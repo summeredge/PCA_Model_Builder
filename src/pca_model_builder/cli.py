@@ -9,7 +9,7 @@ from typing import Any, Sequence
 
 import pandas as pd
 
-from .contribution import aggregate_tag_contributions
+from .contribution import exceedance_contribution_tables
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
 from .preprocessing import (
@@ -18,7 +18,11 @@ from .preprocessing import (
     infer_segment_ids,
 )
 from .quality import QualityReport, inspect_data_quality
-from .validation import ensure_disjoint_windows
+from .validation import (
+    build_validation_matrix,
+    ensure_disjoint_windows,
+    validation_context_start,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("validation_contributions.json"),
     )
     validate.set_defaults(handler=_validate)
+
+    serve = subparsers.add_parser("serve", help="Run the local web interface")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8775)
+    serve.add_argument("--no-open", action="store_true")
+    serve.set_defaults(handler=_serve)
     return parser
 
 
@@ -142,6 +152,13 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _serve(args: argparse.Namespace) -> dict[str, Any]:
+    from .web import run_server
+
+    run_server(args.host, args.port, open_browser=not args.no_open)
+    return {"status": "stopped"}
+
+
 def _validate(args: argparse.Namespace) -> dict[str, Any]:
     model, manifest = load_model_package(args.model)
     config_data = manifest["config"]
@@ -157,46 +174,47 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     ensure_disjoint_windows(training_windows, [validation_window])
 
     raw = _read_csv(args.csv, args.timestamp, args.encoding)
-    validation = _select_window(
-        raw, args.timestamp, args.validation_start, args.validation_end
-    )
     config = PreprocessingConfig(
         sample_interval_minutes=int(config_data["sample_interval_minutes"]),
         smoothing_window_minutes=int(config_data["smoothing_window_minutes"]),
         max_lag_minutes=int(config_data["max_lag_minutes"]),
         lag_step_minutes=int(config_data["lag_step_minutes"]),
     )
+    context_start = validation_context_start(validation_window[0], config)
+    context = _select_window(
+        raw, args.timestamp, context_start.isoformat(), args.validation_end
+    )
     _require_clean_data(
-        validation,
+        context,
         args.timestamp,
         tags,
         expected_interval_minutes=config.sample_interval_minutes,
     )
-    indexed = _to_indexed_frame(validation, args.timestamp, tags)
-    dynamic = build_dynamic_matrix(
+    indexed = _to_indexed_frame(context, args.timestamp, tags)
+    dynamic = build_validation_matrix(
         indexed,
         tags,
         config,
-        infer_segment_ids(indexed.index, config.sample_interval_minutes),
+        validation_window[0],
+        validation_window[1],
     )
     scores = model.score(dynamic)
     args.scores_output.parent.mkdir(parents=True, exist_ok=True)
     scores.to_csv(args.scores_output, index_label=args.timestamp)
 
     contribution_records: list[dict[str, Any]] = []
-    flagged = scores[scores["status"] != "normal"]
-    for timestamp in flagged.index:
-        for statistic in ("t2", "spe"):
-            table = aggregate_tag_contributions(
-                model, dynamic.loc[timestamp], statistic=statistic
-            )
-            contribution_records.append(
-                {
-                    "timestamp": timestamp.isoformat(),
-                    "statistic": statistic,
-                    "tags": table.head(5).to_dict(orient="records"),
-                }
-            )
+    for statistic, timestamp, value, limit95, table in exceedance_contribution_tables(
+        model, dynamic, scores
+    ):
+        contribution_records.append(
+            {
+                "timestamp": timestamp.isoformat(),
+                "statistic": statistic,
+                "statistic_value": value,
+                "limit_95": limit95,
+                "tags": table.head(5).to_dict(orient="records"),
+            }
+        )
     _write_json(args.contributions_output, contribution_records)
 
     report: dict[str, Any] = {
@@ -213,6 +231,9 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         "engineer_decision_required": True,
     }
     if args.label_column:
+        validation = _select_window(
+            raw, args.timestamp, args.validation_start, args.validation_end
+        )
         if args.label_column not in validation.columns:
             raise ValueError(f"missing label column: {args.label_column}")
         labels = validation.set_index(args.timestamp)[args.label_column].reindex(scores.index)

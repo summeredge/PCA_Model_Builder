@@ -20,7 +20,17 @@ def test_fit_selects_components_and_scores_training_data():
     scores = model.score(frame)
 
     assert model.n_components == 2
-    assert {"t2", "spe", "status"}.issubset(scores.columns)
+    assert {
+        "pc1",
+        "pc2",
+        "t2",
+        "spe",
+        "t2_limit_ratio",
+        "spe_limit_ratio",
+        "t2_status",
+        "spe_status",
+        "status",
+    }.issubset(scores.columns)
     assert model.t2_limits[0.99] > model.t2_limits[0.95] > 0
     assert model.q_limits[0.99] > model.q_limits[0.95] >= 0
 
@@ -45,7 +55,11 @@ def test_status_uses_more_severe_of_t2_and_spe():
     abnormal = frame.iloc[[0]].copy()
     abnormal["C__lag_000min"] += 20.0
 
-    assert model.score(abnormal).iloc[0].status == "abnormal"
+    scored = model.score(abnormal).iloc[0]
+
+    assert scored.spe_status == "abnormal"
+    assert scored.spe_limit_ratio >= 1
+    assert scored.status == "abnormal"
 
 
 def test_fit_rejects_model_without_effective_residual_space():

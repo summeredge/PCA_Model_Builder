@@ -43,14 +43,31 @@ class DPCAModel:
         )
         spe = np.sum(residual**2, axis=1)
 
-        status = np.full(len(frame), "normal", dtype=object)
-        attention = (t2 >= self.t2_limits[0.95]) | (spe >= self.q_limits[0.95])
-        abnormal = (t2 >= self.t2_limits[0.99]) | (spe >= self.q_limits[0.99])
-        status[attention] = "attention"
-        status[abnormal] = "abnormal"
-        return pd.DataFrame(
-            {"t2": t2, "spe": spe, "status": status}, index=frame.index
+        t2_status = _statistic_status(
+            t2, self.t2_limits[0.95], self.t2_limits[0.99]
         )
+        spe_status = _statistic_status(
+            spe, self.q_limits[0.95], self.q_limits[0.99]
+        )
+        severity = {"normal": 0, "attention": 1, "abnormal": 2}
+        status = np.array(
+            [
+                left if severity[left] >= severity[right] else right
+                for left, right in zip(t2_status, spe_status, strict=True)
+            ],
+            dtype=object,
+        )
+        result = pd.DataFrame(index=frame.index)
+        for index in range(self.n_components):
+            result[f"pc{index + 1}"] = principal_scores[:, index]
+        result["t2"] = t2
+        result["spe"] = spe
+        result["t2_limit_ratio"] = t2 / self.t2_limits[0.95]
+        result["spe_limit_ratio"] = spe / self.q_limits[0.95]
+        result["t2_status"] = t2_status
+        result["spe_status"] = spe_status
+        result["status"] = status
+        return result
 
 
 def fit_dpca(
@@ -157,3 +174,12 @@ def _q_limit(
     if bracket <= 0:
         return float(np.quantile(training_spe, alpha))
     return float(theta1 * bracket ** (1.0 / h0))
+
+
+def _statistic_status(
+    values: np.ndarray, limit_95: float, limit_99: float
+) -> np.ndarray:
+    status = np.full(len(values), "normal", dtype=object)
+    status[values >= limit_95] = "attention"
+    status[values >= limit_99] = "abnormal"
+    return status

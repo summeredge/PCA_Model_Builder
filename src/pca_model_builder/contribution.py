@@ -74,3 +74,27 @@ def aggregate_tag_contributions(
         "contribution_pct", ascending=False, ignore_index=True
     )
 
+
+def exceedance_contribution_tables(
+    model: DPCAModel,
+    dynamic: pd.DataFrame,
+    scores: pd.DataFrame,
+) -> list[tuple[str, pd.Timestamp, float, float, pd.DataFrame]]:
+    """Return one contribution table per statistic that actually exceeds 95%."""
+    results = []
+    definitions = (
+        ("t2", "t2", model.t2_limits[0.95]),
+        ("spe", "spe", model.q_limits[0.95]),
+    )
+    for statistic, column, limit in definitions:
+        exceeded = scores[column] >= limit
+        if not exceeded.any():
+            continue
+        timestamp = pd.Timestamp((scores.loc[exceeded, column] / limit).idxmax())
+        table = aggregate_tag_contributions(
+            model, dynamic.loc[timestamp], statistic=statistic
+        )
+        results.append(
+            (statistic, timestamp, float(scores.loc[timestamp, column]), float(limit), table)
+        )
+    return results

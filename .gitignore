@@ -8,4 +8,5 @@ dist/
 *.pcamodel
 validation_scores.csv
 validation_report.json
-
+validation_contributions.json
+.web_data/

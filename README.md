@@ -16,6 +16,29 @@ PCA 只用于状态偏离监控和贡献分析，不输出根因结论，不包�
 & "C:\Users\shaoy\AppData\Local\Programs\Python\Python311\python.exe" -m pip install -e ".[test]"
 ```
 
+## Web 交互界面
+
+双击 `start_app.bat`，或在已完成开发安装的环境中运行：
+
+```powershell
+pca-model-builder serve
+```
+
+浏览器默认打开 `http://127.0.0.1:8775/`。该端口与 DataProject 使用的 `8765` 不同，也可以通过 `--port` 指定其他端口。
+
+Web 界面支持：
+
+- 上传并检查 CSV；
+- 选择时间列和连续 Tag；
+- 配置正常时间窗口、平滑、Lag 和解释率；
+- 训练 DPCA 草稿模型；
+- 查看主元解释率、T²/SPE 趋势和控制边界；
+- 使用不重叠的历史窗口独立验证；
+- 查看异常状态和原始 Tag 聚合贡献；
+- 下载不含原始过程数据的 `.pcamodel` 模型包。
+
+上传文件和 Web 运行结果只保存在本机 `.web_data/`，不会发送到外部服务。Web 验证不会自动把模型标记为“通过”。
+
 ## CSV 要求
 
 - 一个可解析的时间戳列；
