@@ -1,0 +1,67 @@
+# PCA_Model_Builder
+
+面向流程工业工程师的离线动态 PCA 状态监控模型构建工具。当前实现范围是 Phase 1 核心验证：CSV 数据经过尾随平滑和统一 Lag 扩展后训练 DPCA，计算 T²、SPE/Q 与原始 Tag 聚合贡献，并在独立历史窗口回放验证。
+
+PCA 只用于状态偏离监控和贡献分析，不输出根因结论，不包含 PLS、实时计算、控制优化或企业级平台功能。
+
+## 环境
+
+- Python 3.11
+- NumPy、pandas、SciPy、scikit-learn
+- pytest（测试）
+
+开发安装：
+
+```powershell
+& "C:\Users\shaoy\AppData\Local\Programs\Python\Python311\python.exe" -m pip install -e ".[test]"
+```
+
+## CSV 要求
+
+- 一个可解析的时间戳列；
+- 参加模型的 Tag 必须为有限数值；
+- 时间戳必须唯一并使用固定采样间隔；
+- 缺失、重复、非数值或不规则采样会阻止训练，工具不会静默清洗。
+
+## 训练草稿模型
+
+```powershell
+pca-model-builder train `
+  --csv history.csv `
+  --timestamp time `
+  --tags TI330001 PI330001 FI330001 `
+  --normal-start "2026-01-01 00:00" `
+  --normal-end "2026-03-01 00:00" `
+  --model-name D330_DPCA_Model_V1 `
+  --output D330_DPCA_Model_V1.pcamodel
+```
+
+默认参数为 10 分钟尾随平滑、最大 Lag 60 分钟、Lag 步长 5 分钟、累计解释率 95%。采样间隔默认 5 分钟，可通过命令行调整。Lag 和平滑均不跨物理时间缺口。
+
+模型包只包含 `manifest.json` 和 `arrays.npz`，不保存原始过程数据，也不使用 pickle。训练完成后的模型状态为 `draft`。
+
+## 独立窗口验证
+
+```powershell
+pca-model-builder validate `
+  --model D330_DPCA_Model_V1.pcamodel `
+  --csv history.csv `
+  --timestamp time `
+  --validation-start "2026-04-01 00:00" `
+  --validation-end "2026-04-15 00:00" `
+  --label-column engineering_label
+```
+
+输出：
+
+- `validation_scores.csv`：逐时间点 T²、SPE 和 normal/attention/abnormal 状态；
+- `validation_contributions.json`：越界点的 T²/SPE Top 5 原始 Tag 贡献及主要 Lag；
+- `validation_report.json`：状态数量、极值及可选的工程标签分组结果。
+
+验证命令不会自动把模型标记为“通过”。工程师必须结合已知正常期和异常事件审查结果。
+
+## 测试
+
+```powershell
+& "C:\Users\shaoy\AppData\Local\Programs\Python\Python311\python.exe" -m pytest -q
+```
