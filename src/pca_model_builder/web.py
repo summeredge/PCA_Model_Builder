@@ -18,11 +18,13 @@ import webbrowser
 import numpy as np
 import pandas as pd
 
+from .clustering import cluster_operating_states
 from .contribution import exceedance_contribution_tables
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
 from .quality import QualityReport, inspect_data_quality
+from .tag_config import engineering_ranges, normalize_tag_configs
 from .validation import (
     build_validation_matrix,
     ensure_disjoint_windows,
@@ -125,13 +127,20 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tags = _required_tags(payload)
     parsed = _parse_timestamp_column(frame, timestamp_column)
     config = _preprocessing_config(payload)
+    tag_configs = normalize_tag_configs(tags, payload.get("tag_configs"))
     normal = _select_window(
         parsed,
         timestamp_column,
         _required_text(payload, "normal_start"),
         _required_text(payload, "normal_end"),
     )
-    _require_clean_data(normal, timestamp_column, tags, config.sample_interval_minutes)
+    _require_clean_data(
+        normal,
+        timestamp_column,
+        tags,
+        config.sample_interval_minutes,
+        engineering_ranges(tag_configs),
+    )
     indexed = _indexed_tags(normal, timestamp_column, tags)
     dynamic = build_dynamic_matrix(
         indexed,
@@ -167,6 +176,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "max_lag_minutes": config.max_lag_minutes,
         "lag_step_minutes": config.lag_step_minutes,
         "variance_threshold": variance_threshold,
+        "tag_configs": tag_configs,
     }
     save_model_package(
         run_dir / "model.pcamodel",
@@ -196,6 +206,65 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    frame = _read_upload(payload)
+    timestamp_column = _required_text(payload, "timestamp_column")
+    tags = _required_tags(payload)
+    parsed = _parse_timestamp_column(frame, timestamp_column)
+    config = _preprocessing_config(payload)
+    tag_configs = normalize_tag_configs(tags, payload.get("tag_configs"))
+    analysis = _select_window(
+        parsed,
+        timestamp_column,
+        _required_text(payload, "analysis_start"),
+        _required_text(payload, "analysis_end"),
+    )
+    _require_clean_data(
+        analysis,
+        timestamp_column,
+        tags,
+        config.sample_interval_minutes,
+        engineering_ranges(tag_configs),
+    )
+    indexed = _indexed_tags(analysis, timestamp_column, tags)
+    dynamic = build_dynamic_matrix(
+        indexed,
+        tags,
+        config,
+        infer_segment_ids(indexed.index, config.sample_interval_minutes),
+    )
+    if dynamic.empty:
+        raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
+    result = cluster_operating_states(
+        dynamic,
+        n_clusters=int(payload.get("n_clusters", 3)),
+        variance_threshold=float(payload.get("variance_threshold", 0.95)),
+        sample_interval_minutes=config.sample_interval_minutes,
+    )
+    points = result.points
+    if len(points) > MAX_CHART_POINTS:
+        positions = np.unique(
+            np.linspace(0, len(points) - 1, MAX_CHART_POINTS, dtype=int)
+        )
+        points = points.iloc[positions]
+    return {
+        "sample_count": len(result.points),
+        "n_components": result.n_components,
+        "cumulative_explained_variance": result.cumulative_explained_variance,
+        "clusters": list(result.summaries),
+        "points": [
+            {
+                "timestamp": timestamp.isoformat(),
+                "pc1": float(row.pc1),
+                "pc2": float(row.pc2),
+                "cluster": int(row.cluster),
+            }
+            for timestamp, row in points.iterrows()
+        ],
+        "engineer_decision_required": True,
+    }
+
+
 def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
     model_path = RUNS_DIR / run_id / "model.pcamodel"
@@ -204,6 +273,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     model, manifest = load_model_package(model_path)
     config_data = manifest["config"]
     tags = list(config_data["tags"])
+    tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
     timestamp_column = _required_text(payload, "timestamp_column")
     validation_window = (
         pd.Timestamp(_required_text(payload, "validation_start")),
@@ -234,6 +304,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         timestamp_column,
         tags,
         config.sample_interval_minutes,
+        engineering_ranges(tag_configs),
     )
     indexed = _indexed_tags(context, timestamp_column, tags)
     dynamic = build_validation_matrix(
@@ -255,7 +326,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "timestamp": timestamp.isoformat(),
                 "statistic_value": value,
                 "limit_95": limit95,
-                "tags": _contribution_records(table.head(8)),
+                "tags": _contribution_records(table.head(8), tag_configs),
             }
         )
 
@@ -377,11 +448,13 @@ def _require_clean_data(
     timestamp_column: str,
     tags: Sequence[str],
     expected_interval_minutes: float,
+    configured_engineering_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> None:
     report = inspect_data_quality(
         frame,
         timestamp_column,
         tags,
+        engineering_ranges=configured_engineering_ranges,
         expected_interval_minutes=expected_interval_minutes,
     )
     if not report.can_train:
@@ -461,10 +534,15 @@ def _focus_timestamp(
     return pd.Timestamp(pd.concat([t2_ratio, q_ratio], axis=1).max(axis=1).idxmax())
 
 
-def _contribution_records(table: pd.DataFrame) -> list[dict[str, Any]]:
+def _contribution_records(
+    table: pd.DataFrame, tag_configs: dict[str, dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    tag_configs = tag_configs or {}
     return [
         {
             "tag": str(row.tag),
+            "description": str(tag_configs.get(str(row.tag), {}).get("description", "")),
+            "unit": str(tag_configs.get(str(row.tag), {}).get("unit", "")),
             "contribution_pct": float(row.contribution_pct),
             "lag_start_minutes": int(row.lag_start_minutes),
             "lag_end_minutes": int(row.lag_end_minutes),
@@ -504,6 +582,9 @@ class _Handler(BaseHTTPRequestHandler):
             payload = self._json_body()
             if self.path == "/api/inspect":
                 self._send_json(inspect_payload(payload))
+                return
+            if self.path == "/api/cluster":
+                self._send_json(cluster_payload(payload))
                 return
             if self.path == "/api/train":
                 self._send_json(train_payload(payload))
@@ -629,6 +710,10 @@ INDEX_HTML = r"""<!doctype html>
     .tag-options label { display:flex; align-items:center; gap:6px; color:var(--text); overflow:hidden; }
     .tag-options input { width:auto; min-height:auto; }
     .tag-options span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tag-config-list { display:grid; gap:6px; max-height:310px; overflow:auto; }
+    .tag-config-list details { background:#fff; border:1px solid var(--line); border-radius:6px; padding:7px 8px; }
+    .tag-config-list summary { cursor:pointer; font-weight:650; font-size:12px; }
+    .tag-config-fields { display:grid; gap:7px; padding-top:8px; }
     .results { display:grid; gap:14px; min-width:0; align-content:start; }
     .tabs { display:flex; gap:8px; border-bottom:1px solid var(--line); padding-bottom:8px; }
     .tab { background:#e8edf3; color:var(--text); }
@@ -684,9 +769,18 @@ INDEX_HTML = r"""<!doctype html>
         <div class="group-title">2. 建模 Tag</div>
         <div id="tagOptions" class="tag-options"><span class="help">检查数据后显示连续数值列。</span></div>
         <div class="help">V1 将所有选中连续 Tag 使用同一组 Lag；工程标签和离散状态不要加入模型。</div>
+        <div class="help">工程参数可选。工程量程用于拦截无效数据；正常范围和报警范围仅用于工程解释。</div>
+        <div id="tagConfigList" class="tag-config-list"><span class="help">检查数据后可配置描述、单位和工程范围。</span></div>
       </div>
       <div class="group">
-        <div class="group-title">3. 正常状态与 DPCA 参数</div>
+        <div class="group-title">3. 聚类辅助识别（可选）</div>
+        <div class="row"><label>分析期开始<input id="analysisStart" type="datetime-local"></label><label>分析期结束<input id="analysisEnd" type="datetime-local"></label></div>
+        <div class="row"><label>Cluster 数量<input id="clusterCount" type="number" min="2" max="10" value="3"></label><span class="help">使用下方相同的平滑、Lag 和解释率参数。</span></div>
+        <button id="clusterButton" class="secondary" disabled>生成运行状态聚类</button>
+        <div class="help">聚类只辅助发现运行模式。算法不会自动认定正常状态。</div>
+      </div>
+      <div class="group">
+        <div class="group-title">4. 正常状态与 DPCA 参数</div>
         <div class="row"><label>正常期开始<input id="normalStart" type="datetime-local"></label><label>正常期结束<input id="normalEnd" type="datetime-local"></label></div>
         <div class="row"><label>采样间隔（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>尾随平滑（分钟）<input id="smoothingWindow" type="number" min="1" value="10"></label></div>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
@@ -700,6 +794,7 @@ INDEX_HTML = r"""<!doctype html>
     <section class="results">
       <div class="tabs" role="tablist">
         <button class="tab active" data-panel="modelPanel">建模结果</button>
+        <button class="tab" data-panel="clusterPanel">聚类辅助</button>
         <button class="tab" data-panel="validationPanel">独立验证</button>
       </div>
       <div id="modelPanel" class="panel active">
@@ -715,6 +810,16 @@ INDEX_HTML = r"""<!doctype html>
           <div class="legend"><span><i class="swatch" style="background:var(--accent)"></i>统计量</span><span><i class="swatch" style="background:var(--attention)"></i>95% 边界</span><span><i class="swatch" style="background:var(--abnormal)"></i>99% 边界</span></div>
           <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a></div>
           <div class="notice">当前保存的是草稿模型。只有独立历史窗口回放并由工程师确认后，才能认为模型验证通过。</div>
+        </div>
+      </div>
+      <div id="clusterPanel" class="panel">
+        <div id="clusterEmpty" class="empty">检查数据后，可对选定历史窗口生成运行状态聚类。</div>
+        <div id="clusterContent" hidden>
+          <div id="clusterMetrics" class="metrics"></div>
+          <div class="chart-card"><h3>聚类状态空间 PC1 / PC2</h3><div id="clusterChart" class="chart"></div></div>
+          <h3>Cluster 概览与代表性连续时段</h3>
+          <div class="table-wrap"><table><thead><tr><th>Cluster</th><th>样本</th><th>占比</th><th>中心 PC1 / PC2</th><th>人工选择正常候选时段</th></tr></thead><tbody id="clusterTable"></tbody></table></div>
+          <div class="notice">Cluster 只表示数据中的相似运行状态，不代表正常或异常。点击时段只会填入正常期窗口，仍需工程师确认后再训练。</div>
         </div>
       </div>
       <div id="validationPanel" class="panel">
@@ -733,14 +838,14 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <h3>主要贡献 Tag</h3>
           <div class="help" id="contributionHint"></div>
-          <div class="table-wrap"><table><thead><tr><th>统计量</th><th>Tag</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>统计量</th><th>Tag</th><th>描述</th><th>单位</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
           <div class="notice">贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
         </div>
       </div>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, inspection:null, training:null };
+const state = { fileId:null, runId:null, inspection:null, clustering:null, training:null };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -749,6 +854,19 @@ function localTime(value) { return value ? value.slice(0,16) : ""; }
 function selectedTags() { return [...document.querySelectorAll('#tagOptions input:checked')].map(node=>node.value); }
 function numberValue(id) { return Number(el(id).value); }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
+function tagConfigField(labelText,field,type="text") { const label=document.createElement("label"); label.textContent=labelText; const input=document.createElement("input"); input.type=type; input.dataset.field=field; if(type==="number") input.step="any"; label.append(input); return label; }
+function renderTagConfigs(tags) {
+  const list=el("tagConfigList"); list.replaceChildren();
+  tags.forEach(tag=>{ const details=document.createElement("details"); details.dataset.tag=tag; const summary=document.createElement("summary"); summary.textContent=`${tag} · 连续变量`; const fields=document.createElement("div"); fields.className="tag-config-fields";
+    const identity=document.createElement("div"); identity.className="row"; identity.append(tagConfigField("描述","description"),tagConfigField("单位","unit"));
+    const engineering=document.createElement("div"); engineering.className="row"; engineering.append(tagConfigField("工程下限","engineering_min","number"),tagConfigField("工程上限","engineering_max","number"));
+    const normal=document.createElement("div"); normal.className="row"; normal.append(tagConfigField("正常下限","normal_min","number"),tagConfigField("正常上限","normal_max","number"));
+    const alarm=document.createElement("div"); alarm.className="row"; alarm.append(tagConfigField("报警下限","alarm_min","number"),tagConfigField("报警上限","alarm_max","number"));
+    fields.append(identity,engineering,normal,alarm); details.append(summary,fields); list.append(details); });
+}
+function tagConfigPayload(tags) {
+  const result={}; document.querySelectorAll('#tagConfigList details').forEach(details=>{ const tag=details.dataset.tag; if(!tags.includes(tag)) return; const config={type:"continuous"}; details.querySelectorAll("input[data-field]").forEach(input=>{ const value=input.value.trim(); config[input.dataset.field]=input.type==="number"?(value===""?null:Number(value)):value; }); result[tag]=config; }); return result;
+}
 
 async function api(path, options={}) {
   const response = await fetch(path, options);
@@ -770,7 +888,7 @@ el("uploadButton").addEventListener("click", async () => {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
     state.fileId=data.file_id; fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
-    el("inspectButton").disabled=false; el("trainButton").disabled=true; el("validateButton").disabled=true;
+    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -780,13 +898,25 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; const options=el("tagOptions"); options.replaceChildren();
+    state.inspection=data; const options=el("tagOptions"); options.replaceChildren(); renderTagConfigs(data.numeric_columns);
     data.numeric_columns.forEach(tag=>{ const label=document.createElement("label"); const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=true; const span=document.createElement("span"); span.textContent=tag; label.append(input,span); options.append(label); });
-    el("normalStart").value=localTime(data.time_start); el("normalEnd").value=localTime(data.suggested_normal_end); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
+    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("normalStart").value=localTime(data.time_start); el("normalEnd").value=localTime(data.suggested_normal_end); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
-    el("trainButton").disabled=false;
+    el("clusterButton").disabled=false; el("trainButton").disabled=false;
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count})`).join("、");
     setStatus(issues ? `检查完成：${data.rows} 行。发现 ${issues}；选择的训练窗口仍会再次检查。` : `检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个连续数值列。`, issues?"warning":"success");
+  } catch (error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+
+el("clusterButton").addEventListener("click", async () => {
+  const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
+  const button=el("clusterButton"); setBusy(button,true,"聚类中…"); setStatus("正在构建动态状态空间并执行聚类。","info");
+  try {
+    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
+    const data=await api("/api/cluster",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    state.clustering=data; renderClustering(data); document.querySelector('[data-panel="clusterPanel"]').click();
+    setStatus("聚类完成。请由工程师判断 Cluster，并选择代表性连续时段作为正常候选。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -796,7 +926,7 @@ el("trainButton").addEventListener("click", async () => {
   const button=el("trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   try {
     const components=el("components").value.trim();
-    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,normal_start:el("normalStart").value,normal_end:el("normalEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
+    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,tag_configs:tagConfigPayload(tags),normal_start:el("normalStart").value,normal_end:el("normalEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     state.runId=data.run_id; state.training=data; renderTraining(data); el("validateButton").disabled=false;
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。模型仍为草稿。`,"success");
@@ -815,6 +945,20 @@ el("validateButton").addEventListener("click", async () => {
 });
 
 function metric(label,value) { return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
+function renderClustering(data) {
+  el("clusterEmpty").hidden=true; el("clusterContent").hidden=false;
+  el("clusterMetrics").innerHTML=metric("聚类动态样本",data.sample_count)+metric("状态空间主元",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("Cluster 数量",data.clusters.length);
+  clusterScatter(el("clusterChart"),data.points);
+  const body=el("clusterTable"); body.replaceChildren();
+  data.clusters.forEach(item=>{
+    const tr=document.createElement("tr");
+    [`Cluster ${item.cluster}`,item.count,`${(item.share*100).toFixed(1)}%`,`${item.pc1_center.toFixed(2)} / ${item.pc2_center.toFixed(2)}`].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); });
+    const windows=document.createElement("td");
+    item.representative_windows.forEach(window=>{ const button=document.createElement("button"); button.className="secondary"; button.style.margin="2px"; button.textContent=`${window.start.slice(0,16)} ～ ${window.end.slice(11,16)} (${window.count}点)`; button.addEventListener("click",()=>{ el("normalStart").value=localTime(window.start); el("normalEnd").value=localTime(window.end); setStatus(`已将 Cluster ${item.cluster} 的代表时段填入正常期。请确认工况后再训练。`,"warning"); }); windows.append(button); });
+    tr.append(windows); body.append(tr);
+  });
+}
+
 function renderTraining(data) {
   el("modelEmpty").hidden=true; el("modelContent").hidden=false;
   el("modelMetrics").innerHTML=metric("训练动态样本",data.training_rows)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
@@ -829,7 +973,7 @@ function renderValidation(data) {
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
   el("contributionHint").textContent=data.contributions.length ? "仅展示达到 95% 控制限的统计量；每类统计量使用其越界程度最高的时间点。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
-  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; tr.innerHTML=`<td>${escapeHtml(group.statistic.toUpperCase())}</td><td>${escapeHtml(item.tag)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; body.append(tr); }));
+  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; tr.innerHTML=`<td>${escapeHtml(group.statistic.toUpperCase())}</td><td>${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; body.append(tr); }));
 }
 
 function lineChart(container, rows, field, limits, label) {
@@ -842,6 +986,15 @@ function lineChart(container, rows, field, limits, label) {
 function scoreScatter(container, rows) {
   if (!rows.length || !("pc1" in rows[0]) || !("pc2" in rows[0])) { container.innerHTML='<div class="empty">当前模型不足两个保留主元。</div>'; return; }
   const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad); const colors={normal:"#16845b",attention:"#d19a20",abnormal:"#cf3f36"}; const circles=rows.map(row=>`<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${colors[row.status]}" fill-opacity=".72"/>`).join(""); container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="PC1与PC2得分散点"><line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${circles}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
+}
+
+function clusterScatter(container, rows) {
+  if (!rows.length) { container.innerHTML='<div class="empty">无可展示数据</div>'; return; }
+  const palette=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
+  const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad);
+  const circles=rows.map(row=>`<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${palette[(row.cluster-1)%palette.length]}" fill-opacity=".72"><title>Cluster ${row.cluster} · ${escapeHtml(row.timestamp.slice(0,16))}</title></circle>`).join("");
+  const legend=[...new Set(rows.map(row=>row.cluster))].map(cluster=>`<text x="${pad+(cluster-1)*82}" y="15" fill="${palette[(cluster-1)%palette.length]}" font-size="10">● Cluster ${cluster}</text>`).join("");
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="运行状态聚类散点">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${circles}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
 }
 
 document.querySelectorAll(".tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.panel)); }));

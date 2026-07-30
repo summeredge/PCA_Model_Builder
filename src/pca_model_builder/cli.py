@@ -18,6 +18,7 @@ from .preprocessing import (
     infer_segment_ids,
 )
 from .quality import QualityReport, inspect_data_quality
+from .tag_config import engineering_ranges, normalize_tag_configs
 from .validation import (
     build_validation_matrix,
     ensure_disjoint_windows,
@@ -44,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--variance-threshold", type=float, default=0.95)
     train.add_argument("--components", type=int)
     train.add_argument("--model-name", required=True)
+    train.add_argument(
+        "--tag-config",
+        type=Path,
+        help="Optional UTF-8 JSON object keyed by selected Tag name",
+    )
     train.add_argument("--output", type=Path, required=True)
     train.set_defaults(handler=_train)
 
@@ -102,6 +108,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         max_lag_minutes=args.max_lag,
         lag_step_minutes=args.lag_step,
     )
+    tag_configs = _read_tag_configs(args.tag_config, args.tags)
     normal = _select_window(
         raw, args.timestamp, args.normal_start, args.normal_end
     )
@@ -110,6 +117,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         args.timestamp,
         args.tags,
         expected_interval_minutes=config.sample_interval_minutes,
+        configured_engineering_ranges=engineering_ranges(tag_configs),
     )
     indexed = _to_indexed_frame(normal, args.timestamp, args.tags)
     segments = infer_segment_ids(indexed.index, config.sample_interval_minutes)
@@ -133,6 +141,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         "max_lag_minutes": config.max_lag_minutes,
         "lag_step_minutes": config.lag_step_minutes,
         "variance_threshold": args.variance_threshold,
+        "tag_configs": tag_configs,
     }
     save_model_package(
         args.output,
@@ -163,6 +172,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     model, manifest = load_model_package(args.model)
     config_data = manifest["config"]
     tags = list(config_data["tags"])
+    tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
     training_windows = [
         (pd.Timestamp(start), pd.Timestamp(end))
         for start, end in manifest["training_windows"]
@@ -189,6 +199,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         args.timestamp,
         tags,
         expected_interval_minutes=config.sample_interval_minutes,
+        configured_engineering_ranges=engineering_ranges(tag_configs),
     )
     indexed = _to_indexed_frame(context, args.timestamp, tags)
     dynamic = build_validation_matrix(
@@ -277,11 +288,13 @@ def _require_clean_data(
     timestamp_column: str,
     tags: Sequence[str],
     expected_interval_minutes: float,
+    configured_engineering_ranges: dict[str, tuple[float, float]] | None = None,
 ) -> None:
     report = inspect_data_quality(
         frame,
         timestamp_column,
         tags,
+        engineering_ranges=configured_engineering_ranges,
         expected_interval_minutes=expected_interval_minutes,
     )
     if not report.can_train:
@@ -309,6 +322,15 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _read_tag_configs(
+    path: Path | None, tags: Sequence[str]
+) -> dict[str, dict[str, Any]]:
+    if path is None:
+        return {}
+    value = json.loads(path.read_text(encoding="utf-8-sig"))
+    return normalize_tag_configs(tags, value)
 
 
 if __name__ == "__main__":

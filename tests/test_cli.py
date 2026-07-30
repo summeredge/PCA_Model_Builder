@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from pca_model_builder.cli import main
+from pca_model_builder.model_io import load_model_package
 
 
 def test_cli_trains_and_replays_independent_validation_window(tmp_path):
@@ -24,7 +25,28 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     scores_path = tmp_path / "scores.csv"
     report_path = tmp_path / "report.json"
     contributions_path = tmp_path / "contributions.json"
+    tag_config_path = tmp_path / "tags.json"
     frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    tag_config_path.write_text(
+        json.dumps(
+            {
+                "A": {
+                    "description": "流量",
+                    "unit": "t/h",
+                    "engineering_min": -100,
+                    "engineering_max": 100,
+                },
+                "B": {
+                    "description": "压力",
+                    "unit": "kPa",
+                    "engineering_min": -100,
+                    "engineering_max": 100,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     train_result = main(
         [
@@ -50,6 +72,8 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
             "5",
             "--model-name",
             "UNIT_DPCA_V1",
+            "--tag-config",
+            str(tag_config_path),
             "--output",
             str(model_path),
         ]
@@ -81,10 +105,11 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     assert train_result == 0
     assert validation_result == 0
     assert model_path.exists()
+    _, manifest = load_model_package(model_path)
+    assert manifest["config"]["tag_configs"]["A"]["unit"] == "t/h"
     assert scores_path.exists()
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["engineer_decision_required"] is True
     assert "known_event" in report["status_by_engineering_label"]
     contributions = json.loads(contributions_path.read_text(encoding="utf-8"))
     assert {item["statistic"] for item in contributions} == {"t2", "spe"}
-
