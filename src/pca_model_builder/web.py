@@ -24,6 +24,7 @@ from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
 from .quality import QualityReport, inspect_data_quality
+from .screening import screen_performance_states
 from .tag_config import engineering_ranges, normalize_tag_configs
 from .validation import (
     build_validation_matrix,
@@ -40,6 +41,14 @@ RUNS_DIR = WEB_DATA_DIR / "runs"
 MAX_REQUEST_BODY_BYTES = 200 * 1024 * 1024
 MAX_CHART_POINTS = 1200
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_VALIDATION_ARTIFACTS = {
+    "scores": ("validation_scores.csv", "text/csv; charset=utf-8"),
+    "report": ("validation_report.json", "application/json; charset=utf-8"),
+    "contributions": (
+        "validation_contributions.json",
+        "application/json; charset=utf-8",
+    ),
+}
 
 
 def run_server(
@@ -265,6 +274,26 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    analysis = _select_window(
+        parsed,
+        timestamp_column,
+        _required_text(payload, "analysis_start"),
+        _required_text(payload, "analysis_end"),
+    )
+    raw_conditions = payload.get("conditions")
+    if not isinstance(raw_conditions, list):
+        raise ValueError("性能条件必须是列表")
+    indexed = analysis.set_index(timestamp_column)
+    return screen_performance_states(
+        indexed,
+        raw_conditions,
+        sample_interval_minutes=int(payload.get("sample_interval_minutes", 5)),
+    )
+
+
 def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
     model_path = RUNS_DIR / run_id / "model.pcamodel"
@@ -368,6 +397,29 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         result["status_by_engineering_label"] = {}
+    run_dir = RUNS_DIR / run_id
+    scores.to_csv(
+        run_dir / "validation_scores.csv",
+        index_label=timestamp_column,
+        encoding="utf-8-sig",
+    )
+    (run_dir / "validation_contributions.json").write_text(
+        json.dumps(contributions, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    report = {
+        key: value
+        for key, value in result.items()
+        if key not in {"scores", "contributions"}
+    }
+    (run_dir / "validation_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    result["validation_downloads"] = {
+        artifact: f"/download/validation?run_id={run_id}&artifact={artifact}"
+        for artifact in _VALIDATION_ARTIFACTS
+    }
     return result
 
 
@@ -492,6 +544,13 @@ def _validated_id(value: str, label: str) -> str:
     return value
 
 
+def _validation_artifact(artifact: str) -> tuple[str, str]:
+    try:
+        return _VALIDATION_ARTIFACTS[artifact]
+    except KeyError as error:
+        raise ValueError("无效的验证工件类型") from error
+
+
 def _limit_payload(limits: dict[float, float]) -> dict[str, float]:
     return {str(int(alpha * 100)): float(value) for alpha, value in limits.items()}
 
@@ -571,6 +630,20 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_json({"error": str(error)}, 400)
             return
+        if parsed.path == "/download/validation":
+            try:
+                query = parse_qs(parsed.query)
+                run_id = _validated_id(query.get("run_id", [""])[0], "run_id")
+                artifact = query.get("artifact", [""])[0]
+                filename, content_type = _validation_artifact(artifact)
+                self._send_download(
+                    RUNS_DIR / run_id / filename,
+                    content_type,
+                    filename,
+                )
+            except Exception as error:
+                self._send_json({"error": str(error)}, 400)
+            return
         self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self) -> None:
@@ -585,6 +658,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/cluster":
                 self._send_json(cluster_payload(payload))
+                return
+            if self.path == "/api/performance-screen":
+                self._send_json(performance_screen_payload(payload))
                 return
             if self.path == "/api/train":
                 self._send_json(train_payload(payload))
@@ -650,15 +726,19 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_model(self, run_id: str) -> None:
         path = RUNS_DIR / run_id / "model.pcamodel"
+        self._send_download(path, "application/zip", "model.pcamodel")
+
+    def _send_download(
+        self, path: Path, content_type: str, filename: str
+    ) -> None:
         if not path.is_file():
-            raise ValueError("模型文件不存在")
+            raise ValueError("下载文件不存在")
         body = path.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header(
-            "Content-Disposition", 'attachment; filename="model.pcamodel"'
-        )
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -714,6 +794,10 @@ INDEX_HTML = r"""<!doctype html>
     .tag-config-list details { background:#fff; border:1px solid var(--line); border-radius:6px; padding:7px 8px; }
     .tag-config-list summary { cursor:pointer; font-weight:650; font-size:12px; }
     .tag-config-fields { display:grid; gap:7px; padding-top:8px; }
+    .condition-list { display:grid; gap:6px; }
+    .condition-row { display:grid; grid-template-columns:1.4fr 1fr 1fr auto; gap:6px; align-items:end; }
+    .condition-row button { padding:8px 10px; }
+    .sub-title { font-size:12px; font-weight:700; padding-top:3px; border-top:1px solid var(--line-soft); }
     .results { display:grid; gap:14px; min-width:0; align-content:start; }
     .tabs { display:flex; gap:8px; border-bottom:1px solid var(--line); padding-bottom:8px; }
     .tab { background:#e8edf3; color:var(--text); }
@@ -745,7 +829,7 @@ INDEX_HTML = r"""<!doctype html>
     .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
     .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
     @media (max-width:1050px) { main { grid-template-columns:1fr; } }
-    @media (max-width:760px) { .chart-grid,.validation-box { grid-template-columns:1fr; } .row { grid-template-columns:1fr; } }
+    @media (max-width:760px) { .chart-grid,.validation-box { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -773,11 +857,16 @@ INDEX_HTML = r"""<!doctype html>
         <div id="tagConfigList" class="tag-config-list"><span class="help">检查数据后可配置描述、单位和工程范围。</span></div>
       </div>
       <div class="group">
-        <div class="group-title">3. 聚类辅助识别（可选）</div>
+        <div class="group-title">3. 状态辅助识别（可选）</div>
         <div class="row"><label>分析期开始<input id="analysisStart" type="datetime-local"></label><label>分析期结束<input id="analysisEnd" type="datetime-local"></label></div>
+        <div class="sub-title">聚类辅助</div>
         <div class="row"><label>Cluster 数量<input id="clusterCount" type="number" min="2" max="10" value="3"></label><span class="help">使用下方相同的平滑、Lag 和解释率参数。</span></div>
         <button id="clusterButton" class="secondary" disabled>生成运行状态聚类</button>
         <div class="help">聚类只辅助发现运行模式。算法不会自动认定正常状态。</div>
+        <div class="sub-title">性能条件筛选</div>
+        <div id="performanceConditions" class="condition-list"><span class="help">检查数据后可添加筛选条件。</span></div>
+        <div class="actions"><button id="addPerformanceCondition" class="secondary" disabled>添加条件</button><button id="performanceButton" class="secondary" disabled>筛选候选时段</button></div>
+        <div class="help">所有条件按 AND 组合。性能列只用于筛选，不会自动加入 PCA Tag。</div>
       </div>
       <div class="group">
         <div class="group-title">4. 正常状态与 DPCA 参数</div>
@@ -795,6 +884,7 @@ INDEX_HTML = r"""<!doctype html>
       <div class="tabs" role="tablist">
         <button class="tab active" data-panel="modelPanel">建模结果</button>
         <button class="tab" data-panel="clusterPanel">聚类辅助</button>
+        <button class="tab" data-panel="performancePanel">性能筛选</button>
         <button class="tab" data-panel="validationPanel">独立验证</button>
       </div>
       <div id="modelPanel" class="panel active">
@@ -822,6 +912,17 @@ INDEX_HTML = r"""<!doctype html>
           <div class="notice">Cluster 只表示数据中的相似运行状态，不代表正常或异常。点击时段只会填入正常期窗口，仍需工程师确认后再训练。</div>
         </div>
       </div>
+      <div id="performancePanel" class="panel">
+        <div id="performanceEmpty" class="empty">检查数据后，可使用透明的性能范围条件筛选候选时段。</div>
+        <div id="performanceContent" hidden>
+          <div id="performanceMetrics" class="metrics"></div>
+          <h3>条件命中情况</h3>
+          <div class="table-wrap"><table><thead><tr><th>性能列</th><th>条件</th><th>单条件命中</th></tr></thead><tbody id="performanceConditionTable"></tbody></table></div>
+          <h3>代表性连续候选时段</h3>
+          <div class="table-wrap"><table><thead><tr><th>开始</th><th>结束</th><th>样本数</th><th>人工选择</th></tr></thead><tbody id="performanceTable"></tbody></table></div>
+          <div class="notice">性能条件仅用于标记优秀运行候选时段，不是预测模型，也不会自动认定正常状态。工程师确认后才能用于训练。</div>
+        </div>
+      </div>
       <div id="validationPanel" class="panel">
         <div class="validation-box">
           <label>验证期开始<input id="validationStart" type="datetime-local"></label>
@@ -839,13 +940,15 @@ INDEX_HTML = r"""<!doctype html>
           <h3>主要贡献 Tag</h3>
           <div class="help" id="contributionHint"></div>
           <div class="table-wrap"><table><thead><tr><th>统计量</th><th>Tag</th><th>描述</th><th>单位</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
+          <div class="actions"><a id="scoresDownload" class="download" href="#">下载完整评分 CSV</a><a id="reportDownload" class="download" href="#">下载验证摘要</a><a id="contributionsDownload" class="download" href="#">下载贡献记录</a></div>
+          <div class="help">每次回放会更新当前模型最近一次验证的下载文件，不保存多次验证历史。</div>
           <div class="notice">贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
         </div>
       </div>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, inspection:null, clustering:null, training:null };
+const state = { fileId:null, runId:null, inspection:null, clustering:null, performance:null, training:null };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -881,6 +984,21 @@ function fillSelect(node, values, blankLabel=null) {
   values.forEach(value=>{ const option=document.createElement("option"); option.value=value; option.textContent=value; node.append(option); });
 }
 
+function addPerformanceCondition() {
+  const columns=state.inspection?.numeric_columns || []; if(!columns.length) return;
+  const row=document.createElement("div"); row.className="condition-row";
+  const columnLabel=document.createElement("label"); columnLabel.textContent="性能列"; const select=document.createElement("select"); select.className="performance-column"; columns.forEach(column=>{ const option=document.createElement("option"); option.value=column; option.textContent=column; select.append(option); }); columnLabel.append(select);
+  const minimum=tagConfigField("下限（可空）","minimum","number"); const maximum=tagConfigField("上限（可空）","maximum","number");
+  const remove=document.createElement("button"); remove.type="button"; remove.className="secondary"; remove.textContent="删除"; remove.addEventListener("click",()=>row.remove());
+  row.append(columnLabel,minimum,maximum,remove); el("performanceConditions").append(row);
+}
+function renderPerformanceConditions(columns) { const list=el("performanceConditions"); list.replaceChildren(); if(columns.length) addPerformanceCondition(); }
+function performanceConditionPayload() {
+  const rows=[...document.querySelectorAll('#performanceConditions .condition-row')]; if(!rows.length) throw new Error("请至少添加一个性能条件。");
+  return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
+}
+function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); document.querySelectorAll('#tagOptions input').forEach(input=>{ if(columns.has(input.value)) input.checked=false; }); }
+
 el("uploadButton").addEventListener("click", async () => {
   const file=el("fileInput").files[0]; if (!file) { setStatus("请选择 CSV 文件。","warning"); return; }
   const button=el("uploadButton"); setBusy(button,true,"上传中…");
@@ -888,7 +1006,7 @@ el("uploadButton").addEventListener("click", async () => {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
     state.fileId=data.file_id; fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
-    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true;
+    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -898,13 +1016,26 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; const options=el("tagOptions"); options.replaceChildren(); renderTagConfigs(data.numeric_columns);
+    state.inspection=data; const options=el("tagOptions"); options.replaceChildren(); renderTagConfigs(data.numeric_columns); renderPerformanceConditions(data.numeric_columns);
     data.numeric_columns.forEach(tag=>{ const label=document.createElement("label"); const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=true; const span=document.createElement("span"); span.textContent=tag; label.append(input,span); options.append(label); });
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("normalStart").value=localTime(data.time_start); el("normalEnd").value=localTime(data.suggested_normal_end); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
-    el("clusterButton").disabled=false; el("trainButton").disabled=false;
+    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("trainButton").disabled=false;
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count})`).join("、");
     setStatus(issues ? `检查完成：${data.rows} 行。发现 ${issues}；选择的训练窗口仍会再次检查。` : `检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个连续数值列。`, issues?"warning":"success");
+  } catch (error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+
+el("addPerformanceCondition").addEventListener("click",addPerformanceCondition);
+
+el("performanceButton").addEventListener("click", async () => {
+  const button=el("performanceButton"); setBusy(button,true,"筛选中…"); setStatus("正在按全部性能条件筛选连续候选时段。","info");
+  try {
+    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),conditions:performanceConditionPayload()};
+    const data=await api("/api/performance-screen",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    state.performance=data; excludePerformanceColumns(data.conditions); renderPerformance(data); document.querySelector('[data-panel="performancePanel"]').click();
+    setStatus("性能条件筛选完成；相关性能列已取消建模勾选。请选择候选时段并由工程师确认工况。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -945,6 +1076,14 @@ el("validateButton").addEventListener("click", async () => {
 });
 
 function metric(label,value) { return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
+function renderPerformance(data) {
+  el("performanceEmpty").hidden=true; el("performanceContent").hidden=false;
+  el("performanceMetrics").innerHTML=metric("分析样本",data.total_rows)+metric("全部条件命中",data.matched_rows)+metric("命中占比",`${(data.match_share*100).toFixed(1)}%`)+metric("组合方式","AND");
+  const conditions=el("performanceConditionTable"); conditions.replaceChildren(); data.conditions.forEach(item=>{ const tr=document.createElement("tr"); const expression=`${item.minimum===null?"":`≥ ${item.minimum}`} ${item.maximum===null?"":`≤ ${item.maximum}`}`.trim(); [item.column,expression,item.matched_rows].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); conditions.append(tr); });
+  const windows=el("performanceTable"); windows.replaceChildren(); data.representative_windows.forEach(window=>{ const tr=document.createElement("tr"); [window.start.slice(0,16),window.end.slice(0,16),window.count].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); const action=document.createElement("td"); const button=document.createElement("button"); button.className="secondary"; button.textContent="填入正常期"; button.addEventListener("click",()=>{ el("normalStart").value=localTime(window.start); el("normalEnd").value=localTime(window.end); setStatus("已将性能候选时段填入正常期。请确认工况后再训练。","warning"); }); action.append(button); tr.append(action); windows.append(tr); });
+  if(!data.representative_windows.length) { const tr=document.createElement("tr"); const td=document.createElement("td"); td.colSpan=4; td.textContent="没有同时满足全部条件的连续时段。"; tr.append(td); windows.append(tr); }
+}
+
 function renderClustering(data) {
   el("clusterEmpty").hidden=true; el("clusterContent").hidden=false;
   el("clusterMetrics").innerHTML=metric("聚类动态样本",data.sample_count)+metric("状态空间主元",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("Cluster 数量",data.clusters.length);
@@ -974,6 +1113,7 @@ function renderValidation(data) {
   el("contributionHint").textContent=data.contributions.length ? "仅展示达到 95% 控制限的统计量；每类统计量使用其越界程度最高的时间点。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
   data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; tr.innerHTML=`<td>${escapeHtml(group.statistic.toUpperCase())}</td><td>${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; body.append(tr); }));
+  el("scoresDownload").href=data.validation_downloads.scores; el("reportDownload").href=data.validation_downloads.report; el("contributionsDownload").href=data.validation_downloads.contributions;
 }
 
 function lineChart(container, rows, field, limits, label) {

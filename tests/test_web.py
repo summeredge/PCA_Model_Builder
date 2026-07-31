@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -43,6 +45,9 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
         'id="timestampColumn"',
         'id="tagOptions"',
         'id="tagConfigList"',
+        'id="performanceButton"',
+        'id="performanceConditions"',
+        'id="performanceTable"',
         'id="clusterButton"',
         'id="clusterChart"',
         'id="clusterTable"',
@@ -52,8 +57,12 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
         'id="speChart"',
         'id="scoreChart"',
         'id="contributionTable"',
+        'id="scoresDownload"',
+        'id="reportDownload"',
+        'id="contributionsDownload"',
     ):
         assert element_id in web.INDEX_HTML
+    assert "excludePerformanceColumns(data.conditions)" in web.INDEX_HTML
 
 
 def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
@@ -83,6 +92,19 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
             "lag_step_minutes": 5,
             "variance_threshold": 0.95,
             "n_clusters": 2,
+        }
+    )
+    screened = web.performance_screen_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "analysis_start": "2026-01-01T00:00:00",
+            "analysis_end": "2026-01-01T14:55:00",
+            "sample_interval_minutes": 5,
+            "conditions": [
+                {"column": "A", "minimum": 0},
+                {"column": "C", "maximum": 1},
+            ],
         }
     )
     trained = web.train_payload(
@@ -128,6 +150,9 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     assert clustered["sample_count"] == 177
     assert len(clustered["clusters"]) == 2
     assert {point["cluster"] for point in clustered["points"]} == {1, 2}
+    assert screened["engineer_decision_required"] is True
+    assert 0 < screened["matched_rows"] < screened["total_rows"]
+    assert screened["representative_windows"]
     assert trained["validation_status"] == "draft"
     assert trained["training_rows"] > 0
     assert trained["model_download"].endswith(trained["run_id"])
@@ -167,6 +192,35 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
         "t2_status",
         "spe_status",
     }.issubset(validated["scores"][0])
+    run_dir = tmp_path / "runs" / trained["run_id"]
+    saved_scores = pd.read_csv(run_dir / "validation_scores.csv", encoding="utf-8-sig")
+    saved_report = json.loads(
+        (run_dir / "validation_report.json").read_text(encoding="utf-8")
+    )
+    saved_contributions = json.loads(
+        (run_dir / "validation_contributions.json").read_text(encoding="utf-8")
+    )
+    assert len(saved_scores) == validated["scored_rows"]
+    assert {"pc1", "pc2", "t2", "spe", "t2_status", "spe_status"}.issubset(
+        saved_scores.columns
+    )
+    assert saved_report["engineer_decision_required"] is True
+    assert "scores" not in saved_report
+    assert saved_contributions == validated["contributions"]
+    assert set(validated["validation_downloads"]) == {
+        "scores",
+        "report",
+        "contributions",
+    }
+
+
+def test_validation_download_artifact_uses_fixed_whitelist():
+    assert web._validation_artifact("scores") == (
+        "validation_scores.csv",
+        "text/csv; charset=utf-8",
+    )
+    with pytest.raises(ValueError, match="无效的验证工件类型"):
+        web._validation_artifact("../model")
 
 
 def test_windows_launcher_uses_web_port_8775():
