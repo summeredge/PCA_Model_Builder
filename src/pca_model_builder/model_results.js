@@ -52,14 +52,14 @@
   const section = document.createElement("div");
   section.className = "chart-card";
   const title = document.createElement("h3");
-  title.textContent = "PC1 / PC2 原始Tag聚合载荷向量图";
+  title.textContent = "PC1 / PC2 原始Tag聚合载荷图";
   const note = document.createElement("div");
   note.className = "help";
-  note.textContent = "每条向量从原点指向一个原始Tag的PC1/PC2聚合载荷；全部Lag按带符号L2能量聚合。向量方向和长度用于解释模型结构，不等同于异常贡献或工艺根因。";
+  note.textContent = "每条连线从原点连接到一个原始Tag的PC1/PC2聚合载荷；全部Lag按带符号L2能量聚合。连线方向和长度用于解释模型结构，不等同于异常贡献或工艺根因。";
   const chart = document.createElement("div");
   chart.id = "loadingChart";
   chart.className = "chart empty";
-  chart.textContent = "完成DPCA训练后显示载荷向量图。";
+  chart.textContent = "完成DPCA训练后显示载荷图。";
   section.append(title, note, chart);
 
   const projectionGrid = document.createElement("div");
@@ -86,7 +86,7 @@
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 820 620");
     svg.setAttribute("role", "img");
-    svg.setAttribute("aria-label", "PC1与PC2原始Tag聚合载荷向量图");
+    svg.setAttribute("aria-label", "PC1与PC2原始Tag聚合载荷图");
 
     const plotLeft = 140;
     const plotTop = 40;
@@ -102,7 +102,6 @@
     const originX = x(0);
     const originY = y(0);
 
-    addArrowMarker(svg);
     addPlotFrame(svg, plotLeft, plotTop, plotSize);
     addGridAndTicks(svg, maxAbs, x, y, plotLeft, plotRight, plotTop, plotBottom);
     addLine(svg, originX, plotTop, originX, plotBottom, "#475569", 1.4);
@@ -120,8 +119,7 @@
       const endX = x(Number(point.pc1) || 0);
       const endY = y(Number(point.pc2) || 0);
       const vector = addLine(svg, originX, originY, endX, endY, "#9f3f3f", 1.6);
-      vector.setAttribute("marker-end", "url(#loadingArrowHead)");
-      vector.setAttribute("opacity", "0.82");
+      vector.setAttribute("opacity", "0.72");
 
       const tooltip = document.createElementNS(SVG_NS, "title");
       tooltip.textContent = loadingTooltip(point);
@@ -158,24 +156,6 @@
     origin.setAttribute("fill", "#111827");
     svg.append(origin);
     chart.append(svg);
-  }
-
-  function addArrowMarker(svg) {
-    const defs = document.createElementNS(SVG_NS, "defs");
-    const marker = document.createElementNS(SVG_NS, "marker");
-    marker.setAttribute("id", "loadingArrowHead");
-    marker.setAttribute("viewBox", "0 0 10 10");
-    marker.setAttribute("refX", "8");
-    marker.setAttribute("refY", "5");
-    marker.setAttribute("markerWidth", "6");
-    marker.setAttribute("markerHeight", "6");
-    marker.setAttribute("orient", "auto-start-reverse");
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
-    path.setAttribute("fill", "#9f3f3f");
-    marker.append(path);
-    defs.append(marker);
-    svg.append(defs);
   }
 
   function addPlotFrame(svg, left, top, size) {

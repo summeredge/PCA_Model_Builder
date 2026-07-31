@@ -55,18 +55,21 @@ def test_trend_page_no_longer_exposes_xy_scatter_matrix() -> None:
     assert 'src="/assets/model-results.js"' in html
 
 
-def test_loading_plot_uses_origin_vectors_and_arrowheads() -> None:
+def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:
     source = (
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
     ).read_text(encoding="utf-8")
 
-    assert "原始Tag聚合载荷向量图" in source
-    assert 'vector.setAttribute("marker-end", "url(#loadingArrowHead)")' in source
+    assert "原始Tag聚合载荷图" in source
+    assert "每条连线从原点连接到" in source
     assert "addLine(svg, originX, originY, endX, endY" in source
     assert "PC1载荷" in source
     assert "PC2载荷" in source
     assert "x_explained_variance_ratio" in source
     assert "y_explained_variance_ratio" in source
+    assert 'marker-end' not in source
+    assert "loadingArrowHead" not in source
+    assert "function addArrowMarker" not in source
     assert "每个点代表一个原始Tag" not in source
 
 
