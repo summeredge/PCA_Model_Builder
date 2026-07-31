@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from pca_model_builder.quality import inspect_data_quality
 
@@ -70,6 +71,98 @@ def test_quality_report_allows_physical_gap_on_sampling_grid():
     ]
 
 
+def test_quality_report_allows_only_ten_minute_physical_gaps():
+    frame = pd.DataFrame(
+        {
+            "time": pd.to_datetime(
+                [
+                    "2026-01-01 00:00",
+                    "2026-01-01 00:10",
+                    "2026-01-01 00:20",
+                    "2026-01-01 00:30",
+                ]
+            ),
+            "T1": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+    report = inspect_data_quality(
+        frame, "time", ["T1"], expected_interval_minutes=5
+    )
+
+    assert report.can_train
+    assert [(issue.code, issue.severity, issue.count) for issue in report.issues] == [
+        ("physical_time_gap", "warning", 3)
+    ]
+
+
+def test_quality_report_allows_only_mixed_physical_gaps():
+    frame = pd.DataFrame(
+        {
+            "time": pd.to_datetime(
+                [
+                    "2026-01-01 00:00",
+                    "2026-01-01 00:10",
+                    "2026-01-01 00:25",
+                    "2026-01-01 00:45",
+                ]
+            ),
+            "T1": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+    report = inspect_data_quality(
+        frame, "time", ["T1"], expected_interval_minutes=5
+    )
+
+    assert report.can_train
+    assert [(issue.code, issue.severity, issue.count) for issue in report.issues] == [
+        ("physical_time_gap", "warning", 3)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("timestamps", "physical_gap_count"),
+    [
+        (
+            ["2026-01-01 00:00", "2026-01-01 00:07", "2026-01-01 00:14"],
+            0,
+        ),
+        (
+            [
+                "2026-01-01 00:00",
+                "2026-01-01 00:10",
+                "2026-01-01 00:22",
+                "2026-01-01 00:32",
+            ],
+            2,
+        ),
+    ],
+)
+def test_quality_report_rejects_off_grid_intervals(
+    timestamps, physical_gap_count
+):
+    frame = pd.DataFrame(
+        {
+            "time": pd.to_datetime(timestamps),
+            "T1": list(range(len(timestamps))),
+        }
+    )
+
+    report = inspect_data_quality(
+        frame, "time", ["T1"], expected_interval_minutes=5
+    )
+
+    issues = {issue.code: issue for issue in report.issues}
+    assert not report.can_train
+    assert issues["irregular_sampling"].severity == "error"
+    assert "sampling_interval_mismatch" not in issues
+    if physical_gap_count:
+        assert issues["physical_time_gap"].count == physical_gap_count
+    else:
+        assert "physical_time_gap" not in issues
+
+
 def test_quality_report_rejects_interval_shorter_than_sampling_period():
     frame = pd.DataFrame(
         {
@@ -88,7 +181,7 @@ def test_quality_report_rejects_interval_shorter_than_sampling_period():
     assert {issue.code for issue in report.issues} == {"irregular_sampling"}
 
 
-def test_quality_report_blocks_unsorted_non_finite_and_interval_mismatch():
+def test_quality_report_blocks_unsorted_non_finite_and_reports_physical_gaps():
     frame = pd.DataFrame(
         {
             "time": pd.to_datetime(
@@ -108,6 +201,6 @@ def test_quality_report_blocks_unsorted_non_finite_and_interval_mismatch():
     assert not report.can_train
     assert {issue.code for issue in report.issues} == {
         "unsorted_timestamp",
-        "sampling_interval_mismatch",
+        "physical_time_gap",
         "non_finite_value",
     }

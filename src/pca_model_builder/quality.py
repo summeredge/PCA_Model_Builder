@@ -102,16 +102,7 @@ def inspect_data_quality(
                     irregular_count,
                 )
             )
-        if expected_interval_minutes is not None and not normal.any():
-            issues.append(
-                QualityIssue(
-                    "sampling_interval_mismatch",
-                    "error",
-                    "Observed sampling interval differs from the configured interval.",
-                    1,
-                )
-            )
-        elif physical_gaps.any():
+        if physical_gaps.any():
             issues.append(
                 QualityIssue(
                     "physical_time_gap",

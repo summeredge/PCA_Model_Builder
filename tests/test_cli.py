@@ -167,6 +167,56 @@ def test_cli_training_allows_physical_time_gap(tmp_path):
     assert model_path.exists()
 
 
+def test_cli_training_allows_only_ten_minute_physical_gaps(tmp_path):
+    rng = np.random.default_rng(31)
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=120, freq="10min"),
+            "A": rng.normal(size=120),
+            "B": rng.normal(size=120),
+            "C": rng.normal(size=120),
+        }
+    )
+    csv_path = tmp_path / "all_gaps.csv"
+    model_path = tmp_path / "all_gaps.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    result = main(
+        [
+            "train",
+            "--csv",
+            str(csv_path),
+            "--timestamp",
+            "time",
+            "--tags",
+            "A",
+            "B",
+            "C",
+            "--normal-start",
+            str(frame.time.iloc[0]),
+            "--normal-end",
+            str(frame.time.iloc[-1]),
+            "--sample-interval",
+            "5",
+            "--smoothing-window",
+            "5",
+            "--max-lag",
+            "0",
+            "--lag-step",
+            "5",
+            "--components",
+            "2",
+            "--model-name",
+            "ALL_GAPS_DPCA_V1",
+            "--output",
+            str(model_path),
+        ]
+    )
+
+    assert result == 0
+    assert model_path.exists()
+
+
 def test_cli_training_rejects_variance_threshold_of_one(tmp_path):
     rng = np.random.default_rng(4)
     frame = pd.DataFrame(
