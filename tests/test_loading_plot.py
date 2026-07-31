@@ -22,6 +22,7 @@ def test_loading_plot_aggregates_all_lags_back_to_original_tags() -> None:
                 [0.4, 0.3, -0.6, 0.0],
             ]
         ),
+        explained_variance_ratio=np.array([0.42, 0.18, 0.10]),
     )
     manifest = {
         "config": {
@@ -37,6 +38,8 @@ def test_loading_plot_aggregates_all_lags_back_to_original_tags() -> None:
     points = {point["tag"]: point for point in payload["points"]}
 
     assert payload["aggregation"] == "signed_l2_by_original_tag"
+    assert payload["x_explained_variance_ratio"] == pytest.approx(0.42)
+    assert payload["y_explained_variance_ratio"] == pytest.approx(0.18)
     assert points["TAG_A"]["pc1"] == pytest.approx(-0.5)
     assert points["TAG_A"]["pc2"] == pytest.approx(0.5)
     assert points["TAG_A"]["pc1_dominant_lag_minutes"] == 5
@@ -51,8 +54,24 @@ def test_loading_plot_requires_pc1_and_pc2() -> None:
     model = SimpleNamespace(
         feature_names=("TAG_A__lag_000min",),
         components=np.array([[1.0]]),
+        explained_variance_ratio=np.array([1.0]),
     )
 
     payload = loading_plot_payload(model, {"config": {"tags": ["TAG_A"]}})
 
     assert payload["points"] == []
+    assert payload["x_explained_variance_ratio"] == pytest.approx(1.0)
+    assert payload["y_explained_variance_ratio"] is None
+
+
+def test_loading_plot_tolerates_legacy_model_without_explained_ratio() -> None:
+    model = SimpleNamespace(
+        feature_names=("TAG_A__lag_000min", "TAG_A__lag_005min"),
+        components=np.array([[0.5, 0.5], [0.5, -0.5]]),
+    )
+
+    payload = loading_plot_payload(model, {"config": {"tags": ["TAG_A"]}})
+
+    assert payload["x_explained_variance_ratio"] is None
+    assert payload["y_explained_variance_ratio"] is None
+    assert len(payload["points"]) == 1
