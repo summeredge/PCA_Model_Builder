@@ -25,6 +25,9 @@ pca-model-builder-web = "pca_model_builder.web_model_results:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+pca_model_builder = ["*.js"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
