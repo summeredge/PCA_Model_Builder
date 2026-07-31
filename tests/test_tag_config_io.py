@@ -53,6 +53,71 @@ def test_import_allows_blank_fields_and_reports_unknown_duplicate_and_invalid_ro
     assert preview["duplicate_tags"] == ["TI001"]
     assert preview["unknown_template_tags"] == ["BAD", "UNKNOWN"]
     assert any("role非法" in error for error in preview["errors"])
+    assert any("UNKNOWN" in warning for warning in preview["warnings"])
+
+
+def test_unknown_template_tags_warn_without_blocking_matched_configs():
+    content = export_tag_config_workbook(
+        ["TI001", "PI001", "OLD001"],
+        {
+            "TI001": {"description": "温度"},
+            "PI001": {"role": "state_filter"},
+            "OLD001": {"unit": "bar"},
+        },
+    )
+
+    preview = parse_tag_config_workbook(content, ["TI001", "PI001"])
+
+    assert preview["can_apply"]
+    assert preview["errors"] == []
+    assert preview["matched_tags"] == ["TI001", "PI001"]
+    assert preview["unknown_template_tags"] == ["OLD001"]
+    assert preview["warnings"] == ["OLD001：当前历史数据中不存在"]
+    assert set(preview["provided_configs"]) == {"TI001", "PI001"}
+
+
+def test_multiple_unknown_tags_warn_and_invalid_unknown_range_still_blocks():
+    content = export_tag_config_workbook(
+        ["TI001", "OLD001", "OLD002"],
+        {"TI001": {"description": "温度"}},
+    )
+    preview = parse_tag_config_workbook(content, ["TI001"])
+
+    assert preview["can_apply"]
+    assert preview["unknown_template_tags"] == ["OLD001", "OLD002"]
+    assert len(preview["warnings"]) == 2
+    assert preview["errors"] == []
+
+    workbook = load_workbook(BytesIO(content))
+    sheet = workbook["Tags"]
+    sheet["E3"] = 20
+    sheet["F3"] = 10
+    broken = BytesIO()
+    workbook.save(broken)
+    invalid = parse_tag_config_workbook(broken.getvalue(), ["TI001"])
+
+    assert not invalid["can_apply"]
+    assert invalid["warnings"] == [
+        "OLD001：当前历史数据中不存在",
+        "OLD002：当前历史数据中不存在",
+    ]
+    assert any("lower value must be less" in error for error in invalid["errors"])
+
+
+def test_duplicate_tag_remains_blocking_when_unknown_tags_only_warn():
+    content = export_tag_config_workbook(["TI001", "OLD001"], {})
+    workbook = load_workbook(BytesIO(content))
+    workbook["Tags"].append(["TI001"])
+    broken = BytesIO()
+    workbook.save(broken)
+
+    preview = parse_tag_config_workbook(broken.getvalue(), ["TI001"])
+
+    assert not preview["can_apply"]
+    assert preview["duplicate_tags"] == ["TI001"]
+    assert preview["unknown_template_tags"] == ["OLD001"]
+    assert any("重复" in error for error in preview["errors"])
+    assert all("不存在" not in error for error in preview["errors"])
 
 
 def test_export_reimports_consistently_and_invalid_files_are_rejected():

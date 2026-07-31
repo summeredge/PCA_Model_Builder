@@ -129,7 +129,7 @@ def inspect_data_quality(
                 )
             )
 
-        missing_count = int(numeric.isna().sum())
+        missing_count = int(frame[tag].isna().sum())
         if missing_count:
             issues.append(
                 QualityIssue(

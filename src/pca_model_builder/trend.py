@@ -13,6 +13,28 @@ MAX_TREND_TAGS = 8
 MAX_TREND_POINTS = 1200
 
 
+def trend_axis_limits(values: Sequence[object]) -> tuple[float, float]:
+    finite: list[float] = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(number):
+            finite.append(number)
+    if not finite:
+        return 0.0, 1.0
+    minimum = min(finite)
+    maximum = max(finite)
+    span = maximum - minimum
+    padding = (
+        span * 0.05
+        if span > 0
+        else max(abs(minimum) * 0.05, 1e-6)
+    )
+    return minimum - padding, maximum + padding
+
+
 def prepare_trend_frame(
     frame: pd.DataFrame,
     tags: Sequence[str],
@@ -148,6 +170,30 @@ def trend_payload_data(
             histograms["reference"] = _histogram(
                 tags[0], raw.loc[reference_mask, tags[0]]
             )
+    ranges = {
+        tag: {
+            key: tag_configs.get(tag, {}).get(key)
+            for key in (
+                "engineering_min",
+                "engineering_max",
+                "normal_min",
+                "normal_max",
+                "alarm_min",
+                "alarm_max",
+            )
+        }
+        for tag in tags
+    }
+    axis_limits: dict[str, dict[str, float]] = {}
+    for tag in tags:
+        values: list[object] = []
+        if display_mode in {"raw", "both"}:
+            values.extend(current_raw[tag].tolist())
+        if display_mode in {"smoothed", "both"}:
+            values.extend(current_smoothed[tag].tolist())
+        values.extend(ranges[tag].values())
+        minimum, maximum = trend_axis_limits(values)
+        axis_limits[tag] = {"minimum": minimum, "maximum": maximum}
     return {
         "tags": list(tags),
         "display_mode": display_mode,
@@ -155,20 +201,8 @@ def trend_payload_data(
         "statistics": statistics,
         "histogram": histogram,
         "histograms": histograms,
-        "ranges": {
-            tag: {
-                key: tag_configs.get(tag, {}).get(key)
-                for key in (
-                    "engineering_min",
-                    "engineering_max",
-                    "normal_min",
-                    "normal_max",
-                    "alarm_min",
-                    "alarm_max",
-                )
-            }
-            for tag in tags
-        },
+        "ranges": ranges,
+        "axis_limits": axis_limits,
     }
 
 

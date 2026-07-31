@@ -1,7 +1,9 @@
 import json
 import inspect
+from io import BytesIO
 
 import numpy as np
+from openpyxl import load_workbook
 import pandas as pd
 import pytest
 
@@ -49,6 +51,7 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
         'id="showProblemTags"',
         'id="qualityButton"',
         'id="qualityPanel"',
+        'id="currentTagQuality"',
         'id="tagDescription"',
         'id="tagRole"',
         'id="templateDownload"',
@@ -82,6 +85,66 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     assert "tagConfigField(" not in web.INDEX_HTML
     assert "excludePerformanceColumns(data.conditions)" in web.INDEX_HTML
     assert 'id="varianceThreshold" type="number" min="0.01" max="0.99"' in web.INDEX_HTML
+
+
+def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
+    html = web.INDEX_HTML
+    render_source = html.split("function renderTagList()", 1)[1].split(
+        "function selectTag", 1
+    )[0]
+
+    assert "selectedModelTags:new Set()" in html
+    assert "state.selectedModelTags.has(tag)" in render_source
+    assert 'document.createElement("div")' in render_source
+    assert 'document.createElement("label")' not in render_source
+    assert "querySelectorAll('#tagOptions input:checked')" not in render_source
+    assert "checked.size?" not in render_source
+    assert "state.selectedModelTags.add(tag)" in render_source
+    assert "state.selectedModelTags.delete(tag)" in render_source
+    assert "state.selectedModelTags.clear()" in html
+    assert (
+        "state.selectedModelTags=new Set(data.numeric_columns.filter("
+        in html
+    )
+    assert "state.selectedModelTags.delete(item.tag)" in html
+    assert "columns.forEach(tag=>state.selectedModelTags.delete(tag))" in html
+    assert (
+        "if(config.role!==\"continuous_input\") "
+        "state.selectedModelTags.delete(tag)"
+    ) in html
+
+
+def test_web_quality_tab_shows_selected_tag_and_trend_axis_uses_payload_limits():
+    html = web.INDEX_HTML
+
+    assert "function renderCurrentTagQuality()" in html
+    assert "尚未执行或结果已失效" in html
+    for field in (
+        "sample_count",
+        "valid_count",
+        "missing_count",
+        "missing_rate",
+        "non_numeric_count",
+        "non_finite_count",
+        "unique_count",
+        "minimum",
+        "maximum",
+        "mean",
+        "median",
+        "standard_deviation",
+        "p01",
+        "p05",
+        "p95",
+        "p99",
+        "engineering_range_outside_count",
+        "normal_range_outside_count",
+        "alarm_range_outside_count",
+    ):
+        assert field in html
+    assert "data.axis_limits[tag]" in html
+    assert "Math.min(...values,0)" not in html
+    assert "Math.max(...values,1)" not in html
+    assert "data.warnings" in html
 
 
 def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
@@ -502,6 +565,38 @@ def test_web_xlsx_preview_and_trend_payload(tmp_path, monkeypatch):
             "time",
             "utf-8-sig",
         )
+
+
+def test_web_xlsx_preview_allows_unknown_tag_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    template = web.tag_config_template_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "encoding": "utf-8-sig",
+        }
+    )
+    workbook = load_workbook(BytesIO(template))
+    workbook["Tags"].append(["OLD_TAG", "旧配置"])
+    modified = BytesIO()
+    workbook.save(modified)
+
+    preview = web.tag_config_import_payload(
+        "config.xlsx",
+        modified.getvalue(),
+        uploaded["file_id"],
+        "time",
+        "utf-8-sig",
+    )
+
+    assert preview["can_apply"]
+    assert preview["errors"] == []
+    assert preview["warnings"] == ["OLD_TAG：当前历史数据中不存在"]
+    assert "OLD_TAG" not in preview["provided_configs"]
 
 
 @pytest.mark.parametrize("statistic", ["t2", "spe"])

@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.quality import inspect_data_quality
-from pca_model_builder.tag_profile import model_quality_payload
+from pca_model_builder.tag_profile import model_quality_payload, profile_tag
 
 
 def test_quality_report_blocks_duplicate_timestamps_and_invalid_values():
@@ -295,3 +295,37 @@ def test_multiple_constant_tags_are_reported_individually():
 
     constants = [issue for issue in report.issues if issue.code == "constant_tag"]
     assert [issue.tag for issue in constants] == ["A", "B"]
+
+
+def test_tag_profile_separates_missing_non_numeric_and_non_finite_values():
+    profile = profile_tag(pd.Series([1.0, None, "BAD", float("inf"), 2.0]))
+
+    assert profile["sample_count"] == 5
+    assert profile["valid_count"] == 2
+    assert profile["missing_count"] == 1
+    assert profile["missing_rate"] == pytest.approx(0.2)
+    assert profile["non_numeric_count"] == 1
+    assert profile["non_finite_count"] == 1
+    assert (
+        profile["valid_count"]
+        + profile["missing_count"]
+        + profile["non_numeric_count"]
+        + profile["non_finite_count"]
+        == profile["sample_count"]
+    )
+
+    report = inspect_data_quality(
+        pd.DataFrame(
+            {
+                "time": pd.date_range("2026-01-01", periods=5, freq="5min"),
+                "T1": [1.0, None, "BAD", float("inf"), 2.0],
+            }
+        ),
+        "time",
+        ["T1"],
+        expected_interval_minutes=5,
+    )
+    issues = {issue.code: issue for issue in report.issues}
+    assert issues["missing_value"].count == 1
+    assert issues["non_numeric_value"].count == 1
+    assert issues["non_finite_value"].count == 1

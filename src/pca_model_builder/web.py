@@ -1259,6 +1259,9 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div id="qualityPanel" class="inner-panel">
           <div id="qualitySummary" class="metrics"></div>
+          <h3>当前Tag详情</h3>
+          <div id="currentTagQuality" class="empty">尚未执行或结果已失效</div>
+          <h3>全部问题Tag</h3>
           <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量Tag</button></div>
           <div id="qualityIssues" class="empty">执行统一数据质量检查后，只显示需要确认或阻止训练的Tag。</div>
         </div>
@@ -1351,13 +1354,13 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, importPreview:null, excludedTags:[], showProblems:false };
+const state = { fileId:null, runId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
 function setBusy(button, busy, text) { if (!button.dataset.label) button.dataset.label=button.textContent; button.disabled=busy; button.textContent=busy?text:button.dataset.label; }
 function localTime(value) { return value ? value.slice(0,16) : ""; }
-function selectedTags() { return [...document.querySelectorAll('#tagOptions input:checked')].map(node=>node.value).filter(tag=>(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
+function selectedTags() { return (state.inspection?.numeric_columns||[]).filter(tag=>state.selectedModelTags.has(tag)&&(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
 function numberValue(id) { return Number(el(id).value); }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
 function formField(labelText,field,type="text") { const label=document.createElement("label"); label.textContent=labelText; const input=document.createElement("input"); input.type=type; input.dataset.field=field; if(type==="number") input.step="any"; label.append(input); return label; }
@@ -1366,15 +1369,14 @@ function tagConfigPayload() { return state.registry; }
 function qualityFor(tag) { return state.quality?.tags?.find(item=>item.tag===tag)||null; }
 function renderTagList() {
   if(!state.inspection) return;
-  const checked=new Set([...document.querySelectorAll('#tagOptions input:checked')].map(node=>node.value));
   const query=el("tagSearch").value.trim().toLowerCase(); const list=el("tagOptions"); list.replaceChildren();
   state.inspection.numeric_columns.forEach(tag=>{
     const quality=qualityFor(tag); const config=state.registry[tag]||emptyTagConfig(); const status=quality?.status||(config.role==="continuous_input"?"usable":"review");
     if(query&&!tag.toLowerCase().includes(query)) return;
     if(state.showProblems&&status==="usable") return;
-    const row=document.createElement("label"); row.className=`tag-row ${state.selectedTag===tag?"selected":""}`; row.dataset.tag=tag;
-    const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=(checked.size?checked.has(tag):config.role==="continuous_input")&&config.role==="continuous_input";
-    input.addEventListener("change",()=>{ invalidateQuality("建模Tag已修改"); selectTag(tag); });
+    const row=document.createElement("div"); row.className=`tag-row ${state.selectedTag===tag?"selected":""}`; row.dataset.tag=tag;
+    const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=state.selectedModelTags.has(tag)&&config.role==="continuous_input";
+    input.addEventListener("change",()=>{ if(input.checked) state.selectedModelTags.add(tag); else state.selectedModelTags.delete(tag); invalidateQuality("建模Tag已修改"); selectTag(tag); });
     const name=document.createElement("span"); name.textContent=tag;
     const badge=document.createElement("span"); badge.className=`tag-state ${status}`; badge.textContent=config.role!=="continuous_input"?config.role:(status==="blocking"?"阻止":status==="review"?"需确认":"正常");
     row.append(input,name,badge); row.addEventListener("click",event=>{ if(event.target!==input) selectTag(tag); }); list.append(row);
@@ -1383,16 +1385,16 @@ function renderTagList() {
 function selectTag(tag) {
   state.selectedTag=tag; const config=state.registry[tag]||emptyTagConfig(); el("selectedTagTitle").textContent=tag;
   const fields={tagDescription:"description",tagUnit:"unit",tagRole:"role",tagComment:"comment",engineeringMin:"engineering_min",engineeringMax:"engineering_max",normalMin:"normal_min",normalMax:"normal_max",alarmMin:"alarm_min",alarmMax:"alarm_max"};
-  Object.entries(fields).forEach(([id,key])=>{ el(id).value=config[key]??""; }); renderTagList();
+  Object.entries(fields).forEach(([id,key])=>{ el(id).value=config[key]??""; }); renderTagList(); renderCurrentTagQuality();
 }
 function optionalNumber(id) { const value=el(id).value.trim(); return value===""?null:Number(value); }
 function saveCurrentTagConfig() {
   if(!state.selectedTag) throw new Error("请先选择Tag。");
-  const tag=state.selectedTag; state.registry[tag]={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:el("tagComment").value.trim(),engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")};
-  const checkbox=document.querySelector(`#tagOptions input[value="${CSS.escape(tag)}"]`); if(checkbox&&state.registry[tag].role!=="continuous_input") checkbox.checked=false;
+  const tag=state.selectedTag; const config={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:el("tagComment").value.trim(),engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")}; state.registry[tag]=config;
+  if(config.role!=="continuous_input") state.selectedModelTags.delete(tag);
   invalidateQuality("Tag工程配置或角色已修改"); renderTagList();
 }
-function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
+function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent="尚未执行或结果已失效"; } el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
 function commonPayload() { return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
 
 async function api(path, options={}) {
@@ -1421,7 +1423,7 @@ function performanceConditionPayload() {
   const rows=[...document.querySelectorAll('#performanceConditions .condition-row')]; if(!rows.length) throw new Error("请至少添加一个性能条件。");
   return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
 }
-function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); document.querySelectorAll('#tagOptions input').forEach(input=>{ if(columns.has(input.value)) input.checked=false; }); invalidateQuality("性能筛选列已从建模Tag取消"); }
+function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>state.selectedModelTags.delete(tag)); invalidateQuality("性能筛选列已从建模Tag取消"); renderTagList(); }
 
 el("uploadButton").addEventListener("click", async () => {
   const file=el("fileInput").files[0]; if (!file) { setStatus("请选择 CSV 文件。","warning"); return; }
@@ -1429,7 +1431,7 @@ el("uploadButton").addEventListener("click", async () => {
   try {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.selectedTag=null; state.selectedModelTags.clear(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -1440,7 +1442,7 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.excludedTags=[]; renderPerformanceConditions(data.numeric_columns); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("normalStart").value=localTime(data.time_start); el("normalEnd").value=localTime(data.suggested_normal_end); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
@@ -1455,8 +1457,8 @@ el("inspectButton").addEventListener("click", async () => {
 });
 
 el("tagSearch").addEventListener("input",renderTagList);
-el("selectAllTags").addEventListener("click",()=>{ document.querySelectorAll('#tagOptions input').forEach(input=>{ if((state.registry[input.value]?.role||"continuous_input")==="continuous_input") input.checked=true; }); invalidateQuality("建模Tag已修改"); });
-el("clearAllTags").addEventListener("click",()=>{ document.querySelectorAll('#tagOptions input').forEach(input=>input.checked=false); invalidateQuality("建模Tag已修改"); });
+el("selectAllTags").addEventListener("click",()=>{ state.selectedModelTags=new Set((state.inspection?.numeric_columns||[]).filter(tag=>(state.registry[tag]?.role||"continuous_input")==="continuous_input")); invalidateQuality("建模Tag已修改"); renderTagList(); });
+el("clearAllTags").addEventListener("click",()=>{ state.selectedModelTags.clear(); invalidateQuality("建模Tag已修改"); renderTagList(); });
 el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.showProblems; el("showProblemTags").textContent=state.showProblems?"显示全部Tag":"只看问题Tag"; renderTagList(); });
 el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
 document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".inner-tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".inner-panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.inner)); }));
@@ -1470,7 +1472,7 @@ el("importConfigButton").addEventListener("click",async()=>{
     const form=new FormData(); form.append("file",file);
     const query=`?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
     const data=await api(`/api/tag-config/import${query}`,{method:"POST",body:form}); state.importPreview=data; el("applyConfigButton").disabled=!data.can_apply;
-    el("importSummary").textContent=`匹配 ${data.matched_tags.length}；数据未配置 ${data.unconfigured_data_tags.length}；模板未知 ${data.unknown_template_tags.length}；重复 ${data.duplicate_tags.length}${data.errors.length?`。\n${data.errors.join("\n")}`:"。请确认后应用，当前配置尚未改变。"}`; el("importSummary").className=`status ${data.can_apply?"success":"error"}`;
+    const messages=[...data.errors,...data.warnings]; el("importSummary").textContent=`匹配 ${data.matched_tags.length}；数据未配置 ${data.unconfigured_data_tags.length}；模板未知 ${data.unknown_template_tags.length}；重复 ${data.duplicate_tags.length}${messages.length?`。\n${messages.join("\n")}`:"。请确认后应用，当前配置尚未改变。"}`; el("importSummary").className=`status ${data.can_apply?(data.warnings.length?"warning":"success"):"error"}`;
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -1479,7 +1481,8 @@ el("applyConfigButton").addEventListener("click",()=>{
   const overwrites=Object.entries(state.importPreview.provided_configs).some(([tag,config])=>Object.entries(config).some(([key,value])=>value!==null&&value!==""&&state.registry[tag]?.[key]!==null&&state.registry[tag]?.[key]!==""));
   if(overwrites&&!confirm("导入内容将覆盖页面已有的非空字段，是否继续？")) return;
   Object.entries(state.importPreview.provided_configs).forEach(([tag,config])=>{ Object.entries(config).forEach(([key,value])=>{ if(value!==null&&value!=="") state.registry[tag][key]=value; }); });
-  state.importPreview=null; el("applyConfigButton").disabled=true; if(state.selectedTag) selectTag(state.selectedTag); invalidateQuality("XLSX工程配置已应用");
+  for(const tag of [...state.selectedModelTags]) { if((state.registry[tag]?.role||"continuous_input")!=="continuous_input") state.selectedModelTags.delete(tag); }
+  state.importPreview=null; el("applyConfigButton").disabled=true; if(state.selectedTag) selectTag(state.selectedTag); invalidateQuality("XLSX工程配置已应用"); renderTagList();
 });
 el("exportConfigButton").addEventListener("click",async()=>{
   try {
@@ -1572,11 +1575,22 @@ el("validateButton").addEventListener("click", async () => {
 });
 
 function metric(label,value) { return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
+function qualityProfileTable(title,profile) {
+  const fields=[["sample_count","样本数"],["valid_count","有效数"],["missing_count","缺失数"],["missing_rate","缺失率"],["non_numeric_count","非数值数"],["non_finite_count","非有限值数"],["unique_count","唯一值"],["minimum","最小值"],["maximum","最大值"],["mean","均值"],["median","中位数"],["standard_deviation","标准差"],["p01","P1"],["p05","P5"],["p95","P95"],["p99","P99"],["engineering_range_outside_count","工程范围越界"],["normal_range_outside_count","正常范围外"],["alarm_range_outside_count","报警范围外"]];
+  return `<h4>${title}</h4><div class="table-wrap"><table><tbody>${fields.map(([key,label])=>`<tr><th>${label}</th><td>${formatStat(key,profile[key])}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function renderCurrentTagQuality() {
+  const container=el("currentTagQuality"); if(!container) return;
+  const item=state.selectedTag?qualityFor(state.selectedTag):null;
+  if(!state.quality||!item) { container.className="empty"; container.textContent="尚未执行或结果已失效"; return; }
+  const role=state.registry[item.tag]?.role||item.role; const issueHtml=item.issues.length?item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join(""):"<li>无质量问题</li>";
+  container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(role)} · ${escapeHtml(item.status)}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
+}
 function renderQuality(data) {
   el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("训练条件",data.can_train?"通过":"未通过");
   const container=el("qualityIssues"); container.className=""; container.replaceChildren();
   data.time_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; container.append(card); });
-  data.tags.filter(item=>item.status!=="usable").forEach(item=>{
+  const problemTags=data.tags.filter(item=>item.status!=="usable"); problemTags.forEach(item=>{
     const card=document.createElement("div"); card.className=`issue-card ${item.status}`; const profile=item.reference;
     card.innerHTML=`<strong>${escapeHtml(item.tag)} · ${escapeHtml(item.status)}</strong><span>参考期样本 ${profile.sample_count}；有效 ${profile.valid_count}；唯一值 ${profile.unique_count}；标准差 ${profile.standard_deviation??"—"}</span>${item.issues.map(issue=>`<span>${escapeHtml(issue.message)}</span>`).join("")}`;
     const actions=document.createElement("div"); actions.className="actions";
@@ -1585,16 +1599,17 @@ function renderQuality(data) {
   });
   el("excludeAllConstants").disabled=!data.tags.some(item=>item.issues.some(issue=>issue.code==="constant_tag"));
   if(!container.children.length) { container.className="empty"; container.textContent="所选Tag和时间轴没有需要处理的问题。"; }
+  renderCurrentTagQuality();
 }
 function excludeConstantTag(item) {
   const issue=item.issues.find(value=>value.code==="constant_tag"); if(!issue) return;
   state.registry[item.tag].role="exclude"; state.excludedTags=state.excludedTags.filter(record=>record.tag!==item.tag); state.excludedTags.push({tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value});
-  const checkbox=document.querySelector(`#tagOptions input[value="${CSS.escape(item.tag)}"]`); if(checkbox) checkbox.checked=false;
+  state.selectedModelTags.delete(item.tag);
   if(state.selectedTag===item.tag) selectTag(item.tag); invalidateQuality(`${item.tag}已标记为排除`); renderTagList();
 }
 el("excludeAllConstants").addEventListener("click",()=>{
   const constants=state.quality?.tags.filter(item=>item.issues.some(issue=>issue.code==="constant_tag"))||[]; if(!constants.length) return;
-  constants.forEach(item=>{ const issue=item.issues.find(value=>value.code==="constant_tag"); state.registry[item.tag].role="exclude"; state.excludedTags=state.excludedTags.filter(record=>record.tag!==item.tag); state.excludedTags.push({tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value}); const checkbox=document.querySelector(`#tagOptions input[value="${CSS.escape(item.tag)}"]`); if(checkbox) checkbox.checked=false; });
+  constants.forEach(item=>{ const issue=item.issues.find(value=>value.code==="constant_tag"); state.registry[item.tag].role="exclude"; state.excludedTags=state.excludedTags.filter(record=>record.tag!==item.tag); state.excludedTags.push({tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value}); state.selectedModelTags.delete(item.tag); });
   invalidateQuality(`已标记排除 ${constants.length} 个精确常量Tag`); renderTagList();
 });
 function renderTrend(data) {
@@ -1608,7 +1623,7 @@ function renderTrend(data) {
 function formatStat(key,value) { if(value===null||value===undefined) return "—"; if(key==="missing_rate") return `${(Number(value)*100).toFixed(2)}%`; return typeof value==="number"?Number(value).toPrecision(5):escapeHtml(value); }
 function trendSvg(data,tag,colorIndex,zoom) {
   const rows=data.rows,width=760*zoom,height=230,pad={l:48,r:16,t:16,b:28}; const fields=[]; if(data.display_mode!=="smoothed") fields.push([`${tag}__raw`,"#176b87","原始"]); if(data.display_mode!=="raw") fields.push([`${tag}__smoothed`,"#d97706","平滑"]);
-  const ranges=data.ranges[tag]||{}; const rangeValues=Object.values(ranges).filter(value=>value!==null&&value!==undefined).map(Number); const values=fields.flatMap(([field])=>rows.map(row=>row[field]).filter(value=>value!==null).map(Number)).concat(rangeValues); const minimum=Math.min(...values,0),maximum=Math.max(...values,1); const span=Math.max(maximum-minimum,1e-12); const x=i=>pad.l+i/Math.max(1,rows.length-1)*(width-pad.l-pad.r),y=value=>height-pad.b-(Number(value)-minimum)/span*(height-pad.t-pad.b);
+  const ranges=data.ranges[tag]||{}; const limits=data.axis_limits[tag]; const minimum=limits.minimum,maximum=limits.maximum,span=maximum-minimum; const x=i=>pad.l+i/Math.max(1,rows.length-1)*(width-pad.l-pad.r),y=value=>height-pad.b-(Number(value)-minimum)/span*(height-pad.t-pad.b);
   const polylines=fields.map(([field,color,label])=>{ let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row.gap_start) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(row.timestamp)} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(row.timestamp)} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
   const rangeLine=(key,color,label)=>ranges[key]===null||ranges[key]===undefined?"":`<line x1="${pad.l}" x2="${width-pad.r}" y1="${y(ranges[key])}" y2="${y(ranges[key])}" stroke="${color}" stroke-dasharray="5 4"><title>${label}: ${ranges[key]}</title></line>`;
   const gaps=rows.map((row,i)=>row.gap_start?`<line x1="${x(i)}" x2="${x(i)}" y1="${pad.t}" y2="${height-pad.b}" stroke="#cf3f36" stroke-dasharray="3 3"><title>物理时间缺口</title></line>`:"").join("");

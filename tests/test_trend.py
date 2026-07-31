@@ -6,6 +6,7 @@ from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.trend import (
     downsample_trend,
     prepare_trend_frame,
+    trend_axis_limits,
     trend_payload_data,
 )
 
@@ -112,3 +113,45 @@ def test_trend_preserves_missing_point_without_modifying_source():
 
     assert result["rows"][2]["A__raw"] is None
     pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([10000.0, 10020.0], "positive"),
+        ([-20.0, -10.0], "negative"),
+        ([-2.0, 3.0], "cross_zero"),
+        ([100.0, 100.0], "constant"),
+        ([None, np.nan, np.inf], "empty"),
+    ],
+)
+def test_trend_axis_limits_scale_to_visible_values(values, expected):
+    minimum, maximum = trend_axis_limits(values)
+
+    if expected == "positive":
+        assert 0 < minimum < 10000 < 10020 < maximum
+    elif expected == "negative":
+        assert minimum < -20 < -10 < maximum < 0
+    elif expected == "cross_zero":
+        assert minimum < -2 < 0 < 3 < maximum
+    elif expected == "constant":
+        assert 0 < minimum < 100 < maximum
+    else:
+        assert (minimum, maximum) == (0.0, 1.0)
+
+
+def test_trend_axis_limits_include_configured_range_lines():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    result = trend_payload_data(
+        pd.DataFrame({"A": [10000.0, 10010.0, 10020.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 5, 0, 5),
+        index[0],
+        index[-1],
+        "raw",
+        {"A": {"engineering_min": 9000.0, "engineering_max": 11000.0}},
+    )
+
+    limits = result["axis_limits"]["A"]
+    assert limits["minimum"] < 9000.0
+    assert limits["maximum"] > 11000.0

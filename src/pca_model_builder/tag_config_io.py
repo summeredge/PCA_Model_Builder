@@ -119,6 +119,8 @@ def parse_tag_config_workbook(
     rows: dict[str, dict[str, Any]] = {}
     duplicates: list[str] = []
     errors: list[str] = []
+    warnings: list[str] = []
+    invalid_role_tags: set[str] = set()
     data_tag_set = set(data_tags)
     unknown: list[str] = []
     for values in sheet.iter_rows(min_row=2, values_only=True):
@@ -139,21 +141,27 @@ def parse_tag_config_workbook(
         role = str(raw.get("role", "continuous_input")).strip()
         if role not in TAG_ROLES:
             errors.append(f"{tag}：role非法（{role}）")
+            invalid_role_tags.add(tag)
         rows[tag] = raw
         if tag not in data_tag_set:
             unknown.append(tag)
     for tag in sorted(set(duplicates)):
         errors.append(f"{tag}：模板中重复出现")
     for tag in sorted(set(unknown)):
-        errors.append(f"{tag}：当前历史数据中不存在")
+        warnings.append(f"{tag}：当前历史数据中不存在")
 
     matched = [tag for tag in data_tags if tag in rows]
     valid_configs: dict[str, dict[str, Any]] = {}
-    for tag in matched:
+    for tag, raw in rows.items():
+        if tag in invalid_role_tags:
+            continue
         try:
-            valid_configs[tag] = normalize_tag_registry([tag], {tag: rows[tag]})[tag]
+            normalized = normalize_tag_registry([tag], {tag: raw})[tag]
         except ValueError as error:
             errors.append(str(error))
+        else:
+            if tag in data_tag_set:
+                valid_configs[tag] = normalized
     return {
         "configs": valid_configs,
         "provided_configs": {
@@ -164,5 +172,6 @@ def parse_tag_config_workbook(
         "unknown_template_tags": sorted(set(unknown)),
         "duplicate_tags": sorted(set(duplicates)),
         "errors": errors,
+        "warnings": warnings,
         "can_apply": not errors,
     }

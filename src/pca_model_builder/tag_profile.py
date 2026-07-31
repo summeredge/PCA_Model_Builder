@@ -15,14 +15,15 @@ def profile_tag(
 ) -> dict[str, Any]:
     config = config or {}
     numeric = pd.to_numeric(series, errors="coerce")
-    non_numeric = series.notna() & numeric.isna()
+    original_missing = series.isna()
+    non_numeric = ~original_missing & numeric.isna()
     finite_mask = numeric.notna() & np.isfinite(numeric)
     finite = numeric[finite_mask].astype(float)
     profile: dict[str, Any] = {
         "sample_count": int(len(series)),
         "valid_count": int(len(finite)),
-        "missing_count": int(numeric.isna().sum()),
-        "missing_rate": float(numeric.isna().mean()) if len(series) else 0.0,
+        "missing_count": int(original_missing.sum()),
+        "missing_rate": float(original_missing.mean()) if len(series) else 0.0,
         "non_numeric_count": int(non_numeric.sum()),
         "non_finite_count": int((numeric.notna() & ~np.isfinite(numeric)).sum()),
         "unique_count": int(finite.nunique()),
