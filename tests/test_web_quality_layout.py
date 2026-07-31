@@ -70,6 +70,22 @@ def test_loading_plot_uses_origin_vectors_and_arrowheads() -> None:
     assert "每个点代表一个原始Tag" not in source
 
 
+def test_model_score_and_loading_plots_use_side_by_side_grid() -> None:
+    source = (
+        PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'layoutStyle.id = "modelProjectionGridStyle"' in source
+    assert 'projectionGrid.className = "model-projection-grid"' in source
+    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);" in source
+    assert "projectionGrid.append(scoreCard, section);" in source
+    assert ".model-projection-grid #scoreChart svg" in source
+    assert ".model-projection-grid #loadingChart svg" in source
+    assert "@media (max-width: 1200px)" in source
+    assert "grid-template-columns: 1fr;" in source
+    assert 'insertAdjacentElement("afterend", section)' not in source
+
+
 def test_supported_web_entrypoints_use_model_results_page() -> None:
     start_app = (PROJECT_ROOT / "start_app.bat").read_text(encoding="utf-8")
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")

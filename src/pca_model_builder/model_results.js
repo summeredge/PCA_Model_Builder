@@ -5,6 +5,50 @@
   if (!modelContent || typeof window.renderTraining !== "function") return;
 
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const scoreCard = document.getElementById("scoreChart")?.closest(".chart-card");
+  if (!scoreCard || !scoreCard.parentNode) return;
+
+  const layoutStyle = document.createElement("style");
+  layoutStyle.id = "modelProjectionGridStyle";
+  layoutStyle.textContent = `
+    .model-projection-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 14px;
+      align-items: stretch;
+      margin-bottom: 14px;
+    }
+    .model-projection-grid > .chart-card {
+      min-width: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .model-projection-grid > .chart-card > .chart {
+      flex: 1 1 auto;
+      min-height: 420px;
+    }
+    .model-projection-grid #scoreChart svg,
+    .model-projection-grid #loadingChart svg {
+      width: 100%;
+      height: 420px;
+      display: block;
+    }
+    @media (max-width: 1200px) {
+      .model-projection-grid {
+        grid-template-columns: 1fr;
+      }
+      .model-projection-grid > .chart-card > .chart {
+        min-height: 360px;
+      }
+      .model-projection-grid #scoreChart svg,
+      .model-projection-grid #loadingChart svg {
+        height: 360px;
+      }
+    }
+  `;
+  document.head.append(layoutStyle);
+
   const section = document.createElement("div");
   section.className = "chart-card";
   const title = document.createElement("h3");
@@ -17,7 +61,11 @@
   chart.className = "chart empty";
   chart.textContent = "完成DPCA训练后显示载荷向量图。";
   section.append(title, note, chart);
-  document.getElementById("scoreChart")?.closest(".chart-card")?.insertAdjacentElement("afterend", section);
+
+  const projectionGrid = document.createElement("div");
+  projectionGrid.className = "model-projection-grid";
+  scoreCard.parentNode.insertBefore(projectionGrid, scoreCard);
+  projectionGrid.append(scoreCard, section);
 
   const originalRenderTraining = window.renderTraining;
   window.renderTraining = function renderTrainingWithLoadings(data) {
