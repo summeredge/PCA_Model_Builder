@@ -253,8 +253,8 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     const width = Math.max(720, Math.floor(container.getBoundingClientRect().width || 960));
     const height = 320;
     const pad = {left:76, right:mode === "independent" ? 76 : 28, top:32, bottom:46};
-    const shared = valueRange(series.flatMap((item) => item.points.map((point) => Number(point.y)).filter(Number.isFinite)));
-    const ranges = series.map((item) => mode === "shared" ? shared : valueRange(item.points.map((point) => Number(point.y)).filter(Number.isFinite)));
+    const shared = valueRange(series.flatMap((item) => item.points.map((point) => finiteNumber(point.y))));
+    const ranges = series.map((item) => mode === "shared" ? shared : valueRange(item.points.map((point) => finiteNumber(point.y))));
     const maxLength = Math.max(...series.map((item) => item.points.length));
     const x = (index) => pad.left + index / Math.max(1, maxLength - 1) * (width - pad.left - pad.right);
     const y = (value, range) => pad.top + (1 - (value - range.min) / Math.max(1e-12, range.max - range.min)) * (height - pad.top - pad.bottom);
@@ -271,9 +271,9 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       const segments = [];
       let current = [];
       item.points.forEach((point, index) => {
-        const value = Number(point.y);
+        const value = finiteNumber(point.y);
         if (point.gap_start && current.length) { segments.push(current); current = []; }
-        if (!Number.isFinite(value)) { if (current.length) segments.push(current); current = []; return; }
+        if (value === null) { if (current.length) segments.push(current); current = []; return; }
         current.push(`${x(index).toFixed(2)},${y(value, ranges[seriesIndex]).toFixed(2)}`);
       });
       if (current.length) segments.push(current);
@@ -299,7 +299,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       ["中位数", stats.median],
       ["有效点数/占比", `${count} / ${sample ? (count/sample*100).toFixed(1) : "0.0"}%`],
     ];
-    return `<div class="dp-trend-stat-card"><h3>${escapeHtml(tag)}</h3><dl>${rows.map(([label,value]) => `<div><dt>${label}</dt><dd>${typeof value === "string" ? escapeHtml(value) : formatAxis(Number(value))}</dd></div>`).join("")}</dl>${renderHistogram(histogram, stats, color, tag)}</div>`;
+    return `<div class="dp-trend-stat-card"><h3>${escapeHtml(tag)}</h3><dl>${rows.map(([label,value]) => { const numeric = finiteNumber(value); return `<div><dt>${label}</dt><dd>${typeof value === "string" ? escapeHtml(value) : numeric === null ? "—" : formatAxis(numeric)}</dd></div>`; }).join("")}</dl>${renderHistogram(histogram, stats, color, tag)}</div>`;
   }
 
   function renderHistogram(histogram, stats, color, tag) {
@@ -361,7 +361,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       const top = topHeight + rowIndex*cellHeight + 22;
       const width = cellWidth - 60;
       const height = cellHeight - 46;
-      const pairs = rows.map((row) => [Number(row[`${xTag}__raw`]), Number(row[`${yTag}__raw`])]).filter(([x,y]) => Number.isFinite(x) && Number.isFinite(y));
+      const pairs = rows.map((row) => [finiteNumber(row[`${xTag}__raw`]), finiteNumber(row[`${yTag}__raw`])]).filter(([x,y]) => x !== null && y !== null);
       context.strokeStyle = "#d8dee8";
       context.strokeRect(left, top, width, height);
       if (!pairs.length) { context.fillStyle = "#5f6b7a"; context.fillText("无有效配对数据", left+12, top+24); return; }
@@ -376,9 +376,16 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     }));
   }
 
+  function finiteNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
   function valueRange(values) {
-    if (!values.length) return {min:0,max:1};
-    let min = Math.min(...values), max = Math.max(...values);
+    const finite = values.map(finiteNumber).filter((value) => value !== null);
+    if (!finite.length) return {min:0,max:1};
+    let min = Math.min(...finite), max = Math.max(...finite);
     if (min === max) { const pad = Math.max(Math.abs(min)*.05, 1e-6); min -= pad; max += pad; }
     else { const pad = (max-min)*.08; min -= pad; max += pad; }
     return {min,max};
