@@ -20,7 +20,7 @@ test = ["pytest>=8"]
 
 [project.scripts]
 pca-model-builder = "pca_model_builder.cli:main"
-pca-model-builder-web = "pca_model_builder.web:main"
+pca-model-builder-web = "pca_model_builder.web_quality_layout:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
