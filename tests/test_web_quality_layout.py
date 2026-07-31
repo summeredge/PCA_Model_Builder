@@ -55,6 +55,21 @@ def test_trend_page_no_longer_exposes_xy_scatter_matrix() -> None:
     assert 'src="/assets/model-results.js"' in html
 
 
+def test_loading_plot_uses_origin_vectors_and_arrowheads() -> None:
+    source = (
+        PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
+    ).read_text(encoding="utf-8")
+
+    assert "原始Tag聚合载荷向量图" in source
+    assert 'vector.setAttribute("marker-end", "url(#loadingArrowHead)")' in source
+    assert "addLine(svg, originX, originY, endX, endY" in source
+    assert "PC1载荷" in source
+    assert "PC2载荷" in source
+    assert "x_explained_variance_ratio" in source
+    assert "y_explained_variance_ratio" in source
+    assert "每个点代表一个原始Tag" not in source
+
+
 def test_supported_web_entrypoints_use_model_results_page() -> None:
     start_app = (PROJECT_ROOT / "start_app.bat").read_text(encoding="utf-8")
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
