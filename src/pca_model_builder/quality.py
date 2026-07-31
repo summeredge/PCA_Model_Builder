@@ -80,28 +80,44 @@ def inspect_data_quality(
     inferred_interval = None
     if not intervals.empty:
         inferred_interval = float(intervals.mode().iloc[0])
-        irregular_count = int(
-            (~np.isclose(intervals.to_numpy(), inferred_interval)).sum()
+        sampling_interval = (
+            float(expected_interval_minutes)
+            if expected_interval_minutes is not None
+            else inferred_interval
         )
+        interval_values = intervals.to_numpy()
+        normal = np.isclose(interval_values, sampling_interval)
+        ratios = interval_values / sampling_interval
+        physical_gaps = (
+            (interval_values > sampling_interval)
+            & np.isclose(ratios, np.round(ratios))
+        )
+        irregular_count = int((~normal & ~physical_gaps).sum())
         if irregular_count:
             issues.append(
                 QualityIssue(
                     "irregular_sampling",
                     "error",
-                    "Sampling intervals are not regular; gaps must be reviewed.",
+                    "Sampling intervals are below the configured period or off its grid.",
                     irregular_count,
                 )
             )
-        if (
-            expected_interval_minutes is not None
-            and not np.isclose(inferred_interval, expected_interval_minutes)
-        ):
+        if expected_interval_minutes is not None and not normal.any():
             issues.append(
                 QualityIssue(
                     "sampling_interval_mismatch",
                     "error",
                     "Observed sampling interval differs from the configured interval.",
                     1,
+                )
+            )
+        elif physical_gaps.any():
+            issues.append(
+                QualityIssue(
+                    "physical_time_gap",
+                    "warning",
+                    "Physical time gaps will start new preprocessing segments.",
+                    int(physical_gaps.sum()),
                 )
             )
 

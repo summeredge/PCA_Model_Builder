@@ -5,13 +5,17 @@ from io import BytesIO
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 import zipfile
 
 import numpy as np
+import pandas as pd
 
 from .dpca import DPCAModel
+from .preprocessing import PreprocessingConfig
+from .tag_config import normalize_tag_configs
 
 
 SCHEMA_VERSION = 1
@@ -22,6 +26,28 @@ _ARRAY_NAMES = {
     "eigenvalues",
     "explained_variance_ratio",
 }
+_MANIFEST_FIELDS = {
+    "schema_version",
+    "validation_status",
+    "feature_names",
+    "n_samples",
+    "n_components",
+    "t2_limits",
+    "q_limits",
+    "config",
+    "training_windows",
+}
+_CONFIG_FIELDS = {
+    "model_name",
+    "tags",
+    "timestamp_column",
+    "sample_interval_minutes",
+    "smoothing_window_minutes",
+    "max_lag_minutes",
+    "lag_step_minutes",
+    "variance_threshold",
+}
+_FEATURE_PATTERN = re.compile(r"^(?P<tag>.+)__lag_(?P<lag>\d+)min$")
 
 
 def save_model_package(
@@ -79,19 +105,20 @@ def save_model_package(
 
 
 def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
-    with zipfile.ZipFile(path) as package:
-        names = set(package.namelist())
-        if names != {"manifest.json", "arrays.npz"}:
-            raise ValueError("model package has unexpected or missing files")
-        manifest = json.loads(package.read("manifest.json"))
-        if not isinstance(manifest, dict):
-            raise ValueError("model package manifest must be an object")
-        if manifest.get("schema_version") != SCHEMA_VERSION:
-            raise ValueError("unsupported model package schema version")
-        with np.load(BytesIO(package.read("arrays.npz")), allow_pickle=False) as arrays:
-            if set(arrays.files) != _ARRAY_NAMES:
-                raise ValueError("model package arrays are unexpected or incomplete")
-            try:
+    try:
+        with zipfile.ZipFile(path) as package:
+            names = set(package.namelist())
+            if names != {"manifest.json", "arrays.npz"}:
+                raise ValueError("model package has unexpected or missing files")
+            manifest = json.loads(package.read("manifest.json"))
+            _validate_manifest_structure(manifest)
+            with np.load(
+                BytesIO(package.read("arrays.npz")), allow_pickle=False
+            ) as arrays:
+                if set(arrays.files) != _ARRAY_NAMES:
+                    raise ValueError(
+                        "model package arrays are unexpected or incomplete"
+                    )
                 model = DPCAModel(
                     feature_names=tuple(manifest["feature_names"]),
                     mean=arrays["mean"].copy(),
@@ -111,10 +138,37 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
                     },
                     n_samples=int(manifest["n_samples"]),
                 )
-            except (KeyError, TypeError, AttributeError) as error:
-                raise ValueError("model package structure is invalid") from error
+    except zipfile.BadZipFile as error:
+        raise ValueError("model package is not a valid ZIP archive") from error
+    except (KeyError, TypeError, AttributeError, IndexError) as error:
+        raise ValueError("model package structure is invalid") from error
     _validate_loaded_model(model, manifest)
     return model, manifest
+
+
+def _validate_manifest_structure(manifest: object) -> None:
+    if not isinstance(manifest, dict):
+        raise ValueError("model package manifest must be an object")
+    missing = sorted(_MANIFEST_FIELDS - set(manifest))
+    if missing:
+        raise ValueError(f"model package manifest is missing: {', '.join(missing)}")
+    if manifest["schema_version"] != SCHEMA_VERSION:
+        raise ValueError("unsupported model package schema version")
+    if manifest["validation_status"] not in {"draft", "passed", "failed"}:
+        raise ValueError("model package validation status is invalid")
+    if (
+        not isinstance(manifest["n_samples"], int)
+        or isinstance(manifest["n_samples"], bool)
+        or manifest["n_samples"] < 3
+        or not isinstance(manifest["n_components"], int)
+        or isinstance(manifest["n_components"], bool)
+        or manifest["n_components"] < 2
+    ):
+        raise ValueError("model package sample or component count is invalid")
+    if not isinstance(manifest["t2_limits"], dict) or not isinstance(
+        manifest["q_limits"], dict
+    ):
+        raise ValueError("model package control limits must be objects")
 
 
 def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
@@ -126,12 +180,9 @@ def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
         or len(feature_names) != len(set(feature_names))
     ):
         raise ValueError("model package feature names are invalid")
-    if manifest.get("validation_status") not in {"draft", "passed", "failed"}:
-        raise ValueError("model package validation status is invalid")
-    if not isinstance(manifest.get("config"), dict) or not isinstance(
-        manifest.get("training_windows"), list
-    ):
-        raise ValueError("model package metadata is invalid")
+    config, preprocessing = _validate_config(manifest["config"])
+    _validate_training_windows(manifest["training_windows"])
+    _validate_dynamic_features(feature_names, config["tags"], preprocessing)
 
     feature_count = len(feature_names)
     component_count = model.n_components
@@ -150,7 +201,8 @@ def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
     if (
         model.eigenvalues.ndim != 1
         or model.explained_variance_ratio.shape != model.eigenvalues.shape
-        or len(model.eigenvalues) <= component_count
+        or len(model.eigenvalues)
+        != min(model.n_samples - 1, feature_count)
     ):
         raise ValueError("model package variance arrays have invalid shapes")
 
@@ -173,6 +225,11 @@ def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
         raise ValueError("model package leaves no effective residual space")
     if np.any(model.explained_variance_ratio < 0):
         raise ValueError("model package explained variance must not be negative")
+    if float(model.explained_variance_ratio.sum()) > 1.0 + 1e-6:
+        raise ValueError("model package explained variance exceeds one")
+    gram = model.components @ model.components.T
+    if not np.allclose(gram, np.eye(component_count), rtol=1e-6, atol=1e-6):
+        raise ValueError("model package component loadings are not orthonormal")
 
     if set(model.t2_limits) != {0.95, 0.99} or set(model.q_limits) != {0.95, 0.99}:
         raise ValueError("model package control limits are incomplete")
@@ -183,3 +240,100 @@ def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
         raise ValueError("model package T2 limits are invalid")
     if not 0 <= model.q_limits[0.95] <= model.q_limits[0.99]:
         raise ValueError("model package SPE limits are invalid")
+
+
+def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfig]:
+    if not isinstance(config, dict):
+        raise ValueError("model package config must be an object")
+    missing = sorted(_CONFIG_FIELDS - set(config))
+    if missing:
+        raise ValueError(f"model package config is missing: {', '.join(missing)}")
+    if not isinstance(config["model_name"], str) or not config["model_name"].strip():
+        raise ValueError("model package model_name must be a non-empty string")
+    if not isinstance(config["timestamp_column"], str) or not config[
+        "timestamp_column"
+    ].strip():
+        raise ValueError("model package timestamp_column must be a non-empty string")
+    tags = config["tags"]
+    if (
+        not isinstance(tags, list)
+        or not tags
+        or not all(isinstance(tag, str) and tag.strip() for tag in tags)
+        or len(tags) != len(set(tags))
+    ):
+        raise ValueError("model package tags must be non-empty unique strings")
+    integer_fields = (
+        "sample_interval_minutes",
+        "smoothing_window_minutes",
+        "max_lag_minutes",
+        "lag_step_minutes",
+    )
+    if any(
+        not isinstance(config[field], int) or isinstance(config[field], bool)
+        for field in integer_fields
+    ):
+        raise ValueError("model package preprocessing values must be integers")
+    variance_threshold = config["variance_threshold"]
+    if (
+        not isinstance(variance_threshold, (int, float))
+        or isinstance(variance_threshold, bool)
+        or not 0 < float(variance_threshold) < 1
+    ):
+        raise ValueError("model package variance threshold must be in (0, 1)")
+    try:
+        preprocessing = PreprocessingConfig(
+            sample_interval_minutes=config["sample_interval_minutes"],
+            smoothing_window_minutes=config["smoothing_window_minutes"],
+            max_lag_minutes=config["max_lag_minutes"],
+            lag_step_minutes=config["lag_step_minutes"],
+        )
+        if "tag_configs" in config and not isinstance(config["tag_configs"], dict):
+            raise ValueError("tag_configs must be an object")
+        if "tag_configs" in config:
+            normalize_tag_configs(tags, config["tag_configs"])
+    except ValueError as error:
+        raise ValueError(f"model package config is invalid: {error}") from error
+    return config, preprocessing
+
+
+def _validate_training_windows(value: object) -> None:
+    if not isinstance(value, list) or not value:
+        raise ValueError("model package training_windows must be a non-empty list")
+    for window in value:
+        if not isinstance(window, list) or len(window) != 2:
+            raise ValueError("model package training window must contain start and end")
+        if not all(isinstance(item, str) and item.strip() for item in window):
+            raise ValueError("model package training window values must be strings")
+        try:
+            start = pd.Timestamp(window[0])
+            end = pd.Timestamp(window[1])
+        except (TypeError, ValueError) as error:
+            raise ValueError("model package training window is not parseable") from error
+        if pd.isna(start) or pd.isna(end):
+            raise ValueError("model package training window is not parseable")
+        try:
+            reversed_window = start > end
+        except TypeError as error:
+            raise ValueError("model package training window timezones are inconsistent") from error
+        if reversed_window:
+            raise ValueError("model package training window start follows its end")
+
+
+def _validate_dynamic_features(
+    feature_names: list[str],
+    tags: list[str],
+    config: PreprocessingConfig,
+) -> None:
+    if any(_FEATURE_PATTERN.fullmatch(name) is None for name in feature_names):
+        raise ValueError("model package dynamic feature name is invalid")
+    expected = [
+        f"{tag}__lag_{lag_minutes:03d}min"
+        for lag_minutes in range(
+            0, config.max_lag_minutes + 1, config.lag_step_minutes
+        )
+        for tag in tags
+    ]
+    if feature_names != expected:
+        raise ValueError(
+            "model package dynamic features do not match configured Tags and Lags"
+        )

@@ -17,21 +17,25 @@ def test_dynamic_lags_do_not_cross_physical_time_gaps():
             "2026-01-01 00:10",
             "2026-01-01 00:30",
             "2026-01-01 00:35",
+            "2026-01-01 00:40",
         ]
     )
-    frame = pd.DataFrame({"T1": [0.0, 1.0, 2.0, 10.0, 11.0]}, index=index)
+    frame = pd.DataFrame(
+        {"T1": [0.0, 1.0, 2.0, 10.0, 12.0, 14.0]}, index=index
+    )
     segments = infer_segment_ids(index, sample_interval_minutes=5)
     config = PreprocessingConfig(
         sample_interval_minutes=5,
-        smoothing_window_minutes=5,
+        smoothing_window_minutes=10,
         max_lag_minutes=5,
         lag_step_minutes=5,
     )
 
     dynamic = build_dynamic_matrix(frame, ["T1"], config, segments)
 
-    assert dynamic.index.tolist() == [index[1], index[2], index[4]]
-    assert dynamic.loc[index[4], "T1__lag_005min"] == 10.0
+    assert dynamic.index.tolist() == [index[2], index[5]]
+    assert dynamic.loc[index[5], "T1__lag_000min"] == 13.0
+    assert dynamic.loc[index[5], "T1__lag_005min"] == 11.0
 
 
 def test_smoothing_is_trailing_and_never_uses_future_samples():
@@ -74,3 +78,11 @@ def test_dynamic_matrix_rejects_non_finite_values():
     with pytest.raises(ValueError, match="non-finite"):
         build_dynamic_matrix(frame, ["T1"], config)
 
+
+def test_segment_inference_rejects_interval_off_sampling_grid():
+    index = pd.to_datetime(
+        ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:17"]
+    )
+
+    with pytest.raises(ValueError, match="sampling grid"):
+        infer_segment_ids(index, sample_interval_minutes=5)

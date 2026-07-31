@@ -65,3 +65,10 @@ def test_cluster_operating_states_rejects_too_many_clusters():
 
     with pytest.raises(ValueError, match="more samples"):
         cluster_operating_states(dynamic, n_clusters=2)
+
+
+def test_cluster_operating_states_rejects_variance_threshold_of_one():
+    with pytest.raises(ValueError, match="residual space for SPE"):
+        cluster_operating_states(
+            _two_state_dynamic_matrix(), n_clusters=2, variance_threshold=1.0
+        )

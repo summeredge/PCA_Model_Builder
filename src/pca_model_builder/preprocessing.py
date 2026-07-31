@@ -41,7 +41,13 @@ def infer_segment_ids(
     if not index.is_monotonic_increasing or index.has_duplicates:
         raise ValueError("timestamps must be sorted and unique")
     expected = pd.Timedelta(minutes=sample_interval_minutes)
-    gaps = index.to_series().diff().gt(expected)
+    intervals = index.to_series().diff()
+    valid_intervals = intervals.dropna()
+    ratios = valid_intervals / expected
+    on_grid = np.isclose(ratios, np.round(ratios))
+    if ((valid_intervals < expected) | ~on_grid).any():
+        raise ValueError("timestamps must follow the configured sampling grid")
+    gaps = intervals.gt(expected)
     return gaps.cumsum().astype(int).set_axis(index)
 
 
@@ -88,4 +94,3 @@ def build_dynamic_matrix(
             dynamic_columns[f"{tag}__lag_{lag_minutes:03d}min"] = lagged[tag]
 
     return pd.DataFrame(dynamic_columns, index=frame.index).dropna(how="any")
-

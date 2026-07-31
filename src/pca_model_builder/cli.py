@@ -9,7 +9,7 @@ from typing import Any, Sequence
 
 import pandas as pd
 
-from .contribution import exceedance_contribution_tables
+from .contribution import contribution_event_records, exceedance_contribution_tables
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
 from .preprocessing import (
@@ -213,19 +213,15 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     args.scores_output.parent.mkdir(parents=True, exist_ok=True)
     scores.to_csv(args.scores_output, index_label=args.timestamp)
 
-    contribution_records: list[dict[str, Any]] = []
-    for statistic, timestamp, value, limit95, table in exceedance_contribution_tables(
-        model, dynamic, scores
-    ):
-        contribution_records.append(
-            {
-                "timestamp": timestamp.isoformat(),
-                "statistic": statistic,
-                "statistic_value": value,
-                "limit_95": limit95,
-                "tags": table.head(5).to_dict(orient="records"),
-            }
-        )
+    contribution_records = contribution_event_records(
+        exceedance_contribution_tables(
+            model,
+            dynamic,
+            scores,
+            sample_interval_minutes=config.sample_interval_minutes,
+        ),
+        tag_configs,
+    )
     _write_json(args.contributions_output, contribution_records)
 
     report: dict[str, Any] = {

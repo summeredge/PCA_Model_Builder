@@ -108,8 +108,100 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     _, manifest = load_model_package(model_path)
     assert manifest["config"]["tag_configs"]["A"]["unit"] == "t/h"
     assert scores_path.exists()
+    scores = pd.read_csv(scores_path)
+    assert {"pc1", "pc2"}.issubset(scores.columns)
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["engineer_decision_required"] is True
     assert "known_event" in report["status_by_engineering_label"]
     contributions = json.loads(contributions_path.read_text(encoding="utf-8"))
     assert {item["statistic"] for item in contributions} == {"t2", "spe"}
+
+
+def test_cli_training_allows_physical_time_gap(tmp_path):
+    rng = np.random.default_rng(3)
+    timestamps = pd.date_range("2026-01-01", periods=120, freq="5min").to_series()
+    timestamps.iloc[60:] += pd.Timedelta(minutes=15)
+    frame = pd.DataFrame(
+        {
+            "time": timestamps.to_numpy(),
+            "A": rng.normal(size=120),
+            "B": rng.normal(size=120),
+            "C": rng.normal(size=120),
+        }
+    )
+    csv_path = tmp_path / "gap.csv"
+    model_path = tmp_path / "gap.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    result = main(
+        [
+            "train",
+            "--csv",
+            str(csv_path),
+            "--timestamp",
+            "time",
+            "--tags",
+            "A",
+            "B",
+            "C",
+            "--normal-start",
+            str(frame.time.iloc[0]),
+            "--normal-end",
+            str(frame.time.iloc[-1]),
+            "--sample-interval",
+            "5",
+            "--smoothing-window",
+            "10",
+            "--max-lag",
+            "10",
+            "--lag-step",
+            "5",
+            "--model-name",
+            "GAP_DPCA_V1",
+            "--output",
+            str(model_path),
+        ]
+    )
+
+    assert result == 0
+    assert model_path.exists()
+
+
+def test_cli_training_rejects_variance_threshold_of_one(tmp_path):
+    rng = np.random.default_rng(4)
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=100, freq="5min"),
+            "A": rng.normal(size=100),
+            "B": rng.normal(size=100),
+            "C": rng.normal(size=100),
+        }
+    )
+    csv_path = tmp_path / "history.csv"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    result = main(
+        [
+            "train",
+            "--csv",
+            str(csv_path),
+            "--timestamp",
+            "time",
+            "--tags",
+            "A",
+            "B",
+            "C",
+            "--normal-start",
+            str(frame.time.iloc[0]),
+            "--normal-end",
+            str(frame.time.iloc[-1]),
+            "--variance-threshold",
+            "1.0",
+            "--model-name",
+            "INVALID_DPCA_V1",
+            "--output",
+            str(tmp_path / "invalid.pcamodel"),
+        ]
+    )
+
+    assert result == 2

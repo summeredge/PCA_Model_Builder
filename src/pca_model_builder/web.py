@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .clustering import cluster_operating_states
-from .contribution import exceedance_contribution_tables
+from .contribution import contribution_event_records, exceedance_contribution_tables
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
@@ -345,19 +345,15 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     scores = model.score(dynamic)
     focus_timestamp = _focus_timestamp(scores, model.t2_limits[0.99], model.q_limits[0.99])
-    contributions = []
-    for statistic, timestamp, value, limit95, table in exceedance_contribution_tables(
-        model, dynamic, scores
-    ):
-        contributions.append(
-            {
-                "statistic": statistic,
-                "timestamp": timestamp.isoformat(),
-                "statistic_value": value,
-                "limit_95": limit95,
-                "tags": _contribution_records(table.head(8), tag_configs),
-            }
-        )
+    contributions = contribution_event_records(
+        exceedance_contribution_tables(
+            model,
+            dynamic,
+            scores,
+            sample_interval_minutes=config.sample_interval_minutes,
+        ),
+        tag_configs,
+    )
 
     result: dict[str, Any] = {
         "run_id": run_id,
@@ -561,11 +557,7 @@ def _status_counts(scores: pd.DataFrame) -> dict[str, int]:
 
 
 def _score_payload(scores: pd.DataFrame) -> list[dict[str, Any]]:
-    if len(scores) <= MAX_CHART_POINTS:
-        positions = np.arange(len(scores))
-    else:
-        positions = np.linspace(0, len(scores) - 1, MAX_CHART_POINTS, dtype=int)
-        positions = np.unique(positions)
+    positions = _chart_positions(scores, MAX_CHART_POINTS)
     rows = scores.iloc[positions]
     pc_columns = [column for column in scores.columns if column.startswith("pc")]
     result = []
@@ -585,29 +577,105 @@ def _score_payload(scores: pd.DataFrame) -> list[dict[str, Any]]:
     return result
 
 
+def _chart_positions(scores: pd.DataFrame, limit: int) -> np.ndarray:
+    if limit < 2:
+        raise ValueError("chart point limit must be at least 2")
+    if len(scores) <= limit:
+        return np.arange(len(scores), dtype=int)
+
+    severity = scores["status"].map(
+        {"normal": 0, "attention": 1, "abnormal": 2}
+    ).to_numpy(dtype=int)
+    critical = {0, len(scores) - 1}
+    critical.update(np.flatnonzero(severity > 0).tolist())
+    critical.add(int(np.argmax(scores["t2"].to_numpy())))
+    critical.add(int(np.argmax(scores["spe"].to_numpy())))
+    for column in ("status", "t2_status", "spe_status"):
+        values = scores[column].to_numpy()
+        switches = np.flatnonzero(values[1:] != values[:-1]) + 1
+        critical.update(switches.tolist())
+        critical.update((switches - 1).tolist())
+
+    if len(critical) <= limit:
+        selected = set(critical)
+        candidates = np.array(
+            [position for position in range(len(scores)) if position not in selected]
+        )
+        selected.update(
+            _spread_positions(candidates, limit - len(selected)).tolist()
+        )
+        return np.array(sorted(selected), dtype=int)
+
+    bucket_count = max(1, (limit - 2) // 3)
+    if limit < 5:
+        ratios = np.maximum(
+            scores["t2_limit_ratio"].to_numpy(dtype=float),
+            scores["spe_limit_ratio"].to_numpy(dtype=float),
+        )
+        ranked = sorted(
+            range(len(scores)),
+            key=lambda position: (severity[position], ratios[position]),
+            reverse=True,
+        )
+        selected = {0, len(scores) - 1}
+        selected.update(ranked[: limit - len(selected)])
+        return np.array(sorted(selected), dtype=int)
+    bucket_ids = _time_bucket_ids(scores.index, bucket_count)
+    t2_ratio = scores["t2_limit_ratio"].to_numpy(dtype=float)
+    spe_ratio = scores["spe_limit_ratio"].to_numpy(dtype=float)
+    selected = {0, len(scores) - 1}
+    for bucket in range(bucket_count):
+        positions = np.flatnonzero(bucket_ids == bucket)
+        if not len(positions):
+            continue
+        selected.add(
+            int(
+                max(
+                    positions,
+                    key=lambda position: (
+                        severity[position],
+                        max(t2_ratio[position], spe_ratio[position]),
+                    ),
+                )
+            )
+        )
+        selected.add(int(positions[np.argmax(t2_ratio[positions])]))
+        selected.add(int(positions[np.argmax(spe_ratio[positions])]))
+
+    remaining = np.array(
+        [position for position in range(len(scores)) if position not in selected]
+    )
+    selected.update(_spread_positions(remaining, limit - len(selected)).tolist())
+    return np.array(sorted(selected), dtype=int)
+
+
+def _time_bucket_ids(index: pd.Index, bucket_count: int) -> np.ndarray:
+    if isinstance(index, pd.DatetimeIndex) and index[-1] > index[0]:
+        elapsed = (index - index[0]).asi8.astype(float)
+        return np.minimum(
+            (elapsed / (elapsed[-1] + 1.0) * bucket_count).astype(int),
+            bucket_count - 1,
+        )
+    return np.minimum(
+        np.arange(len(index)) * bucket_count // len(index), bucket_count - 1
+    )
+
+
+def _spread_positions(candidates: np.ndarray, count: int) -> np.ndarray:
+    if count <= 0 or not len(candidates):
+        return np.array([], dtype=int)
+    if count >= len(candidates):
+        return candidates
+    offsets = np.arange(count) * len(candidates) // count
+    return candidates[offsets]
+
+
 def _focus_timestamp(
     scores: pd.DataFrame, t2_limit_99: float, q_limit_99: float
 ) -> pd.Timestamp:
     t2_ratio = scores["t2"] / max(t2_limit_99, np.finfo(float).eps)
     q_ratio = scores["spe"] / max(q_limit_99, np.finfo(float).eps)
     return pd.Timestamp(pd.concat([t2_ratio, q_ratio], axis=1).max(axis=1).idxmax())
-
-
-def _contribution_records(
-    table: pd.DataFrame, tag_configs: dict[str, dict[str, Any]] | None = None
-) -> list[dict[str, Any]]:
-    tag_configs = tag_configs or {}
-    return [
-        {
-            "tag": str(row.tag),
-            "description": str(tag_configs.get(str(row.tag), {}).get("description", "")),
-            "unit": str(tag_configs.get(str(row.tag), {}).get("unit", "")),
-            "contribution_pct": float(row.contribution_pct),
-            "lag_start_minutes": int(row.lag_start_minutes),
-            "lag_end_minutes": int(row.lag_end_minutes),
-        }
-        for row in table.itertuples(index=False)
-    ]
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -873,7 +941,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>正常期开始<input id="normalStart" type="datetime-local"></label><label>正常期结束<input id="normalEnd" type="datetime-local"></label></div>
         <div class="row"><label>采样间隔（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>尾随平滑（分钟）<input id="smoothingWindow" type="number" min="1" value="10"></label></div>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
-        <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.5" max="1" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="1" placeholder="自动"></label></div>
+        <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
         <button id="trainButton" disabled>训练 DPCA 草稿模型</button>
       </div>
@@ -939,7 +1007,7 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <h3>主要贡献 Tag</h3>
           <div class="help" id="contributionHint"></div>
-          <div class="table-wrap"><table><thead><tr><th>统计量</th><th>Tag</th><th>描述</th><th>单位</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>事件 / 峰值</th><th>统计量</th><th>Tag</th><th>描述</th><th>单位</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
           <div class="actions"><a id="scoresDownload" class="download" href="#">下载完整评分 CSV</a><a id="reportDownload" class="download" href="#">下载验证摘要</a><a id="contributionsDownload" class="download" href="#">下载贡献记录</a></div>
           <div class="help">每次回放会更新当前模型最近一次验证的下载文件，不保存多次验证历史。</div>
           <div class="notice">贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
@@ -1110,9 +1178,9 @@ function renderValidation(data) {
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型状态（草稿）","待工程确认");
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
-  el("contributionHint").textContent=data.contributions.length ? "仅展示达到 95% 控制限的统计量；每类统计量使用其越界程度最高的时间点。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
+  el("contributionHint").textContent=data.contributions.length ? "按每个连续越过95%控制限的事件保存峰值贡献；事件不会跨物理时间缺口合并。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
-  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; tr.innerHTML=`<td>${escapeHtml(group.statistic.toUpperCase())}</td><td>${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; body.append(tr); }));
+  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${group.event_start.slice(0,16)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td>${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; body.append(tr); }));
   el("scoresDownload").href=data.validation_downloads.scores; el("reportDownload").href=data.validation_downloads.report; el("contributionsDownload").href=data.validation_downloads.contributions;
 }
 

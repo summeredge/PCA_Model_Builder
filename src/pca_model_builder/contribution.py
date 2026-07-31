@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -9,6 +11,17 @@ from .dpca import DPCAModel
 
 
 _FEATURE_PATTERN = re.compile(r"^(?P<tag>.+)__lag_(?P<lag>\d+)min$")
+
+
+@dataclass(frozen=True)
+class ContributionEvent:
+    statistic: str
+    event_start: pd.Timestamp
+    event_end: pd.Timestamp
+    peak_timestamp: pd.Timestamp
+    statistic_value: float
+    limit_95: float
+    table: pd.DataFrame
 
 
 def aggregate_tag_contributions(
@@ -79,22 +92,88 @@ def exceedance_contribution_tables(
     model: DPCAModel,
     dynamic: pd.DataFrame,
     scores: pd.DataFrame,
-) -> list[tuple[str, pd.Timestamp, float, float, pd.DataFrame]]:
-    """Return one contribution table per statistic that actually exceeds 95%."""
-    results = []
+    sample_interval_minutes: int,
+) -> list[ContributionEvent]:
+    """Return one peak contribution table per continuous 95% exceedance event."""
+    if sample_interval_minutes <= 0:
+        raise ValueError("sample interval must be positive")
+    results: list[ContributionEvent] = []
+    expected = pd.Timedelta(minutes=sample_interval_minutes)
     definitions = (
         ("t2", "t2", model.t2_limits[0.95]),
         ("spe", "spe", model.q_limits[0.95]),
     )
     for statistic, column, limit in definitions:
-        exceeded = scores[column] >= limit
-        if not exceeded.any():
-            continue
-        timestamp = pd.Timestamp((scores.loc[exceeded, column] / limit).idxmax())
-        table = aggregate_tag_contributions(
-            model, dynamic.loc[timestamp], statistic=statistic
-        )
-        results.append(
-            (statistic, timestamp, float(scores.loc[timestamp, column]), float(limit), table)
-        )
+        exceeded = scores[column].to_numpy(dtype=float) >= limit
+        start: int | None = None
+        for position in range(len(scores) + 1):
+            continues = (
+                position < len(scores)
+                and bool(exceeded[position])
+                and (
+                    start is None
+                    or scores.index[position] - scores.index[position - 1] == expected
+                )
+            )
+            if continues:
+                if start is None:
+                    start = position
+                continue
+            if start is not None:
+                event_positions = np.arange(start, position)
+                values = scores.iloc[event_positions][column].to_numpy(dtype=float)
+                peak_position = int(event_positions[np.argmax(values / limit)])
+                peak_timestamp = pd.Timestamp(scores.index[peak_position])
+                results.append(
+                    ContributionEvent(
+                        statistic=statistic,
+                        event_start=pd.Timestamp(scores.index[start]),
+                        event_end=pd.Timestamp(scores.index[position - 1]),
+                        peak_timestamp=peak_timestamp,
+                        statistic_value=float(scores.iloc[peak_position][column]),
+                        limit_95=float(limit),
+                        table=aggregate_tag_contributions(
+                            model, dynamic.loc[peak_timestamp], statistic=statistic
+                        ),
+                    )
+                )
+                start = (
+                    position
+                    if position < len(scores) and bool(exceeded[position])
+                    else None
+                )
     return results
+
+
+def contribution_event_records(
+    events: list[ContributionEvent],
+    tag_configs: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    tag_configs = tag_configs or {}
+    records = []
+    for event in events:
+        tags = []
+        for row in event.table.itertuples(index=False):
+            config = tag_configs.get(str(row.tag), {})
+            tags.append(
+                {
+                    "tag": str(row.tag),
+                    "description": str(config.get("description", "")),
+                    "unit": str(config.get("unit", "")),
+                    "contribution_pct": float(row.contribution_pct),
+                    "lag_start_minutes": int(row.lag_start_minutes),
+                    "lag_end_minutes": int(row.lag_end_minutes),
+                }
+            )
+        records.append(
+            {
+                "statistic": event.statistic,
+                "event_start": event.event_start.isoformat(),
+                "event_end": event.event_end.isoformat(),
+                "peak_timestamp": event.peak_timestamp.isoformat(),
+                "statistic_value": event.statistic_value,
+                "limit_95": event.limit_95,
+                "tags": tags,
+            }
+        )
+    return records

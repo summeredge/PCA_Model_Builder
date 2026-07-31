@@ -1,4 +1,5 @@
 import json
+import inspect
 
 import numpy as np
 import pandas as pd
@@ -63,6 +64,7 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     ):
         assert element_id in web.INDEX_HTML
     assert "excludePerformanceColumns(data.conditions)" in web.INDEX_HTML
+    assert 'id="varianceThreshold" type="number" min="0.01" max="0.99"' in web.INDEX_HTML
 
 
 def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
@@ -154,6 +156,8 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     assert 0 < screened["matched_rows"] < screened["total_rows"]
     assert screened["representative_windows"]
     assert trained["validation_status"] == "draft"
+    assert trained["n_components"] >= 2
+    assert {"pc1", "pc2"}.issubset(trained["scores"][0])
     assert trained["training_rows"] > 0
     assert trained["model_download"].endswith(trained["run_id"])
     assert (tmp_path / "runs" / trained["run_id"] / "model.pcamodel").exists()
@@ -270,3 +274,132 @@ def test_web_training_blocks_values_outside_configured_engineering_range(
                 "model_name": "UNIT_DPCA_V1",
             }
         )
+
+
+def test_web_training_and_clustering_allow_physical_time_gap(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    history.loc[90:, "time"] += pd.Timedelta(minutes=15)
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    common = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "analysis_start": history.time.iloc[0].isoformat(),
+        "analysis_end": history.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "variance_threshold": 0.95,
+    }
+
+    clustered = web.cluster_payload({**common, "n_clusters": 2})
+    trained = web.train_payload(
+        {
+            **common,
+            "normal_start": common["analysis_start"],
+            "normal_end": common["analysis_end"],
+            "model_name": "GAP_DPCA_V1",
+        }
+    )
+
+    assert clustered["sample_count"] == 174
+    assert trained["training_rows"] == 174
+    assert trained["n_components"] >= 2
+
+
+def test_web_training_rejects_variance_threshold_of_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+
+    with pytest.raises(ValueError, match="residual space for SPE"):
+        web.train_payload(
+            {
+                "file_id": uploaded["file_id"],
+                "timestamp_column": "time",
+                "tags": ["A", "B", "C"],
+                "normal_start": history.time.iloc[0].isoformat(),
+                "normal_end": history.time.iloc[-1].isoformat(),
+                "sample_interval_minutes": 5,
+                "smoothing_window_minutes": 10,
+                "max_lag_minutes": 10,
+                "lag_step_minutes": 5,
+                "variance_threshold": 1.0,
+                "model_name": "INVALID_DPCA_V1",
+            }
+        )
+
+
+@pytest.mark.parametrize("statistic", ["t2", "spe"])
+def test_score_payload_preserves_short_anomaly_missed_by_uniform_sampling(statistic):
+    count = web.MAX_CHART_POINTS + 805
+    scores = _chart_scores(count)
+    old_positions = set(
+        np.linspace(0, count - 1, web.MAX_CHART_POINTS, dtype=int).tolist()
+    )
+    anomaly = next(position for position in range(2, count - 2) if position not in old_positions)
+    scores.iloc[anomaly, scores.columns.get_loc(statistic)] = 50.0
+    scores.iloc[anomaly, scores.columns.get_loc(f"{statistic}_limit_ratio")] = 10.0
+    scores.iloc[anomaly, scores.columns.get_loc(f"{statistic}_status")] = "abnormal"
+    scores.iloc[anomaly, scores.columns.get_loc("status")] = "abnormal"
+
+    payload = web._score_payload(scores)
+    timestamps = {row["timestamp"] for row in payload}
+
+    assert len(payload) <= web.MAX_CHART_POINTS
+    assert scores.index[0].isoformat() in timestamps
+    assert scores.index[-1].isoformat() in timestamps
+    assert scores.index[anomaly].isoformat() in timestamps
+    assert scores.index[anomaly - 1].isoformat() in timestamps
+    assert scores.index[anomaly + 1].isoformat() in timestamps
+    assert "np.linspace" not in inspect.getsource(web._score_payload)
+
+
+def test_score_payload_buckets_when_critical_points_exceed_limit():
+    count = web.MAX_CHART_POINTS * 2 + 5
+    scores = _chart_scores(count)
+    scores.loc[:, ["status", "t2_status", "spe_status"]] = "attention"
+    scores.loc[:, ["t2_limit_ratio", "spe_limit_ratio"]] = 1.1
+    abnormal_positions = np.arange(3, count, 7)
+    scores.iloc[abnormal_positions, scores.columns.get_loc("status")] = "abnormal"
+    scores.iloc[abnormal_positions, scores.columns.get_loc("t2_status")] = "abnormal"
+    scores.iloc[731, scores.columns.get_loc("t2")] = 100.0
+    scores.iloc[731, scores.columns.get_loc("t2_limit_ratio")] = 20.0
+    scores.iloc[1873, scores.columns.get_loc("spe")] = 120.0
+    scores.iloc[1873, scores.columns.get_loc("spe_limit_ratio")] = 24.0
+
+    payload = web._score_payload(scores)
+    timestamps = [row["timestamp"] for row in payload]
+
+    assert len(payload) == web.MAX_CHART_POINTS
+    assert timestamps == sorted(set(timestamps))
+    assert scores.index[0].isoformat() == timestamps[0]
+    assert scores.index[-1].isoformat() == timestamps[-1]
+    assert scores.index[731].isoformat() in timestamps
+    assert scores.index[1873].isoformat() in timestamps
+    assert sum(row["status"] == "abnormal" for row in payload) > 100
+
+
+def _chart_scores(count: int) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "pc1": np.zeros(count),
+            "pc2": np.zeros(count),
+            "t2": np.full(count, 0.1),
+            "spe": np.full(count, 0.1),
+            "t2_limit_ratio": np.full(count, 0.1),
+            "spe_limit_ratio": np.full(count, 0.1),
+            "t2_status": np.full(count, "normal", dtype=object),
+            "spe_status": np.full(count, "normal", dtype=object),
+            "status": np.full(count, "normal", dtype=object),
+        },
+        index=pd.date_range("2026-01-01", periods=count, freq="5min"),
+    )

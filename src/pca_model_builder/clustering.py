@@ -30,8 +30,10 @@ def cluster_operating_states(
         raise ValueError("cluster count must be between 2 and 10")
     if len(dynamic) <= n_clusters:
         raise ValueError("cluster analysis needs more samples than clusters")
-    if not 0.5 <= variance_threshold <= 1.0:
-        raise ValueError("variance threshold must be between 0.5 and 1.0")
+    if not 0 < variance_threshold < 1:
+        raise ValueError(
+            "variance threshold must be in (0, 1) to preserve residual space for SPE"
+        )
     if sample_interval_minutes <= 0:
         raise ValueError("sample interval must be positive")
 

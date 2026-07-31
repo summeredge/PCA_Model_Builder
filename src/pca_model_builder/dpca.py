@@ -84,8 +84,10 @@ def fit_dpca(
         raise ValueError("DPCA requires at least three rows and two features")
     if not np.isfinite(values).all():
         raise ValueError("training data contain non-finite values")
-    if not 0 < variance_threshold <= 1:
-        raise ValueError("variance threshold must be in (0, 1]")
+    if not 0 < variance_threshold < 1:
+        raise ValueError(
+            "variance threshold must be in (0, 1) to preserve residual space for SPE"
+        )
 
     mean = values.mean(axis=0)
     scale = values.std(axis=0, ddof=0)
@@ -100,13 +102,20 @@ def fit_dpca(
     effective_rank = int(
         np.sum(full_pca.explained_variance_ > np.finfo(float).eps)
     )
+    if effective_rank < 3:
+        raise ValueError(
+            "DPCA effective rank must be at least 3 to provide PC1, PC2, "
+            "and effective residual space for SPE"
+        )
 
     if n_components is None:
-        selected = int(np.searchsorted(cumulative, variance_threshold) + 1)
+        selected = max(
+            2, int(np.searchsorted(cumulative, variance_threshold) + 1)
+        )
     else:
         selected = int(n_components)
-    if not 1 <= selected <= max_components:
-        raise ValueError(f"n_components must be between 1 and {max_components}")
+    if not 2 <= selected <= max_components:
+        raise ValueError(f"n_components must be between 2 and {max_components}")
     if selected >= effective_rank:
         raise ValueError(
             "selected components leave no effective residual space for SPE; "
