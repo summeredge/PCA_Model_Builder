@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pca_model_builder import web_quality_layout
+from pca_model_builder import cli_entry, web_quality_layout
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +51,16 @@ def test_supported_web_entrypoints_use_quality_layout() -> None:
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "pca_model_builder.web_quality_layout" in start_app
+    assert 'pca-model-builder = "pca_model_builder.cli_entry:main"' in pyproject
     assert (
         'pca-model-builder-web = "pca_model_builder.web_quality_layout:main"'
         in pyproject
     )
+
+
+def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = cli_entry.cli._serve
+    monkeypatch.setattr(cli_entry.cli, "main", lambda argv=None: 0)
+
+    assert cli_entry.main(["train"]) == 0
+    assert cli_entry.cli._serve is original
