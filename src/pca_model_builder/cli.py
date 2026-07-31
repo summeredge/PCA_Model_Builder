@@ -162,7 +162,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _serve(args: argparse.Namespace) -> dict[str, Any]:
-    from .web import run_server
+    from .web_dataproject import run_server
 
     run_server(args.host, args.port, open_browser=not args.no_open)
     return {"status": "stopped"}
