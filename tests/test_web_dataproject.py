@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
+
 import pandas as pd
 import pytest
 
-from pca_model_builder import web_dataproject
+from pca_model_builder import cli, web_dataproject
 
 
 def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls() -> None:
@@ -28,6 +30,23 @@ def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls()
     assert 'id="trendTags"' in html
     assert 'id="trendStart"' in html
     assert 'id="trendEnd"' in html
+
+
+def test_missing_values_are_not_converted_to_zero_by_frontend_contract() -> None:
+    html = web_dataproject.INDEX_HTML
+
+    assert "function finiteNumber(value)" in html
+    assert 'value === null || value === undefined || value === ""' in html
+    assert "Number(point.y)" not in html
+    assert "Number(row[`${xTag}__raw`])" not in html
+    assert "Number(row[`${yTag}__raw`])" not in html
+
+
+def test_cli_serve_uses_dataproject_web_entry() -> None:
+    source = inspect.getsource(cli._serve)
+
+    assert "from .web_dataproject import run_server" in source
+    assert "from .web import run_server" not in source
 
 
 def test_dataproject_trend_payload_preserves_physical_gap_and_statistics(
@@ -76,6 +95,42 @@ def test_dataproject_trend_payload_preserves_physical_gap_and_statistics(
     assert result["statistics"]["A"]["current"]["mean"] == pytest.approx(11.0)
     assert result["statistics"]["A"]["reference"]["sample_count"] == 2
     assert sum(result["histograms"]["A"]["counts"]) == 3
+
+
+def test_dataproject_trend_payload_keeps_missing_as_null(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "TIME": pd.date_range("2026-01-01", periods=3, freq="5min"),
+            "A": [10.0, None, 12.0],
+            "B": [20.0, 19.0, 18.0],
+        }
+    )
+    monkeypatch.setattr(web_dataproject.base_web, "_read_upload", lambda payload: frame)
+
+    result = web_dataproject.trend_payload(
+        {
+            "purpose": "trend",
+            "file_id": "ignored-by-test",
+            "timestamp_column": "TIME",
+            "tags": ["A", "B"],
+            "tag_configs": {},
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 10,
+            "max_lag_minutes": 60,
+            "lag_step_minutes": 5,
+            "start": "2026-01-01 00:00",
+            "end": "2026-01-01 00:10",
+            "max_points": 100,
+        }
+    )
+
+    assert [point["y"] for point in result["series"][0]["points"]] == [10.0, None, 12.0]
+    assert result["statistics"]["A"]["current"]["sample_count"] == 3
+    assert result["statistics"]["A"]["current"]["valid_count"] == 2
+    assert result["statistics"]["A"]["current"]["missing_count"] == 1
+    assert sum(result["histograms"]["A"]["counts"]) == 2
 
 
 def test_trend_and_scatter_tag_limits_are_separate(
