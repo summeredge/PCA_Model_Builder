@@ -26,11 +26,30 @@ def _signed_loading_energy(
     return sign * magnitude, int(lags[dominant_position])
 
 
+def _explained_variance_ratio(model: Any, component_index: int) -> float | None:
+    ratios = np.asarray(
+        getattr(model, "explained_variance_ratio", ()), dtype=float
+    ).reshape(-1)
+    if component_index >= len(ratios):
+        return None
+    value = float(ratios[component_index])
+    return value if np.isfinite(value) else None
+
+
 def loading_plot_payload(model: Any, manifest: Mapping[str, Any]) -> dict[str, Any]:
     """Aggregate DPCA lag-feature loadings back to original Tag coordinates."""
     components = np.asarray(model.components, dtype=float)
+    x_ratio = _explained_variance_ratio(model, 0)
+    y_ratio = _explained_variance_ratio(model, 1)
     if components.ndim != 2 or components.shape[0] < 2:
-        return {"aggregation": "signed_l2_by_original_tag", "points": []}
+        return {
+            "aggregation": "signed_l2_by_original_tag",
+            "x_component": "PC1",
+            "y_component": "PC2",
+            "x_explained_variance_ratio": x_ratio,
+            "y_explained_variance_ratio": y_ratio,
+            "points": [],
+        }
 
     groups: dict[str, list[tuple[int, int]]] = {}
     for index, feature_name in enumerate(model.feature_names):
@@ -84,5 +103,7 @@ def loading_plot_payload(model: Any, manifest: Mapping[str, Any]) -> dict[str, A
         ),
         "x_component": "PC1",
         "y_component": "PC2",
+        "x_explained_variance_ratio": x_ratio,
+        "y_explained_variance_ratio": y_ratio,
         "points": points,
     }
