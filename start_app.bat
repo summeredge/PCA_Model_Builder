@@ -34,7 +34,7 @@ echo Starting PCA Model Builder at %APP_URL%
 start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$url='%APP_URL%'; for($i=0; $i -lt 120; $i++){ try { $response=Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 1; if($response.StatusCode -ge 200){ Start-Process $url; exit 0 } } catch {}; Start-Sleep -Milliseconds 250 }; Start-Process $url"
 
 pushd "%~dp0src"
-"%PYTHON_CMD%" -m pca_model_builder.web_quality_layout --host 127.0.0.1 --port 8775 --no-open
+"%PYTHON_CMD%" -m pca_model_builder.web_model_results --host 127.0.0.1 --port 8775 --no-open
 popd
 
 pause
