@@ -11,7 +11,7 @@ def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls()
 
     assert 'id="dataprojectTrendStyle"' in html
     assert 'id="dataprojectTrendScript"' in html
-    assert 'id="legacyTrendPanel"' in html
+    assert 'legacy.id = "legacyTrendPanel"' in html
     assert 'id="dpTrendVar1"' in html
     assert 'id="dpTrendVar4"' in html
     assert 'id="dpTrendAxisMode"' in html
