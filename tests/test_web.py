@@ -45,7 +45,18 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
         'id="uploadButton"',
         'id="timestampColumn"',
         'id="tagOptions"',
-        'id="tagConfigList"',
+        'id="tagSearch"',
+        'id="showProblemTags"',
+        'id="qualityButton"',
+        'id="qualityPanel"',
+        'id="tagDescription"',
+        'id="tagRole"',
+        'id="templateDownload"',
+        'id="tagConfigFile"',
+        'id="exportConfigButton"',
+        'id="trendPanel"',
+        'id="trendTags"',
+        'id="trendButton"',
         'id="performanceButton"',
         'id="performanceConditions"',
         'id="performanceTable"',
@@ -63,6 +74,12 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
         'id="contributionsDownload"',
     ):
         assert element_id in web.INDEX_HTML
+    assert 'id="tagConfigList"' not in web.INDEX_HTML
+    for tab_name in ("Tag配置", "趋势浏览", "状态辅助", "模型训练", "验证结果"):
+        assert tab_name in web.INDEX_HTML
+    assert '<button id="trainButton" disabled>' in web.INDEX_HTML
+    assert "function formField(" in web.INDEX_HTML
+    assert "tagConfigField(" not in web.INDEX_HTML
     assert "excludePerformanceColumns(data.conditions)" in web.INDEX_HTML
     assert 'id="varianceThreshold" type="number" min="0.01" max="0.99"' in web.INDEX_HTML
 
@@ -335,6 +352,155 @@ def test_web_training_rejects_variance_threshold_of_one(tmp_path, monkeypatch):
                 "variance_threshold": 1.0,
                 "model_name": "INVALID_DPCA_V1",
             }
+        )
+
+
+def test_web_quality_blocks_constant_tag_and_training_records_confirmed_exclusion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    rng = np.random.default_rng(77)
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=100, freq="5min"),
+            "FIXED": np.full(100, 50.0),
+            "A": rng.normal(size=100),
+            "B": rng.normal(size=100),
+            "C": rng.normal(size=100),
+        }
+    )
+    uploaded = web.save_upload(
+        "history.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+    common = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "encoding": "utf-8-sig",
+        "normal_start": frame.time.iloc[0].isoformat(),
+        "normal_end": frame.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 5,
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "tag_configs": {
+            "FIXED": {"role": "exclude"},
+            "A": {"role": "continuous_input"},
+            "B": {"role": "continuous_input"},
+            "C": {"role": "continuous_input"},
+        },
+    }
+    blocking = web.quality_payload(
+        {
+            **common,
+            "tag_configs": {
+                **common["tag_configs"],
+                "FIXED": {"role": "continuous_input"},
+            },
+            "tags": ["FIXED", "A", "B", "C"],
+        }
+    )
+    issue = next(
+        item
+        for item in blocking["tags"]
+        if item["tag"] == "FIXED"
+    )["issues"][0]
+
+    assert not blocking["can_train"]
+    assert issue["tag"] == "FIXED"
+    with pytest.raises(ValueError, match="FIXED.*参考状态窗口内为常量"):
+        web.train_payload(
+            {
+                **common,
+                "tag_configs": {
+                    **common["tag_configs"],
+                    "FIXED": {"role": "continuous_input"},
+                },
+                "tags": ["FIXED", "A", "B", "C"],
+                "model_name": "BLOCKED",
+            }
+        )
+
+    trained = web.train_payload(
+        {
+            **common,
+            "tags": ["A", "B", "C"],
+            "excluded_tags": [
+                {
+                    "tag": "FIXED",
+                    "reason": "constant_in_reference_window",
+                }
+            ],
+            "n_components": 2,
+            "model_name": "EXCLUDED_DPCA_V1",
+        }
+    )
+    _, manifest = load_model_package(
+        tmp_path / "runs" / trained["run_id"] / "model.pcamodel"
+    )
+
+    assert manifest["config"]["excluded_tags"][0] == {
+        "tag": "FIXED",
+        "reason": "constant_in_reference_window",
+        "sample_count": 100,
+        "unique_count": 1,
+        "constant_value": 50.0,
+    }
+    assert all(
+        not name.startswith("FIXED__") for name in manifest["feature_names"]
+    )
+
+
+def test_web_xlsx_preview_and_trend_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    common = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "encoding": "utf-8-sig",
+    }
+    template = web.tag_config_template_payload(common)
+    preview = web.tag_config_import_payload(
+        "config.xlsx",
+        template,
+        uploaded["file_id"],
+        "time",
+        "utf-8-sig",
+    )
+    trend = web.trend_payload(
+        {
+            **common,
+            "tags": ["A"],
+            "start": history.time.iloc[0].isoformat(),
+            "end": history.time.iloc[30].isoformat(),
+            "normal_start": history.time.iloc[0].isoformat(),
+            "normal_end": history.time.iloc[20].isoformat(),
+            "display_mode": "both",
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 10,
+            "max_lag_minutes": 10,
+            "lag_step_minutes": 5,
+            "tag_configs": {
+                "A": {"normal_min": -1, "normal_max": 1},
+            },
+        }
+    )
+
+    assert preview["can_apply"]
+    assert preview["configs"]["A"]["description"] == ""
+    assert len(trend["rows"]) == 31
+    assert trend["statistics"]["A"]["reference"]["sample_count"] == 21
+    assert sum(trend["histogram"]["counts"]) == 31
+    with pytest.raises(ValueError, match="无宏"):
+        web.tag_config_import_payload(
+            "config.xlsm",
+            template,
+            uploaded["file_id"],
+            "time",
+            "utf-8-sig",
         )
 
 

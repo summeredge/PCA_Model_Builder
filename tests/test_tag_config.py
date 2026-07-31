@@ -1,6 +1,10 @@
 import pytest
 
-from pca_model_builder.tag_config import engineering_ranges, normalize_tag_configs
+from pca_model_builder.tag_config import (
+    engineering_ranges,
+    normalize_tag_configs,
+    normalize_tag_registry,
+)
 
 
 def test_tag_config_normalizes_metadata_and_engineering_ranges():
@@ -42,3 +46,18 @@ def test_tag_config_normalizes_metadata_and_engineering_ranges():
 def test_tag_config_rejects_invalid_configuration(raw, message):
     with pytest.raises(ValueError, match=message):
         normalize_tag_configs(["TI001"], raw)
+
+
+def test_tag_registry_supports_roles_and_maps_legacy_continuous_type():
+    registry = normalize_tag_registry(
+        ["A", "MODE", "LABEL"],
+        {
+            "A": {"type": "continuous"},
+            "MODE": {"role": "state_filter"},
+            "LABEL": {"role": "label_only", "comment": "人工事件标签"},
+        },
+    )
+
+    assert registry["A"]["role"] == "continuous_input"
+    assert registry["MODE"]["role"] == "state_filter"
+    assert registry["LABEL"]["comment"] == "人工事件标签"

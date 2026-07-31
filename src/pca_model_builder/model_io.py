@@ -15,7 +15,7 @@ import pandas as pd
 
 from .dpca import DPCAModel
 from .preprocessing import PreprocessingConfig
-from .tag_config import normalize_tag_configs
+from .tag_config import normalize_tag_configs, normalize_tag_registry
 
 
 SCHEMA_VERSION = 1
@@ -291,9 +291,62 @@ def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfi
             raise ValueError("tag_configs must be an object")
         if "tag_configs" in config:
             normalize_tag_configs(tags, config["tag_configs"])
+        if "source_tag_configs" in config:
+            source = config["source_tag_configs"]
+            if not isinstance(source, dict) or not source:
+                raise ValueError("source_tag_configs must be a non-empty object")
+            registry = normalize_tag_registry(list(source), source)
+            if any(
+                tag not in registry or registry[tag]["role"] != "continuous_input"
+                for tag in tags
+            ):
+                raise ValueError(
+                    "trained Tags must be continuous_input in source_tag_configs"
+                )
+        if "excluded_tags" in config:
+            excluded = _validate_excluded_tags(config["excluded_tags"])
+            if excluded & set(tags):
+                raise ValueError("excluded_tags must not contain trained Tags")
+            if "source_tag_configs" in config and not excluded <= set(registry):
+                raise ValueError("excluded_tags must exist in source_tag_configs")
     except ValueError as error:
         raise ValueError(f"model package config is invalid: {error}") from error
     return config, preprocessing
+
+
+def _validate_excluded_tags(value: object) -> set[str]:
+    if not isinstance(value, list):
+        raise ValueError("excluded_tags must be a list")
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("excluded_tags entries must be objects")
+        required = {
+            "tag",
+            "reason",
+            "sample_count",
+            "unique_count",
+            "constant_value",
+        }
+        if set(item) != required:
+            raise ValueError("excluded_tags entry fields are invalid")
+        tag = item["tag"]
+        if not isinstance(tag, str) or not tag.strip() or tag in seen:
+            raise ValueError("excluded_tags contain invalid or duplicate Tags")
+        seen.add(tag)
+        if item["reason"] != "constant_in_reference_window":
+            raise ValueError("excluded_tags reason is invalid")
+        if (
+            not isinstance(item["sample_count"], int)
+            or isinstance(item["sample_count"], bool)
+            or item["sample_count"] < 1
+            or item["unique_count"] != 1
+            or not isinstance(item["constant_value"], (int, float))
+            or isinstance(item["constant_value"], bool)
+            or not np.isfinite(item["constant_value"])
+        ):
+            raise ValueError("excluded_tags constant metadata is invalid")
+    return seen
 
 
 def _validate_training_windows(value: object) -> None:

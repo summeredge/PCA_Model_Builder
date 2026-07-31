@@ -34,6 +34,44 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
     assert manifest["config"]["tags"] == ["A", "B", "C"]
 
 
+def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
+    tmp_path,
+):
+    frame = pd.DataFrame(
+        np.random.default_rng(19).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    config = _valid_config()
+    config["source_tag_configs"] = {
+        "A": {"role": "continuous_input"},
+        "B": {"role": "continuous_input"},
+        "C": {"type": "continuous"},
+        "MODE": {"role": "state_filter"},
+        "FIXED": {"role": "exclude"},
+    }
+    config["excluded_tags"] = [
+        {
+            "tag": "FIXED",
+            "reason": "constant_in_reference_window",
+            "sample_count": 100,
+            "unique_count": 1,
+            "constant_value": 50.0,
+        }
+    ]
+    path = tmp_path / "metadata.pcamodel"
+    save_model_package(
+        path,
+        fit_dpca(frame, n_components=2),
+        config,
+        [["2026-01-01", "2026-01-02"]],
+    )
+
+    _, manifest = load_model_package(path)
+
+    assert manifest["config"]["source_tag_configs"]["C"]["type"] == "continuous"
+    assert manifest["config"]["excluded_tags"][0]["tag"] == "FIXED"
+
+
 def test_model_package_rejects_unexpected_files(tmp_path):
     frame = pd.DataFrame(
         np.random.default_rng(1).normal(size=(100, 3)),
@@ -145,6 +183,12 @@ def test_model_package_rejects_invalid_numeric_arrays(
                 0, "A__lag_005min"
             ),
             "dynamic features do not match",
+        ),
+        (
+            lambda manifest: manifest["config"].__setitem__(
+                "excluded_tags", [{"tag": "A"}]
+            ),
+            "entry fields are invalid",
         ),
     ],
 )

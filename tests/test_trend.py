@@ -1,0 +1,114 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from pca_model_builder.preprocessing import PreprocessingConfig
+from pca_model_builder.trend import (
+    downsample_trend,
+    prepare_trend_frame,
+    trend_payload_data,
+)
+
+
+def test_trend_smoothing_is_trailing_and_does_not_cross_gap():
+    index = pd.to_datetime(
+        [
+            "2026-01-01 00:00",
+            "2026-01-01 00:05",
+            "2026-01-01 00:10",
+            "2026-01-01 00:30",
+            "2026-01-01 00:35",
+        ]
+    )
+    frame = pd.DataFrame({"A": [0.0, 10.0, 20.0, 100.0, 120.0]}, index=index)
+    raw, smoothed, segments = prepare_trend_frame(
+        frame, ["A"], PreprocessingConfig(5, 10, 0, 5)
+    )
+
+    assert raw.equals(frame)
+    assert smoothed.loc[index[1], "A"] == 5.0
+    assert smoothed.loc[index[2], "A"] == 15.0
+    assert pd.isna(smoothed.loc[index[3], "A"])
+    assert smoothed.loc[index[4], "A"] == 110.0
+    assert segments.tolist() == [0, 0, 0, 1, 1]
+
+
+def test_trend_payload_returns_statistics_histogram_ranges_and_preserves_input():
+    index = pd.date_range("2026-01-01", periods=20, freq="5min")
+    frame = pd.DataFrame({"A": np.arange(20, dtype=float)}, index=index)
+    original = frame.copy(deep=True)
+    result = trend_payload_data(
+        frame,
+        ["A"],
+        PreprocessingConfig(5, 10, 0, 5),
+        index[2],
+        index[12],
+        "both",
+        {
+            "A": {
+                "engineering_min": 0,
+                "engineering_max": 30,
+                "normal_min": 2,
+                "normal_max": 10,
+                "alarm_min": -1,
+                "alarm_max": 20,
+            }
+        },
+        index[0],
+        index[9],
+    )
+
+    pd.testing.assert_frame_equal(frame, original)
+    assert result["statistics"]["A"]["full"]["sample_count"] == 20
+    assert result["statistics"]["A"]["current"]["sample_count"] == 11
+    assert sum(result["histogram"]["counts"]) == 11
+    assert sum(result["histograms"]["reference"]["counts"]) == 10
+    assert result["ranges"]["A"]["normal_max"] == 10
+    assert {"A__raw", "A__smoothed"}.issubset(result["rows"][0])
+
+
+def test_trend_downsampling_preserves_first_last_spike_and_gap_boundaries():
+    first = pd.date_range("2026-01-01", periods=800, freq="5min")
+    second = pd.date_range(first[-1] + pd.Timedelta(minutes=20), periods=800, freq="5min")
+    index = first.append(second)
+    values = np.zeros(len(index))
+    values[713] = 100.0
+    frame = pd.DataFrame({"A": values}, index=index)
+    raw, smoothed, segments = prepare_trend_frame(
+        frame, ["A"], PreprocessingConfig(5, 5, 0, 5)
+    )
+    positions = downsample_trend(raw, smoothed, segments, limit=120)
+
+    assert len(positions) <= 120
+    assert positions[0] == 0
+    assert positions[-1] == len(index) - 1
+    assert 713 in positions
+    assert 799 in positions and 800 in positions
+
+
+def test_trend_rejects_more_than_eight_tags():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    frame = pd.DataFrame(
+        {f"T{index}": [1.0, 2.0, 3.0] for index in range(9)},
+        index=index,
+    )
+    with pytest.raises(ValueError, match="最多选择8"):
+        prepare_trend_frame(frame, list(frame.columns), PreprocessingConfig(5, 5, 0, 5))
+
+
+def test_trend_preserves_missing_point_without_modifying_source():
+    index = pd.date_range("2026-01-01", periods=5, freq="5min")
+    frame = pd.DataFrame({"A": [1.0, 2.0, np.nan, 4.0, 5.0]}, index=index)
+    original = frame.copy(deep=True)
+    result = trend_payload_data(
+        frame,
+        ["A"],
+        PreprocessingConfig(5, 5, 0, 5),
+        index[0],
+        index[-1],
+        "raw",
+        {"A": {}},
+    )
+
+    assert result["rows"][2]["A__raw"] is None
+    pd.testing.assert_frame_equal(frame, original)

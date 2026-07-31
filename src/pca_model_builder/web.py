@@ -25,7 +25,19 @@ from .model_io import load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
 from .quality import QualityReport, inspect_data_quality
 from .screening import screen_performance_states
-from .tag_config import engineering_ranges, normalize_tag_configs
+from .tag_config import (
+    engineering_ranges,
+    normalize_tag_configs,
+    normalize_tag_registry,
+)
+from .tag_config_io import (
+    MAX_TAG_CONFIG_BYTES,
+    build_tag_config_template,
+    export_tag_config_workbook,
+    parse_tag_config_workbook,
+)
+from .tag_profile import model_quality_payload, profile_tag
+from .trend import trend_payload_data
 from .validation import (
     build_validation_matrix,
     ensure_disjoint_windows,
@@ -40,6 +52,7 @@ UPLOADS_DIR = WEB_DATA_DIR / "uploads"
 RUNS_DIR = WEB_DATA_DIR / "runs"
 MAX_REQUEST_BODY_BYTES = 200 * 1024 * 1024
 MAX_CHART_POINTS = 1200
+MAX_XLSX_BODY_BYTES = MAX_TAG_CONFIG_BYTES
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _VALIDATION_ARTIFACTS = {
     "scores": ("validation_scores.csv", "text/csv; charset=utf-8"),
@@ -133,10 +146,15 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     frame = _read_upload(payload)
     timestamp_column = _required_text(payload, "timestamp_column")
-    tags = _required_tags(payload)
     parsed = _parse_timestamp_column(frame, timestamp_column)
+    all_tags = _numeric_candidates(parsed, timestamp_column)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
+    tags = _required_tags(payload)
+    _require_continuous_roles(tags, registry)
     config = _preprocessing_config(payload)
-    tag_configs = normalize_tag_configs(tags, payload.get("tag_configs"))
+    tag_configs = normalize_tag_configs(
+        tags, {tag: registry[tag] for tag in tags}
+    )
     normal = _select_window(
         parsed,
         timestamp_column,
@@ -149,6 +167,9 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         tags,
         config.sample_interval_minutes,
         engineering_ranges(tag_configs),
+    )
+    excluded_tags = _excluded_tag_records(
+        payload.get("excluded_tags"), normal, tags, registry
     )
     indexed = _indexed_tags(normal, timestamp_column, tags)
     dynamic = build_dynamic_matrix(
@@ -186,6 +207,8 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "lag_step_minutes": config.lag_step_minutes,
         "variance_threshold": variance_threshold,
         "tag_configs": tag_configs,
+        "source_tag_configs": registry,
+        "excluded_tags": excluded_tags,
     }
     save_model_package(
         run_dir / "model.pcamodel",
@@ -215,13 +238,145 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    frame = _read_upload(payload)
+    timestamp_column = _required_text(payload, "timestamp_column")
+    parsed = _parse_timestamp_column(frame, timestamp_column)
+    all_tags = _numeric_candidates(parsed, timestamp_column)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
+    tags = _required_tags(payload)
+    _require_continuous_roles(tags, registry)
+    config = _preprocessing_config(payload)
+    reference = _select_window(
+        parsed,
+        timestamp_column,
+        _required_text(payload, "normal_start"),
+        _required_text(payload, "normal_end"),
+    )
+    result = model_quality_payload(
+        parsed,
+        reference,
+        timestamp_column,
+        tags,
+        registry,
+        config.sample_interval_minutes,
+    )
+    if result["can_train"]:
+        indexed = _indexed_tags(reference, timestamp_column, tags)
+        dynamic = build_dynamic_matrix(
+            indexed,
+            tags,
+            config,
+            infer_segment_ids(indexed.index, config.sample_interval_minutes),
+        )
+        if dynamic.empty:
+            result["time_issues"].append(
+                {
+                    "code": "dynamic_matrix_empty",
+                    "severity": "error",
+                    "message": "平滑和Lag预热后没有有效动态样本。",
+                    "count": 0,
+                    "tag": None,
+                    "details": {},
+                }
+            )
+            result["can_train"] = False
+        elif np.linalg.matrix_rank(dynamic.to_numpy(dtype=float)) < 3:
+            result["time_issues"].append(
+                {
+                    "code": "insufficient_effective_rank",
+                    "severity": "error",
+                    "message": "有效秩不足3，无法同时建立PC1/PC2和SPE残差空间。",
+                    "count": len(dynamic),
+                    "tag": None,
+                    "details": {},
+                }
+            )
+            result["can_train"] = False
+    return result
+
+
+def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    all_tags = _numeric_candidates(parsed, timestamp_column)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
+    raw_tags = payload.get("tags")
+    if not isinstance(raw_tags, list) or not raw_tags:
+        raise ValueError("趋势Tag必须是非空列表")
+    tags = [str(tag).strip() for tag in raw_tags]
+    if len(tags) != len(set(tags)):
+        raise ValueError("趋势Tag不能重复")
+    if len(tags) > 8:
+        raise ValueError("趋势浏览一次最多选择8个Tag")
+    missing = [tag for tag in tags if tag not in all_tags]
+    if missing:
+        raise ValueError(f"找不到趋势Tag：{', '.join(missing)}")
+    indexed = parsed.set_index(timestamp_column).sort_index()
+    reference_start = _optional_timestamp(payload.get("normal_start"))
+    reference_end = _optional_timestamp(payload.get("normal_end"))
+    return trend_payload_data(
+        indexed,
+        tags,
+        _preprocessing_config(payload),
+        pd.Timestamp(_required_text(payload, "start")),
+        pd.Timestamp(_required_text(payload, "end")),
+        str(payload.get("display_mode", "both")),
+        registry,
+        reference_start,
+        reference_end,
+    )
+
+
+def tag_config_template_payload(payload: dict[str, Any]) -> bytes:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    return build_tag_config_template(_numeric_candidates(parsed, timestamp_column))
+
+
+def tag_config_export_payload(payload: dict[str, Any]) -> bytes:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    tags = _numeric_candidates(parsed, timestamp_column)
+    return export_tag_config_workbook(tags, payload.get("tag_configs"))
+
+
+def tag_config_import_payload(
+    filename: str,
+    content: bytes,
+    file_id: str,
+    timestamp_column: str,
+    encoding: str,
+) -> dict[str, Any]:
+    if Path(filename).suffix.lower() != ".xlsx":
+        raise ValueError("工程配置仅接受无宏的.xlsx文件")
+    parsed = _parse_timestamp_column(
+        _read_upload(
+            {
+                "file_id": file_id,
+                "timestamp_column": timestamp_column,
+                "encoding": encoding,
+            }
+        ),
+        timestamp_column,
+    )
+    return parse_tag_config_workbook(
+        content, _numeric_candidates(parsed, timestamp_column)
+    )
+
+
 def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
     frame = _read_upload(payload)
     timestamp_column = _required_text(payload, "timestamp_column")
-    tags = _required_tags(payload)
     parsed = _parse_timestamp_column(frame, timestamp_column)
+    all_tags = _numeric_candidates(parsed, timestamp_column)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
+    tags = _required_tags(payload)
+    _require_continuous_roles(tags, registry)
     config = _preprocessing_config(payload)
-    tag_configs = normalize_tag_configs(tags, payload.get("tag_configs"))
+    tag_configs = normalize_tag_configs(
+        tags, {tag: registry[tag] for tag in tags}
+    )
     analysis = _select_window(
         parsed,
         timestamp_column,
@@ -473,6 +628,59 @@ def _required_tags(payload: dict[str, Any]) -> list[str]:
     return tags
 
 
+def _require_continuous_roles(
+    tags: Sequence[str], registry: dict[str, dict[str, Any]]
+) -> None:
+    missing = [tag for tag in tags if tag not in registry]
+    if missing:
+        raise ValueError(f"找不到 Tag：{', '.join(missing)}")
+    invalid = [tag for tag in tags if registry[tag]["role"] != "continuous_input"]
+    if invalid:
+        raise ValueError(
+            "只有continuous_input角色可以进入PCA：" + ", ".join(invalid)
+        )
+
+
+def _excluded_tag_records(
+    value: object,
+    reference: pd.DataFrame,
+    selected_tags: Sequence[str],
+    registry: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if value is None or value == "":
+        return []
+    if not isinstance(value, list):
+        raise ValueError("excluded_tags必须是列表")
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("excluded_tags记录必须是对象")
+        tag = str(item.get("tag", "")).strip()
+        if not tag or tag in seen or tag not in registry:
+            raise ValueError("excluded_tags包含无效、重复或未知Tag")
+        if tag in selected_tags:
+            raise ValueError(f"已排除Tag仍在建模选择中：{tag}")
+        if item.get("reason") != "constant_in_reference_window":
+            raise ValueError(f"{tag}的排除原因无效")
+        profile = profile_tag(reference[tag], registry[tag])
+        if profile["unique_count"] != 1 or profile["valid_count"] < 1:
+            raise ValueError(f"{tag}并非参考期精确常量，不能记录为常量排除")
+        finite = pd.to_numeric(reference[tag], errors="coerce")
+        finite = finite[np.isfinite(finite)]
+        records.append(
+            {
+                "tag": tag,
+                "reason": "constant_in_reference_window",
+                "sample_count": int(profile["valid_count"]),
+                "unique_count": 1,
+                "constant_value": float(finite.iloc[0]),
+            }
+        )
+        seen.add(tag)
+    return records
+
+
 def _select_window(
     frame: pd.DataFrame,
     timestamp_column: str,
@@ -510,7 +718,12 @@ def _require_clean_data(
 
 
 def _format_quality_errors(report: QualityReport) -> str:
-    details = "；".join(f"{issue.code}({issue.count})" for issue in report.issues)
+    details = "；".join(
+        f"{issue.code}({issue.count})"
+        + (f"[{issue.tag}]" if issue.tag else "")
+        + f"：{issue.message}"
+        for issue in report.issues
+    )
     return f"数据质量问题尚未处理：{details}"
 
 
@@ -532,6 +745,15 @@ def _required_text(payload: dict[str, Any], key: str) -> str:
     if not value:
         raise ValueError(f"缺少参数：{key}")
     return value
+
+
+def _optional_timestamp(value: object) -> pd.Timestamp | None:
+    if value is None or not str(value).strip():
+        return None
+    timestamp = pd.Timestamp(value)
+    if pd.isna(timestamp):
+        raise ValueError("时间值无法解析")
+    return timestamp
 
 
 def _validated_id(value: str, label: str) -> str:
@@ -689,6 +911,24 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self._send_json({"status": "ok", "port": self.server.server_port})
             return
+        if parsed.path == "/download/tag-config-template":
+            try:
+                query = parse_qs(parsed.query)
+                body = tag_config_template_payload(
+                    {
+                        "file_id": query.get("file_id", [""])[0],
+                        "timestamp_column": query.get("timestamp_column", [""])[0],
+                        "encoding": query.get("encoding", ["utf-8-sig"])[0],
+                    }
+                )
+                self._send_download_bytes(
+                    body,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "PCA_Tag_Config_Template.xlsx",
+                )
+            except Exception as error:
+                self._send_json({"error": str(error)}, 400)
+            return
         if parsed.path == "/download/model":
             try:
                 run_id = _validated_id(
@@ -716,24 +956,51 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
-            if self.path == "/api/upload":
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/upload":
                 filename, content = self._multipart_file("file")
                 self._send_json(save_upload(filename, content))
                 return
+            if parsed.path == "/api/tag-config/import":
+                filename, content = self._multipart_file("file")
+                query = parse_qs(parsed.query)
+                self._send_json(
+                    tag_config_import_payload(
+                        filename,
+                        content,
+                        query.get("file_id", [""])[0],
+                        query.get("timestamp_column", [""])[0],
+                        query.get("encoding", ["utf-8-sig"])[0],
+                    )
+                )
+                return
             payload = self._json_body()
-            if self.path == "/api/inspect":
+            if parsed.path == "/api/inspect":
                 self._send_json(inspect_payload(payload))
                 return
-            if self.path == "/api/cluster":
+            if parsed.path == "/api/quality":
+                self._send_json(quality_payload(payload))
+                return
+            if parsed.path == "/api/trend":
+                self._send_json(trend_payload(payload))
+                return
+            if parsed.path == "/api/tag-config/export":
+                self._send_download_bytes(
+                    tag_config_export_payload(payload),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "PCA_Tag_Config.xlsx",
+                )
+                return
+            if parsed.path == "/api/cluster":
                 self._send_json(cluster_payload(payload))
                 return
-            if self.path == "/api/performance-screen":
+            if parsed.path == "/api/performance-screen":
                 self._send_json(performance_screen_payload(payload))
                 return
-            if self.path == "/api/train":
+            if parsed.path == "/api/train":
                 self._send_json(train_payload(payload))
                 return
-            if self.path == "/api/validate":
+            if parsed.path == "/api/validate":
                 self._send_json(validate_payload(payload))
                 return
             self._send_json({"error": "Not found"}, 404)
@@ -810,6 +1077,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_download_bytes(
+        self, body: bytes, content_type: str, filename: str
+    ) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the local PCA Model Builder web UI.")
@@ -854,14 +1132,31 @@ INDEX_HTML = r"""<!doctype html>
     .status.warning { background:#fff4d6; color:#8a5a00; border-color:#f3d58c; }
     .status.error { background:#fee9e7; color:#991b1b; border-color:#f5c2bd; }
     .help { color:var(--muted); font-size:12px; line-height:1.45; }
-    .tag-options { display:grid; grid-template-columns:1fr 1fr; gap:5px; max-height:170px; overflow:auto; padding:8px; background:#fff; border:1px solid var(--line); border-radius:6px; }
+    .tag-options { display:grid; gap:5px; max-height:260px; overflow:auto; padding:8px; background:#fff; border:1px solid var(--line); border-radius:6px; }
     .tag-options label { display:flex; align-items:center; gap:6px; color:var(--text); overflow:hidden; }
     .tag-options input { width:auto; min-height:auto; }
     .tag-options span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .tag-config-list { display:grid; gap:6px; max-height:310px; overflow:auto; }
-    .tag-config-list details { background:#fff; border:1px solid var(--line); border-radius:6px; padding:7px 8px; }
-    .tag-config-list summary { cursor:pointer; font-weight:650; font-size:12px; }
-    .tag-config-fields { display:grid; gap:7px; padding-top:8px; }
+    .tag-row { display:grid !important; grid-template-columns:auto minmax(0,1fr) auto; cursor:pointer; padding:4px; border-radius:4px; }
+    .tag-row.selected { background:var(--accent-soft); }
+    .tag-state { font-size:11px; }
+    .tag-state.usable { color:var(--normal); }
+    .tag-state.review { color:var(--warn); }
+    .tag-state.blocking { color:var(--danger); }
+    .tag-toolbar { display:flex; gap:5px; flex-wrap:wrap; }
+    .tag-toolbar button { padding:7px 9px; }
+    .detail-fields { display:grid; gap:9px; max-width:760px; }
+    .inner-tabs { display:flex; gap:6px; margin-bottom:10px; }
+    .inner-tab { background:#e8edf3; color:var(--text); }
+    .inner-tab.active { background:var(--accent); color:#fff; }
+    .inner-panel { display:none; }
+    .inner-panel.active { display:grid; gap:10px; }
+    .issue-card { border:1px solid var(--line); border-left:4px solid var(--warn); border-radius:6px; padding:9px; display:grid; gap:5px; }
+    .issue-card.blocking { border-left-color:var(--danger); }
+    .trend-controls { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+    .trend-chart { min-height:260px; overflow:auto; border:1px solid var(--line); border-radius:7px; }
+    .trend-chart svg { height:260px; display:block; }
+    .compact-list { max-height:220px; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:7px; display:grid; gap:4px; }
+    textarea { width:100%; min-height:70px; padding:7px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; }
     .condition-list { display:grid; gap:6px; }
     .condition-row { display:grid; grid-template-columns:1.4fr 1fr 1fr auto; gap:6px; align-items:end; }
     .condition-row button { padding:8px 10px; }
@@ -897,7 +1192,7 @@ INDEX_HTML = r"""<!doctype html>
     .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
     .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
     @media (max-width:1050px) { main { grid-template-columns:1fr; } }
-    @media (max-width:760px) { .chart-grid,.validation-box { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
+    @media (max-width:760px) { .chart-grid,.validation-box,.trend-controls { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -919,30 +1214,19 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div class="group">
         <div class="group-title">2. 建模 Tag</div>
+        <input id="tagSearch" placeholder="搜索 Tag">
+        <div class="tag-toolbar"><button id="selectAllTags" class="secondary">全选</button><button id="clearAllTags" class="secondary">取消全选</button><button id="showProblemTags" class="secondary">只看问题Tag</button></div>
         <div id="tagOptions" class="tag-options"><span class="help">检查数据后显示连续数值列。</span></div>
-        <div class="help">V1 将所有选中连续 Tag 使用同一组 Lag；工程标签和离散状态不要加入模型。</div>
-        <div class="help">工程参数可选。工程量程用于拦截无效数据；正常范围和报警范围仅用于工程解释。</div>
-        <div id="tagConfigList" class="tag-config-list"><span class="help">检查数据后可配置描述、单位和工程范围。</span></div>
+        <div class="help">仅勾选且角色为 continuous_input 的Tag进入PCA；点击Tag在右侧查看配置与质量。</div>
       </div>
       <div class="group">
-        <div class="group-title">3. 状态辅助识别（可选）</div>
-        <div class="row"><label>分析期开始<input id="analysisStart" type="datetime-local"></label><label>分析期结束<input id="analysisEnd" type="datetime-local"></label></div>
-        <div class="sub-title">聚类辅助</div>
-        <div class="row"><label>Cluster 数量<input id="clusterCount" type="number" min="2" max="10" value="3"></label><span class="help">使用下方相同的平滑、Lag 和解释率参数。</span></div>
-        <button id="clusterButton" class="secondary" disabled>生成运行状态聚类</button>
-        <div class="help">聚类只辅助发现运行模式。算法不会自动认定正常状态。</div>
-        <div class="sub-title">性能条件筛选</div>
-        <div id="performanceConditions" class="condition-list"><span class="help">检查数据后可添加筛选条件。</span></div>
-        <div class="actions"><button id="addPerformanceCondition" class="secondary" disabled>添加条件</button><button id="performanceButton" class="secondary" disabled>筛选候选时段</button></div>
-        <div class="help">所有条件按 AND 组合。性能列只用于筛选，不会自动加入 PCA Tag。</div>
-      </div>
-      <div class="group">
-        <div class="group-title">4. 正常状态与 DPCA 参数</div>
+        <div class="group-title">3. 参考状态与 DPCA 参数</div>
         <div class="row"><label>正常期开始<input id="normalStart" type="datetime-local"></label><label>正常期结束<input id="normalEnd" type="datetime-local"></label></div>
         <div class="row"><label>采样间隔（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>尾随平滑（分钟）<input id="smoothingWindow" type="number" min="1" value="10"></label></div>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
+        <button id="qualityButton" class="secondary" disabled>执行统一数据质量检查</button>
         <button id="trainButton" disabled>训练 DPCA 草稿模型</button>
       </div>
       <div id="status" class="status info" role="status" aria-live="polite">请先上传 CSV。</div>
@@ -950,12 +1234,51 @@ INDEX_HTML = r"""<!doctype html>
     </section>
     <section class="results">
       <div class="tabs" role="tablist">
-        <button class="tab active" data-panel="modelPanel">建模结果</button>
-        <button class="tab" data-panel="clusterPanel">聚类辅助</button>
-        <button class="tab" data-panel="performancePanel">性能筛选</button>
-        <button class="tab" data-panel="validationPanel">独立验证</button>
+        <button class="tab active" data-panel="configPanel">Tag配置</button>
+        <button class="tab" data-panel="trendPanel">趋势浏览</button>
+        <button class="tab" data-panel="statePanels">状态辅助</button>
+        <button class="tab" data-panel="modelPanel">模型训练</button>
+        <button class="tab" data-panel="validationPanel">验证结果</button>
       </div>
-      <div id="modelPanel" class="panel active">
+      <div id="configPanel" class="panel active">
+        <div class="inner-tabs">
+          <button class="inner-tab active" data-inner="engineeringPanel">工程配置</button>
+          <button class="inner-tab" data-inner="qualityPanel">数据质量</button>
+          <button class="inner-tab" data-inner="batchPanel">批量配置</button>
+        </div>
+        <div id="engineeringPanel" class="inner-panel active">
+          <h3 id="selectedTagTitle">请选择左侧Tag</h3>
+          <div class="detail-fields">
+            <div class="row"><label>描述<input id="tagDescription"></label><label>单位<input id="tagUnit"></label></div>
+            <div class="row"><label>变量角色<select id="tagRole"><option value="continuous_input">continuous_input</option><option value="state_filter">state_filter</option><option value="label_only">label_only</option><option value="exclude">exclude</option></select></label><label>备注<textarea id="tagComment"></textarea></label></div>
+            <div class="row"><label>工程下限<input id="engineeringMin" type="number" step="any"></label><label>工程上限<input id="engineeringMax" type="number" step="any"></label></div>
+            <div class="row"><label>正常下限<input id="normalMin" type="number" step="any"></label><label>正常上限<input id="normalMax" type="number" step="any"></label></div>
+            <div class="row"><label>报警下限<input id="alarmMin" type="number" step="any"></label><label>报警上限<input id="alarmMax" type="number" step="any"></label></div>
+            <button id="saveTagConfig" class="secondary">保存当前Tag配置</button>
+          </div>
+        </div>
+        <div id="qualityPanel" class="inner-panel">
+          <div id="qualitySummary" class="metrics"></div>
+          <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量Tag</button></div>
+          <div id="qualityIssues" class="empty">执行统一数据质量检查后，只显示需要确认或阻止训练的Tag。</div>
+        </div>
+        <div id="batchPanel" class="inner-panel">
+          <div class="actions"><a id="templateDownload" class="download" href="#">下载XLSX模板</a><label class="secondary">导入XLSX配置<input id="tagConfigFile" type="file" accept=".xlsx"></label><button id="importConfigButton" class="secondary" disabled>预览导入</button><button id="applyConfigButton" disabled>确认应用非空字段</button><button id="exportConfigButton" class="secondary" disabled>导出当前配置</button></div>
+          <div id="importSummary" class="status info">XLSX是可选工程元数据，导入不会跳过质量检查，也不会立即覆盖当前配置。</div>
+        </div>
+      </div>
+      <div id="trendPanel" class="panel">
+        <div class="trend-controls">
+          <label>趋势Tag（最多8个）<select id="trendTags" multiple size="6"></select></label>
+          <div><label>时间范围<select id="trendPreset"><option value="all">全部数据</option><option value="1">最近1天</option><option value="3">最近3天</option><option value="7">最近7天</option><option value="custom">自定义</option><option value="reference">参考状态期</option><option value="validation">验证期</option></select></label><div class="row"><label>开始<input id="trendStart" type="datetime-local"></label><label>结束<input id="trendEnd" type="datetime-local"></label></div></div>
+          <div><label>显示<select id="trendMode"><option value="raw">原始值</option><option value="smoothed">平滑值</option><option value="both" selected>原始值和平滑值</option></select></label><label>缩放<input id="trendZoom" type="range" min="1" max="5" value="1"></label><button id="trendButton" class="secondary" disabled>浏览趋势</button></div>
+        </div>
+        <div class="actions"><button id="trendToAnalysis" class="secondary">将当前窗口设为分析期</button><button id="trendToReference" class="secondary">将当前窗口设为参考状态候选期</button><label>直方图范围<select id="histogramScope"><option value="current">当前窗口</option><option value="reference">参考期</option></select></label></div>
+        <div id="trendChart" class="trend-chart"><div class="empty">选择Tag和时间范围后浏览原始值、尾随平滑、缺口及工程范围。</div></div>
+        <div id="trendStats" class="table-wrap"></div>
+        <div id="trendHistogram" class="chart"></div>
+      </div>
+      <div id="modelPanel" class="panel">
         <div id="modelEmpty" class="empty">完成训练后显示主元解释率、T²/SPE 和模型下载。</div>
         <div id="modelContent" hidden>
           <div id="modelMetrics" class="metrics"></div>
@@ -971,6 +1294,12 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div id="clusterPanel" class="panel">
+        <div class="group">
+          <div class="group-title">运行状态聚类辅助</div>
+          <div class="row"><label>分析期开始<input id="analysisStart" type="datetime-local"></label><label>分析期结束<input id="analysisEnd" type="datetime-local"></label></div>
+          <div class="row"><label>Cluster 数量<input id="clusterCount" type="number" min="2" max="10" value="3"></label><button id="clusterButton" class="secondary" disabled>生成运行状态聚类</button></div>
+          <div class="help">聚类只辅助发现运行模式，不会自动认定正常状态。</div>
+        </div>
         <div id="clusterEmpty" class="empty">检查数据后，可对选定历史窗口生成运行状态聚类。</div>
         <div id="clusterContent" hidden>
           <div id="clusterMetrics" class="metrics"></div>
@@ -981,6 +1310,12 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div id="performancePanel" class="panel">
+        <div class="group">
+          <div class="group-title">性能条件筛选</div>
+          <div id="performanceConditions" class="condition-list"><span class="help">检查数据后可添加筛选条件。</span></div>
+          <div class="actions"><button id="addPerformanceCondition" class="secondary" disabled>添加条件</button><button id="performanceButton" class="secondary" disabled>筛选候选时段</button></div>
+          <div class="help">全部条件按AND组合；性能列只用于筛选，不会自动进入PCA。</div>
+        </div>
         <div id="performanceEmpty" class="empty">检查数据后，可使用透明的性能范围条件筛选候选时段。</div>
         <div id="performanceContent" hidden>
           <div id="performanceMetrics" class="metrics"></div>
@@ -1016,28 +1351,49 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, inspection:null, clustering:null, performance:null, training:null };
+const state = { fileId:null, runId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, importPreview:null, excludedTags:[], showProblems:false };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
 function setBusy(button, busy, text) { if (!button.dataset.label) button.dataset.label=button.textContent; button.disabled=busy; button.textContent=busy?text:button.dataset.label; }
 function localTime(value) { return value ? value.slice(0,16) : ""; }
-function selectedTags() { return [...document.querySelectorAll('#tagOptions input:checked')].map(node=>node.value); }
+function selectedTags() { return [...document.querySelectorAll('#tagOptions input:checked')].map(node=>node.value).filter(tag=>(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
 function numberValue(id) { return Number(el(id).value); }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
-function tagConfigField(labelText,field,type="text") { const label=document.createElement("label"); label.textContent=labelText; const input=document.createElement("input"); input.type=type; input.dataset.field=field; if(type==="number") input.step="any"; label.append(input); return label; }
-function renderTagConfigs(tags) {
-  const list=el("tagConfigList"); list.replaceChildren();
-  tags.forEach(tag=>{ const details=document.createElement("details"); details.dataset.tag=tag; const summary=document.createElement("summary"); summary.textContent=`${tag} · 连续变量`; const fields=document.createElement("div"); fields.className="tag-config-fields";
-    const identity=document.createElement("div"); identity.className="row"; identity.append(tagConfigField("描述","description"),tagConfigField("单位","unit"));
-    const engineering=document.createElement("div"); engineering.className="row"; engineering.append(tagConfigField("工程下限","engineering_min","number"),tagConfigField("工程上限","engineering_max","number"));
-    const normal=document.createElement("div"); normal.className="row"; normal.append(tagConfigField("正常下限","normal_min","number"),tagConfigField("正常上限","normal_max","number"));
-    const alarm=document.createElement("div"); alarm.className="row"; alarm.append(tagConfigField("报警下限","alarm_min","number"),tagConfigField("报警上限","alarm_max","number"));
-    fields.append(identity,engineering,normal,alarm); details.append(summary,fields); list.append(details); });
+function formField(labelText,field,type="text") { const label=document.createElement("label"); label.textContent=labelText; const input=document.createElement("input"); input.type=type; input.dataset.field=field; if(type==="number") input.step="any"; label.append(input); return label; }
+function emptyTagConfig() { return {description:"",unit:"",role:"continuous_input",engineering_min:null,engineering_max:null,normal_min:null,normal_max:null,alarm_min:null,alarm_max:null,comment:""}; }
+function tagConfigPayload() { return state.registry; }
+function qualityFor(tag) { return state.quality?.tags?.find(item=>item.tag===tag)||null; }
+function renderTagList() {
+  if(!state.inspection) return;
+  const checked=new Set([...document.querySelectorAll('#tagOptions input:checked')].map(node=>node.value));
+  const query=el("tagSearch").value.trim().toLowerCase(); const list=el("tagOptions"); list.replaceChildren();
+  state.inspection.numeric_columns.forEach(tag=>{
+    const quality=qualityFor(tag); const config=state.registry[tag]||emptyTagConfig(); const status=quality?.status||(config.role==="continuous_input"?"usable":"review");
+    if(query&&!tag.toLowerCase().includes(query)) return;
+    if(state.showProblems&&status==="usable") return;
+    const row=document.createElement("label"); row.className=`tag-row ${state.selectedTag===tag?"selected":""}`; row.dataset.tag=tag;
+    const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=(checked.size?checked.has(tag):config.role==="continuous_input")&&config.role==="continuous_input";
+    input.addEventListener("change",()=>{ invalidateQuality("建模Tag已修改"); selectTag(tag); });
+    const name=document.createElement("span"); name.textContent=tag;
+    const badge=document.createElement("span"); badge.className=`tag-state ${status}`; badge.textContent=config.role!=="continuous_input"?config.role:(status==="blocking"?"阻止":status==="review"?"需确认":"正常");
+    row.append(input,name,badge); row.addEventListener("click",event=>{ if(event.target!==input) selectTag(tag); }); list.append(row);
+  });
 }
-function tagConfigPayload(tags) {
-  const result={}; document.querySelectorAll('#tagConfigList details').forEach(details=>{ const tag=details.dataset.tag; if(!tags.includes(tag)) return; const config={type:"continuous"}; details.querySelectorAll("input[data-field]").forEach(input=>{ const value=input.value.trim(); config[input.dataset.field]=input.type==="number"?(value===""?null:Number(value)):value; }); result[tag]=config; }); return result;
+function selectTag(tag) {
+  state.selectedTag=tag; const config=state.registry[tag]||emptyTagConfig(); el("selectedTagTitle").textContent=tag;
+  const fields={tagDescription:"description",tagUnit:"unit",tagRole:"role",tagComment:"comment",engineeringMin:"engineering_min",engineeringMax:"engineering_max",normalMin:"normal_min",normalMax:"normal_max",alarmMin:"alarm_min",alarmMax:"alarm_max"};
+  Object.entries(fields).forEach(([id,key])=>{ el(id).value=config[key]??""; }); renderTagList();
 }
+function optionalNumber(id) { const value=el(id).value.trim(); return value===""?null:Number(value); }
+function saveCurrentTagConfig() {
+  if(!state.selectedTag) throw new Error("请先选择Tag。");
+  const tag=state.selectedTag; state.registry[tag]={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:el("tagComment").value.trim(),engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")};
+  const checkbox=document.querySelector(`#tagOptions input[value="${CSS.escape(tag)}"]`); if(checkbox&&state.registry[tag].role!=="continuous_input") checkbox.checked=false;
+  invalidateQuality("Tag工程配置或角色已修改"); renderTagList();
+}
+function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
+function commonPayload() { return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
 
 async function api(path, options={}) {
   const response = await fetch(path, options);
@@ -1056,7 +1412,7 @@ function addPerformanceCondition() {
   const columns=state.inspection?.numeric_columns || []; if(!columns.length) return;
   const row=document.createElement("div"); row.className="condition-row";
   const columnLabel=document.createElement("label"); columnLabel.textContent="性能列"; const select=document.createElement("select"); select.className="performance-column"; columns.forEach(column=>{ const option=document.createElement("option"); option.value=column; option.textContent=column; select.append(option); }); columnLabel.append(select);
-  const minimum=tagConfigField("下限（可空）","minimum","number"); const maximum=tagConfigField("上限（可空）","maximum","number");
+  const minimum=formField("下限（可空）","minimum","number"); const maximum=formField("上限（可空）","maximum","number");
   const remove=document.createElement("button"); remove.type="button"; remove.className="secondary"; remove.textContent="删除"; remove.addEventListener("click",()=>row.remove());
   row.append(columnLabel,minimum,maximum,remove); el("performanceConditions").append(row);
 }
@@ -1065,7 +1421,7 @@ function performanceConditionPayload() {
   const rows=[...document.querySelectorAll('#performanceConditions .condition-row')]; if(!rows.length) throw new Error("请至少添加一个性能条件。");
   return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
 }
-function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); document.querySelectorAll('#tagOptions input').forEach(input=>{ if(columns.has(input.value)) input.checked=false; }); }
+function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); document.querySelectorAll('#tagOptions input').forEach(input=>{ if(columns.has(input.value)) input.checked=false; }); invalidateQuality("性能筛选列已从建模Tag取消"); }
 
 el("uploadButton").addEventListener("click", async () => {
   const file=el("fileInput").files[0]; if (!file) { setStatus("请选择 CSV 文件。","warning"); return; }
@@ -1074,7 +1430,7 @@ el("uploadButton").addEventListener("click", async () => {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
     state.fileId=data.file_id; fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
-    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true;
+    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1084,16 +1440,87 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; const options=el("tagOptions"); options.replaceChildren(); renderTagConfigs(data.numeric_columns); renderPerformanceConditions(data.numeric_columns);
-    data.numeric_columns.forEach(tag=>{ const label=document.createElement("label"); const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=true; const span=document.createElement("span"); span.textContent=tag; label.append(input,span); options.append(label); });
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.excludedTags=[]; renderPerformanceConditions(data.numeric_columns); renderTagList();
+    fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("normalStart").value=localTime(data.time_start); el("normalEnd").value=localTime(data.suggested_normal_end); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
+    el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
-    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("trainButton").disabled=false;
-    const issues=data.quality_issues.map(item=>`${item.code}(${item.count})`).join("、");
-    setStatus(issues ? `检查完成：${data.rows} 行。发现 ${issues}；选择的训练窗口仍会再次检查。` : `检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个连续数值列。`, issues?"warning":"success");
+    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=false; el("trendButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
+    el("templateDownload").href=`/download/tag-config-template?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
+    if(data.numeric_columns.length) selectTag(data.numeric_columns[0]);
+    const issues=data.quality_issues.map(item=>`${item.code}(${item.count}) ${item.tag||""}`).join("、");
+    setStatus(issues ? `初步检查完成：${data.rows} 行。发现 ${issues}；选择参考期后必须执行统一质量检查。` : `初步检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个数值列。请选择参考期并执行统一质量检查。`, issues?"warning":"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
+
+el("tagSearch").addEventListener("input",renderTagList);
+el("selectAllTags").addEventListener("click",()=>{ document.querySelectorAll('#tagOptions input').forEach(input=>{ if((state.registry[input.value]?.role||"continuous_input")==="continuous_input") input.checked=true; }); invalidateQuality("建模Tag已修改"); });
+el("clearAllTags").addEventListener("click",()=>{ document.querySelectorAll('#tagOptions input').forEach(input=>input.checked=false); invalidateQuality("建模Tag已修改"); });
+el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.showProblems; el("showProblemTags").textContent=state.showProblems?"显示全部Tag":"只看问题Tag"; renderTagList(); });
+el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
+document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".inner-tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".inner-panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.inner)); }));
+["normalStart","normalEnd","sampleInterval","smoothingWindow","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>invalidateQuality("参考期或预处理参数已修改")));
+
+el("tagConfigFile").addEventListener("change",()=>{ el("importConfigButton").disabled=!el("tagConfigFile").files[0]||!state.fileId; });
+el("importConfigButton").addEventListener("click",async()=>{
+  const file=el("tagConfigFile").files[0]; if(!file) return;
+  const button=el("importConfigButton"); setBusy(button,true,"读取中…");
+  try {
+    const form=new FormData(); form.append("file",file);
+    const query=`?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
+    const data=await api(`/api/tag-config/import${query}`,{method:"POST",body:form}); state.importPreview=data; el("applyConfigButton").disabled=!data.can_apply;
+    el("importSummary").textContent=`匹配 ${data.matched_tags.length}；数据未配置 ${data.unconfigured_data_tags.length}；模板未知 ${data.unknown_template_tags.length}；重复 ${data.duplicate_tags.length}${data.errors.length?`。\n${data.errors.join("\n")}`:"。请确认后应用，当前配置尚未改变。"}`; el("importSummary").className=`status ${data.can_apply?"success":"error"}`;
+  } catch(error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+el("applyConfigButton").addEventListener("click",()=>{
+  if(!state.importPreview?.can_apply) return;
+  const overwrites=Object.entries(state.importPreview.provided_configs).some(([tag,config])=>Object.entries(config).some(([key,value])=>value!==null&&value!==""&&state.registry[tag]?.[key]!==null&&state.registry[tag]?.[key]!==""));
+  if(overwrites&&!confirm("导入内容将覆盖页面已有的非空字段，是否继续？")) return;
+  Object.entries(state.importPreview.provided_configs).forEach(([tag,config])=>{ Object.entries(config).forEach(([key,value])=>{ if(value!==null&&value!=="") state.registry[tag][key]=value; }); });
+  state.importPreview=null; el("applyConfigButton").disabled=true; if(state.selectedTag) selectTag(state.selectedTag); invalidateQuality("XLSX工程配置已应用");
+});
+el("exportConfigButton").addEventListener("click",async()=>{
+  try {
+    const response=await fetch("/api/tag-config/export",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(commonPayload())});
+    if(!response.ok) { const data=await response.json(); throw new Error(data.error||"导出失败"); }
+    const link=document.createElement("a"); link.href=URL.createObjectURL(await response.blob()); link.download="PCA_Tag_Config.xlsx"; link.click(); URL.revokeObjectURL(link.href);
+  } catch(error) { setStatus(error.message,"error"); }
+});
+
+el("qualityButton").addEventListener("click",async()=>{
+  const tags=selectedTags(); if(tags.length<2) { setStatus("至少选择两个continuous_input Tag。","warning"); return; }
+  const button=el("qualityButton"); setBusy(button,true,"检查中…");
+  try {
+    const payload={...commonPayload(),tags,normal_start:el("normalStart").value,normal_end:el("normalEnd").value};
+    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; renderQuality(data); renderTagList(); el("trainButton").disabled=!data.can_train;
+    document.querySelector('[data-panel="configPanel"]').click(); document.querySelector('[data-inner="qualityPanel"]').click();
+    setStatus(data.can_train?"统一质量检查通过，可以训练草稿模型。":"仍有阻止训练的问题，请排除问题Tag或调整参考期后重新检查。",data.can_train?"success":"error");
+  } catch(error) { setStatus(error.message,"error"); el("trainButton").disabled=true; }
+  finally { setBusy(button,false,""); }
+});
+
+el("trendPreset").addEventListener("change",()=>{
+  if(!state.inspection) return; const preset=el("trendPreset").value; const end=new Date(state.inspection.time_end);
+  if(preset==="all") { el("trendStart").value=localTime(state.inspection.time_start); el("trendEnd").value=localTime(state.inspection.time_end); }
+  else if(["1","3","7"].includes(preset)) { el("trendEnd").value=localTime(state.inspection.time_end); el("trendStart").value=localTime(new Date(end.getTime()-Number(preset)*86400000).toISOString()); }
+  else if(preset==="reference") { el("trendStart").value=el("normalStart").value; el("trendEnd").value=el("normalEnd").value; }
+  else if(preset==="validation") { el("trendStart").value=el("validationStart").value; el("trendEnd").value=el("validationEnd").value; }
+});
+el("trendButton").addEventListener("click",async()=>{
+  const tags=[...el("trendTags").selectedOptions].map(option=>option.value); if(!tags.length||tags.length>8) { setStatus("趋势浏览请选择1至8个Tag。","warning"); return; }
+  const button=el("trendButton"); setBusy(button,true,"读取中…");
+  try {
+    const payload={...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value,normal_start:el("normalStart").value,normal_end:el("normalEnd").value,display_mode:el("trendMode").value};
+    const data=await api("/api/trend",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.trend=data; renderTrend(data); setStatus("趋势与统计已更新；数据未被修改或插值。","success");
+  } catch(error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+el("trendZoom").addEventListener("input",()=>{ el("trendChart").querySelectorAll("svg").forEach(svg=>svg.style.width=`${760*Number(el("trendZoom").value)}px`); });
+el("trendToAnalysis").addEventListener("click",()=>{ el("analysisStart").value=el("trendStart").value; el("analysisEnd").value=el("trendEnd").value; setStatus("当前趋势窗口已设置为分析期。","success"); });
+el("trendToReference").addEventListener("click",()=>{ el("normalStart").value=el("trendStart").value; el("normalEnd").value=el("trendEnd").value; invalidateQuality("参考状态候选期已从趋势页更新"); });
+el("histogramScope").addEventListener("change",()=>{ if(state.trend) renderHistogram(state.trend.histograms?.[el("histogramScope").value]); });
 
 el("addPerformanceCondition").addEventListener("click",addPerformanceCondition);
 
@@ -1102,7 +1529,7 @@ el("performanceButton").addEventListener("click", async () => {
   try {
     const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),conditions:performanceConditionPayload()};
     const data=await api("/api/performance-screen",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.performance=data; excludePerformanceColumns(data.conditions); renderPerformance(data); document.querySelector('[data-panel="performancePanel"]').click();
+    state.performance=data; excludePerformanceColumns(data.conditions); renderPerformance(data); document.querySelector('[data-panel="statePanels"]').click();
     setStatus("性能条件筛选完成；相关性能列已取消建模勾选。请选择候选时段并由工程师确认工况。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1114,20 +1541,21 @@ el("clusterButton").addEventListener("click", async () => {
   try {
     const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
     const data=await api("/api/cluster",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.clustering=data; renderClustering(data); document.querySelector('[data-panel="clusterPanel"]').click();
+    state.clustering=data; renderClustering(data); document.querySelector('[data-panel="statePanels"]').click();
     setStatus("聚类完成。请由工程师判断 Cluster，并选择代表性连续时段作为正常候选。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
 
 el("trainButton").addEventListener("click", async () => {
+  if(!state.quality?.can_train) { setStatus("训练前必须重新执行并通过统一数据质量检查。","error"); return; }
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   const button=el("trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   try {
     const components=el("components").value.trim();
-    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,tag_configs:tagConfigPayload(tags),normal_start:el("normalStart").value,normal_end:el("normalEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
+    const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,normal_start:el("normalStart").value,normal_end:el("normalEnd").value,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.runId=data.run_id; state.training=data; renderTraining(data); el("validateButton").disabled=false;
+    state.runId=data.run_id; state.training=data; renderTraining(data); el("validateButton").disabled=false; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。模型仍为草稿。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1144,11 +1572,57 @@ el("validateButton").addEventListener("click", async () => {
 });
 
 function metric(label,value) { return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
+function renderQuality(data) {
+  el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("训练条件",data.can_train?"通过":"未通过");
+  const container=el("qualityIssues"); container.className=""; container.replaceChildren();
+  data.time_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; container.append(card); });
+  data.tags.filter(item=>item.status!=="usable").forEach(item=>{
+    const card=document.createElement("div"); card.className=`issue-card ${item.status}`; const profile=item.reference;
+    card.innerHTML=`<strong>${escapeHtml(item.tag)} · ${escapeHtml(item.status)}</strong><span>参考期样本 ${profile.sample_count}；有效 ${profile.valid_count}；唯一值 ${profile.unique_count}；标准差 ${profile.standard_deviation??"—"}</span>${item.issues.map(issue=>`<span>${escapeHtml(issue.message)}</span>`).join("")}`;
+    const actions=document.createElement("div"); actions.className="actions";
+    if(item.issues.some(issue=>issue.code==="constant_tag")) { const exclude=document.createElement("button"); exclude.className="secondary"; exclude.textContent="从本次模型排除"; exclude.addEventListener("click",()=>excludeConstantTag(item)); actions.append(exclude); }
+    const trend=document.createElement("button"); trend.className="secondary"; trend.textContent="在趋势页查看"; trend.addEventListener("click",()=>{ [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); el("trendStart").value=el("normalStart").value; el("trendEnd").value=el("normalEnd").value; document.querySelector('[data-panel="trendPanel"]').click(); }); actions.append(trend); card.append(actions); container.append(card);
+  });
+  el("excludeAllConstants").disabled=!data.tags.some(item=>item.issues.some(issue=>issue.code==="constant_tag"));
+  if(!container.children.length) { container.className="empty"; container.textContent="所选Tag和时间轴没有需要处理的问题。"; }
+}
+function excludeConstantTag(item) {
+  const issue=item.issues.find(value=>value.code==="constant_tag"); if(!issue) return;
+  state.registry[item.tag].role="exclude"; state.excludedTags=state.excludedTags.filter(record=>record.tag!==item.tag); state.excludedTags.push({tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value});
+  const checkbox=document.querySelector(`#tagOptions input[value="${CSS.escape(item.tag)}"]`); if(checkbox) checkbox.checked=false;
+  if(state.selectedTag===item.tag) selectTag(item.tag); invalidateQuality(`${item.tag}已标记为排除`); renderTagList();
+}
+el("excludeAllConstants").addEventListener("click",()=>{
+  const constants=state.quality?.tags.filter(item=>item.issues.some(issue=>issue.code==="constant_tag"))||[]; if(!constants.length) return;
+  constants.forEach(item=>{ const issue=item.issues.find(value=>value.code==="constant_tag"); state.registry[item.tag].role="exclude"; state.excludedTags=state.excludedTags.filter(record=>record.tag!==item.tag); state.excludedTags.push({tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value}); const checkbox=document.querySelector(`#tagOptions input[value="${CSS.escape(item.tag)}"]`); if(checkbox) checkbox.checked=false; });
+  invalidateQuality(`已标记排除 ${constants.length} 个精确常量Tag`); renderTagList();
+});
+function renderTrend(data) {
+  const container=el("trendChart"); container.replaceChildren(); const zoom=Number(el("trendZoom").value);
+  data.tags.forEach((tag,index)=>{ const card=document.createElement("div"); card.className="chart-card"; const title=document.createElement("h3"); title.textContent=`${tag}${state.registry[tag]?.unit?` (${state.registry[tag].unit})`:""}`; card.append(title); card.insertAdjacentHTML("beforeend",trendSvg(data,tag,index,zoom)); container.append(card); });
+  const fields=[["sample_count","样本"],["valid_count","有效"],["missing_rate","缺失率"],["unique_count","唯一值"],["minimum","最小"],["maximum","最大"],["mean","均值"],["median","中位数"],["standard_deviation","标准差"],["p01","P1"],["p05","P5"],["p95","P95"],["p99","P99"]];
+  let html="<table><thead><tr><th>Tag</th><th>范围</th>"+fields.map(item=>`<th>${item[1]}</th>`).join("")+"</tr></thead><tbody>";
+  data.tags.forEach(tag=>{ ["full","current","reference"].forEach(scope=>{ const profile=data.statistics[tag][scope]; if(!profile) return; html+=`<tr><td>${escapeHtml(tag)}</td><td>${scope==="full"?"全数据":scope==="current"?"当前窗口":"参考期"}</td>${fields.map(([key])=>`<td>${formatStat(key,profile[key])}</td>`).join("")}</tr>`; }); }); el("trendStats").innerHTML=html+"</tbody></table>";
+  renderHistogram(data.histograms?.[el("histogramScope").value]||data.histogram);
+}
+function formatStat(key,value) { if(value===null||value===undefined) return "—"; if(key==="missing_rate") return `${(Number(value)*100).toFixed(2)}%`; return typeof value==="number"?Number(value).toPrecision(5):escapeHtml(value); }
+function trendSvg(data,tag,colorIndex,zoom) {
+  const rows=data.rows,width=760*zoom,height=230,pad={l:48,r:16,t:16,b:28}; const fields=[]; if(data.display_mode!=="smoothed") fields.push([`${tag}__raw`,"#176b87","原始"]); if(data.display_mode!=="raw") fields.push([`${tag}__smoothed`,"#d97706","平滑"]);
+  const ranges=data.ranges[tag]||{}; const rangeValues=Object.values(ranges).filter(value=>value!==null&&value!==undefined).map(Number); const values=fields.flatMap(([field])=>rows.map(row=>row[field]).filter(value=>value!==null).map(Number)).concat(rangeValues); const minimum=Math.min(...values,0),maximum=Math.max(...values,1); const span=Math.max(maximum-minimum,1e-12); const x=i=>pad.l+i/Math.max(1,rows.length-1)*(width-pad.l-pad.r),y=value=>height-pad.b-(Number(value)-minimum)/span*(height-pad.t-pad.b);
+  const polylines=fields.map(([field,color,label])=>{ let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row.gap_start) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(row.timestamp)} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(row.timestamp)} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
+  const rangeLine=(key,color,label)=>ranges[key]===null||ranges[key]===undefined?"":`<line x1="${pad.l}" x2="${width-pad.r}" y1="${y(ranges[key])}" y2="${y(ranges[key])}" stroke="${color}" stroke-dasharray="5 4"><title>${label}: ${ranges[key]}</title></line>`;
+  const gaps=rows.map((row,i)=>row.gap_start?`<line x1="${x(i)}" x2="${x(i)}" y1="${pad.t}" y2="${height-pad.b}" stroke="#cf3f36" stroke-dasharray="3 3"><title>物理时间缺口</title></line>`:"").join("");
+  return `<svg viewBox="0 0 ${width} ${height}" style="width:${width}px" aria-label="${escapeHtml(tag)}趋势">${gaps}${rangeLine("engineering_min","#64748b","工程下限")}${rangeLine("engineering_max","#64748b","工程上限")}${rangeLine("normal_min","#16845b","正常下限")}${rangeLine("normal_max","#16845b","正常上限")}${rangeLine("alarm_min","#cf3f36","报警下限")}${rangeLine("alarm_max","#cf3f36","报警上限")}${polylines}<text x="4" y="20" font-size="10">${maximum.toPrecision(4)}</text><text x="4" y="${height-pad.b}" font-size="10">${minimum.toPrecision(4)}</text></svg>`;
+}
+function renderHistogram(histogram) {
+  const container=el("trendHistogram"); if(!histogram||!histogram.counts.length) { container.innerHTML='<div class="empty">单Tag且存在有效值时显示直方图。</div>'; return; }
+  const width=760,height=250,pad=30,max=Math.max(...histogram.counts,1),barWidth=(width-pad*2)/histogram.counts.length; const bars=histogram.counts.map((count,index)=>`<rect x="${pad+index*barWidth}" y="${height-pad-count/max*(height-pad*2)}" width="${Math.max(1,barWidth-1)}" height="${count/max*(height-pad*2)}" fill="#176b87"><title>${histogram.edges[index].toPrecision(4)}～${histogram.edges[index+1].toPrecision(4)}: ${count}</title></rect>`).join(""); container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" aria-label="${escapeHtml(histogram.tag)}分布直方图">${bars}</svg>`;
+}
 function renderPerformance(data) {
   el("performanceEmpty").hidden=true; el("performanceContent").hidden=false;
   el("performanceMetrics").innerHTML=metric("分析样本",data.total_rows)+metric("全部条件命中",data.matched_rows)+metric("命中占比",`${(data.match_share*100).toFixed(1)}%`)+metric("组合方式","AND");
   const conditions=el("performanceConditionTable"); conditions.replaceChildren(); data.conditions.forEach(item=>{ const tr=document.createElement("tr"); const expression=`${item.minimum===null?"":`≥ ${item.minimum}`} ${item.maximum===null?"":`≤ ${item.maximum}`}`.trim(); [item.column,expression,item.matched_rows].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); conditions.append(tr); });
-  const windows=el("performanceTable"); windows.replaceChildren(); data.representative_windows.forEach(window=>{ const tr=document.createElement("tr"); [window.start.slice(0,16),window.end.slice(0,16),window.count].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); const action=document.createElement("td"); const button=document.createElement("button"); button.className="secondary"; button.textContent="填入正常期"; button.addEventListener("click",()=>{ el("normalStart").value=localTime(window.start); el("normalEnd").value=localTime(window.end); setStatus("已将性能候选时段填入正常期。请确认工况后再训练。","warning"); }); action.append(button); tr.append(action); windows.append(tr); });
+  const windows=el("performanceTable"); windows.replaceChildren(); data.representative_windows.forEach(window=>{ const tr=document.createElement("tr"); [window.start.slice(0,16),window.end.slice(0,16),window.count].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); const action=document.createElement("td"); const button=document.createElement("button"); button.className="secondary"; button.textContent="填入正常期"; button.addEventListener("click",()=>{ el("normalStart").value=localTime(window.start); el("normalEnd").value=localTime(window.end); invalidateQuality("正常期已由性能候选时段更新"); }); action.append(button); tr.append(action); windows.append(tr); });
   if(!data.representative_windows.length) { const tr=document.createElement("tr"); const td=document.createElement("td"); td.colSpan=4; td.textContent="没有同时满足全部条件的连续时段。"; tr.append(td); windows.append(tr); }
 }
 
@@ -1161,7 +1635,7 @@ function renderClustering(data) {
     const tr=document.createElement("tr");
     [`Cluster ${item.cluster}`,item.count,`${(item.share*100).toFixed(1)}%`,`${item.pc1_center.toFixed(2)} / ${item.pc2_center.toFixed(2)}`].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); });
     const windows=document.createElement("td");
-    item.representative_windows.forEach(window=>{ const button=document.createElement("button"); button.className="secondary"; button.style.margin="2px"; button.textContent=`${window.start.slice(0,16)} ～ ${window.end.slice(11,16)} (${window.count}点)`; button.addEventListener("click",()=>{ el("normalStart").value=localTime(window.start); el("normalEnd").value=localTime(window.end); setStatus(`已将 Cluster ${item.cluster} 的代表时段填入正常期。请确认工况后再训练。`,"warning"); }); windows.append(button); });
+    item.representative_windows.forEach(window=>{ const button=document.createElement("button"); button.className="secondary"; button.style.margin="2px"; button.textContent=`${window.start.slice(0,16)} ～ ${window.end.slice(11,16)} (${window.count}点)`; button.addEventListener("click",()=>{ el("normalStart").value=localTime(window.start); el("normalEnd").value=localTime(window.end); invalidateQuality(`正常期已由 Cluster ${item.cluster} 候选时段更新`); }); windows.append(button); });
     tr.append(windows); body.append(tr);
   });
 }
@@ -1180,7 +1654,7 @@ function renderValidation(data) {
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
   el("contributionHint").textContent=data.contributions.length ? "按每个连续越过95%控制限的事件保存峰值贡献；事件不会跨物理时间缺口合并。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
-  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${group.event_start.slice(0,16)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td>${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; body.append(tr); }));
+  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${group.event_start.slice(0,16)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td title="点击在趋势页查看">${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; tr.children[2].style.cursor="pointer"; tr.children[2].addEventListener("click",()=>{ [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); el("trendStart").value=localTime(group.event_start); el("trendEnd").value=localTime(group.event_end); document.querySelector('[data-panel="trendPanel"]').click(); }); body.append(tr); }));
   el("scoresDownload").href=data.validation_downloads.scores; el("reportDownload").href=data.validation_downloads.report; el("contributionsDownload").href=data.validation_downloads.contributions;
 }
 
@@ -1205,7 +1679,7 @@ function clusterScatter(container, rows) {
   container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="运行状态聚类散点">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${circles}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
 }
 
-document.querySelectorAll(".tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.panel)); }));
+document.querySelectorAll(".tab").forEach(button=>button.addEventListener("click",()=>{ const target=button.dataset.panel; document.querySelectorAll(".tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".panel").forEach(panel=>panel.classList.toggle("active",target==="statePanels"?["clusterPanel","performancePanel"].includes(panel.id):panel.id===target)); }));
 el("resetButton").addEventListener("click",()=>location.reload());
 </script>
 </body>

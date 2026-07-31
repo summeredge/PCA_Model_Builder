@@ -2,6 +2,7 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.quality import inspect_data_quality
+from pca_model_builder.tag_profile import model_quality_payload
 
 
 def test_quality_report_blocks_duplicate_timestamps_and_invalid_values():
@@ -44,6 +45,9 @@ def test_quality_report_detects_irregular_sampling_missing_and_range_violation()
         "missing_value",
         "engineering_range",
     }
+    assert next(
+        issue for issue in report.issues if issue.code == "engineering_range"
+    ).tag == "T1"
 
 
 def test_quality_report_allows_physical_gap_on_sampling_grid():
@@ -204,3 +208,90 @@ def test_quality_report_blocks_unsorted_non_finite_and_reports_physical_gaps():
         "physical_time_gap",
         "non_finite_value",
     }
+
+
+def test_constant_issue_contains_tag_and_reference_details():
+    full = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=6, freq="5min"),
+            "A": [50.0, 50.0, 50.0, 50.0, 51.0, 52.0],
+            "B": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }
+    )
+    reference = full.iloc[:4]
+    result = model_quality_payload(
+        full,
+        reference,
+        "time",
+        ["A", "B"],
+        {"A": {}, "B": {}},
+        5,
+    )
+    tag = next(item for item in result["tags"] if item["tag"] == "A")
+    issue = tag["issues"][0]
+
+    assert result["summary"] == {"usable": 1, "review": 0, "blocking": 1}
+    assert issue["code"] == "constant_tag"
+    assert issue["tag"] == "A"
+    assert issue["details"]["unique_count"] == 1
+    assert issue["details"]["constant_value"] == 50.0
+    assert issue["details"]["standard_deviation"] == 0.0
+    assert issue["details"]["constant_in_full_data"] is False
+    assert "A：" in issue["message"]
+    assert "constant_tag(4)" not in issue["message"]
+
+
+def test_near_constant_is_warning_and_time_issue_has_no_tag():
+    frame = pd.DataFrame(
+        {
+            "time": pd.to_datetime(
+                ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 00:17"]
+            ),
+            "A": [10.0, 10.000001, 10.000002],
+        }
+    )
+    report = inspect_data_quality(
+        frame, "time", ["A"], expected_interval_minutes=5
+    )
+    issues = {issue.code: issue for issue in report.issues}
+
+    assert issues["near_constant_tag"].severity == "warning"
+    assert issues["near_constant_tag"].tag == "A"
+    assert issues["irregular_sampling"].tag is None
+
+
+def test_low_cardinality_continuous_tag_requires_role_review():
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=300, freq="5min"),
+            "MODE": [0.0, 1.0] * 150,
+        }
+    )
+    result = model_quality_payload(
+        frame,
+        frame,
+        "time",
+        ["MODE"],
+        {"MODE": {"role": "continuous_input"}},
+        5,
+    )
+
+    tag = result["tags"][0]
+    assert tag["status"] == "review"
+    assert tag["issues"][0]["code"] == "suspected_discrete_state"
+
+
+def test_multiple_constant_tags_are_reported_individually():
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=4, freq="5min"),
+            "A": [1.0] * 4,
+            "B": [2.0] * 4,
+        }
+    )
+    report = inspect_data_quality(
+        frame, "time", ["A", "B"], expected_interval_minutes=5
+    )
+
+    constants = [issue for issue in report.issues if issue.code == "constant_tag"]
+    assert [issue.tag for issue in constants] == ["A", "B"]

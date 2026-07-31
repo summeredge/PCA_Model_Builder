@@ -9,6 +9,53 @@ _RANGE_PAIRS = (
     ("normal_min", "normal_max", "normal operating range"),
     ("alarm_min", "alarm_max", "alarm range"),
 )
+TAG_ROLES = frozenset(
+    {"continuous_input", "state_filter", "label_only", "exclude"}
+)
+
+
+def normalize_tag_registry(
+    tags: Sequence[str], raw: object | None
+) -> dict[str, dict[str, Any]]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("tag config must be an object keyed by Tag name")
+    unknown = sorted(set(str(key) for key in raw) - set(tags))
+    if unknown:
+        raise ValueError(f"tag config contains unknown Tags: {', '.join(unknown)}")
+
+    result: dict[str, dict[str, Any]] = {}
+    for tag in tags:
+        value = raw.get(tag, {})
+        if not isinstance(value, Mapping):
+            raise ValueError(f"tag config for {tag} must be an object")
+        legacy_type = str(value.get("type", "")).strip()
+        role = str(
+            value.get(
+                "role",
+                "continuous_input" if legacy_type in {"", "continuous"} else legacy_type,
+            )
+        ).strip()
+        if role not in TAG_ROLES:
+            raise ValueError(f"tag config for {tag} has invalid role: {role}")
+        normalized: dict[str, Any] = {
+            "description": str(value.get("description", "")).strip(),
+            "unit": str(value.get("unit", "")).strip(),
+            "role": role,
+            "comment": str(value.get("comment", "")).strip(),
+        }
+        for lower_key, upper_key, label in _RANGE_PAIRS:
+            lower = _optional_float(value.get(lower_key), tag, lower_key)
+            upper = _optional_float(value.get(upper_key), tag, upper_key)
+            if (lower is None) != (upper is None):
+                raise ValueError(f"{tag} {label} requires both lower and upper values")
+            if lower is not None and lower >= upper:
+                raise ValueError(f"{tag} {label} lower value must be less than upper")
+            normalized[lower_key] = lower
+            normalized[upper_key] = upper
+        result[tag] = normalized
+    return result
 
 
 def normalize_tag_configs(
@@ -21,30 +68,20 @@ def normalize_tag_configs(
     unknown = sorted(set(str(key) for key in raw) - set(tags))
     if unknown:
         raise ValueError(f"tag config contains unselected Tags: {', '.join(unknown)}")
-
-    result: dict[str, dict[str, Any]] = {}
     for tag in tags:
         value = raw.get(tag, {})
-        if not isinstance(value, Mapping):
-            raise ValueError(f"tag config for {tag} must be an object")
-        tag_type = str(value.get("type", "continuous")).strip() or "continuous"
-        if tag_type != "continuous":
+        if (
+            isinstance(value, Mapping)
+            and "role" not in value
+            and str(value.get("type", "continuous")).strip() != "continuous"
+        ):
             raise ValueError(f"tag config for {tag} must have type continuous")
-        normalized: dict[str, Any] = {
-            "description": str(value.get("description", "")).strip(),
-            "unit": str(value.get("unit", "")).strip(),
-            "type": tag_type,
-        }
-        for lower_key, upper_key, label in _RANGE_PAIRS:
-            lower = _optional_float(value.get(lower_key), tag, lower_key)
-            upper = _optional_float(value.get(upper_key), tag, upper_key)
-            if (lower is None) != (upper is None):
-                raise ValueError(f"{tag} {label} requires both lower and upper values")
-            if lower is not None and lower >= upper:
-                raise ValueError(f"{tag} {label} lower value must be less than upper")
-            normalized[lower_key] = lower
-            normalized[upper_key] = upper
-        result[tag] = normalized
+    registry = normalize_tag_registry(tags, raw)
+    result: dict[str, dict[str, Any]] = {}
+    for tag, config in registry.items():
+        if config["role"] != "continuous_input":
+            raise ValueError(f"tag config for {tag} must have role continuous_input")
+        result[tag] = {**config, "type": "continuous"}
     return result
 
 

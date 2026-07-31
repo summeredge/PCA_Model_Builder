@@ -217,6 +217,46 @@ def test_cli_training_allows_only_ten_minute_physical_gaps(tmp_path):
     assert model_path.exists()
 
 
+def test_cli_training_reports_constant_tag_name(tmp_path, capsys):
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=20, freq="5min"),
+            "FIXED": np.full(20, 50.0),
+            "A": np.arange(20, dtype=float),
+            "B": np.arange(20, dtype=float) ** 2,
+        }
+    )
+    csv_path = tmp_path / "constant.csv"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    result = main(
+        [
+            "train",
+            "--csv",
+            str(csv_path),
+            "--timestamp",
+            "time",
+            "--tags",
+            "FIXED",
+            "A",
+            "B",
+            "--normal-start",
+            str(frame.time.iloc[0]),
+            "--normal-end",
+            str(frame.time.iloc[-1]),
+            "--model-name",
+            "BLOCKED_DPCA",
+            "--output",
+            str(tmp_path / "blocked.pcamodel"),
+        ]
+    )
+
+    assert result == 2
+    error = capsys.readouterr().err
+    assert "constant_tag(20) [FIXED]" in error
+    assert "固定值50" in error
+
+
 def test_cli_training_rejects_variance_threshold_of_one(tmp_path):
     rng = np.random.default_rng(4)
     frame = pd.DataFrame(

@@ -299,7 +299,10 @@ def _require_clean_data(
 
 def _format_quality_errors(report: QualityReport) -> str:
     return "data quality review required: " + "; ".join(
-        f"{issue.code}({issue.count})" for issue in report.issues
+        f"{issue.code}({issue.count})"
+        + (f" [{issue.tag}]" if issue.tag else "")
+        + f": {issue.message}"
+        for issue in report.issues
     )
 
 

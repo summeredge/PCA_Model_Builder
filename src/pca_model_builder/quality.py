@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -13,6 +13,8 @@ class QualityIssue:
     severity: str
     message: str
     count: int
+    tag: str | None = None
+    details: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -123,6 +125,7 @@ def inspect_data_quality(
                     "error",
                     f"{tag} contains non-numeric values.",
                     non_numeric_count,
+                    tag,
                 )
             )
 
@@ -134,6 +137,7 @@ def inspect_data_quality(
                     "error",
                     f"{tag} contains missing values.",
                     missing_count,
+                    tag,
                 )
             )
 
@@ -146,17 +150,50 @@ def inspect_data_quality(
                     "error",
                     f"{tag} contains infinite values.",
                     non_finite_count,
+                    tag,
                 )
             )
         if not finite.empty and finite.nunique() <= 1:
+            constant_value = float(finite.iloc[0])
             issues.append(
                 QualityIssue(
                     "constant_tag",
                     "error",
-                    f"{tag} is constant and cannot be standardized.",
+                    (
+                        f"{tag}：参考状态窗口内为常量；有效样本{len(finite)}；"
+                        f"固定值{constant_value:g}；无法进行Z-score标准化。"
+                    ),
                     len(finite),
+                    tag,
+                    {
+                        "sample_count": len(frame),
+                        "valid_count": len(finite),
+                        "unique_count": 1,
+                        "constant_value": constant_value,
+                        "standard_deviation": 0.0,
+                    },
                 )
             )
+        elif not finite.empty:
+            standard_deviation = float(finite.std(ddof=0))
+            near_constant_limit = max(abs(float(finite.mean())), 1.0) * 1e-6
+            if 0 < standard_deviation <= near_constant_limit:
+                issues.append(
+                    QualityIssue(
+                        "near_constant_tag",
+                        "warning",
+                        f"{tag}：参考状态窗口内变化极小，请确认是否适合建模。",
+                        len(finite),
+                        tag,
+                        {
+                            "sample_count": len(frame),
+                            "valid_count": len(finite),
+                            "unique_count": int(finite.nunique()),
+                            "standard_deviation": standard_deviation,
+                            "threshold": near_constant_limit,
+                        },
+                    )
+                )
 
         if tag in engineering_ranges:
             lower, upper = engineering_ranges[tag]
@@ -168,6 +205,8 @@ def inspect_data_quality(
                         "error",
                         f"{tag} contains values outside its engineering range.",
                         outside_count,
+                        tag,
+                        {"minimum": lower, "maximum": upper},
                     )
                 )
 
