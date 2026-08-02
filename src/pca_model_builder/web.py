@@ -18,7 +18,8 @@ import webbrowser
 import numpy as np
 import pandas as pd
 
-from .clustering import cluster_operating_states
+from .clustering import cluster_model_scores, cluster_operating_states
+from .compat import MODEL_PURPOSES
 from .contribution import contribution_event_records, exceedance_contribution_tables
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
@@ -151,6 +152,8 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     tags = _required_tags(payload)
     _require_continuous_roles(tags, registry)
+    model_purpose = _model_purpose(payload.get("model_purpose"))
+    model_status = "draft" if model_purpose == "exploratory" else "candidate"
     config = _preprocessing_config(payload)
     tag_configs = normalize_tag_configs(
         tags, {tag: registry[tag] for tag in tags}
@@ -215,12 +218,15 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         model,
         config=stored_config,
         training_windows=[training_window],
+        model_purpose=model_purpose,
+        model_status=model_status,
     )
     scores = model.score(dynamic)
     return {
         "run_id": run_id,
         "model_name": model_name,
-        "validation_status": "draft",
+        "model_purpose": model_purpose,
+        "model_status": model_status,
         "training_rows": len(dynamic),
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
@@ -366,6 +372,12 @@ def tag_config_import_payload(
 
 
 def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    exploratory_run_id = payload.get("exploratory_run_id")
+    if exploratory_run_id not in {None, ""}:
+        return _cluster_exploratory_payload(
+            payload,
+            _validated_id(str(exploratory_run_id), "exploratory_run_id"),
+        )
     frame = _read_upload(payload)
     timestamp_column = _required_text(payload, "timestamp_column")
     parsed = _parse_timestamp_column(frame, timestamp_column)
@@ -405,6 +417,66 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
         variance_threshold=float(payload.get("variance_threshold", 0.95)),
         sample_interval_minutes=config.sample_interval_minutes,
     )
+    return _cluster_result_payload(result)
+
+
+def _cluster_exploratory_payload(
+    payload: dict[str, Any], exploratory_run_id: str
+) -> dict[str, Any]:
+    model_path = RUNS_DIR / exploratory_run_id / "model.pcamodel"
+    if not model_path.is_file():
+        raise ValueError("探索模型运行记录不存在")
+    model, manifest = load_model_package(model_path)
+    if manifest["model_purpose"] != "exploratory":
+        raise ValueError("聚类必须引用探索模型")
+    config_data = manifest["config"]
+    timestamp_column = _required_text(payload, "timestamp_column")
+    if timestamp_column != config_data["timestamp_column"]:
+        raise ValueError("探索模型时间戳列与聚类请求不一致")
+    tags = list(config_data["tags"])
+    tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
+    config = PreprocessingConfig(
+        sample_interval_minutes=int(config_data["sample_interval_minutes"]),
+        smoothing_window_minutes=int(config_data["smoothing_window_minutes"]),
+        max_lag_minutes=int(config_data["max_lag_minutes"]),
+        lag_step_minutes=int(config_data["lag_step_minutes"]),
+    )
+    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    analysis = _select_window(
+        parsed,
+        timestamp_column,
+        _required_text(payload, "analysis_start"),
+        _required_text(payload, "analysis_end"),
+    )
+    _require_clean_data(
+        analysis,
+        timestamp_column,
+        tags,
+        config.sample_interval_minutes,
+        engineering_ranges(tag_configs),
+    )
+    indexed = _indexed_tags(analysis, timestamp_column, tags)
+    dynamic = build_dynamic_matrix(
+        indexed,
+        tags,
+        config,
+        infer_segment_ids(indexed.index, config.sample_interval_minutes),
+    )
+    if dynamic.empty:
+        raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
+    result = cluster_model_scores(
+        model,
+        dynamic,
+        n_clusters=int(payload.get("n_clusters", 3)),
+        sample_interval_minutes=config.sample_interval_minutes,
+    )
+    return {
+        **_cluster_result_payload(result),
+        "exploratory_run_id": exploratory_run_id,
+    }
+
+
+def _cluster_result_payload(result: Any) -> dict[str, Any]:
     points = result.points
     if len(points) > MAX_CHART_POINTS:
         positions = np.unique(
@@ -455,6 +527,8 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if not model_path.is_file():
         raise ValueError("模型运行记录不存在")
     model, manifest = load_model_package(model_path)
+    if manifest["model_purpose"] != "normal_state":
+        raise ValueError("探索模型不能执行独立验证")
     config_data = manifest["config"]
     tags = list(config_data["tags"])
     tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
@@ -512,7 +586,8 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     result: dict[str, Any] = {
         "run_id": run_id,
-        "model_validation_status": manifest["validation_status"],
+        "model_purpose": manifest["model_purpose"],
+        "model_status": manifest["model_status"],
         "engineer_decision_required": True,
         "validation_window": [
             validation_window[0].isoformat(),
@@ -626,6 +701,14 @@ def _required_tags(payload: dict[str, Any]) -> list[str]:
     if len(tags) != len(set(tags)):
         raise ValueError("Tag 不能重复")
     return tags
+
+
+def _model_purpose(value: object) -> str:
+    if value in {None, ""}:
+        return "normal_state"
+    if value not in MODEL_PURPOSES:
+        raise ValueError("model_purpose必须是exploratory或normal_state")
+    return str(value)
 
 
 def _require_continuous_roles(
@@ -1227,7 +1310,11 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
         <button id="qualityButton" class="secondary" disabled>执行统一数据质量检查</button>
-        <button id="trainButton" disabled>训练 DPCA 草稿模型</button>
+        <div class="actions"><button id="trainExploratoryButton" class="secondary" disabled>建立探索模型</button><button id="trainButton" disabled>建立正常状态候选模型</button></div>
+        <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>
+        <div class="notice">正常状态候选模型尚未验证，不能发布或用于部署。</div>
+        <div class="notice">聚类结果必须由工程师判断，不能自动定义正常状态。</div>
+        <div class="notice">探索模型和正常状态候选模型均不提供根因、因果或控制建议。</div>
       </div>
       <div id="status" class="status info" role="status" aria-live="polite">请先上传 CSV。</div>
       <div class="help">数据缺失、重复、乱序或采样间隔不一致时训练会停止，不会静默清洗。</div>
@@ -1354,7 +1441,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -1394,7 +1481,7 @@ function saveCurrentTagConfig() {
   if(config.role!=="continuous_input") state.selectedModelTags.delete(tag);
   invalidateQuality("Tag工程配置或角色已修改"); renderTagList();
 }
-function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent="尚未执行或结果已失效"; } el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
+function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent="尚未执行或结果已失效"; } el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
 function commonPayload() { return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
 
 async function api(path, options={}) {
@@ -1497,10 +1584,10 @@ el("qualityButton").addEventListener("click",async()=>{
   const button=el("qualityButton"); setBusy(button,true,"检查中…");
   try {
     const payload={...commonPayload(),tags,normal_start:el("normalStart").value,normal_end:el("normalEnd").value};
-    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; renderQuality(data); renderTagList(); el("trainButton").disabled=!data.can_train;
+    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; renderQuality(data); renderTagList(); el("trainButton").disabled=!data.can_train; el("trainExploratoryButton").disabled=!data.can_train;
     document.querySelector('[data-panel="configPanel"]').click(); document.querySelector('[data-inner="qualityPanel"]').click();
     setStatus(data.can_train?"统一质量检查通过，可以训练草稿模型。":"仍有阻止训练的问题，请排除问题Tag或调整参考期后重新检查。",data.can_train?"success":"error");
-  } catch(error) { setStatus(error.message,"error"); el("trainButton").disabled=true; }
+  } catch(error) { setStatus(error.message,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
   finally { setBusy(button,false,""); }
 });
 
@@ -1542,7 +1629,7 @@ el("clusterButton").addEventListener("click", async () => {
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   const button=el("clusterButton"); setBusy(button,true,"聚类中…"); setStatus("正在构建动态状态空间并执行聚类。","info");
   try {
-    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
+    const payload=state.exploratoryRunId?{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,exploratory_run_id:state.exploratoryRunId,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,n_clusters:numberValue("clusterCount")}:{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
     const data=await api("/api/cluster",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     state.clustering=data; renderClustering(data); document.querySelector('[data-panel="statePanels"]').click();
     setStatus("聚类完成。请由工程师判断 Cluster，并选择代表性连续时段作为正常候选。","success");
@@ -1550,19 +1637,21 @@ el("clusterButton").addEventListener("click", async () => {
   finally { setBusy(button,false,""); }
 });
 
-el("trainButton").addEventListener("click", async () => {
+async function trainModel(modelPurpose) {
   if(!state.quality?.can_train) { setStatus("训练前必须重新执行并通过统一数据质量检查。","error"); return; }
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
-  const button=el("trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
+  const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   try {
     const components=el("components").value.trim();
-    const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,normal_start:el("normalStart").value,normal_end:el("normalEnd").value,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
+    const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,model_purpose:modelPurpose,normal_start:el("normalStart").value,normal_end:el("normalEnd").value,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.runId=data.run_id; state.training=data; renderTraining(data); el("validateButton").disabled=false; document.querySelector('[data-panel="modelPanel"]').click();
-    setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。模型仍为草稿。`,"success");
+    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
+    setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
-});
+}
+el("trainExploratoryButton").addEventListener("click",()=>trainModel("exploratory"));
+el("trainButton").addEventListener("click",()=>trainModel("normal_state"));
 
 el("validateButton").addEventListener("click", async () => {
   const button=el("validateButton"); setBusy(button,true,"回放中…"); setStatus("正在使用训练参数回放独立验证窗口。","info");
@@ -1657,7 +1746,8 @@ function renderClustering(data) {
 
 function renderTraining(data) {
   el("modelEmpty").hidden=true; el("modelContent").hidden=false;
-  el("modelMetrics").innerHTML=metric("训练动态样本",data.training_rows)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
+  const purpose=data.model_purpose==="exploratory"?"探索模型":"正常状态模型"; const status=data.model_status==="draft"?"草稿":"候选";
+  el("modelMetrics").innerHTML=metric("模型用途",purpose)+metric("模型状态",status)+metric("训练动态样本",data.training_rows)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
   data.explained_variance.slice(0,30).forEach((value,index)=>{ const bar=document.createElement("div"); bar.className=`variance-bar ${index<data.n_components?"selected":""}`; bar.style.height=`${Math.max(3,value/max*95)}px`; const label=document.createElement("span"); label.textContent=`${(value*100).toFixed(0)}%`; bar.title=`PC${index+1}: ${(value*100).toFixed(2)}%`; bar.append(label); variance.append(bar); });
   lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download;

@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pca_model_builder.clustering import cluster_operating_states
+from pca_model_builder.clustering import cluster_model_scores, cluster_operating_states
+from pca_model_builder.dpca import fit_dpca
 
 
 def _two_state_dynamic_matrix() -> pd.DataFrame:
@@ -72,3 +73,23 @@ def test_cluster_operating_states_rejects_variance_threshold_of_one():
         cluster_operating_states(
             _two_state_dynamic_matrix(), n_clusters=2, variance_threshold=1.0
         )
+
+
+def test_cluster_model_scores_uses_saved_dpca_scores_without_refitting_pca():
+    dynamic = _two_state_dynamic_matrix()
+    model = fit_dpca(dynamic, n_components=2)
+
+    result = cluster_model_scores(model, dynamic, n_clusters=2)
+
+    expected = model.score(dynamic)
+    pd.testing.assert_series_equal(result.points["pc1"], expected["pc1"])
+    pd.testing.assert_series_equal(result.points["pc2"], expected["pc2"])
+    assert result.n_components == model.n_components
+
+
+def test_cluster_model_scores_rejects_different_dynamic_feature_order():
+    dynamic = _two_state_dynamic_matrix()
+    model = fit_dpca(dynamic, n_components=2)
+
+    with pytest.raises(ValueError, match="do not match exploratory model"):
+        cluster_model_scores(model, dynamic.iloc[:, ::-1], n_clusters=2)

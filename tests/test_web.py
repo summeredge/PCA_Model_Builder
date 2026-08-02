@@ -235,7 +235,8 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     assert screened["engineer_decision_required"] is True
     assert 0 < screened["matched_rows"] < screened["total_rows"]
     assert screened["representative_windows"]
-    assert trained["validation_status"] == "draft"
+    assert trained["model_purpose"] == "normal_state"
+    assert trained["model_status"] == "candidate"
     assert trained["n_components"] >= 2
     assert {"pc1", "pc2"}.issubset(trained["scores"][0])
     assert trained["training_rows"] > 0
@@ -296,6 +297,66 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
         "report",
         "contributions",
     }
+
+
+def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    training = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": "2026-01-01T00:00:00",
+        "normal_end": "2026-01-01T09:55:00",
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "model_name": "SEMANTICS_DPCA",
+    }
+    exploratory = web.train_payload(
+        {**training, "model_purpose": "exploratory"}
+    )
+    candidate = web.train_payload(training)
+
+    assert exploratory["model_purpose"] == "exploratory"
+    assert exploratory["model_status"] == "draft"
+    assert candidate["model_purpose"] == "normal_state"
+    assert candidate["model_status"] == "candidate"
+    with pytest.raises(ValueError, match="探索模型不能执行独立验证"):
+        web.validate_payload({"run_id": exploratory["run_id"]})
+    with pytest.raises(ValueError, match="聚类必须引用探索模型"):
+        web.cluster_payload({"exploratory_run_id": candidate["run_id"]})
+
+    clustered = web.cluster_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "exploratory_run_id": exploratory["run_id"],
+            "analysis_start": "2026-01-01T00:00:00",
+            "analysis_end": "2026-01-01T14:55:00",
+            "n_clusters": 2,
+        }
+    )
+    model, _ = load_model_package(
+        tmp_path / "runs" / exploratory["run_id"] / "model.pcamodel"
+    )
+    analysis = history.iloc[:180].set_index("time")[["A", "B", "C"]]
+    config = PreprocessingConfig(5, 10, 10, 5)
+    dynamic = build_dynamic_matrix(analysis, ["A", "B", "C"], config, infer_segment_ids(analysis.index, 5))
+    expected_scores = model.score(dynamic)
+    points = pd.DataFrame(clustered["points"])
+    points.index = pd.to_datetime(points.pop("timestamp"))
+
+    assert clustered["exploratory_run_id"] == exploratory["run_id"]
+    np.testing.assert_allclose(points["pc1"], expected_scores["pc1"])
+    np.testing.assert_allclose(points["pc2"], expected_scores["pc2"])
 
 
 def test_validation_download_artifact_uses_fixed_whitelist():

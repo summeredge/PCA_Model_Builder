@@ -29,8 +29,12 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
 
     with zipfile.ZipFile(path) as package:
         assert set(package.namelist()) == {"manifest.json", "arrays.npz"}
+        assert "validation_status" not in json.loads(package.read("manifest.json"))
     pd.testing.assert_frame_equal(model.score(frame), loaded.score(frame))
-    assert manifest["validation_status"] == "draft"
+    assert manifest["schema_version"] == 2
+    assert manifest["model_purpose"] == "normal_state"
+    assert manifest["model_status"] == "candidate"
+    assert "validation_status" not in manifest
     assert manifest["config"]["tags"] == ["A", "B", "C"]
 
 
@@ -70,6 +74,64 @@ def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
 
     assert manifest["config"]["source_tag_configs"]["C"]["type"] == "continuous"
     assert manifest["config"]["excluded_tags"][0]["tag"] == "FIXED"
+
+
+@pytest.mark.parametrize(
+    ("model_purpose", "model_status"),
+    [
+        ("exploratory", "candidate"),
+        ("exploratory", "validated"),
+        ("exploratory", "published"),
+    ],
+)
+def test_model_package_rejects_invalid_exploratory_status(
+    tmp_path, model_purpose, model_status
+):
+    frame = pd.DataFrame(
+        np.random.default_rng(31).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+
+    with pytest.raises(ValueError, match="purpose and status combination"):
+        save_model_package(
+            tmp_path / "invalid.pcamodel",
+            fit_dpca(frame, n_components=2),
+            _valid_config(),
+            [["2026-01-01", "2026-01-02"]],
+            model_purpose=model_purpose,
+            model_status=model_status,
+        )
+
+
+@pytest.mark.parametrize("legacy_status", ["draft", "passed", "failed"])
+def test_schema_v1_statuses_do_not_upgrade_model_semantics(tmp_path, legacy_status):
+    frame = pd.DataFrame(
+        np.random.default_rng(32).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    path = tmp_path / "legacy.pcamodel"
+    save_model_package(
+        path,
+        fit_dpca(frame, n_components=2),
+        _valid_config(),
+        [["2026-01-01", "2026-01-02"]],
+    )
+    with zipfile.ZipFile(path) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays = package.read("arrays.npz")
+    manifest["schema_version"] = 1
+    manifest["validation_status"] = legacy_status
+    manifest.pop("model_purpose")
+    manifest.pop("model_status")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)
+
+    _, loaded = load_model_package(path)
+
+    assert loaded["model_purpose"] == "normal_state"
+    assert loaded["model_status"] == "draft"
+    assert loaded["legacy_validation_status"] == legacy_status
 
 
 def test_model_package_rejects_unexpected_files(tmp_path):

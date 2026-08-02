@@ -8,6 +8,8 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
+from .dpca import DPCAModel
+
 
 @dataclass(frozen=True)
 class OperatingStateClusters:
@@ -55,8 +57,58 @@ def cluster_operating_states(
     )
     selected = min(max(2, selected), pca.components_.shape[0])
     scores = pca.transform(standardized)[:, :selected]
-    fitted = KMeans(n_clusters=n_clusters, random_state=0, n_init=10).fit(scores)
+    return _cluster_scores(
+        pd.DataFrame(scores, index=dynamic.index),
+        n_clusters=n_clusters,
+        sample_interval_minutes=sample_interval_minutes,
+        cumulative_explained_variance=float(
+            pca.explained_variance_ratio_[:selected].sum()
+        ),
+    )
 
+
+def cluster_model_scores(
+    model: DPCAModel,
+    dynamic: pd.DataFrame,
+    n_clusters: int,
+    sample_interval_minutes: int = 5,
+) -> OperatingStateClusters:
+    """Cluster scores from a saved exploratory DPCA model without refitting PCA."""
+    if tuple(dynamic.columns) != model.feature_names:
+        raise ValueError("dynamic features do not match exploratory model")
+    scores = model.score(dynamic)
+    pc_columns = [f"pc{index}" for index in range(1, model.n_components + 1)]
+    return _cluster_scores(
+        scores[pc_columns],
+        n_clusters=n_clusters,
+        sample_interval_minutes=sample_interval_minutes,
+        cumulative_explained_variance=float(
+            model.explained_variance_ratio[: model.n_components].sum()
+        ),
+    )
+
+
+def _cluster_scores(
+    scores: pd.DataFrame,
+    n_clusters: int,
+    sample_interval_minutes: int,
+    cumulative_explained_variance: float,
+) -> OperatingStateClusters:
+    if not isinstance(scores.index, pd.DatetimeIndex):
+        raise TypeError("cluster scores index must be a DatetimeIndex")
+    if not 2 <= n_clusters <= 10:
+        raise ValueError("cluster count must be between 2 and 10")
+    if len(scores) <= n_clusters:
+        raise ValueError("cluster analysis needs more samples than clusters")
+    if sample_interval_minutes <= 0:
+        raise ValueError("sample interval must be positive")
+    values = scores.to_numpy(dtype=float)
+    if not np.isfinite(values).all():
+        raise ValueError("cluster inputs contain non-finite values")
+    if len(np.unique(values, axis=0)) < n_clusters:
+        raise ValueError("cluster count exceeds the number of distinct states")
+
+    fitted = KMeans(n_clusters=n_clusters, random_state=0, n_init=10).fit(values)
     order = np.argsort(fitted.cluster_centers_[:, 0])
     remap = {int(label): position + 1 for position, label in enumerate(order)}
     labels = np.array([remap[int(label)] for label in fitted.labels_], dtype=int)
@@ -65,8 +117,8 @@ def cluster_operating_states(
         for label in range(n_clusters)
     }
     points = pd.DataFrame(
-        {"pc1": scores[:, 0], "pc2": scores[:, 1], "cluster": labels},
-        index=dynamic.index,
+        {"pc1": values[:, 0], "pc2": values[:, 1], "cluster": labels},
+        index=scores.index,
     )
     summaries = tuple(
         {
@@ -84,10 +136,8 @@ def cluster_operating_states(
     return OperatingStateClusters(
         points=points,
         summaries=summaries,
-        n_components=selected,
-        cumulative_explained_variance=float(
-            pca.explained_variance_ratio_[:selected].sum()
-        ),
+        n_components=values.shape[1],
+        cumulative_explained_variance=cumulative_explained_variance,
     )
 
 

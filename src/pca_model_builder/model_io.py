@@ -16,9 +16,10 @@ import pandas as pd
 from .dpca import DPCAModel
 from .preprocessing import PreprocessingConfig
 from .tag_config import normalize_tag_configs, normalize_tag_registry
+from .compat import normalize_model_semantics, validate_new_model_semantics
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _ARRAY_NAMES = {
     "mean",
     "scale",
@@ -26,7 +27,7 @@ _ARRAY_NAMES = {
     "eigenvalues",
     "explained_variance_ratio",
 }
-_MANIFEST_FIELDS = {
+_MANIFEST_FIELDS_V1 = {
     "schema_version",
     "validation_status",
     "feature_names",
@@ -36,6 +37,10 @@ _MANIFEST_FIELDS = {
     "q_limits",
     "config",
     "training_windows",
+}
+_MANIFEST_FIELDS_V2 = (_MANIFEST_FIELDS_V1 - {"validation_status"}) | {
+    "model_purpose",
+    "model_status",
 }
 _CONFIG_FIELDS = {
     "model_name",
@@ -55,16 +60,17 @@ def save_model_package(
     model: DPCAModel,
     config: dict[str, Any],
     training_windows: list[list[str]],
-    validation_status: str = "draft",
+    model_purpose: str = "normal_state",
+    model_status: str = "candidate",
 ) -> None:
-    if validation_status not in {"draft", "passed", "failed"}:
-        raise ValueError("invalid validation status")
+    validate_new_model_semantics(model_purpose, model_status)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "validation_status": validation_status,
+        "model_purpose": model_purpose,
+        "model_status": model_status,
         "feature_names": list(model.feature_names),
         "n_samples": model.n_samples,
         "n_components": model.n_components,
@@ -142,6 +148,7 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
         raise ValueError("model package is not a valid ZIP archive") from error
     except (KeyError, TypeError, AttributeError, IndexError) as error:
         raise ValueError("model package structure is invalid") from error
+    manifest = {**manifest, **normalize_model_semantics(manifest)}
     _validate_loaded_model(model, manifest)
     return model, manifest
 
@@ -149,13 +156,14 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
 def _validate_manifest_structure(manifest: object) -> None:
     if not isinstance(manifest, dict):
         raise ValueError("model package manifest must be an object")
-    missing = sorted(_MANIFEST_FIELDS - set(manifest))
+    schema_version = manifest.get("schema_version")
+    fields = _MANIFEST_FIELDS_V1 if schema_version == 1 else _MANIFEST_FIELDS_V2
+    missing = sorted(fields - set(manifest))
     if missing:
         raise ValueError(f"model package manifest is missing: {', '.join(missing)}")
-    if manifest["schema_version"] != SCHEMA_VERSION:
+    if schema_version not in {1, SCHEMA_VERSION}:
         raise ValueError("unsupported model package schema version")
-    if manifest["validation_status"] not in {"draft", "passed", "failed"}:
-        raise ValueError("model package validation status is invalid")
+    normalize_model_semantics(manifest)
     if (
         not isinstance(manifest["n_samples"], int)
         or isinstance(manifest["n_samples"], bool)

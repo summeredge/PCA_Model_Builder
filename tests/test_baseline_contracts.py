@@ -29,7 +29,8 @@ def test_final_web_keeps_chinese_workflow_labels_and_separate_statistics() -> No
         "历史数据",
         "建模 Tag",
         "参考状态与 DPCA 参数",
-        "训练 DPCA 草稿模型",
+        "建立探索模型",
+        "建立正常状态候选模型",
         "运行状态聚类辅助",
         "验证结果",
         "训练期 T²",
@@ -58,6 +59,23 @@ def test_final_web_keeps_complete_tag_roles_and_chinese_guidance() -> None:
         "exclude",
     ):
         assert f'<option value="{role}">{role}</option>' in html
+
+
+def test_final_web_exposes_distinct_model_semantics_and_warnings() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for text in (
+        "建立探索模型",
+        "建立正常状态候选模型",
+        "探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。",
+        "正常状态候选模型尚未验证，不能发布或用于部署。",
+        "聚类结果必须由工程师判断，不能自动定义正常状态。",
+        "探索模型和正常状态候选模型均不提供根因、因果或控制建议。",
+    ):
+        assert text in html
+    assert 'model_purpose:modelPurpose' in html
+    assert 'trainModel("exploratory")' in html
+    assert 'trainModel("normal_state")' in html
 
 
 def test_schema_v1_model_package_loads_and_preserves_scores(tmp_path: Path) -> None:

@@ -33,25 +33,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    train = subparsers.add_parser("train", help="Train a draft DPCA model")
-    _add_data_arguments(train)
-    train.add_argument("--tags", nargs="+", required=True)
-    train.add_argument("--normal-start", required=True)
-    train.add_argument("--normal-end", required=True)
-    train.add_argument("--sample-interval", type=int, default=5)
-    train.add_argument("--smoothing-window", type=int, default=10)
-    train.add_argument("--max-lag", type=int, default=60)
-    train.add_argument("--lag-step", type=int, default=5)
-    train.add_argument("--variance-threshold", type=float, default=0.95)
-    train.add_argument("--components", type=int)
-    train.add_argument("--model-name", required=True)
-    train.add_argument(
-        "--tag-config",
-        type=Path,
-        help="Optional UTF-8 JSON object keyed by selected Tag name",
+    _add_train_parser(
+        subparsers,
+        "train",
+        "Train a normal-state candidate DPCA model (compatibility command)",
+        "normal_state",
     )
-    train.add_argument("--output", type=Path, required=True)
-    train.set_defaults(handler=_train)
+    _add_train_parser(
+        subparsers,
+        "train-exploratory",
+        "Train an exploratory draft DPCA model",
+        "exploratory",
+    )
+    _add_train_parser(
+        subparsers,
+        "train-normal",
+        "Train a normal-state candidate DPCA model",
+        "normal_state",
+    )
 
     validate = subparsers.add_parser(
         "validate", help="Replay an independent historical validation window"
@@ -86,6 +85,33 @@ def _add_data_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--csv", type=Path, required=True)
     parser.add_argument("--timestamp", required=True)
     parser.add_argument("--encoding", default="utf-8-sig")
+
+
+def _add_train_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    command: str,
+    help_text: str,
+    model_purpose: str,
+) -> None:
+    train = subparsers.add_parser(command, help=help_text)
+    _add_data_arguments(train)
+    train.add_argument("--tags", nargs="+", required=True)
+    train.add_argument("--normal-start", required=True)
+    train.add_argument("--normal-end", required=True)
+    train.add_argument("--sample-interval", type=int, default=5)
+    train.add_argument("--smoothing-window", type=int, default=10)
+    train.add_argument("--max-lag", type=int, default=60)
+    train.add_argument("--lag-step", type=int, default=5)
+    train.add_argument("--variance-threshold", type=float, default=0.95)
+    train.add_argument("--components", type=int)
+    train.add_argument("--model-name", required=True)
+    train.add_argument(
+        "--tag-config",
+        type=Path,
+        help="Optional UTF-8 JSON object keyed by selected Tag name",
+    )
+    train.add_argument("--output", type=Path, required=True)
+    train.set_defaults(handler=_train, model_purpose=model_purpose)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -148,10 +174,15 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         model,
         config=stored_config,
         training_windows=[training_window],
+        model_purpose=args.model_purpose,
+        model_status="draft" if args.model_purpose == "exploratory" else "candidate",
     )
     return {
         "model": str(args.output),
-        "validation_status": "draft",
+        "model_purpose": args.model_purpose,
+        "model_status": "draft"
+        if args.model_purpose == "exploratory"
+        else "candidate",
         "training_rows": len(dynamic),
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
@@ -226,7 +257,8 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
 
     report: dict[str, Any] = {
         "model": str(args.model),
-        "model_validation_status": manifest["validation_status"],
+        "model_purpose": manifest["model_purpose"],
+        "model_status": manifest["model_status"],
         "validation_window": [
             validation_window[0].isoformat(),
             validation_window[1].isoformat(),

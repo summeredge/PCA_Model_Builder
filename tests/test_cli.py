@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from pca_model_builder.cli import main
 from pca_model_builder.model_io import load_model_package
@@ -107,6 +108,8 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     assert model_path.exists()
     _, manifest = load_model_package(model_path)
     assert manifest["config"]["tag_configs"]["A"]["unit"] == "t/h"
+    assert manifest["model_purpose"] == "normal_state"
+    assert manifest["model_status"] == "candidate"
     assert scores_path.exists()
     scores = pd.read_csv(scores_path)
     assert {"pc1", "pc2"}.issubset(scores.columns)
@@ -115,6 +118,60 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     assert "known_event" in report["status_by_engineering_label"]
     contributions = json.loads(contributions_path.read_text(encoding="utf-8"))
     assert {item["statistic"] for item in contributions} == {"t2", "spe"}
+
+
+@pytest.mark.parametrize(
+    ("command", "model_purpose", "model_status"),
+    [
+        ("train-exploratory", "exploratory", "draft"),
+        ("train-normal", "normal_state", "candidate"),
+    ],
+)
+def test_cli_explicit_training_commands_preserve_model_semantics(
+    tmp_path, command, model_purpose, model_status
+):
+    rng = np.random.default_rng(88)
+    time = pd.date_range("2026-01-01", periods=100, freq="5min")
+    a = rng.normal(size=len(time))
+    frame = pd.DataFrame(
+        {
+            "time": time,
+            "A": a,
+            "B": 1.5 * a + rng.normal(scale=0.1, size=len(time)),
+            "C": rng.normal(size=len(time)),
+        }
+    )
+    csv_path = tmp_path / f"{command}.csv"
+    model_path = tmp_path / f"{command}.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+
+    assert main(
+        [
+            command,
+            "--csv",
+            str(csv_path),
+            "--timestamp",
+            "time",
+            "--tags",
+            "A",
+            "B",
+            "C",
+            "--normal-start",
+            time[0].isoformat(),
+            "--normal-end",
+            time[-1].isoformat(),
+            "--max-lag",
+            "0",
+            "--model-name",
+            command,
+            "--output",
+            str(model_path),
+        ]
+    ) == 0
+
+    _, manifest = load_model_package(model_path)
+    assert manifest["model_purpose"] == model_purpose
+    assert manifest["model_status"] == model_status
 
 
 def test_cli_training_allows_physical_time_gap(tmp_path):
