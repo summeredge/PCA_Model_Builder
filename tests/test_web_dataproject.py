@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 
 import pandas as pd
 import pytest
@@ -37,9 +38,9 @@ def test_missing_values_are_not_converted_to_zero_by_frontend_contract() -> None
 
     assert "function finiteNumber(value)" in html
     assert 'value === null || value === undefined || value === ""' in html
-    assert "Number(point.y)" not in html
-    assert "Number(row[`${xTag}__raw`])" not in html
-    assert "Number(row[`${yTag}__raw`])" not in html
+    assert not re.search(r"(?<![A-Za-z])Number\(point\.y\)", html)
+    assert not re.search(r"(?<![A-Za-z])Number\(row\[`\$\{xTag\}__raw`\]\)", html)
+    assert not re.search(r"(?<![A-Za-z])Number\(row\[`\$\{yTag\}__raw`\]\)", html)
 
 
 def test_cli_serve_uses_dataproject_web_entry() -> None:
