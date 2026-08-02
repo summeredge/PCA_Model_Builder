@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.cli import build_parser
-from pca_model_builder import cli, web
+from pca_model_builder import cli, web, web_model_results
 from pca_model_builder.model_io import load_model_package
 from pca_model_builder.preprocessing import (
     PreprocessingConfig,
@@ -87,6 +87,19 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     assert "tagConfigField(" not in web.INDEX_HTML
     assert "excludePerformanceColumns(data.conditions)" in web.INDEX_HTML
     assert 'id="varianceThreshold" type="number" min="0.01" max="0.99"' in web.INDEX_HTML
+
+
+def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls():
+    html = web_model_results.INDEX_HTML
+    for element_id in (
+        'id="validationType"',
+        'id="validationWindowTable"',
+        'id="recordValidationDecision"',
+        'id="validatedModelDownload"',
+    ):
+        assert element_id in html
+    for label in ("正常样本验证", "已知异常验证", "通过", "结论不足", "不通过"):
+        assert label in html
 
 
 def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
@@ -803,6 +816,38 @@ def test_web_validates_legacy_window_packages_without_reconversion(tmp_path, mon
         web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_start": "2026-01-01T00:00:00", "validation_end": "2026-01-01T00:10:00"})
     result = web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_start": "2026-01-01T10:00:00", "validation_end": "2026-01-01T14:55:00"})
     assert result["scored_rows"] and result["status_counts"] and result["validation_downloads"]
+
+
+def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    trained = web.train_payload({"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "normal_start": "2026-01-01T00:00:00", "normal_end": "2026-01-01T07:55:00", "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 0, "lag_step_minutes": 5, "model_name": "candidate"})
+    windows = [
+        {"id": "normal-001", "type": "normal_validation", "start": "2026-01-01T08:00:00", "end": "2026-01-01T09:55:00", "enabled": True, "comment": "normal"},
+        {"id": "abnormal-001", "type": "known_abnormal", "start": "2026-01-01T10:50:00", "end": "2026-01-01T14:55:00", "enabled": True, "comment": "event"},
+    ]
+    result = web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
+    assert result["normal_validation_complete"] is True
+    assert result["known_abnormal_complete"] is True
+    assert {item["type"] for item in result["validation_window_summaries"]} == {"normal_validation", "known_abnormal"}
+
+    run_dir = tmp_path / "runs" / trained["run_id"]
+    candidate = run_dir / "model.pcamodel"
+    assert web.validation_decision_payload({"run_id": trained["run_id"], "decision": "insufficient", "comment": "need more data"})["validated_model_download"] is None
+    assert not (run_dir / "validated_model.pcamodel").exists()
+    decision = web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved"})
+    assert decision["model_status"] == "validated"
+    assert (run_dir / "validated_model.pcamodel").exists()
+    _, candidate_manifest = load_model_package(candidate)
+    validated_model, validated_manifest = load_model_package(run_dir / "validated_model.pcamodel")
+    assert candidate_manifest["model_status"] == "candidate"
+    assert validated_manifest["model_status"] == "validated"
+    assert validated_manifest["source_candidate_package"]["identifier"] == trained["run_id"]
+    assert validated_model.feature_names == tuple(candidate_manifest["feature_names"])
 
 
 def test_validation_download_artifact_uses_fixed_whitelist():

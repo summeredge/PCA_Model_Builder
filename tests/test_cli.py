@@ -383,6 +383,45 @@ def test_cli_validates_legacy_window_packages_without_reconversion(tmp_path, sch
     assert scores.exists() and report.exists() and contributions.exists()
 
 
+def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, capsys):
+    rng = np.random.default_rng(97)
+    time = pd.date_range("2026-01-01", periods=180, freq="5min")
+    a = rng.normal(size=len(time))
+    frame = pd.DataFrame({"time": time, "A": a, "B": 1.5 * a + rng.normal(scale=0.1, size=len(time)), "C": rng.normal(size=len(time))})
+    csv_path = tmp_path / "history.csv"
+    candidate = tmp_path / "candidate.pcamodel"
+    windows_path = tmp_path / "validation-windows.json"
+    report = tmp_path / "report.json"
+    validated = tmp_path / "validated.pcamodel"
+    failed_output = tmp_path / "failed.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    windows_path.write_text(json.dumps([
+        {"id": "normal-001", "type": "normal_validation", "start": time[90].isoformat(), "end": time[119].isoformat(), "enabled": True, "comment": "normal"},
+        {"id": "abnormal-001", "type": "known_abnormal", "start": time[130].isoformat(), "end": time[-1].isoformat(), "enabled": True, "comment": "event"},
+    ]), encoding="utf-8")
+
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--normal-start", time[0].isoformat(), "--normal-end", time[79].isoformat(), "--max-lag", "0", "--model-name", "candidate", "--output", str(candidate)]) == 0
+    assert main(["validate", "--model", str(candidate), "--csv", str(csv_path), "--timestamp", "time", "--validation-windows", str(windows_path), "--scores-output", str(tmp_path / "scores.csv"), "--report-output", str(report), "--contributions-output", str(tmp_path / "contributions.json")]) == 0
+    validation_report = json.loads(report.read_text(encoding="utf-8"))
+    assert validation_report["normal_validation_complete"] is True
+    assert validation_report["known_abnormal_complete"] is True
+    assert {item["type"] for item in validation_report["validation_window_summaries"]} == {"normal_validation", "known_abnormal"}
+
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "insufficient", "--output", str(failed_output)]) == 0
+    assert not failed_output.exists()
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--comment", "approved", "--output", str(validated), "--source-id", "candidate-run"]) == 0
+    candidate_model, candidate_manifest = load_model_package(candidate)
+    validated_model, validated_manifest = load_model_package(validated)
+    assert candidate_manifest["model_status"] == "candidate"
+    assert validated_manifest["model_status"] == "validated"
+    np.testing.assert_allclose(candidate_model.mean, validated_model.mean)
+    np.testing.assert_allclose(candidate_model.scale, validated_model.scale)
+    np.testing.assert_allclose(candidate_model.components, validated_model.components)
+
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "failed", "--output", str(candidate)]) == 2
+    assert "must differ" in capsys.readouterr().err
+
+
 def test_cli_training_allows_physical_time_gap(tmp_path):
     rng = np.random.default_rng(3)
     timestamps = pd.date_range("2026-01-01", periods=120, freq="5min").to_series()

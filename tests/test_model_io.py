@@ -7,7 +7,11 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.dpca import fit_dpca
-from pca_model_builder.model_io import load_model_package, save_model_package
+from pca_model_builder.model_io import (
+    copy_validated_model_package,
+    load_model_package,
+    save_model_package,
+)
 
 
 def test_model_package_round_trip_uses_json_and_npz(tmp_path):
@@ -85,6 +89,56 @@ def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
 
     assert manifest["config"]["source_tag_configs"]["C"]["type"] == "continuous"
     assert manifest["config"]["excluded_tags"][0]["tag"] == "FIXED"
+
+
+def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
+    frame = pd.DataFrame(
+        np.random.default_rng(20).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    validated = tmp_path / "validated.pcamodel"
+    original = fit_dpca(frame, n_components=2)
+    save_model_package(candidate, original, _valid_config(), [["2026-01-01", "2026-01-02"]])
+
+    copy_validated_model_package(
+        candidate,
+        validated,
+        validation_summary={"normal_validation_complete": True, "known_abnormal_complete": True},
+        engineer_decision={"decision": "passed", "comment": "reviewed", "reviewed_at": "2026-01-03T00:00:00+00:00"},
+        source_identifier="run-001",
+    )
+
+    candidate_model, candidate_manifest = load_model_package(candidate)
+    validated_model, validated_manifest = load_model_package(validated)
+    assert candidate_manifest["model_status"] == "candidate"
+    assert validated_manifest["model_purpose"] == "normal_state"
+    assert validated_manifest["model_status"] == "validated"
+    assert validated_manifest["validation_summary"]["known_abnormal_complete"] is True
+    assert validated_manifest["engineer_decision"]["decision"] == "passed"
+    assert validated_manifest["source_candidate_package"] == {
+        "identifier": "run-001",
+        "filename": "candidate.pcamodel",
+    }
+    pd.testing.assert_frame_equal(candidate_model.score(frame), validated_model.score(frame))
+
+
+def test_validated_copy_rejects_candidate_output_path(tmp_path):
+    frame = pd.DataFrame(
+        np.random.default_rng(21).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+
+    with pytest.raises(ValueError, match="must differ"):
+        copy_validated_model_package(
+            candidate,
+            candidate,
+            validation_summary={},
+            engineer_decision={},
+            source_identifier="run-001",
+        )
 
 
 @pytest.mark.parametrize(

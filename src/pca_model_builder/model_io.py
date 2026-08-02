@@ -68,6 +68,9 @@ def save_model_package(
     training_windows: list[object],
     model_purpose: str = "normal_state",
     model_status: str = "candidate",
+    validation_summary: dict[str, Any] | None = None,
+    engineer_decision: dict[str, Any] | None = None,
+    source_candidate_package: dict[str, str] | None = None,
 ) -> None:
     validate_new_model_semantics(model_purpose, model_status)
     destination = Path(path)
@@ -85,6 +88,12 @@ def save_model_package(
         "config": config,
         "training_windows": normalize_training_windows_for_write(training_windows),
     }
+    if validation_summary is not None:
+        manifest["validation_summary"] = validation_summary
+    if engineer_decision is not None:
+        manifest["engineer_decision"] = engineer_decision
+    if source_candidate_package is not None:
+        manifest["source_candidate_package"] = source_candidate_package
     arrays = BytesIO()
     np.savez_compressed(
         arrays,
@@ -114,6 +123,39 @@ def save_model_package(
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
+
+
+def copy_validated_model_package(
+    source_path: str | Path,
+    destination_path: str | Path,
+    validation_summary: dict[str, Any],
+    engineer_decision: dict[str, Any],
+    source_identifier: str,
+) -> None:
+    source = Path(source_path)
+    destination = Path(destination_path)
+    if source.resolve() == destination.resolve():
+        raise ValueError("validated model output must differ from the candidate package")
+    model, manifest = load_model_package(source)
+    if (
+        manifest["model_purpose"] != "normal_state"
+        or manifest["model_status"] != "candidate"
+    ):
+        raise ValueError("only normal_state/candidate models can become validated")
+    save_model_package(
+        destination,
+        model,
+        config=dict(manifest["config"]),
+        training_windows=manifest["training_windows"],
+        model_purpose="normal_state",
+        model_status="validated",
+        validation_summary=validation_summary,
+        engineer_decision=engineer_decision,
+        source_candidate_package={
+            "identifier": source_identifier,
+            "filename": source.name,
+        },
+    )
 
 
 def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:

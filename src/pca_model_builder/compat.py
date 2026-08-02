@@ -13,6 +13,7 @@ MODEL_PURPOSES = frozenset({"exploratory", "normal_state"})
 _WRITABLE_MODEL_SEMANTICS = {
     ("exploratory", "draft"),
     ("normal_state", "candidate"),
+    ("normal_state", "validated"),
 }
 
 

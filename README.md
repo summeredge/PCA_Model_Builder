@@ -42,13 +42,13 @@ Web 界面支持：
 - 配置平滑、Lag 和解释率；
 - 分别建立探索草稿模型和正常状态候选模型；
 - 查看主元解释率、T²/SPE 趋势和控制边界；
-- 使用不重叠的历史窗口独立验证；
+- 管理正常样本验证和已知异常验证时段，并使用不重叠的历史窗口独立回放；
 - 查看异常状态和原始 Tag 聚合贡献；
 - 下载完整验证评分 CSV、验证摘要和贡献记录；
+- 保存工程师“通过 / 结论不足 / 不通过”结论；只有“通过”才会保留候选包并生成新的已验证模型包；
 - 下载不含原始过程数据的 `.pcamodel` 模型包。
 
-上传文件和 Web 运行结果只保存在本机 `.web_data/`，不会发送到外部服务。Web 验证不会自动把模型标记为“通过”。
-同一草稿模型再次执行回放时，Web 下载文件更新为最近一次验证结果，不保存多次验证历史。
+上传文件和 Web 运行结果只保存在本机 `.web_data/`，不会发送到外部服务。Web 验证不会自动把模型标记为“通过”。同一运行目录会保留候选模型、最近一次验证文件和（仅工程师结论为“通过”时）新的 `validated_model.pcamodel`；候选包不会原地修改。
 
 探索模型仅用于状态空间浏览和聚类辅助，不能执行独立验证、发布或部署。正常状态候选模型仍需经过独立验证和工程师确认；聚类结果不会自动把任何 Cluster 判定为正常或异常。
 
@@ -81,7 +81,7 @@ pca-model-builder train-normal `
 默认参数为 10 分钟尾随平滑、最大 Lag 60 分钟、Lag 步长 5 分钟、累计解释率 95%。采样间隔默认 5 分钟，可通过命令行调整。Lag 和平滑均不跨物理时间缺口。
 累计解释率必须小于 100%，模型至少保留 PC1、PC2，并为 SPE 保留一个有效残差维度。
 
-模型包只包含 `manifest.json` 和 `arrays.npz`，不保存原始过程数据，也不使用 pickle。新模型包使用 schema v3：训练窗口保存为带 ID、来源、启用状态和备注的对象。`train-exploratory` 生成 `exploratory/draft`，`train-normal` 生成 `normal_state/candidate`。旧 `train` 命令保持兼容，生成正常状态候选模型。schema v1/v2 包继续只读加载，旧二元训练窗口会转换为 `legacy-window-001...`；schema v1 的旧 `validation_status` 仅保留为历史来源信息，不能升级模型状态。
+模型包只包含 `manifest.json` 和 `arrays.npz`，不保存原始过程数据，也不使用 pickle。新模型包使用 schema v3：训练窗口保存为带 ID、来源、启用状态和备注的对象。`train-exploratory` 生成 `exploratory/draft`，`train-normal` 生成 `normal_state/candidate`。只有候选模型完成两类验证且工程师明确选择“通过”时，才复制生成 `normal_state/validated` 包；普通训练入口不会直接生成已验证模型。旧 `train` 命令保持兼容，生成正常状态候选模型。schema v1/v2 包继续只读加载，旧二元训练窗口会转换为 `legacy-window-001...`；schema v1 的旧 `validation_status` 仅保留为历史来源信息，不能升级模型状态。
 
 训练命令可使用 UTF-8 JSON 窗口文件替代旧的单个 `--normal-start/--normal-end`：
 
@@ -107,9 +107,29 @@ pca-model-builder validate `
 
 - `validation_scores.csv`：逐时间点 T²、SPE 和 normal/attention/abnormal 状态；
 - `validation_contributions.json`：按连续越过95%控制限的事件保存T²/SPE峰值、原始Tag贡献及主要Lag贡献区间，事件不会跨物理时间缺口合并；
-- `validation_report.json`：状态数量、极值及可选的工程标签分组结果。
+- `validation_report.json`：每个验证时段的覆盖率、四类越限比例、连续事件、极值及可选的工程标签分组结果。
 
-验证命令不会自动把模型标记为“通过”。工程师必须结合已知正常期和异常事件审查结果。
+旧的 `--validation-start/--validation-end` 仍可用于单个正常样本验证。需要同时审查正常与已知异常时段时，使用 UTF-8 JSON 文件：
+
+```json
+[
+  {"id":"normal-001","type":"normal_validation","start":"2026-04-01T00:00:00","end":"2026-04-03T00:00:00","enabled":true,"comment":"稳定运行"},
+  {"id":"abnormal-001","type":"known_abnormal","start":"2026-04-10T00:00:00","end":"2026-04-11T00:00:00","enabled":true,"comment":"已知扰动"}
+]
+```
+
+通过 `--validation-windows validation-windows.json` 读取。验证命令不会自动把模型标记为“通过”。工程师必须结合已知正常期和异常事件审查结果。CLI 使用独立输出路径记录结论：
+
+```powershell
+pca-model-builder review-validation `
+  --model D330_DPCA_Model_V1.pcamodel `
+  --validation-report validation_report.json `
+  --decision passed `
+  --comment "工程师确认" `
+  --output D330_DPCA_Model_V1_validated.pcamodel
+```
+
+`--output` 必填且不得与 `--model` 相同。“结论不足”或“不通过”只写入验证报告，不会创建已验证模型包。本阶段不包含模型版本注册、发布或在线部署。
 
 ## 测试
 

@@ -9,20 +9,20 @@ from typing import Any, Sequence
 
 import pandas as pd
 
-from .contribution import contribution_event_records, exceedance_contribution_tables
 from .compat import (
     training_windows_from_payload,
 )
 from .dpca import fit_dpca
-from .model_io import load_model_package, save_model_package
+from .model_io import copy_validated_model_package, load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig
 from .quality import QualityReport, inspect_data_quality
 from .tag_config import engineering_ranges, normalize_tag_configs
 from .training import build_training_matrix
 from .validation import (
-    build_validation_matrix,
-    ensure_disjoint_windows,
+    record_engineer_decision,
+    validate_model_windows,
     validation_context_start,
+    validation_windows_from_payload,
 )
 
 
@@ -57,8 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_data_arguments(validate)
     validate.add_argument("--model", type=Path, required=True)
-    validate.add_argument("--validation-start", required=True)
-    validate.add_argument("--validation-end", required=True)
+    validate.add_argument("--validation-start")
+    validate.add_argument("--validation-end")
+    validate.add_argument("--validation-windows", type=Path)
     validate.add_argument("--label-column")
     validate.add_argument(
         "--scores-output", type=Path, default=Path("validation_scores.csv")
@@ -72,6 +73,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("validation_contributions.json"),
     )
     validate.set_defaults(handler=_validate)
+
+    review = subparsers.add_parser(
+        "review-validation", help="Record an engineer validation decision"
+    )
+    review.add_argument("--model", type=Path, required=True)
+    review.add_argument("--validation-report", type=Path, required=True)
+    review.add_argument("--decision", choices=("passed", "insufficient", "failed"), required=True)
+    review.add_argument("--comment", default="")
+    review.add_argument("--output", type=Path, required=True)
+    review.add_argument("--source-id")
+    review.set_defaults(handler=_review_validation)
 
     serve = subparsers.add_parser("serve", help="Run the local web interface")
     serve.add_argument("--host", default="127.0.0.1")
@@ -209,11 +221,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         for window in manifest["training_windows"]
         if window["enabled"]
     ]
-    validation_window = (
-        pd.Timestamp(args.validation_start),
-        pd.Timestamp(args.validation_end),
-    )
-    ensure_disjoint_windows(training_windows, [validation_window])
+    validation_windows = _validation_windows_from_args(args)
 
     raw = _read_csv(args.csv, args.timestamp, args.encoding)
     config = PreprocessingConfig(
@@ -222,67 +230,86 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         max_lag_minutes=int(config_data["max_lag_minutes"]),
         lag_step_minutes=int(config_data["lag_step_minutes"]),
     )
-    context_start = validation_context_start(validation_window[0], config)
-    context = _select_window(
-        raw, args.timestamp, context_start.isoformat(), args.validation_end
-    )
-    _require_clean_data(
-        context,
-        args.timestamp,
-        tags,
-        expected_interval_minutes=config.sample_interval_minutes,
-        configured_engineering_ranges=engineering_ranges(tag_configs),
-    )
-    indexed = _to_indexed_frame(context, args.timestamp, tags)
-    dynamic = build_validation_matrix(
+    for window in validation_windows:
+        if not window["enabled"]:
+            continue
+        context = _select_window(
+            raw,
+            args.timestamp,
+            validation_context_start(pd.Timestamp(window["start"]), config).isoformat(),
+            window["end"],
+        )
+        _require_clean_data(
+            context,
+            args.timestamp,
+            tags,
+            expected_interval_minutes=config.sample_interval_minutes,
+            configured_engineering_ranges=engineering_ranges(tag_configs),
+        )
+    indexed = _to_indexed_frame(raw, args.timestamp, tags)
+    validation_result = validate_model_windows(
+        model,
         indexed,
         tags,
         config,
-        validation_window[0],
-        validation_window[1],
+        training_windows,
+        validation_windows,
+        tag_configs,
     )
-    scores = model.score(dynamic)
+    scores = validation_result["scores"]
     args.scores_output.parent.mkdir(parents=True, exist_ok=True)
     scores.to_csv(args.scores_output, index_label=args.timestamp)
 
-    contribution_records = contribution_event_records(
-        exceedance_contribution_tables(
-            model,
-            dynamic,
-            scores,
-            sample_interval_minutes=config.sample_interval_minutes,
-        ),
-        tag_configs,
-    )
+    contribution_records = validation_result["contributions"]
     _write_json(args.contributions_output, contribution_records)
 
     report: dict[str, Any] = {
         "model": str(args.model),
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
-        "validation_window": [
-            validation_window[0].isoformat(),
-            validation_window[1].isoformat(),
-        ],
+        "validation_windows": validation_result["validation_windows"],
+        "validation_window_summaries": validation_result["window_summaries"],
+        "normal_validation_complete": validation_result["normal_validation_complete"],
+        "known_abnormal_complete": validation_result["known_abnormal_complete"],
         "scored_rows": len(scores),
         "status_counts": dict(Counter(scores["status"])),
         "maximum_t2": float(scores["t2"].max()),
         "maximum_spe": float(scores["spe"].max()),
         "engineer_decision_required": True,
     }
+    if len(validation_result["validation_windows"]) == 1:
+        window = validation_result["validation_windows"][0]
+        report["validation_window"] = [window["start"], window["end"]]
     if args.label_column:
-        validation = _select_window(
-            raw, args.timestamp, args.validation_start, args.validation_end
-        )
-        if args.label_column not in validation.columns:
+        if args.label_column not in raw.columns:
             raise ValueError(f"missing label column: {args.label_column}")
-        labels = validation.set_index(args.timestamp)[args.label_column].reindex(scores.index)
+        labels = raw.set_index(args.timestamp)[args.label_column].reindex(scores.index)
         report["status_by_engineering_label"] = {
             str(label): dict(Counter(scores.loc[labels == label, "status"]))
             for label in labels.dropna().unique()
         }
     _write_json(args.report_output, report)
     return report
+
+
+def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
+    if args.model.resolve() == args.output.resolve():
+        raise ValueError("validated model output must differ from the candidate package")
+    _, manifest = load_model_package(args.model)
+    report = json.loads(args.validation_report.read_text(encoding="utf-8"))
+    decision = record_engineer_decision(manifest, report, args.decision, args.comment)
+    report["engineer_decision"] = decision
+    _write_json(args.validation_report, report)
+    if args.decision != "passed":
+        return {"engineer_decision": decision, "validated_model": None}
+    copy_validated_model_package(
+        args.model,
+        args.output,
+        validation_summary=report,
+        engineer_decision=decision,
+        source_identifier=args.source_id or args.model.name,
+    )
+    return {"engineer_decision": decision, "validated_model": str(args.output)}
 
 
 def _read_csv(path: Path, timestamp_column: str, encoding: str) -> pd.DataFrame:
@@ -373,6 +400,26 @@ def _training_windows_from_args(args: argparse.Namespace) -> list[dict[str, Any]
         return training_windows_from_payload({"training_windows": value})
     return training_windows_from_payload(
         {"normal_start": args.normal_start, "normal_end": args.normal_end}
+    )
+
+
+def _validation_windows_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if args.validation_windows is not None:
+        if args.validation_start is not None or args.validation_end is not None:
+            raise ValueError(
+                "--validation-windows不能与--validation-start/--validation-end同时使用"
+            )
+        value = json.loads(args.validation_windows.read_text(encoding="utf-8-sig"))
+        return validation_windows_from_payload({"validation_windows": value})
+    if args.validation_start is None or args.validation_end is None:
+        raise ValueError(
+            "--validation-windows或--validation-start/--validation-end必须提供"
+        )
+    return validation_windows_from_payload(
+        {
+            "validation_start": args.validation_start,
+            "validation_end": args.validation_end,
+        }
     )
 
 

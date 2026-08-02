@@ -23,9 +23,8 @@ from .compat import (
     MODEL_PURPOSES,
     training_windows_from_payload,
 )
-from .contribution import contribution_event_records, exceedance_contribution_tables
 from .dpca import fit_dpca
-from .model_io import load_model_package, save_model_package
+from .model_io import copy_validated_model_package, load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
 from .quality import QualityReport, inspect_data_quality
 from .screening import screen_performance_states
@@ -44,9 +43,10 @@ from .tag_profile import model_quality_payload, profile_tag
 from .training import build_training_matrix
 from .trend import trend_payload_data
 from .validation import (
-    build_validation_matrix,
-    ensure_disjoint_windows,
+    record_engineer_decision,
+    validate_model_windows,
     validation_context_start,
+    validation_windows_from_payload,
 )
 from .windows import (
     add_training_window,
@@ -575,17 +575,12 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tags = list(config_data["tags"])
     tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
     timestamp_column = _required_text(payload, "timestamp_column")
-    validation_window = (
-        pd.Timestamp(_required_text(payload, "validation_start")),
-        pd.Timestamp(_required_text(payload, "validation_end")),
-    )
+    validation_windows = validation_windows_from_payload(payload)
     training_windows = [
         (pd.Timestamp(window["start"]), pd.Timestamp(window["end"]))
         for window in manifest["training_windows"]
         if window["enabled"]
     ]
-    ensure_disjoint_windows(training_windows, [validation_window])
-
     parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
     config = PreprocessingConfig(
         sample_interval_minutes=int(config_data["sample_interval_minutes"]),
@@ -593,49 +588,45 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         max_lag_minutes=int(config_data["max_lag_minutes"]),
         lag_step_minutes=int(config_data["lag_step_minutes"]),
     )
-    context_start = validation_context_start(validation_window[0], config)
-    context = _select_window(
-        parsed,
-        timestamp_column,
-        context_start.isoformat(),
-        validation_window[1].isoformat(),
-    )
-    _require_clean_data(
-        context,
-        timestamp_column,
-        tags,
-        config.sample_interval_minutes,
-        engineering_ranges(tag_configs),
-    )
-    indexed = _indexed_tags(context, timestamp_column, tags)
-    dynamic = build_validation_matrix(
+    for window in validation_windows:
+        if not window["enabled"]:
+            continue
+        context = _select_window(
+            parsed,
+            timestamp_column,
+            validation_context_start(pd.Timestamp(window["start"]), config).isoformat(),
+            window["end"],
+        )
+        _require_clean_data(
+            context,
+            timestamp_column,
+            tags,
+            config.sample_interval_minutes,
+            engineering_ranges(tag_configs),
+        )
+    indexed = _indexed_tags(parsed, timestamp_column, tags)
+    validation_result = validate_model_windows(
+        model,
         indexed,
         tags,
         config,
-        validation_window[0],
-        validation_window[1],
-    )
-    scores = model.score(dynamic)
-    focus_timestamp = _focus_timestamp(scores, model.t2_limits[0.99], model.q_limits[0.99])
-    contributions = contribution_event_records(
-        exceedance_contribution_tables(
-            model,
-            dynamic,
-            scores,
-            sample_interval_minutes=config.sample_interval_minutes,
-        ),
+        training_windows,
+        validation_windows,
         tag_configs,
     )
+    scores = validation_result["scores"]
+    focus_timestamp = _focus_timestamp(scores, model.t2_limits[0.99], model.q_limits[0.99])
+    contributions = validation_result["contributions"]
 
     result: dict[str, Any] = {
         "run_id": run_id,
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
         "engineer_decision_required": True,
-        "validation_window": [
-            validation_window[0].isoformat(),
-            validation_window[1].isoformat(),
-        ],
+        "validation_windows": validation_result["validation_windows"],
+        "validation_window_summaries": validation_result["window_summaries"],
+        "normal_validation_complete": validation_result["normal_validation_complete"],
+        "known_abnormal_complete": validation_result["known_abnormal_complete"],
         "scored_rows": len(scores),
         "status_counts": _status_counts(scores),
         "maximum_t2": float(scores["t2"].max()),
@@ -646,17 +637,14 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "scores": _score_payload(scores),
         "contributions": contributions,
     }
+    if len(validation_result["validation_windows"]) == 1:
+        window = validation_result["validation_windows"][0]
+        result["validation_window"] = [window["start"], window["end"]]
     label_column = str(payload.get("label_column", "")).strip()
     if label_column:
-        validation = _select_window(
-            parsed,
-            timestamp_column,
-            validation_window[0].isoformat(),
-            validation_window[1].isoformat(),
-        )
-        if label_column not in validation.columns:
+        if label_column not in parsed.columns:
             raise ValueError(f"找不到工程标签列：{label_column}")
-        labels = validation.set_index(timestamp_column)[label_column].reindex(scores.index)
+        labels = parsed.set_index(timestamp_column)[label_column].reindex(scores.index)
         result["status_by_engineering_label"] = {
             str(label): {
                 status: int(count)
@@ -690,6 +678,43 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for artifact in _VALIDATION_ARTIFACTS
     }
     return result
+
+
+def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    run_dir = RUNS_DIR / run_id
+    model_path = run_dir / "model.pcamodel"
+    report_path = run_dir / "validation_report.json"
+    if not model_path.is_file() or not report_path.is_file():
+        raise ValueError("候选模型或验证报告不存在")
+    _, manifest = load_model_package(model_path)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    decision = record_engineer_decision(
+        manifest,
+        report,
+        payload.get("decision"),
+        payload.get("comment", ""),
+    )
+    report["engineer_decision"] = decision
+    validated_path: Path | None = None
+    if decision["decision"] == "passed":
+        validated_path = run_dir / "validated_model.pcamodel"
+        copy_validated_model_package(
+            model_path,
+            validated_path,
+            validation_summary=report,
+            engineer_decision=decision,
+            source_identifier=run_id,
+        )
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "run_id": run_id,
+        "engineer_decision": decision,
+        "model_status": "validated" if validated_path else manifest["model_status"],
+        "validated_model_download": (
+            f"/download/validated-model?run_id={run_id}" if validated_path else None
+        ),
+    }
 
 
 def _read_upload(payload: dict[str, Any]) -> pd.DataFrame:
@@ -1073,6 +1098,19 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_json({"error": str(error)}, 400)
             return
+        if parsed.path == "/download/validated-model":
+            try:
+                run_id = _validated_id(
+                    parse_qs(parsed.query).get("run_id", [""])[0], "run_id"
+                )
+                self._send_download(
+                    RUNS_DIR / run_id / "validated_model.pcamodel",
+                    "application/octet-stream",
+                    "validated_model.pcamodel",
+                )
+            except Exception as error:
+                self._send_json({"error": str(error)}, 400)
+            return
         if parsed.path == "/download/validation":
             try:
                 query = parse_qs(parsed.query)
@@ -1140,6 +1178,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/validate":
                 self._send_json(validate_payload(payload))
+                return
+            if parsed.path == "/api/validation-decision":
+                self._send_json(validation_decision_payload(payload))
                 return
             self._send_json({"error": "Not found"}, 404)
         except Exception as error:
@@ -1479,9 +1520,13 @@ INDEX_HTML = r"""<!doctype html>
         <div class="validation-box">
           <label>验证期开始<input id="validationStart" type="datetime-local"></label>
           <label>验证期结束<input id="validationEnd" type="datetime-local"></label>
+          <label>验证类型<select id="validationType"><option value="normal_validation">正常样本验证</option><option value="known_abnormal">已知异常验证</option></select></label>
+          <label>验证备注<input id="validationComment" type="text"></label>
+          <button id="addValidationWindow" class="secondary" type="button">加入验证时段</button>
           <label>工程标签列（可选）<select id="labelColumn"><option value="">不使用</option></select></label>
           <button id="validateButton" disabled>回放独立验证期</button>
         </div>
+        <div class="table-wrap"><table><thead><tr><th>类型</th><th>开始</th><th>结束</th><th>备注</th><th>操作</th></tr></thead><tbody id="validationWindowTable"></tbody></table></div>
         <div id="validationEmpty" class="empty">训练草稿模型后可执行独立验证。</div>
         <div id="validationContent" hidden>
           <div id="validationMetrics" class="metrics"></div>
@@ -1493,14 +1538,15 @@ INDEX_HTML = r"""<!doctype html>
           <div class="help" id="contributionHint"></div>
           <div class="table-wrap"><table><thead><tr><th>事件 / 峰值</th><th>统计量</th><th>Tag</th><th>描述</th><th>单位</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
           <div class="actions"><a id="scoresDownload" class="download" href="#">下载完整评分 CSV</a><a id="reportDownload" class="download" href="#">下载验证摘要</a><a id="contributionsDownload" class="download" href="#">下载贡献记录</a></div>
-          <div class="help">每次回放会更新当前模型最近一次验证的下载文件，不保存多次验证历史。</div>
+          <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
+          <div class="help">每次回放会更新当前模型最近一次验证的下载文件；候选模型不会被验证结果原地修改。</div>
           <div class="notice">贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
         </div>
       </div>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -1620,9 +1666,9 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.validation=null; el("validatedModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
-    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
+    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
     el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
@@ -1737,7 +1783,7 @@ async function trainModel(modelPurpose) {
     const components=el("components").value.trim();
     const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
+    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1745,13 +1791,41 @@ async function trainModel(modelPurpose) {
 el("trainExploratoryButton").addEventListener("click",()=>trainModel("exploratory"));
 el("trainButton").addEventListener("click",()=>trainModel("normal_state"));
 
+function renderValidationWindows() {
+  const body=el("validationWindowTable"); body.replaceChildren();
+  state.validationWindows.forEach(window=>{ const row=document.createElement("tr");
+    const type=document.createElement("td"); type.textContent=window.type==="normal_validation"?"正常样本验证":"已知异常验证";
+    const start=document.createElement("td"); start.textContent=localTime(window.start); const end=document.createElement("td"); end.textContent=localTime(window.end);
+    const comment=document.createElement("td"); comment.textContent=window.comment||"—";
+    const actions=document.createElement("td"); const remove=document.createElement("button"); remove.className="secondary"; remove.type="button"; remove.textContent="删除"; remove.addEventListener("click",()=>{ state.validationWindows=state.validationWindows.filter(item=>item.id!==window.id); renderValidationWindows(); }); actions.append(remove);
+    row.append(type,start,end,comment,actions); body.append(row);
+  });
+}
+el("addValidationWindow").addEventListener("click",()=>{
+  const start=el("validationStart").value, end=el("validationEnd").value;
+  if(!start||!end) { setStatus("验证时段需要开始和结束时间。","warning"); return; }
+  state.validationWindows.push({id:`validation-${candidateId()}`,type:el("validationType").value,start,end,enabled:true,comment:el("validationComment").value.trim()});
+  el("validationComment").value=""; renderValidationWindows();
+});
+
 el("validateButton").addEventListener("click", async () => {
   const button=el("validateButton"); setBusy(button,true,"回放中…"); setStatus("正在使用训练参数回放独立验证窗口。","info");
   try {
-    const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_start:el("validationStart").value,validation_end:el("validationEnd").value,label_column:el("labelColumn").value};
+    if(!state.validationWindows.length) { state.validationWindows.push({id:"validation-default-001",type:"normal_validation",start:el("validationStart").value,end:el("validationEnd").value,enabled:true,comment:""}); renderValidationWindows(); }
+    const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_windows:state.validationWindows,label_column:el("labelColumn").value};
     const data=await api("/api/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    renderValidation(data); setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
+    state.validation=data; renderValidation(data); setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
   } catch (error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+
+el("recordValidationDecision").addEventListener("click",async()=>{
+  const button=el("recordValidationDecision"); setBusy(button,true,"保存中…");
+  try {
+    const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
+    if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; }
+    setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已创建新的已验证模型包。":"工程师结论已保存；候选模型保持不变。","success");
+  } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
 
