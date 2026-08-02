@@ -9,8 +9,10 @@ import pandas as pd
 _WINDOW_FIELDS = {"id", "start", "end", "source", "source_ref", "enabled", "comment"}
 
 
-def normalize_training_windows(value: object) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or not value:
+def normalize_training_windows(
+    value: object, *, allow_empty: bool = False
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or (not value and not allow_empty):
         raise ValueError("training_windows必须是非空列表")
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -85,23 +87,28 @@ def legacy_single_window_to_training_windows(start: object, end: object) -> list
 
 
 def add_training_window(windows: object, window: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return normalize_training_windows([*normalize_training_windows(windows), dict(window)])
+    return normalize_training_windows(
+        [*normalize_training_windows(windows, allow_empty=True), dict(window)],
+        allow_empty=True,
+    )
 
 
 def update_training_window(windows: object, window_id: str, changes: Mapping[str, Any]) -> list[dict[str, Any]]:
-    existing = normalize_training_windows(windows)
+    existing = normalize_training_windows(windows, allow_empty=True)
     if window_id not in {window["id"] for window in existing}:
         raise ValueError("training_windows窗口不存在")
     return normalize_training_windows(
-        [{**window, **dict(changes)} if window["id"] == window_id else window for window in existing]
+        [{**window, **dict(changes)} if window["id"] == window_id else window for window in existing],
+        allow_empty=True,
     )
 
 
 def remove_training_window(windows: object, window_id: str) -> list[dict[str, Any]]:
-    result = [window for window in normalize_training_windows(windows) if window["id"] != window_id]
-    if len(result) == len(normalize_training_windows(windows)):
+    existing = normalize_training_windows(windows, allow_empty=True)
+    result = [window for window in existing if window["id"] != window_id]
+    if len(result) == len(existing):
         raise ValueError("training_windows窗口不存在")
-    return normalize_training_windows(result)
+    return normalize_training_windows(result, allow_empty=True)
 
 
 def set_enabled_training_window(windows: object, window_id: str, enabled: bool) -> list[dict[str, Any]]:
@@ -124,7 +131,7 @@ def summarize_training_windows(
     sample_interval_minutes: int | None = None,
 ) -> list[dict[str, Any]]:
     result = []
-    for window in normalize_training_windows(windows):
+    for window in normalize_training_windows(windows, allow_empty=True):
         start, end = _window_bounds(window["start"], window["end"])
         summary = {**window, "duration_minutes": int((end - start).total_seconds() // 60)}
         if timestamps is not None:

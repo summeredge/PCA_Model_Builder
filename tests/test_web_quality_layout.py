@@ -233,6 +233,24 @@ def test_candidate_view_and_mutations_preserve_explicit_enablement() -> None:
     assert "if(affectsTraining) invalidateQuality" in mutation_source
 
 
+def test_last_candidate_removal_keeps_the_candidate_table_empty() -> None:
+    html = web_model_results.INDEX_HTML
+    update_source = html.split("async function updateTrainingWindows", 1)[1].split(
+        "function addCandidateWindow", 1
+    )[0]
+    render_source = html.split("function renderTrainingWindows", 1)[1].split(
+        "async function updateTrainingWindows", 1
+    )[0]
+
+    assert 'action:"remove"' in html
+    assert "state.trainingWindows=data.training_windows" in update_source
+    assert "state.trainingWindowSummary=data.summary" in update_source
+    assert "renderTrainingWindows(); updateQualityButtonAvailability();" in update_source
+    assert "if(affectsTraining) invalidateQuality" in update_source
+    assert "suggested-window-001" not in update_source
+    assert "尚无正常候选时段" in render_source
+
+
 def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     original = cli_entry.cli._serve
     monkeypatch.setattr(cli_entry.cli, "main", lambda argv=None: 0)

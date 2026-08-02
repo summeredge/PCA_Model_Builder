@@ -50,6 +50,7 @@ from .validation import (
 )
 from .windows import (
     add_training_window,
+    normalize_training_windows,
     remove_training_window,
     set_enabled_training_window,
     summarize_training_windows,
@@ -301,7 +302,11 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    windows = training_windows_from_payload(payload)
+    windows = (
+        normalize_training_windows(payload["training_windows"], allow_empty=True)
+        if "training_windows" in payload
+        else training_windows_from_payload(payload)
+    )
     operation = payload.get("operation")
     if operation is not None:
         if not isinstance(operation, dict):

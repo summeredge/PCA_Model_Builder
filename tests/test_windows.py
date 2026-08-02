@@ -26,6 +26,21 @@ def test_training_window_operations_preserve_ids_comments_and_enablement():
     assert remove_training_window(windows, "window-002") == [_window()]
 
 
+def test_candidate_window_operations_allow_an_empty_collection():
+    normalized = normalize_training_windows([_window()])[0]
+
+    assert remove_training_window([_window()], "window-001") == []
+    assert add_training_window([], _window()) == [normalized]
+    assert summarize_training_windows([]) == []
+    assert normalize_training_windows([], allow_empty=True) == []
+    with pytest.raises(ValueError, match="窗口不存在"):
+        update_training_window([], "missing", {"comment": "无效"})
+    with pytest.raises(ValueError, match="窗口不存在"):
+        set_enabled_training_window([], "missing", True)
+    with pytest.raises(ValueError, match="非空列表"):
+        normalize_training_windows([])
+
+
 def test_training_windows_reject_enabled_overlap_but_allow_adjacent_or_disabled():
     with pytest.raises(ValueError, match="不能重叠"):
         normalize_training_windows([_window(), _window("window-002", "2026-01-01T00:10:00", "2026-01-01T00:15:00")])

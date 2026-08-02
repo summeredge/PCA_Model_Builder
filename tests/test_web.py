@@ -513,10 +513,49 @@ def test_web_quality_and_training_reject_all_disabled_candidate_windows(
         "model_name": "DISABLED_WINDOWS",
     }
 
-    with pytest.raises(ValueError, match="至少需要一个启用的training_windows窗口"):
-        web.quality_payload(payload)
-    with pytest.raises(ValueError, match="至少需要一个启用的training_windows窗口"):
-        web.train_payload(payload)
+    for entry_point in (web.quality_payload, web.train_payload):
+        with pytest.raises(ValueError, match="至少需要一个启用的training_windows窗口"):
+            entry_point({**payload, "training_windows": windows})
+        with pytest.raises(ValueError, match="非空列表"):
+            entry_point({**payload, "training_windows": []})
+
+
+def test_web_candidate_management_allows_empty_collection_and_last_removal():
+    window = {
+        "id": "manual-window-001",
+        "start": "2026-01-01T00:00:00",
+        "end": "2026-01-01T00:10:00",
+        "source": "manual",
+        "source_ref": "manual-input",
+        "enabled": False,
+        "comment": "待工程师确认",
+    }
+    refreshed = web.training_windows_payload({"training_windows": [], "operation": None})
+    added = web.training_windows_payload(
+        {
+            "training_windows": [],
+            "operation": {"action": "add", "window": window},
+        }
+    )
+    removed_disabled = web.training_windows_payload(
+        {
+            "training_windows": added["training_windows"],
+            "operation": {"action": "remove", "id": window["id"]},
+        }
+    )
+    removed_enabled = web.training_windows_payload(
+        {
+            "training_windows": [{**window, "enabled": True}],
+            "operation": {"action": "remove", "id": window["id"]},
+        }
+    )
+
+    assert refreshed == {"training_windows": [], "summary": []}
+    assert added["training_windows"][0]["source_ref"] == "manual-input"
+    assert added["training_windows"][0]["comment"] == "待工程师确认"
+    assert added["training_windows"][0]["enabled"] is False
+    assert removed_disabled == {"training_windows": [], "summary": []}
+    assert removed_enabled == {"training_windows": [], "summary": []}
 
 
 def test_explicitly_enabled_candidate_can_complete_quality_and_training(
