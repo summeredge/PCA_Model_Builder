@@ -174,6 +174,80 @@ def test_cli_explicit_training_commands_preserve_model_semantics(
     assert manifest["model_status"] == model_status
 
 
+def test_cli_rejects_exploratory_model_validation_before_creating_outputs(
+    tmp_path, capsys
+):
+    rng = np.random.default_rng(89)
+    timestamps = pd.date_range("2026-01-01", periods=100, freq="5min")
+    a = rng.normal(size=len(timestamps))
+    history = pd.DataFrame(
+        {
+            "time": timestamps,
+            "A": a,
+            "B": 1.5 * a + rng.normal(scale=0.1, size=len(a)),
+            "C": rng.normal(size=len(a)),
+        }
+    )
+    history_path = tmp_path / "history.csv"
+    model_path = tmp_path / "exploratory.pcamodel"
+    scores_path = tmp_path / "scores.csv"
+    report_path = tmp_path / "report.json"
+    contributions_path = tmp_path / "contributions.json"
+    history.to_csv(history_path, index=False, encoding="utf-8-sig")
+
+    assert main(
+        [
+            "train-exploratory",
+            "--csv",
+            str(history_path),
+            "--timestamp",
+            "time",
+            "--tags",
+            "A",
+            "B",
+            "C",
+            "--normal-start",
+            timestamps[0].isoformat(),
+            "--normal-end",
+            timestamps[-1].isoformat(),
+            "--max-lag",
+            "0",
+            "--model-name",
+            "EXPLORATORY_DPCA",
+            "--output",
+            str(model_path),
+        ]
+    ) == 0
+    capsys.readouterr()
+
+    assert main(
+        [
+            "validate",
+            "--model",
+            str(model_path),
+            "--csv",
+            str(tmp_path / "must-not-be-read.csv"),
+            "--timestamp",
+            "time",
+            "--validation-start",
+            timestamps[0].isoformat(),
+            "--validation-end",
+            timestamps[-1].isoformat(),
+            "--scores-output",
+            str(scores_path),
+            "--report-output",
+            str(report_path),
+            "--contributions-output",
+            str(contributions_path),
+        ]
+    ) == 2
+
+    assert "探索模型不能执行独立验证" in capsys.readouterr().err
+    assert not scores_path.exists()
+    assert not report_path.exists()
+    assert not contributions_path.exists()
+
+
 def test_cli_training_allows_physical_time_gap(tmp_path):
     rng = np.random.default_rng(3)
     timestamps = pd.date_range("2026-01-01", periods=120, freq="5min").to_series()
