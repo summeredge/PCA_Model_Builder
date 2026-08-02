@@ -161,6 +161,51 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     assert "normalEnd" not in html
 
 
+def test_validated_download_link_is_cleared_at_each_final_ui_state_boundary() -> None:
+    html = web_model_results.INDEX_HTML
+    helper = html.split("function hideValidatedModelDownload()", 1)[1].split(
+        "function", 1
+    )[0]
+    assert "validatedModelDownload.hidden=true" in helper
+    assert 'validatedModelDownload.removeAttribute("href")' in helper
+
+    callback_ranges = (
+        (
+            'el("uploadButton").addEventListener("click", async () => {',
+            'el("inspectButton").addEventListener',
+        ),
+        (
+            'el("inspectButton").addEventListener("click", async () => {',
+            'el("tagSearch").addEventListener',
+        ),
+        (
+            'el("qualityButton").addEventListener("click",async()=>{',
+            'el("trendPreset").addEventListener',
+        ),
+        (
+            "async function trainModel(modelPurpose) {",
+            'el("trainExploratoryButton").addEventListener',
+        ),
+        (
+            'el("validateButton").addEventListener("click", async () => {',
+            'el("recordValidationDecision").addEventListener',
+        ),
+        (
+            'el("recordValidationDecision").addEventListener("click",async()=>{',
+            "function metric(",
+        ),
+    )
+    for start, end in callback_ranges:
+        source = html.split(start, 1)[1].split(end, 1)[0]
+        assert "hideValidatedModelDownload()" in source, start
+
+    decision_source = html.split(
+        'el("recordValidationDecision").addEventListener("click",async()=>{', 1
+    )[1].split("function metric(", 1)[0]
+    assert "data.validated_model_download" in decision_source
+    assert "else { hideValidatedModelDownload(); }" in decision_source
+
+
 def test_candidate_actions_do_not_replace_the_training_window() -> None:
     html = web_model_results.INDEX_HTML
     cluster_source = html.split("function renderClustering", 1)[1].split(

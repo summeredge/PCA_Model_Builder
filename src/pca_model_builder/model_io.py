@@ -397,10 +397,12 @@ def commit_validation_artifacts(
         if report_installed and report_file.exists():
             report_file.unlink()
         if output_backup is not None and output_backup.exists():
-            os.replace(output_backup, validated)
+            validated.unlink(missing_ok=True)
+            os.rename(output_backup, validated)
             output_backup = None
         if report_backup is not None and report_backup.exists():
-            os.replace(report_backup, report_file)
+            report_file.unlink(missing_ok=True)
+            os.rename(report_backup, report_file)
             report_backup = None
         raise
     finally:
@@ -409,6 +411,104 @@ def commit_validation_artifacts(
             temporary_report,
             output_backup,
             report_backup,
+        ):
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+
+
+def commit_validation_run_artifacts(
+    candidate_path: str | Path,
+    report_path: str | Path,
+    scores_path: str | Path,
+    contributions_path: str | Path,
+    validated_path: str | Path,
+    report: Mapping[str, Any],
+    scores: pd.DataFrame,
+    contributions: Any,
+    timestamp_column: str,
+    previous_report: Mapping[str, Any] | None = None,
+    source_identifier: str | None = None,
+) -> None:
+    """Commit one complete validation run without exposing partial artifacts."""
+    candidate = Path(candidate_path)
+    report_file = Path(report_path)
+    scores_file = Path(scores_path)
+    contributions_file = Path(contributions_path)
+    validated = Path(validated_path)
+    if not isinstance(report, Mapping) or "engineer_decision" in report:
+        raise ValueError("新的验证报告不得包含人工结论")
+    if validated.resolve() == candidate.resolve():
+        raise ValueError("validated model output must differ from the candidate package")
+    if validated.exists():
+        if previous_report is None or not isinstance(source_identifier, str) or not source_identifier.strip():
+            raise ValueError("已有validated工件来源无法验证，拒绝覆盖")
+        validate_validated_model_artifact(
+            candidate,
+            validated,
+            previous_report,
+            expected_identifier=source_identifier,
+        )
+
+    for target in (report_file, scores_file, contributions_file, validated):
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+    temporary_scores: Path | None = None
+    temporary_contributions: Path | None = None
+    temporary_report: Path | None = None
+    backups: dict[Path, Path] = {}
+    installed: list[Path] = []
+    try:
+        temporary_scores = _reserve_temporary_path(scores_file, ".csv.tmp")
+        temporary_scores.parent.mkdir(parents=True, exist_ok=True)
+        scores.to_csv(
+            temporary_scores,
+            index_label=timestamp_column,
+            encoding="utf-8-sig",
+        )
+        temporary_contributions = _reserve_temporary_path(
+            contributions_file, ".json.tmp"
+        )
+        temporary_contributions.write_text(
+            json.dumps(contributions, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary_report = _reserve_temporary_path(report_file, ".json.tmp")
+        temporary_report.write_text(
+            json.dumps(dict(report), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        for target in (report_file, scores_file, contributions_file, validated):
+            if target.exists():
+                backup = _reserve_temporary_path(target, ".bak")
+                os.replace(target, backup)
+                backups[target] = backup
+
+        for temporary, target in (
+            (temporary_report, report_file),
+            (temporary_scores, scores_file),
+            (temporary_contributions, contributions_file),
+        ):
+            if temporary is not None:
+                os.replace(temporary, target)
+                installed.append(target)
+        temporary_report = None
+        temporary_scores = None
+        temporary_contributions = None
+    except Exception:
+        for target in reversed(installed):
+            target.unlink(missing_ok=True)
+        for target, backup in backups.items():
+            if backup.exists():
+                target.unlink(missing_ok=True)
+                os.rename(backup, target)
+        raise
+    finally:
+        for temporary in (
+            temporary_report,
+            temporary_scores,
+            temporary_contributions,
+            *backups.values(),
         ):
             if temporary is not None and temporary.exists():
                 temporary.unlink()

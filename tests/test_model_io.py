@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import pca_model_builder.model_io as model_io
 from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.model_io import (
     commit_validation_artifacts,
@@ -309,6 +310,263 @@ def test_validation_artifact_commit_rolls_back_when_report_replace_fails(tmp_pat
     assert json.loads(report_path.read_text(encoding="utf-8")) == original_report
     assert not validated.exists()
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def _review_transaction_fixture(tmp_path):
+    frame = pd.DataFrame(
+        np.random.default_rng(27).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    report_path = tmp_path / "validation_report.json"
+    validated = tmp_path / "validated.pcamodel"
+    save_model_package(
+        candidate,
+        fit_dpca(frame, n_components=2),
+        _valid_config(),
+        [["2026-01-01", "2026-01-02"]],
+    )
+    report = _bound_report(candidate, "run-001")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    decision = {
+        "decision": "passed",
+        "comment": "approved",
+        "reviewed_at": "2026-01-03T00:00:00+00:00",
+    }
+    return candidate, report_path, validated, report, decision
+
+
+def _assert_transaction_clean(tmp_path):
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert not list(tmp_path.glob(".*.bak"))
+
+
+def test_review_transaction_rolls_back_when_validated_copy_fails(tmp_path, monkeypatch):
+    candidate, report_path, validated, report, decision = _review_transaction_fixture(tmp_path)
+    original_report = report_path.read_bytes()
+    original_candidate = candidate.read_bytes()
+
+    def fail_copy(*args, **kwargs):
+        raise OSError("simulated validated write failure")
+
+    monkeypatch.setattr(model_io, "copy_validated_model_package", fail_copy)
+    with pytest.raises(OSError, match="simulated validated write failure"):
+        commit_validation_artifacts(
+            candidate,
+            validated,
+            report_path,
+            {**report, "engineer_decision": decision},
+            decision,
+            "run-001",
+            previous_report=report,
+        )
+    assert report_path.read_bytes() == original_report
+    assert candidate.read_bytes() == original_candidate
+    assert not validated.exists()
+    _assert_transaction_clean(tmp_path)
+
+
+def test_review_transaction_rolls_back_when_temporary_report_write_fails(
+    tmp_path, monkeypatch
+):
+    candidate, report_path, validated, report, decision = _review_transaction_fixture(tmp_path)
+    original_report = report_path.read_bytes()
+    original_candidate = candidate.read_bytes()
+    original_write_text = Path.write_text
+
+    def fail_temporary_report(self, data, *args, **kwargs):
+        if self.name.startswith(".validation_report.json."):
+            raise OSError("simulated temporary report write failure")
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_temporary_report)
+    with pytest.raises(OSError, match="simulated temporary report write failure"):
+        commit_validation_artifacts(
+            candidate,
+            validated,
+            report_path,
+            {**report, "engineer_decision": decision},
+            decision,
+            "run-001",
+            previous_report=report,
+        )
+    assert report_path.read_bytes() == original_report
+    assert candidate.read_bytes() == original_candidate
+    assert not validated.exists()
+    _assert_transaction_clean(tmp_path)
+
+
+@pytest.mark.parametrize("failure_target", ["validated", "report"])
+def test_review_transaction_rolls_back_install_failure(tmp_path, monkeypatch, failure_target):
+    candidate, report_path, validated, report, decision = _review_transaction_fixture(tmp_path)
+    original_report = report_path.read_bytes()
+    original_candidate = candidate.read_bytes()
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+    target = validated if failure_target == "validated" else report_path
+
+    def fail_install(source, destination):
+        if Path(destination) == target and not failed["value"]:
+            failed["value"] = True
+            raise OSError(f"simulated {failure_target} install failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_install)
+    with pytest.raises(OSError, match=f"simulated {failure_target} install failure"):
+        commit_validation_artifacts(
+            candidate,
+            validated,
+            report_path,
+            {**report, "engineer_decision": decision},
+            decision,
+            "run-001",
+            previous_report=report,
+        )
+    assert report_path.read_bytes() == original_report
+    assert candidate.read_bytes() == original_candidate
+    assert not validated.exists()
+    _assert_transaction_clean(tmp_path)
+
+
+def test_review_transaction_with_old_validated_restores_both_on_report_failure(
+    tmp_path, monkeypatch
+):
+    candidate, report_path, validated, report, decision = _review_transaction_fixture(tmp_path)
+    committed_report = {**report, "engineer_decision": decision}
+    commit_validation_artifacts(
+        candidate,
+        validated,
+        report_path,
+        committed_report,
+        decision,
+        "run-001",
+        previous_report=report,
+    )
+    old_report = report_path.read_bytes()
+    old_validated = validated.read_bytes()
+    original_candidate = candidate.read_bytes()
+    new_report = {**report, "status_counts": {"normal": 1}, "engineer_decision": decision}
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+
+    def fail_report(source, destination):
+        if Path(destination) == report_path and not failed["value"]:
+            failed["value"] = True
+            raise OSError("simulated report install failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_report)
+    with pytest.raises(OSError, match="simulated report install failure"):
+        commit_validation_artifacts(
+            candidate,
+            validated,
+            report_path,
+            new_report,
+            decision,
+            "run-001",
+            previous_report=committed_report,
+        )
+    assert report_path.read_bytes() == old_report
+    assert validated.read_bytes() == old_validated
+    assert candidate.read_bytes() == original_candidate
+    _assert_transaction_clean(tmp_path)
+
+
+@pytest.mark.parametrize("backup_target", ["validated", "report"])
+def test_review_transaction_restores_when_existing_artifact_backup_fails(
+    tmp_path, monkeypatch, backup_target
+):
+    candidate, report_path, validated, report, decision = _review_transaction_fixture(tmp_path)
+    committed_report = {**report, "engineer_decision": decision}
+    commit_validation_artifacts(
+        candidate,
+        validated,
+        report_path,
+        committed_report,
+        decision,
+        "run-001",
+        previous_report=report,
+    )
+    old_report = report_path.read_bytes()
+    old_validated = validated.read_bytes()
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+    prefix = ".validated.pcamodel." if backup_target == "validated" else ".validation_report.json."
+
+    def fail_backup(source, destination):
+        if (
+            Path(destination).name.startswith(prefix)
+            and Path(destination).name.endswith(".bak")
+            and not failed["value"]
+        ):
+            failed["value"] = True
+            raise OSError(f"simulated {backup_target} backup failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_backup)
+    new_report = {**report, "engineer_decision": decision, "status_counts": {"normal": 1}}
+    with pytest.raises(OSError, match=f"simulated {backup_target} backup failure"):
+        commit_validation_artifacts(
+            candidate,
+            validated,
+            report_path,
+            new_report,
+            decision,
+            "run-001",
+            previous_report=committed_report,
+        )
+    assert report_path.read_bytes() == old_report
+    assert validated.read_bytes() == old_validated
+    _assert_transaction_clean(tmp_path)
+
+
+def test_nonpassed_review_restores_old_validated_when_report_replace_fails(
+    tmp_path, monkeypatch
+):
+    candidate, report_path, validated, report, decision = _review_transaction_fixture(tmp_path)
+    committed_report = {**report, "engineer_decision": decision}
+    commit_validation_artifacts(
+        candidate,
+        validated,
+        report_path,
+        committed_report,
+        decision,
+        "run-001",
+        previous_report=report,
+    )
+    old_report = report_path.read_bytes()
+    old_validated = validated.read_bytes()
+    failed_report = {
+        **report,
+        "engineer_decision": {
+            "decision": "failed",
+            "comment": "rejected",
+            "reviewed_at": "2026-01-04T00:00:00+00:00",
+        },
+    }
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+
+    def fail_report(source, destination):
+        if Path(destination) == report_path and not failed["value"]:
+            failed["value"] = True
+            raise OSError("simulated nonpassed report failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_report)
+    with pytest.raises(OSError, match="simulated nonpassed report failure"):
+        commit_validation_artifacts(
+            candidate,
+            validated,
+            report_path,
+            failed_report,
+            failed_report["engineer_decision"],
+            "run-001",
+            previous_report=committed_report,
+        )
+    assert report_path.read_bytes() == old_report
+    assert validated.read_bytes() == old_validated
+    _assert_transaction_clean(tmp_path)
 
 
 @pytest.mark.parametrize(

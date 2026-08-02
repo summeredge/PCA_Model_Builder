@@ -26,6 +26,7 @@ from .compat import (
 from .dpca import fit_dpca
 from .model_io import (
     commit_validation_artifacts,
+    commit_validation_run_artifacts,
     load_model_package,
     model_package_sha256,
     save_model_package,
@@ -612,9 +613,6 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             engineering_ranges(tag_configs),
         )
     indexed = _indexed_tags(parsed, timestamp_column, tags)
-    validated_path = RUNS_DIR / run_id / "validated_model.pcamodel"
-    if validated_path.exists():
-        validated_path.unlink()
     validation_result = validate_model_windows(
         model,
         indexed,
@@ -670,23 +668,28 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         result["status_by_engineering_label"] = {}
     run_dir = RUNS_DIR / run_id
-    scores.to_csv(
-        run_dir / "validation_scores.csv",
-        index_label=timestamp_column,
-        encoding="utf-8-sig",
-    )
-    (run_dir / "validation_contributions.json").write_text(
-        json.dumps(contributions, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
     report = {
         key: value
         for key, value in result.items()
         if key not in {"scores", "contributions"}
     }
-    (run_dir / "validation_report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    report_path = run_dir / "validation_report.json"
+    validated_path = run_dir / "validated_model.pcamodel"
+    previous_report = None
+    if validated_path.exists() and report_path.is_file():
+        previous_report = json.loads(report_path.read_text(encoding="utf-8"))
+    commit_validation_run_artifacts(
+        model_path,
+        report_path,
+        run_dir / "validation_scores.csv",
+        run_dir / "validation_contributions.json",
+        validated_path,
+        report,
+        scores,
+        contributions,
+        timestamp_column,
+        previous_report=previous_report,
+        source_identifier=run_id,
     )
     result["validation_downloads"] = {
         artifact: f"/download/validation?run_id={run_id}&artifact={artifact}"
@@ -1755,7 +1758,7 @@ el("qualityButton").addEventListener("click",async()=>{
   const button=el("qualityButton"); setBusy(button,true,"检查中…");
   try {
     const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
-    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); el("trainButton").disabled=!data.can_train; el("trainExploratoryButton").disabled=!data.can_train;
+    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; hideValidatedModelDownload(); renderTrainingWindows(); renderQuality(data); renderTagList(); el("trainButton").disabled=!data.can_train; el("trainExploratoryButton").disabled=!data.can_train;
     document.querySelector('[data-panel="configPanel"]').click(); document.querySelector('[data-inner="qualityPanel"]').click();
     setStatus(data.can_train?"统一质量检查通过，可以训练草稿模型。":"仍有阻止训练的问题，请排除问题Tag或调整参考期后重新检查。",data.can_train?"success":"error");
   } catch(error) { setStatus(error.message,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }

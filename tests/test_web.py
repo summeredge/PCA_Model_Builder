@@ -3,6 +3,9 @@ import hashlib
 import inspect
 from io import BytesIO
 from pathlib import Path
+import threading
+from urllib.error import HTTPError
+from urllib.request import urlopen
 import zipfile
 
 import numpy as np
@@ -37,6 +40,87 @@ def _history_frame() -> pd.DataFrame:
     )
     frame.loc[145:160, "C"] += 8.0
     return frame
+
+
+def _validation_windows() -> list[dict[str, object]]:
+    return [
+        {
+            "id": "normal-001",
+            "type": "normal_validation",
+            "start": "2026-01-01T08:00:00",
+            "end": "2026-01-01T09:55:00",
+            "enabled": True,
+            "comment": "normal",
+        },
+        {
+            "id": "abnormal-001",
+            "type": "known_abnormal",
+            "start": "2026-01-01T10:50:00",
+            "end": "2026-01-01T14:55:00",
+            "enabled": True,
+            "comment": "event",
+        },
+    ]
+
+
+def _http_get(path: str) -> tuple[int, bytes]:
+    server = web.ThreadingHTTPServer(("127.0.0.1", 0), web._Handler)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}{path}"
+        with urlopen(url, timeout=5) as response:
+            return response.status, response.read()
+    except HTTPError as error:
+        return error.code, error.read()
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def _create_passed_web_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    trained = web.train_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": ["A", "B", "C"],
+            "normal_start": "2026-01-01T00:00:00",
+            "normal_end": "2026-01-01T07:55:00",
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 10,
+            "max_lag_minutes": 0,
+            "lag_step_minutes": 5,
+            "model_name": "candidate",
+        }
+    )
+    windows = _validation_windows()
+    web.validate_payload(
+        {
+            "run_id": trained["run_id"],
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "validation_windows": windows,
+        }
+    )
+    web.validation_decision_payload(
+        {
+            "run_id": trained["run_id"],
+            "decision": "passed",
+            "comment": "approved",
+        }
+    )
+    return (
+        trained["run_id"],
+        uploaded["file_id"],
+        tmp_path / "runs" / trained["run_id"],
+        windows,
+    )
 
 
 def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
@@ -927,6 +1011,266 @@ def test_web_review_transaction_keeps_report_and_candidate_on_commit_failure(
     assert candidate.read_bytes() == original_candidate
     assert report.read_bytes() == original_report
     assert not (run_dir / "validated_model.pcamodel").exists()
+
+
+def test_web_revalidation_failure_preserves_previous_evidence_and_download(
+    tmp_path, monkeypatch
+):
+    run_id, file_id, run_dir, _ = _create_passed_web_run(tmp_path, monkeypatch)
+    paths = [
+        run_dir / "model.pcamodel",
+        run_dir / "validation_report.json",
+        run_dir / "validation_scores.csv",
+        run_dir / "validation_contributions.json",
+        run_dir / "validated_model.pcamodel",
+    ]
+    original = {path.name: path.read_bytes() for path in paths}
+
+    with pytest.raises(ValueError, match="training and validation windows overlap"):
+        web.validate_payload(
+            {
+                "run_id": run_id,
+                "file_id": file_id,
+                "timestamp_column": "time",
+                "validation_windows": [
+                    {
+                        "id": "overlap-001",
+                        "type": "normal_validation",
+                        "start": "2026-01-01T00:00:00",
+                        "end": "2026-01-01T00:10:00",
+                        "enabled": True,
+                        "comment": "invalid",
+                    }
+                ],
+            }
+        )
+
+    assert {path.name: path.read_bytes() for path in paths} == original
+    assert not list(run_dir.glob(".*"))
+    status, body = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 200
+    assert body == original["validated_model.pcamodel"]
+
+
+def test_web_revalidation_score_write_failure_rolls_back_all_evidence(
+    tmp_path, monkeypatch
+):
+    run_id, file_id, run_dir, windows = _create_passed_web_run(tmp_path, monkeypatch)
+    paths = [
+        run_dir / "model.pcamodel",
+        run_dir / "validation_report.json",
+        run_dir / "validation_scores.csv",
+        run_dir / "validation_contributions.json",
+        run_dir / "validated_model.pcamodel",
+    ]
+    original = {path.name: path.read_bytes() for path in paths}
+    original_to_csv = pd.DataFrame.to_csv
+
+    def fail_scores(self, path_or_buf=None, *args, **kwargs):
+        if Path(path_or_buf).name.startswith(".validation_scores.csv."):
+            raise OSError("simulated score write failure")
+        return original_to_csv(self, path_or_buf, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", fail_scores)
+    with pytest.raises(OSError, match="simulated score write failure"):
+        web.validate_payload(
+            {
+                "run_id": run_id,
+                "file_id": file_id,
+                "timestamp_column": "time",
+                "validation_windows": windows,
+            }
+        )
+
+    assert {path.name: path.read_bytes() for path in paths} == original
+    assert not list(run_dir.glob(".*"))
+
+
+def test_web_revalidation_report_commit_failure_restores_all_evidence(
+    tmp_path, monkeypatch
+):
+    run_id, file_id, run_dir, windows = _create_passed_web_run(tmp_path, monkeypatch)
+    paths = [
+        run_dir / "model.pcamodel",
+        run_dir / "validation_report.json",
+        run_dir / "validation_scores.csv",
+        run_dir / "validation_contributions.json",
+        run_dir / "validated_model.pcamodel",
+    ]
+    original = {path.name: path.read_bytes() for path in paths}
+    report_path = run_dir / "validation_report.json"
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+
+    def fail_report_install(source, destination):
+        if Path(destination) == report_path and not failed["value"]:
+            failed["value"] = True
+            raise OSError("simulated validation report commit failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_report_install)
+    with pytest.raises(OSError, match="simulated validation report commit failure"):
+        web.validate_payload(
+            {
+                "run_id": run_id,
+                "file_id": file_id,
+                "timestamp_column": "time",
+                "validation_windows": windows,
+            }
+        )
+
+    assert {path.name: path.read_bytes() for path in paths} == original
+    assert not list(run_dir.glob(".*"))
+
+
+def test_web_revalidation_contribution_write_failure_restores_all_evidence(
+    tmp_path, monkeypatch
+):
+    run_id, file_id, run_dir, windows = _create_passed_web_run(tmp_path, monkeypatch)
+    paths = [
+        run_dir / "model.pcamodel",
+        run_dir / "validation_report.json",
+        run_dir / "validation_scores.csv",
+        run_dir / "validation_contributions.json",
+        run_dir / "validated_model.pcamodel",
+    ]
+    original = {path.name: path.read_bytes() for path in paths}
+    original_write_text = Path.write_text
+
+    def fail_contributions(self, data, *args, **kwargs):
+        if self.name.startswith(".validation_contributions.json."):
+            raise OSError("simulated contribution write failure")
+        return original_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_contributions)
+    with pytest.raises(OSError, match="simulated contribution write failure"):
+        web.validate_payload(
+            {
+                "run_id": run_id,
+                "file_id": file_id,
+                "timestamp_column": "time",
+                "validation_windows": windows,
+            }
+        )
+
+    assert {path.name: path.read_bytes() for path in paths} == original
+    assert not list(run_dir.glob(".*"))
+
+
+def test_web_revalidation_rejects_untrusted_previous_validated_artifact(
+    tmp_path, monkeypatch
+):
+    run_id, file_id, run_dir, windows = _create_passed_web_run(tmp_path, monkeypatch)
+    report_path = run_dir / "validation_report.json"
+    original = {
+        path.name: path.read_bytes()
+        for path in (
+            run_dir / "model.pcamodel",
+            report_path,
+            run_dir / "validation_scores.csv",
+            run_dir / "validation_contributions.json",
+            run_dir / "validated_model.pcamodel",
+        )
+    }
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["engineer_decision"]["comment"] = "tampered"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    tampered_report = report_path.read_bytes()
+
+    with pytest.raises(ValueError, match="验证报告与当前已验证模型包不一致"):
+        web.validate_payload(
+            {
+                "run_id": run_id,
+                "file_id": file_id,
+                "timestamp_column": "time",
+                "validation_windows": windows,
+            }
+        )
+
+    assert (run_dir / "validated_model.pcamodel").exists()
+    assert report_path.read_bytes() == tampered_report
+    assert (run_dir / "model.pcamodel").read_bytes() == original["model.pcamodel"]
+    assert (run_dir / "validation_scores.csv").read_bytes() == original["validation_scores.csv"]
+    assert (run_dir / "validation_contributions.json").read_bytes() == original[
+        "validation_contributions.json"
+    ]
+    assert not list(run_dir.glob(".*"))
+
+
+def test_validated_model_download_route_rechecks_all_evidence_states(
+    tmp_path, monkeypatch
+):
+    run_id, file_id, run_dir, windows = _create_passed_web_run(tmp_path, monkeypatch)
+    report_path = run_dir / "validation_report.json"
+    candidate_path = run_dir / "model.pcamodel"
+    validated_path = run_dir / "validated_model.pcamodel"
+    passed_report = report_path.read_bytes()
+    candidate_bytes = candidate_path.read_bytes()
+    validated_bytes = validated_path.read_bytes()
+
+    status, body = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 200
+    assert body == validated_bytes
+
+    failed_report = json.loads(passed_report.decode("utf-8"))
+    failed_report["engineer_decision"]["decision"] = "failed"
+    report_path.write_text(json.dumps(failed_report), encoding="utf-8")
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
+
+    insufficient_report = json.loads(passed_report.decode("utf-8"))
+    insufficient_report["engineer_decision"]["decision"] = "insufficient"
+    report_path.write_text(json.dumps(insufficient_report), encoding="utf-8")
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
+
+    report_path.write_bytes(passed_report)
+    candidate_path.write_bytes(b"candidate was replaced")
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
+    candidate_path.write_bytes(candidate_bytes)
+
+    with zipfile.ZipFile(validated_path) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays = package.read("arrays.npz")
+    manifest["source_candidate_package"]["sha256"] = "0" * 64
+    with zipfile.ZipFile(validated_path, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
+    validated_path.write_bytes(validated_bytes)
+
+    mismatched_report = json.loads(passed_report.decode("utf-8"))
+    mismatched_report["status_counts"] = {"normal": 999}
+    report_path.write_text(json.dumps(mismatched_report), encoding="utf-8")
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
+
+    no_decision_report = json.loads(passed_report.decode("utf-8"))
+    no_decision_report.pop("engineer_decision")
+    report_path.write_text(json.dumps(no_decision_report), encoding="utf-8")
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
+
+    report_path.write_bytes(passed_report)
+    validated_path.unlink()
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
+
+    validated_path.write_bytes(validated_bytes)
+    web.validate_payload(
+        {
+            "run_id": run_id,
+            "file_id": file_id,
+            "timestamp_column": "time",
+            "validation_windows": windows,
+        }
+    )
+    assert not validated_path.exists()
+    validated_path.write_bytes(validated_bytes)
+    status, _ = _http_get(f"/download/validated-model?run_id={run_id}")
+    assert status == 400
 
 
 def test_validation_download_artifact_uses_fixed_whitelist():

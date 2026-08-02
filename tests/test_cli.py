@@ -15,6 +15,108 @@ from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.training import build_training_matrix
 
 
+def _create_cli_passed_run(tmp_path, prefix="candidate"):
+    rng = np.random.default_rng(101)
+    time = pd.date_range("2026-01-01", periods=180, freq="5min")
+    frame = pd.DataFrame(
+        {
+            "time": time,
+            "A": rng.normal(size=len(time)),
+            "B": rng.normal(size=len(time)),
+            "C": rng.normal(size=len(time)),
+        }
+    )
+    csv_path = tmp_path / f"{prefix}.csv"
+    candidate = tmp_path / f"{prefix}.pcamodel"
+    report = tmp_path / f"{prefix}-report.json"
+    validated = tmp_path / f"{prefix}-validated.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    assert main(
+        [
+            "train-normal",
+            "--csv",
+            str(csv_path),
+            "--timestamp",
+            "time",
+            "--tags",
+            "A",
+            "B",
+            "C",
+            "--normal-start",
+            time[0].isoformat(),
+            "--normal-end",
+            time[79].isoformat(),
+            "--max-lag",
+            "0",
+            "--components",
+            "2",
+            "--model-name",
+            prefix,
+            "--output",
+            str(candidate),
+        ]
+    ) == 0
+    windows = tmp_path / f"{prefix}-windows.json"
+    windows.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "normal-001",
+                    "type": "normal_validation",
+                    "start": time[90].isoformat(),
+                    "end": time[119].isoformat(),
+                    "enabled": True,
+                    "comment": "normal",
+                },
+                {
+                    "id": "abnormal-001",
+                    "type": "known_abnormal",
+                    "start": time[130].isoformat(),
+                    "end": time[-1].isoformat(),
+                    "enabled": True,
+                    "comment": "event",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    assert main(
+        [
+            "validate",
+            "--model",
+            str(candidate),
+            "--csv",
+            str(csv_path),
+            "--timestamp",
+            "time",
+            "--validation-windows",
+            str(windows),
+            "--scores-output",
+            str(tmp_path / f"{prefix}-scores.csv"),
+            "--report-output",
+            str(report),
+            "--contributions-output",
+            str(tmp_path / f"{prefix}-contributions.json"),
+        ]
+    ) == 0
+    assert main(
+        [
+            "review-validation",
+            "--model",
+            str(candidate),
+            "--validation-report",
+            str(report),
+            "--decision",
+            "passed",
+            "--comment",
+            "approved",
+            "--output",
+            str(validated),
+        ]
+    ) == 0
+    return csv_path, candidate, report, validated
+
+
 def _rewrite_as_legacy_window_package(path, schema_version):
     with zipfile.ZipFile(path) as package:
         manifest = json.loads(package.read("manifest.json"))
@@ -481,6 +583,99 @@ def test_cli_review_transaction_keeps_report_and_candidate_on_commit_failure(
     assert report_path.read_bytes() == original_report
     assert candidate.read_bytes() == original_candidate
     assert not output.exists()
+
+
+def test_cli_failed_review_rejects_and_preserves_an_unrelated_output_file(tmp_path, capsys):
+    _, candidate, report, output = _create_cli_passed_run(tmp_path, "ordinary")
+    output.write_bytes(b"ordinary file")
+    candidate_bytes = candidate.read_bytes()
+    report_bytes = report.read_bytes()
+    output_bytes = output.read_bytes()
+
+    assert main(
+        [
+            "review-validation",
+            "--model",
+            str(candidate),
+            "--validation-report",
+            str(report),
+            "--decision",
+            "failed",
+            "--output",
+            str(output),
+        ]
+    ) == 2
+    error = capsys.readouterr().err
+    assert "已验证模型" in error or "ZIP" in error
+    assert candidate.read_bytes() == candidate_bytes
+    assert report.read_bytes() == report_bytes
+    assert output.read_bytes() == output_bytes
+
+
+def test_cli_failed_review_rejects_validated_output_from_another_candidate(tmp_path):
+    _, candidate_a, _, validated_a = _create_cli_passed_run(tmp_path, "candidate-a")
+    _, candidate_b, report_b, _ = _create_cli_passed_run(tmp_path, "candidate-b")
+    candidate_a_bytes = candidate_a.read_bytes()
+    candidate_b_bytes = candidate_b.read_bytes()
+    report_b_bytes = report_b.read_bytes()
+    validated_a_bytes = validated_a.read_bytes()
+
+    assert main(
+        [
+            "review-validation",
+            "--model",
+            str(candidate_b),
+            "--validation-report",
+            str(report_b),
+            "--decision",
+            "failed",
+            "--output",
+            str(validated_a),
+        ]
+    ) == 2
+    assert candidate_a.read_bytes() == candidate_a_bytes
+    assert candidate_b.read_bytes() == candidate_b_bytes
+    assert report_b.read_bytes() == report_b_bytes
+    assert validated_a.read_bytes() == validated_a_bytes
+
+
+def test_cli_failed_review_rejects_manual_old_validated_after_report_failed(tmp_path):
+    _, candidate, report, output = _create_cli_passed_run(tmp_path, "manual-old")
+    old_validated = output.read_bytes()
+    candidate_bytes = candidate.read_bytes()
+
+    assert main(
+        [
+            "review-validation",
+            "--model",
+            str(candidate),
+            "--validation-report",
+            str(report),
+            "--decision",
+            "failed",
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    failed_report = report.read_bytes()
+    output.write_bytes(old_validated)
+
+    assert main(
+        [
+            "review-validation",
+            "--model",
+            str(candidate),
+            "--validation-report",
+            str(report),
+            "--decision",
+            "insufficient",
+            "--output",
+            str(output),
+        ]
+    ) == 2
+    assert candidate.read_bytes() == candidate_bytes
+    assert report.read_bytes() == failed_report
+    assert output.read_bytes() == old_validated
 
 
 def test_cli_training_allows_physical_time_gap(tmp_path):
