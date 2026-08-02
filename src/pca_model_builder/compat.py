@@ -15,6 +15,7 @@ _LOADABLE_MODEL_SEMANTICS = frozenset(
         ("exploratory", "draft"),
         ("normal_state", "candidate"),
         ("normal_state", "validated"),
+        ("normal_state", "published"),
     }
 )
 _DIRECT_WRITABLE_MODEL_SEMANTICS = frozenset(

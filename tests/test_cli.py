@@ -250,6 +250,45 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     assert {item["statistic"] for item in contributions} == {"t2", "spe"}
 
 
+def test_cli_models_list_compare_verify_and_publish(tmp_path, capsys):
+    _, _, _, validated = _create_cli_passed_run(tmp_path, prefix="registry-cli")
+    registry = tmp_path / "models"
+    assert main(
+        [
+            "models",
+            "publish",
+            "--model",
+            str(validated),
+            "--registry",
+            str(registry),
+            "--confirm",
+            "--applicability-scope",
+            "D330 normal",
+            "--engineer-comment",
+            "CLI review",
+        ]
+    ) == 0
+    published = next(registry.glob("*/v0001/model.pcamodel"))
+    assert main(
+        ["models", "verify", "--model-path", str(published), "--require-external"]
+    ) == 0
+    assert main(["models", "list", "--registry", str(registry)]) == 0
+    assert main(["models", "compare", str(published), str(published)]) == 0
+    assert main(
+        [
+            "models",
+            "publish",
+            "--model",
+            str(validated),
+            "--registry",
+            str(registry),
+            "--applicability-scope",
+            "D330 normal",
+        ]
+    ) == 2
+    assert "明确的工程师确认" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     ("command", "model_purpose", "model_status"),
     [

@@ -20,6 +20,12 @@ from .model_io import (
     save_model_package,
     validate_validation_report_binding,
 )
+from .model_registry import (
+    compare_model_versions,
+    list_model_versions,
+    publish_model_version,
+    verify_model_package_integrity,
+)
 from .preprocessing import PreprocessingConfig
 from .quality import QualityReport, inspect_data_quality
 from .tag_config import engineering_ranges, normalize_tag_configs
@@ -96,6 +102,37 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--port", type=int, default=8775)
     serve.add_argument("--no-open", action="store_true")
     serve.set_defaults(handler=_serve)
+
+    models = subparsers.add_parser("models", help="管理模型版本和发布包")
+    model_subparsers = models.add_subparsers(dest="models_command", required=True)
+
+    models_list = model_subparsers.add_parser("list", help="列出模型版本")
+    models_list.add_argument("--registry", type=Path, default=Path(".web_data/models"))
+    models_list.set_defaults(handler=_models_list)
+
+    models_compare = model_subparsers.add_parser("compare", help="比较两个模型版本")
+    models_compare.add_argument("left", nargs="?", type=Path)
+    models_compare.add_argument("right", nargs="?", type=Path)
+    models_compare.add_argument("--left", dest="left_option", type=Path)
+    models_compare.add_argument("--right", dest="right_option", type=Path)
+    models_compare.add_argument("--left-model", dest="left_model", type=Path)
+    models_compare.add_argument("--right-model", dest="right_model", type=Path)
+    models_compare.set_defaults(handler=_models_compare)
+
+    models_publish = model_subparsers.add_parser("publish", help="复制发布已验证模型")
+    models_publish.add_argument("--model", type=Path, required=True)
+    models_publish.add_argument("--registry", type=Path, default=Path(".web_data/models"))
+    models_publish.add_argument("--confirm", "--confirm-publish", action="store_true")
+    models_publish.add_argument("--applicability-scope", required=True)
+    models_publish.add_argument("--engineer-comment", default="")
+    models_publish.set_defaults(handler=_models_publish)
+
+    models_verify = model_subparsers.add_parser("verify", help="校验模型包完整性")
+    models_verify.add_argument("model", nargs="?", type=Path)
+    models_verify.add_argument("--model", dest="model_option", type=Path)
+    models_verify.add_argument("--model-path", dest="model_path", type=Path)
+    models_verify.add_argument("--require-external", action="store_true")
+    models_verify.set_defaults(handler=_models_verify)
     return parser
 
 
@@ -213,6 +250,50 @@ def _serve(args: argparse.Namespace) -> dict[str, Any]:
 
     run_server(args.host, args.port, open_browser=not args.no_open)
     return {"status": "stopped"}
+
+
+def _models_list(args: argparse.Namespace) -> list[dict[str, Any]]:
+    return list_model_versions(args.registry)
+
+
+def _models_compare(args: argparse.Namespace) -> dict[str, Any]:
+    left = args.left_model or args.left_option or args.left
+    right = args.right_model or args.right_option or args.right
+    if left is None or right is None:
+        raise ValueError("compare需要两个模型包路径")
+    return compare_model_versions(left, right)
+
+
+def _parse_applicability_scope(value: str) -> object:
+    text = value.strip()
+    if not text:
+        return ""
+    if text[:1] in "[{":
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as error:
+            raise ValueError("适用范围JSON无效") from error
+    return text
+
+
+def _models_publish(args: argparse.Namespace) -> dict[str, Any]:
+    return publish_model_version(
+        args.model,
+        args.registry,
+        engineer_confirmation=args.confirm,
+        applicability_scope=_parse_applicability_scope(args.applicability_scope),
+        engineer_comment=args.engineer_comment,
+    )
+
+
+def _models_verify(args: argparse.Namespace) -> dict[str, Any]:
+    model = args.model_path or args.model_option or args.model
+    if model is None:
+        raise ValueError("verify需要模型包路径")
+    return verify_model_package_integrity(
+        model,
+        require_external=args.require_external,
+    )
 
 
 def _validate(args: argparse.Namespace) -> dict[str, Any]:

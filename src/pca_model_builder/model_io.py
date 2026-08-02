@@ -51,6 +51,17 @@ _MANIFEST_FIELDS_V2 = (_MANIFEST_FIELDS_V1 - {"validation_status"}) | {
     "model_purpose",
     "model_status",
 }
+_MANIFEST_FIELDS_V4 = _MANIFEST_FIELDS_V2 | {
+    "model_id",
+    "version",
+    "parent_model_id",
+    "parent_version",
+    "created_at",
+    "software_version",
+    "engineer_comment",
+    "applicability_scope",
+    "file_hashes",
+}
 _CONFIG_FIELDS = {
     "model_name",
     "tags",
@@ -100,12 +111,14 @@ def _write_model_package(
     validation_summary: dict[str, Any] | None = None,
     engineer_decision: dict[str, Any] | None = None,
     source_candidate_package: dict[str, str] | None = None,
+    schema_version: int = SCHEMA_VERSION,
+    lifecycle_metadata: Mapping[str, Any] | None = None,
 ) -> None:
     validate_loadable_model_semantics(model_purpose, model_status)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model_purpose": model_purpose,
         "model_status": model_status,
@@ -123,6 +136,10 @@ def _write_model_package(
         manifest["engineer_decision"] = engineer_decision
     if source_candidate_package is not None:
         manifest["source_candidate_package"] = source_candidate_package
+    if schema_version >= 4:
+        if lifecycle_metadata is None:
+            raise ValueError("schema v4 model package lifecycle metadata is required")
+        manifest.update(dict(lifecycle_metadata))
     arrays = BytesIO()
     np.savez_compressed(
         arrays,
@@ -132,6 +149,14 @@ def _write_model_package(
         eigenvalues=model.eigenvalues,
         explained_variance_ratio=model.explained_variance_ratio,
     )
+    arrays_bytes = arrays.getvalue()
+    if schema_version >= 4:
+        manifest["file_hashes"] = {
+            "arrays.npz": {
+                "sha256": hashlib.sha256(arrays_bytes).hexdigest(),
+                "bytes": len(arrays_bytes),
+            }
+        }
 
     temporary_path: Path | None = None
     try:
@@ -147,7 +172,7 @@ def _write_model_package(
                 "manifest.json",
                 json.dumps(manifest, ensure_ascii=False, indent=2),
             )
-            package.writestr("arrays.npz", arrays.getvalue())
+            package.writestr("arrays.npz", arrays_bytes)
         os.replace(temporary_path, destination)
     finally:
         if temporary_path is not None and temporary_path.exists():
@@ -534,8 +559,10 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
                 raise ValueError("model package has unexpected or missing files")
             manifest = json.loads(package.read("manifest.json"))
             _validate_manifest_structure(manifest)
+            arrays_bytes = package.read("arrays.npz")
+            _validate_array_file_hash(manifest, arrays_bytes)
             with np.load(
-                BytesIO(package.read("arrays.npz")), allow_pickle=False
+                BytesIO(arrays_bytes), allow_pickle=False
             ) as arrays:
                 if set(arrays.files) != _ARRAY_NAMES:
                     raise ValueError(
@@ -577,14 +604,21 @@ def _validate_manifest_structure(manifest: object) -> None:
     if not isinstance(manifest, dict):
         raise ValueError("model package manifest must be an object")
     schema_version = manifest.get("schema_version")
-    fields = _MANIFEST_FIELDS_V1 if schema_version == 1 else _MANIFEST_FIELDS_V2
+    if schema_version == 1:
+        fields = _MANIFEST_FIELDS_V1
+    elif schema_version == 4:
+        fields = _MANIFEST_FIELDS_V4
+    else:
+        fields = _MANIFEST_FIELDS_V2
     missing = sorted(fields - set(manifest))
     if missing:
         raise ValueError(f"model package manifest is missing: {', '.join(missing)}")
-    if schema_version not in {1, 2, SCHEMA_VERSION}:
+    if schema_version not in {1, 2, SCHEMA_VERSION, 4}:
         raise ValueError("unsupported model package schema version")
     normalize_model_semantics(manifest)
-    if manifest.get("model_status") == "validated":
+    if schema_version == 4:
+        _validate_v4_metadata(manifest)
+    if manifest.get("model_status") in {"validated", "published"}:
         _validate_validated_evidence(manifest)
     if (
         not isinstance(manifest["n_samples"], int)
@@ -599,6 +633,53 @@ def _validate_manifest_structure(manifest: object) -> None:
         manifest["q_limits"], dict
     ):
         raise ValueError("model package control limits must be objects")
+
+
+def _validate_v4_metadata(manifest: dict[str, Any]) -> None:
+    if not isinstance(manifest.get("model_id"), str) or not manifest["model_id"].strip():
+        raise ValueError("model package model_id must be a non-empty string")
+    version = manifest.get("version")
+    if not isinstance(version, str) or re.fullmatch(r"v\d{4}", version) is None:
+        raise ValueError("model package version is invalid")
+    for field in ("parent_model_id", "parent_version"):
+        value = manifest.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f"model package {field} is invalid")
+    if not isinstance(manifest.get("software_version"), str) or not manifest[
+        "software_version"
+    ].strip():
+        raise ValueError("model package software_version must be a non-empty string")
+    _validate_reviewed_at(manifest.get("created_at"))
+    if not isinstance(manifest.get("engineer_comment"), str):
+        raise ValueError("model package engineer_comment must be text")
+    scope = manifest.get("applicability_scope")
+    if not isinstance(scope, (str, list, dict)):
+        raise ValueError("model package applicability_scope is invalid")
+    if manifest.get("model_status") == "published" and not (
+        (isinstance(scope, str) and scope.strip())
+        or (isinstance(scope, (list, dict)) and bool(scope))
+    ):
+        raise ValueError("published model package applicability_scope is required")
+    if not isinstance(manifest.get("file_hashes"), dict):
+        raise ValueError("model package file_hashes are required")
+
+
+def _validate_array_file_hash(manifest: Mapping[str, Any], arrays_bytes: bytes) -> None:
+    if manifest.get("schema_version") != 4:
+        return
+    hashes = manifest.get("file_hashes")
+    arrays_hash = hashes.get("arrays.npz") if isinstance(hashes, Mapping) else None
+    if not isinstance(arrays_hash, Mapping):
+        raise ValueError("model package arrays.npz hash is required")
+    if (
+        not isinstance(arrays_hash.get("sha256"), str)
+        or _SHA256_PATTERN.fullmatch(arrays_hash["sha256"]) is None
+        or not isinstance(arrays_hash.get("bytes"), int)
+        or isinstance(arrays_hash.get("bytes"), bool)
+        or arrays_hash["bytes"] != len(arrays_bytes)
+        or arrays_hash["sha256"] != hashlib.sha256(arrays_bytes).hexdigest()
+    ):
+        raise ValueError("model package arrays.npz integrity check failed")
 
 
 def _validate_validated_evidence(manifest: dict[str, Any]) -> None:

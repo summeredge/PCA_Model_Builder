@@ -33,6 +33,12 @@ from .model_io import (
     validate_validated_model_artifact,
     validate_validation_report_binding,
 )
+from .model_registry import (
+    compare_model_versions,
+    list_model_versions,
+    publish_model_version,
+    verify_model_package_integrity,
+)
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
 from .quality import QualityReport, inspect_data_quality
 from .screening import screen_performance_states
@@ -71,6 +77,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_DATA_DIR = PROJECT_ROOT / ".web_data"
 UPLOADS_DIR = WEB_DATA_DIR / "uploads"
 RUNS_DIR = WEB_DATA_DIR / "runs"
+MODEL_REGISTRY_DIR = WEB_DATA_DIR / "models"
 MAX_REQUEST_BODY_BYTES = 200 * 1024 * 1024
 MAX_CHART_POINTS = 1200
 MAX_XLSX_BODY_BYTES = MAX_TAG_CONFIG_BYTES
@@ -740,6 +747,54 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def model_versions_payload(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = payload or {}
+    registry = Path(payload.get("registry_dir", MODEL_REGISTRY_DIR))
+    return {"models": list_model_versions(registry)}
+
+
+def model_compare_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    left = _required_text(payload, "left_model")
+    right = _required_text(payload, "right_model")
+    return compare_model_versions(left, right)
+
+
+def model_verify_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    path = _required_text(payload, "model_path")
+    return verify_model_package_integrity(
+        path,
+        require_external=bool(payload.get("require_external", False)),
+    )
+
+
+def model_publish_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    path = _required_text(payload, "model_path")
+    if payload.get("engineer_confirmation") is not True:
+        raise ValueError("发布必须提供明确的工程师确认")
+    scope = payload.get("applicability_scope")
+    return publish_model_version(
+        path,
+        Path(payload.get("registry_dir", MODEL_REGISTRY_DIR)),
+        engineer_confirmation=True,
+        applicability_scope=scope,
+        engineer_comment=str(payload.get("engineer_comment", "")),
+    )
+
+
+def _registry_package_path(value: object) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("模型版本路径无效")
+    package = Path(value).resolve()
+    registry = MODEL_REGISTRY_DIR.resolve()
+    try:
+        package.relative_to(registry)
+    except ValueError as error:
+        raise ValueError("模型版本路径必须位于本地模型仓库") from error
+    if package.name != "model.pcamodel":
+        raise ValueError("模型版本路径无效")
+    return package
+
+
 def _read_upload(payload: dict[str, Any]) -> pd.DataFrame:
     file_id = _validated_id(_required_text(payload, "file_id"), "file_id")
     path = UPLOADS_DIR / f"{file_id}.csv"
@@ -1094,6 +1149,14 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self._send_json({"status": "ok", "port": self.server.server_port})
             return
+        if parsed.path in {"/api/models", "/api/model-versions"}:
+            query = parse_qs(parsed.query)
+            self._send_json(
+                model_versions_payload(
+                    {"registry_dir": query.get("registry_dir", [str(MODEL_REGISTRY_DIR)])[0]}
+                )
+            )
+            return
         if parsed.path == "/download/tag-config-template":
             try:
                 query = parse_qs(parsed.query)
@@ -1118,6 +1181,20 @@ class _Handler(BaseHTTPRequestHandler):
                     parse_qs(parsed.query).get("run_id", [""])[0], "run_id"
                 )
                 self._send_model(run_id)
+            except Exception as error:
+                self._send_json({"error": str(error)}, 400)
+            return
+        if parsed.path == "/download/model-version":
+            try:
+                query = parse_qs(parsed.query)
+                package = _registry_package_path(query.get("path", [""])[0])
+                artifact = query.get("artifact", ["model"])[0]
+                if artifact == "sha256":
+                    sidecar = package.with_name(f"{package.name}.sha256")
+                    self._send_download(sidecar, "text/plain; charset=utf-8", sidecar.name)
+                else:
+                    verify_model_package_integrity(package, require_external=True)
+                    self._send_download(package, "application/zip", package.name)
             except Exception as error:
                 self._send_json({"error": str(error)}, 400)
             return
@@ -1216,6 +1293,15 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/validation-decision":
                 self._send_json(validation_decision_payload(payload))
+                return
+            if parsed.path == "/api/models/compare":
+                self._send_json(model_compare_payload(payload))
+                return
+            if parsed.path == "/api/models/verify":
+                self._send_json(model_verify_payload(payload))
+                return
+            if parsed.path == "/api/models/publish":
+                self._send_json(model_publish_payload(payload))
                 return
             self._send_json({"error": "Not found"}, 404)
         except Exception as error:
@@ -1574,14 +1660,26 @@ INDEX_HTML = r"""<!doctype html>
           <div class="table-wrap"><table><thead><tr><th>事件 / 峰值</th><th>统计量</th><th>Tag</th><th>描述</th><th>单位</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
           <div class="actions"><a id="scoresDownload" class="download" href="#">下载完整评分 CSV</a><a id="reportDownload" class="download" href="#">下载验证摘要</a><a id="contributionsDownload" class="download" href="#">下载贡献记录</a></div>
           <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
-          <div class="help">每次回放会更新当前模型最近一次验证的下载文件；候选模型不会被验证结果原地修改。</div>
-          <div class="notice">贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
-        </div>
+           <div class="help">每次回放会更新当前模型最近一次验证的下载文件；候选模型不会被验证结果原地修改。</div>
+           <div class="notice">贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
+         </div>
+           <div id="modelLifecyclePanel" class="group">
+            <h3>模型版本与发布</h3>
+            <div class="actions"><button id="refreshModelVersions" class="secondary" type="button">刷新模型版本</button><button id="compareModelVersions" class="secondary" type="button">比较选中版本</button></div>
+            <div class="row"><label>左侧版本<select id="modelCompareLeft"></select></label><label>右侧版本<select id="modelCompareRight"></select></label></div>
+            <div id="modelVersionTable" class="table-wrap"><div class="empty">尚未读取模型版本。</div></div>
+            <div id="modelCompareResult" class="help"></div>
+            <label>适用范围<input id="modelPublishScope" type="text" placeholder="装置、工况或适用范围"></label>
+            <label>工程备注<textarea id="modelPublishComment"></textarea></label>
+            <label><input id="modelPublishConfirm" type="checkbox"> 我确认该 normal_state/validated 模型满足发布条件</label>
+            <button id="publishModelVersion" type="button">复制发布已验证模型</button>
+            <div id="modelIntegrity" class="help">发布前将重新校验模型包完整性。</div>
+         </div>
       </div>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[], modelVersions:[] };
 const el = (id) => document.getElementById(id);
 function hideValidatedModelDownload() { const validatedModelDownload=el("validatedModelDownload"); validatedModelDownload.hidden=true; validatedModelDownload.removeAttribute("href"); }
 
@@ -1861,10 +1959,25 @@ el("recordValidationDecision").addEventListener("click",async()=>{
   try {
     const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
     if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; } else { hideValidatedModelDownload(); }
-    setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已创建新的已验证模型包。":"工程师结论已保存；候选模型保持不变。","success");
+    await loadModelVersions(); setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已创建新的已验证模型包。":"工程师结论已保存；候选模型保持不变。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
+
+function renderModelVersions() {
+  const left=el("modelCompareLeft"), right=el("modelCompareRight");
+  left.replaceChildren(); right.replaceChildren();
+  state.modelVersions.forEach((item,index)=>{ if(!item.integrity?.valid) return; const label=`${item.model_id||"legacy"}/${item.version||"legacy"} · ${item.model_status}`; [left,right].forEach(select=>{ const option=document.createElement("option"); option.value=item.path; option.textContent=label; select.append(option); }); if(index===1) right.selectedIndex=1; });
+  const table=el("modelVersionTable"); table.replaceChildren();
+  if(!state.modelVersions.length) { table.innerHTML='<div class="empty">尚未发现模型版本。</div>'; return; }
+  const rows=state.modelVersions.map(item=>{ const path=String(item.path||""); const encoded=encodeURIComponent(path); return `<tr><td>${escapeHtml(item.model_id||"legacy")}</td><td>${escapeHtml(item.version||"legacy")}</td><td>${escapeHtml(item.model_purpose||"—")}</td><td>${escapeHtml(item.model_status||"—")}</td><td>${item.integrity?.valid?"通过":"失败"}</td><td><a href="/download/model-version?path=${encoded}">模型包</a> <a href="/download/model-version?path=${encoded}&artifact=sha256">SHA-256</a></td></tr>`; }).join("");
+  table.innerHTML=`<table><thead><tr><th>模型ID</th><th>版本</th><th>用途</th><th>状态</th><th>完整性</th><th>路径</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+async function loadModelVersions() { const data=await api("/api/models"); state.modelVersions=data.models||[]; renderModelVersions(); }
+el("refreshModelVersions").addEventListener("click",async()=>{ try { await loadModelVersions(); setStatus("模型版本列表已刷新。","success"); } catch(error) { setStatus(error.message,"error"); } });
+el("compareModelVersions").addEventListener("click",async()=>{ try { const left=el("modelCompareLeft").value,right=el("modelCompareRight").value; if(!left||!right) throw new Error("请选择两个模型版本"); const data=await api("/api/models/compare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({left_model:left,right_model:right})}); el("modelCompareResult").textContent=data.equal?"两个模型版本的比较字段全部一致。":`模型版本存在差异：${Object.entries(data.fields).filter(([,value])=>!value.equal).map(([key])=>key).join("、")}`; } catch(error) { setStatus(error.message,"error"); } });
+el("publishModelVersion").addEventListener("click",async()=>{ try { if(!state.modelVersions.length) throw new Error("请先刷新模型版本"); const selected=state.modelVersions.find(item=>item.path===el("modelCompareLeft").value)||state.modelVersions.find(item=>item.model_status==="validated"); if(!selected) throw new Error("请选择已验证模型"); const data=await api("/api/models/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_path:selected.path,engineer_confirmation:el("modelPublishConfirm").checked,applicability_scope:el("modelPublishScope").value.trim(),engineer_comment:el("modelPublishComment").value.trim()})}); await loadModelVersions(); el("modelIntegrity").textContent=`已创建不可变发布版本 ${data.model_id}/${data.version}，完整性校验通过。`; setStatus("已创建新的不可变发布版本。","success"); } catch(error) { setStatus(error.message,"error"); } });
+loadModelVersions().catch(()=>{});
 
 function metric(label,value) { return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
 function qualityProfileTable(title,profile) {

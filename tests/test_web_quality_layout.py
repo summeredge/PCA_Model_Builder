@@ -158,6 +158,27 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     assert 'addCandidateWindow("performance"' in html
     assert 'button.textContent="填入正常期"' not in html
     assert "normalStart" not in html
+
+
+def test_final_web_page_exposes_model_registry_and_publish_controls() -> None:
+    html = web_model_results.INDEX_HTML
+    for element_id in (
+        'id="modelLifecyclePanel"',
+        'id="refreshModelVersions"',
+        'id="modelCompareLeft"',
+        'id="modelCompareRight"',
+        'id="compareModelVersions"',
+        'id="modelVersionTable"',
+        'id="modelPublishScope"',
+        'id="modelPublishConfirm"',
+        'id="publishModelVersion"',
+        'id="modelIntegrity"',
+    ):
+        assert element_id in html
+    assert "/api/models" in html
+    assert "/api/models/compare" in html
+    assert "/api/models/publish" in html
+    assert "不可变发布版本" in html
     assert "normalEnd" not in html
 
 

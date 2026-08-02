@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 from urllib.error import HTTPError
 from urllib.request import urlopen
+from urllib.parse import quote
 import zipfile
 
 import numpy as np
@@ -189,6 +190,48 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
         assert label in html
     assert 'validatedModelDownload.removeAttribute("href")' in html
     assert html.count("hideValidatedModelDownload()") >= 5
+
+
+def test_web_model_registry_lists_compares_verifies_and_publishes(tmp_path, monkeypatch):
+    run_id, _, run_dir, _ = _create_passed_web_run(tmp_path, monkeypatch)
+    registry = tmp_path / "models"
+    monkeypatch.setattr(web, "MODEL_REGISTRY_DIR", registry)
+    validated = run_dir / "validated_model.pcamodel"
+
+    with pytest.raises(ValueError, match="明确的工程师确认"):
+        web.model_publish_payload(
+            {
+                "model_path": str(validated),
+                "engineer_confirmation": False,
+                "applicability_scope": "D330",
+            }
+        )
+    published = web.model_publish_payload(
+        {
+            "model_path": str(validated),
+            "engineer_confirmation": True,
+            "applicability_scope": {"unit": "D330"},
+            "engineer_comment": "web review",
+        }
+    )
+    assert published["model_status"] == "published"
+    listed = web.model_versions_payload()
+    assert len(listed["models"]) == 1
+    path = listed["models"][0]["path"]
+    assert web.model_verify_payload({"model_path": path, "require_external": True})[
+        "valid"
+    ] is True
+    comparison = web.model_compare_payload({"left_model": path, "right_model": path})
+    assert comparison["equal"] is True
+    status, body = _http_get(f"/download/model-version?path={quote(path)}")
+    assert status == 200
+    assert body == Path(path).read_bytes()
+    status, body = _http_get(
+        f"/download/model-version?path={quote(path)}&artifact=sha256"
+    )
+    assert status == 200
+    assert body == Path(f"{path}.sha256").read_bytes()
+    assert run_id in str(run_dir)
 
 
 def test_web_tag_selection_uses_persistent_state_not_rendered_dom():

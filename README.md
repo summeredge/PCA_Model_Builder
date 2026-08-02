@@ -129,7 +129,25 @@ pca-model-builder review-validation `
   --output D330_DPCA_Model_V1_validated.pcamodel
 ```
 
-`--output` 必填且不得与 `--model` 相同。“结论不足”或“不通过”只写入验证报告，不会创建已验证模型包。本阶段不包含模型版本注册、发布或在线部署。
+`--output` 必填且不得与 `--model` 相同。“结论不足”或“不通过”只写入验证报告，不会创建已验证模型包。
+
+## 模型版本与发布
+
+PR-6 使用本地文件扫描模型版本，不引入数据库。模型版本保存于 `.web_data/models/<model_id>/v0001/model.pcamodel`，每个包旁边都有外部 `.sha256` 校验文件；schema v1-v3 包仍只读加载。
+
+```powershell
+pca-model-builder models list --registry .web_data/models
+pca-model-builder models verify --model-path .web_data/models/model-xxx/v0001/model.pcamodel --require-external
+pca-model-builder models compare left.pcamodel right.pcamodel
+pca-model-builder models publish `
+  --model validated.pcamodel `
+  --registry .web_data/models `
+  --confirm `
+  --applicability-scope "D330正常负荷" `
+  --engineer-comment "工程师确认"
+```
+
+发布只接受 `normal_state/validated` 包，并要求完整训练/验证证据、`passed` 人工结论、非空适用范围、显式确认和完整性校验通过。发布会复制生成新的 `normal_state/published` schema v4 包，保留来源包，不覆盖任何已有版本；普通训练入口仍只生成 `normal_state/candidate`。
 
 ## 测试
 
