@@ -240,8 +240,8 @@ def record_engineer_decision(
     if not isinstance(comment, str):
         raise ValueError("工程师备注必须是文本")
     if decision == "passed" and not (
-        validation_summary.get("normal_validation_complete")
-        and validation_summary.get("known_abnormal_complete")
+        validation_summary.get("normal_validation_complete") is True
+        and validation_summary.get("known_abnormal_complete") is True
     ):
         raise ValueError("通过前必须完成正常验证和已知异常验证")
     return {

@@ -10,15 +10,30 @@ from .windows import (
 
 
 MODEL_PURPOSES = frozenset({"exploratory", "normal_state"})
-_WRITABLE_MODEL_SEMANTICS = {
-    ("exploratory", "draft"),
-    ("normal_state", "candidate"),
-    ("normal_state", "validated"),
-}
+_LOADABLE_MODEL_SEMANTICS = frozenset(
+    {
+        ("exploratory", "draft"),
+        ("normal_state", "candidate"),
+        ("normal_state", "validated"),
+    }
+)
+_DIRECT_WRITABLE_MODEL_SEMANTICS = frozenset(
+    {
+        ("exploratory", "draft"),
+        ("normal_state", "candidate"),
+    }
+)
+
+
+def validate_loadable_model_semantics(
+    model_purpose: object, model_status: object
+) -> None:
+    if (model_purpose, model_status) not in _LOADABLE_MODEL_SEMANTICS:
+        raise ValueError("model purpose and status combination is invalid")
 
 
 def validate_new_model_semantics(model_purpose: object, model_status: object) -> None:
-    if (model_purpose, model_status) not in _WRITABLE_MODEL_SEMANTICS:
+    if (model_purpose, model_status) not in _DIRECT_WRITABLE_MODEL_SEMANTICS:
         raise ValueError("model purpose and status combination is invalid")
 
 
@@ -33,7 +48,7 @@ def normalize_model_semantics(manifest: dict[str, Any]) -> dict[str, str]:
             "model_status": "draft",
             "legacy_validation_status": legacy_status,
         }
-    validate_new_model_semantics(
+    validate_loadable_model_semantics(
         manifest.get("model_purpose"), manifest.get("model_status")
     )
     return {

@@ -1,6 +1,8 @@
 from io import BytesIO
 import json
 import zipfile
+import hashlib
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -8,6 +10,7 @@ import pytest
 
 from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.model_io import (
+    commit_validation_artifacts,
     copy_validated_model_package,
     load_model_package,
     save_model_package,
@@ -100,11 +103,24 @@ def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
     validated = tmp_path / "validated.pcamodel"
     original = fit_dpca(frame, n_components=2)
     save_model_package(candidate, original, _valid_config(), [["2026-01-01", "2026-01-02"]])
+    candidate_bytes = candidate.read_bytes()
+    candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    report = {
+        "model_purpose": "normal_state",
+        "model_status": "candidate",
+        "normal_validation_complete": True,
+        "known_abnormal_complete": True,
+        "source_candidate_package": {
+            "identifier": "run-001",
+            "filename": candidate.name,
+            "sha256": candidate_sha256,
+        },
+    }
 
     copy_validated_model_package(
         candidate,
         validated,
-        validation_summary={"normal_validation_complete": True, "known_abnormal_complete": True},
+        validation_summary=report,
         engineer_decision={"decision": "passed", "comment": "reviewed", "reviewed_at": "2026-01-03T00:00:00+00:00"},
         source_identifier="run-001",
     )
@@ -119,7 +135,10 @@ def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
     assert validated_manifest["source_candidate_package"] == {
         "identifier": "run-001",
         "filename": "candidate.pcamodel",
+        "sha256": candidate_sha256,
     }
+    assert validated_manifest["validation_summary"]["source_candidate_package"]["sha256"] == candidate_sha256
+    assert candidate.read_bytes() == candidate_bytes
     pd.testing.assert_frame_equal(candidate_model.score(frame), validated_model.score(frame))
 
 
@@ -139,6 +158,157 @@ def test_validated_copy_rejects_candidate_output_path(tmp_path):
             engineer_decision={},
             source_identifier="run-001",
         )
+
+
+def test_public_model_writer_cannot_create_validated_package(tmp_path):
+    frame = pd.DataFrame(
+        np.random.default_rng(22).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    with pytest.raises(ValueError, match="purpose and status combination"):
+        save_model_package(
+            tmp_path / "direct-validated.pcamodel",
+            fit_dpca(frame, n_components=2),
+            _valid_config(),
+            [["2026-01-01", "2026-01-02"]],
+            model_purpose="normal_state",
+            model_status="validated",
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda report: report.pop("source_candidate_package"),
+        lambda report: report.__setitem__("normal_validation_complete", "true"),
+        lambda report: report["source_candidate_package"].__setitem__("sha256", "0" * 64),
+        lambda report: report.__setitem__("model_status", "draft"),
+    ],
+)
+def test_validated_copy_requires_complete_bound_evidence(tmp_path, mutate):
+    frame = pd.DataFrame(
+        np.random.default_rng(23).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    validated = tmp_path / "validated.pcamodel"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+    report = _bound_report(candidate, "run-001")
+    mutate(report)
+
+    with pytest.raises(ValueError):
+        copy_validated_model_package(
+            candidate,
+            validated,
+            report,
+            {"decision": "passed", "comment": "ok", "reviewed_at": "2026-01-03T00:00:00+00:00"},
+            "run-001",
+        )
+    assert not validated.exists()
+
+
+@pytest.mark.parametrize("decision", ["failed", "insufficient", None])
+def test_validated_copy_rejects_nonpassed_decisions(tmp_path, decision):
+    frame = pd.DataFrame(
+        np.random.default_rng(24).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    validated = tmp_path / "validated.pcamodel"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+    report = _bound_report(candidate, "run-001")
+
+    with pytest.raises(ValueError):
+        copy_validated_model_package(
+            candidate,
+            validated,
+            report,
+            {"decision": decision, "comment": "not approved", "reviewed_at": "2026-01-03T00:00:00+00:00"},
+            "run-001",
+        )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda manifest: manifest.pop("validation_summary"),
+        lambda manifest: manifest.pop("engineer_decision"),
+        lambda manifest: manifest.pop("source_candidate_package"),
+        lambda manifest: manifest["engineer_decision"].__setitem__("decision", "failed"),
+        lambda manifest: manifest["validation_summary"].__setitem__("known_abnormal_complete", False),
+        lambda manifest: manifest["source_candidate_package"].__setitem__("sha256", "BAD"),
+        lambda manifest: manifest["source_candidate_package"].__setitem__("sha256", "0" * 64),
+        lambda manifest: manifest["engineer_decision"].__setitem__("reviewed_at", "2026-01-03T00:00:00"),
+        lambda manifest: manifest["source_candidate_package"].__setitem__("identifier", ""),
+    ],
+)
+def test_tampered_validated_manifest_is_rejected_on_load(tmp_path, mutate):
+    frame = pd.DataFrame(
+        np.random.default_rng(25).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    validated = tmp_path / "validated.pcamodel"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+    report = _bound_report(candidate, "run-001")
+    copy_validated_model_package(
+        candidate,
+        validated,
+        report,
+        {"decision": "passed", "comment": "ok", "reviewed_at": "2026-01-03T00:00:00+00:00"},
+        "run-001",
+    )
+    with zipfile.ZipFile(validated) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays = package.read("arrays.npz")
+    mutate(manifest)
+    with zipfile.ZipFile(validated, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)
+
+    with pytest.raises(ValueError):
+        load_model_package(validated)
+
+
+def test_validation_artifact_commit_rolls_back_when_report_replace_fails(tmp_path, monkeypatch):
+    import pca_model_builder.model_io as model_io
+
+    frame = pd.DataFrame(
+        np.random.default_rng(26).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    validated = tmp_path / "validated.pcamodel"
+    report_path = tmp_path / "validation_report.json"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+    report = _bound_report(candidate, "run-001")
+    report["engineer_decision_required"] = True
+    decision = {"decision": "passed", "comment": "ok", "reviewed_at": "2026-01-03T00:00:00+00:00"}
+    original_report = {"old": True}
+    report_path.write_text(json.dumps(original_report), encoding="utf-8")
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+
+    def fail_report_replace(source, destination):
+        if Path(destination) == report_path and not failed["value"]:
+            failed["value"] = True
+            raise OSError("simulated report commit failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_report_replace)
+    with pytest.raises(OSError, match="simulated"):
+        commit_validation_artifacts(
+            candidate,
+            validated,
+            report_path,
+            report,
+            decision,
+            "run-001",
+        )
+
+    assert json.loads(report_path.read_text(encoding="utf-8")) == original_report
+    assert not validated.exists()
+    assert not list(tmp_path.glob(".*.tmp"))
 
 
 @pytest.mark.parametrize(
@@ -354,4 +524,18 @@ def _valid_config() -> dict[str, object]:
         "max_lag_minutes": 0,
         "lag_step_minutes": 5,
         "variance_threshold": 0.95,
+    }
+
+
+def _bound_report(path, identifier):
+    return {
+        "model_purpose": "normal_state",
+        "model_status": "candidate",
+        "normal_validation_complete": True,
+        "known_abnormal_complete": True,
+        "source_candidate_package": {
+            "identifier": identifier,
+            "filename": path.name,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        },
     }

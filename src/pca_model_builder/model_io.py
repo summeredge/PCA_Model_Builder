@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from io import BytesIO
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +22,7 @@ from .compat import (
     normalize_manifest_training_windows,
     normalize_model_semantics,
     normalize_training_windows_for_write,
+    validate_loadable_model_semantics,
     validate_new_model_semantics,
 )
 from .windows import normalize_training_windows
@@ -59,6 +62,7 @@ _CONFIG_FIELDS = {
     "variance_threshold",
 }
 _FEATURE_PATTERN = re.compile(r"^(?P<tag>.+)__lag_(?P<lag>\d+)min$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def save_model_package(
@@ -73,6 +77,31 @@ def save_model_package(
     source_candidate_package: dict[str, str] | None = None,
 ) -> None:
     validate_new_model_semantics(model_purpose, model_status)
+    _write_model_package(
+        path,
+        model,
+        config=config,
+        training_windows=training_windows,
+        model_purpose=model_purpose,
+        model_status=model_status,
+        validation_summary=validation_summary,
+        engineer_decision=engineer_decision,
+        source_candidate_package=source_candidate_package,
+    )
+
+
+def _write_model_package(
+    path: str | Path,
+    model: DPCAModel,
+    config: dict[str, Any],
+    training_windows: list[object],
+    model_purpose: str,
+    model_status: str,
+    validation_summary: dict[str, Any] | None = None,
+    engineer_decision: dict[str, Any] | None = None,
+    source_candidate_package: dict[str, str] | None = None,
+) -> None:
+    validate_loadable_model_semantics(model_purpose, model_status)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
@@ -136,26 +165,265 @@ def copy_validated_model_package(
     destination = Path(destination_path)
     if source.resolve() == destination.resolve():
         raise ValueError("validated model output must differ from the candidate package")
+    if not isinstance(source_identifier, str) or not source_identifier.strip():
+        raise ValueError("source candidate identifier must be a non-empty string")
     model, manifest = load_model_package(source)
     if (
         manifest["model_purpose"] != "normal_state"
         or manifest["model_status"] != "candidate"
     ):
         raise ValueError("only normal_state/candidate models can become validated")
-    save_model_package(
+    actual_sha256 = model_package_sha256(source)
+    _validate_review_evidence(
+        source,
+        manifest,
+        validation_summary,
+        engineer_decision,
+        expected_identifier=source_identifier,
+        actual_sha256=actual_sha256,
+    )
+    source_binding = dict(validation_summary["source_candidate_package"])
+    source_binding["sha256"] = actual_sha256
+    summary = dict(validation_summary)
+    summary["source_candidate_package"] = source_binding
+    _write_model_package(
         destination,
         model,
         config=dict(manifest["config"]),
         training_windows=manifest["training_windows"],
         model_purpose="normal_state",
         model_status="validated",
-        validation_summary=validation_summary,
+        validation_summary=summary,
         engineer_decision=engineer_decision,
         source_candidate_package={
             "identifier": source_identifier,
             "filename": source.name,
+            "sha256": actual_sha256,
         },
     )
+
+
+def model_package_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_validation_report_binding(
+    candidate_path: str | Path,
+    manifest: dict[str, Any],
+    report: Mapping[str, Any],
+    expected_identifier: str | None = None,
+) -> str:
+    source = Path(candidate_path)
+    if manifest.get("model_purpose") != "normal_state" or manifest.get(
+        "model_status"
+    ) != "candidate":
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    binding = report.get("source_candidate_package")
+    if not isinstance(binding, Mapping):
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    identifier = binding.get("identifier")
+    filename = binding.get("filename")
+    reported_sha256 = binding.get("sha256")
+    if (
+        not isinstance(identifier, str)
+        or not identifier.strip()
+        or filename != source.name
+        or not isinstance(reported_sha256, str)
+        or _SHA256_PATTERN.fullmatch(reported_sha256) is None
+    ):
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    if expected_identifier is not None and identifier != expected_identifier:
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    if report.get("model_purpose") != "normal_state" or report.get(
+        "model_status"
+    ) != "candidate":
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    if reported_sha256 != model_package_sha256(source):
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    return reported_sha256
+
+
+def _validate_review_evidence(
+    source: Path,
+    manifest: Mapping[str, Any],
+    validation_summary: Mapping[str, Any],
+    engineer_decision: Mapping[str, Any],
+    expected_identifier: str,
+    actual_sha256: str,
+) -> None:
+    if not isinstance(validation_summary, Mapping):
+        raise ValueError("验证报告证据不完整")
+    if validation_summary.get("model_purpose") != "normal_state" or validation_summary.get(
+        "model_status"
+    ) != "candidate":
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    if validation_summary.get("normal_validation_complete") is not True or validation_summary.get(
+        "known_abnormal_complete"
+    ) is not True:
+        raise ValueError("通过前必须完成正常验证和已知异常验证")
+    if not isinstance(engineer_decision, Mapping):
+        raise ValueError("验证人工结论不完整")
+    if engineer_decision.get("decision") != "passed":
+        raise ValueError("只有passed结论可以生成validated模型")
+    if not isinstance(engineer_decision.get("comment"), str):
+        raise ValueError("工程师备注必须是文本")
+    _validate_reviewed_at(engineer_decision.get("reviewed_at"))
+    binding = validation_summary.get("source_candidate_package")
+    if not isinstance(binding, Mapping):
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    if binding.get("identifier") != expected_identifier or binding.get("filename") != source.name:
+        raise ValueError("验证报告与当前候选模型包不匹配")
+    if binding.get("sha256") != actual_sha256:
+        raise ValueError("验证报告与当前候选模型包不匹配")
+
+
+def _validate_reviewed_at(value: object) -> None:
+    if not isinstance(value, str):
+        raise ValueError("工程师审查时间无效")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("工程师审查时间无效") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("工程师审查时间必须带时区")
+
+
+def validate_validated_model_artifact(
+    candidate_path: str | Path,
+    validated_path: str | Path,
+    report: Mapping[str, Any],
+    expected_identifier: str | None = None,
+) -> dict[str, Any]:
+    candidate = Path(candidate_path)
+    validated = Path(validated_path)
+    _, candidate_manifest = load_model_package(candidate)
+    candidate_sha256 = validate_validation_report_binding(
+        candidate, candidate_manifest, report, expected_identifier
+    )
+    engineer_decision = report.get("engineer_decision")
+    if not isinstance(engineer_decision, Mapping) or engineer_decision.get(
+        "decision"
+    ) != "passed":
+        raise ValueError("当前验证报告不是passed结论")
+    if not validated.is_file():
+        raise ValueError("已验证模型工件不存在")
+    _, validated_manifest = load_model_package(validated)
+    source_package = validated_manifest["source_candidate_package"]
+    if (
+        validated_manifest.get("model_purpose") != "normal_state"
+        or validated_manifest.get("model_status") != "validated"
+        or source_package.get("sha256") != candidate_sha256
+        or source_package.get("filename") != candidate.name
+        or (
+            expected_identifier is not None
+            and source_package.get("identifier") != expected_identifier
+        )
+        or validated_manifest.get("engineer_decision") != dict(engineer_decision)
+        or validated_manifest.get("validation_summary") != dict(report)
+    ):
+        raise ValueError("验证报告与当前已验证模型包不一致")
+    return validated_manifest
+
+
+def commit_validation_artifacts(
+    candidate_path: str | Path,
+    validated_path: str | Path,
+    report_path: str | Path,
+    report: Mapping[str, Any],
+    engineer_decision: Mapping[str, Any],
+    source_identifier: str,
+    previous_report: Mapping[str, Any] | None = None,
+) -> None:
+    """Atomically commit the report and optional validated copy as one review."""
+    candidate = Path(candidate_path)
+    validated = Path(validated_path)
+    report_file = Path(report_path)
+    if candidate.resolve() == validated.resolve():
+        raise ValueError("validated model output must differ from the candidate package")
+    report_file.parent.mkdir(parents=True, exist_ok=True)
+    if not isinstance(source_identifier, str) or not source_identifier.strip():
+        raise ValueError("source candidate identifier must be a non-empty string")
+    decision = engineer_decision.get("decision")
+    if decision not in {"passed", "insufficient", "failed"}:
+        raise ValueError("工程师结论无效")
+    if validated.exists():
+        if previous_report is None:
+            raise ValueError("已有validated工件来源无法验证，拒绝覆盖")
+        validate_validated_model_artifact(
+            candidate,
+            validated,
+            previous_report,
+            expected_identifier=source_identifier,
+        )
+
+    temporary_validated: Path | None = None
+    temporary_report: Path | None = None
+    output_backup: Path | None = None
+    report_backup: Path | None = None
+    output_installed = False
+    report_installed = False
+    try:
+        if decision == "passed":
+            temporary_validated = _reserve_temporary_path(validated, ".pcamodel.tmp")
+            copy_validated_model_package(
+                candidate,
+                temporary_validated,
+                validation_summary=dict(report),
+                engineer_decision=dict(engineer_decision),
+                source_identifier=source_identifier,
+            )
+        temporary_report = _reserve_temporary_path(report_file, ".json.tmp")
+        temporary_report.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        if validated.exists():
+            output_backup = _reserve_temporary_path(validated, ".bak")
+            os.replace(validated, output_backup)
+        if report_file.exists():
+            report_backup = _reserve_temporary_path(report_file, ".bak")
+            os.replace(report_file, report_backup)
+        if temporary_validated is not None:
+            os.replace(temporary_validated, validated)
+            output_installed = True
+        os.replace(temporary_report, report_file)
+        report_installed = True
+    except Exception:
+        if output_installed and validated.exists():
+            validated.unlink()
+        if report_installed and report_file.exists():
+            report_file.unlink()
+        if output_backup is not None and output_backup.exists():
+            os.replace(output_backup, validated)
+            output_backup = None
+        if report_backup is not None and report_backup.exists():
+            os.replace(report_backup, report_file)
+            report_backup = None
+        raise
+    finally:
+        for temporary in (
+            temporary_validated,
+            temporary_report,
+            output_backup,
+            report_backup,
+        ):
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+
+
+def _reserve_temporary_path(target: Path, suffix: str) -> Path:
+    fd, name = tempfile.mkstemp(
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=suffix,
+    )
+    os.close(fd)
+    path = Path(name)
+    path.unlink()
+    return path
 
 
 def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
@@ -216,6 +484,8 @@ def _validate_manifest_structure(manifest: object) -> None:
     if schema_version not in {1, 2, SCHEMA_VERSION}:
         raise ValueError("unsupported model package schema version")
     normalize_model_semantics(manifest)
+    if manifest.get("model_status") == "validated":
+        _validate_validated_evidence(manifest)
     if (
         not isinstance(manifest["n_samples"], int)
         or isinstance(manifest["n_samples"], bool)
@@ -229,6 +499,48 @@ def _validate_manifest_structure(manifest: object) -> None:
         manifest["q_limits"], dict
     ):
         raise ValueError("model package control limits must be objects")
+
+
+def _validate_validated_evidence(manifest: dict[str, Any]) -> None:
+    validation_summary = manifest.get("validation_summary")
+    engineer_decision = manifest.get("engineer_decision")
+    source_package = manifest.get("source_candidate_package")
+    if not isinstance(validation_summary, dict):
+        raise ValueError("validated model package validation_summary is required")
+    if not isinstance(engineer_decision, dict):
+        raise ValueError("validated model package engineer_decision is required")
+    if not isinstance(source_package, dict):
+        raise ValueError("validated model package source_candidate_package is required")
+    if engineer_decision.get("decision") != "passed":
+        raise ValueError("validated model package decision must be passed")
+    if not isinstance(engineer_decision.get("comment"), str):
+        raise ValueError("validated model package decision comment is invalid")
+    _validate_reviewed_at(engineer_decision.get("reviewed_at"))
+    if (
+        validation_summary.get("normal_validation_complete") is not True
+        or validation_summary.get("known_abnormal_complete") is not True
+    ):
+        raise ValueError("validated model package validation evidence is incomplete")
+    summary_binding = validation_summary.get("source_candidate_package")
+    if not isinstance(summary_binding, dict):
+        raise ValueError("validated model package validation binding is missing")
+    for binding in (source_package, summary_binding):
+        if (
+            not isinstance(binding.get("identifier"), str)
+            or not binding["identifier"].strip()
+            or not isinstance(binding.get("filename"), str)
+            or not binding["filename"].strip()
+            or not isinstance(binding.get("sha256"), str)
+            or _SHA256_PATTERN.fullmatch(binding["sha256"]) is None
+        ):
+            raise ValueError("validated model package source binding is invalid")
+    if summary_binding["sha256"] != source_package["sha256"]:
+        raise ValueError("validated model package source binding is inconsistent")
+    if (
+        summary_binding["identifier"] != source_package["identifier"]
+        or summary_binding["filename"] != source_package["filename"]
+    ):
+        raise ValueError("validated model package source binding is inconsistent")
 
 
 def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:

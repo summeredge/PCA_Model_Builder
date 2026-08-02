@@ -1,4 +1,6 @@
 import json
+import hashlib
+from pathlib import Path
 import zipfile
 
 import numpy as np
@@ -7,6 +9,7 @@ import pytest
 
 from pca_model_builder.cli import main
 from pca_model_builder import cli
+import pca_model_builder.model_io as model_io
 from pca_model_builder.model_io import load_model_package
 from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.training import build_training_matrix
@@ -135,6 +138,11 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     assert {"pc1", "pc2"}.issubset(scores.columns)
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["engineer_decision_required"] is True
+    assert report["source_candidate_package"] == {
+        "identifier": model_path.name,
+        "filename": model_path.name,
+        "sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
+    }
     assert "known_event" in report["status_by_engineering_label"]
     contributions = json.loads(contributions_path.read_text(encoding="utf-8"))
     assert {item["statistic"] for item in contributions} == {"t2", "spe"}
@@ -407,6 +415,12 @@ def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, c
     assert validation_report["known_abnormal_complete"] is True
     assert {item["type"] for item in validation_report["validation_window_summaries"]} == {"normal_validation", "known_abnormal"}
 
+    candidate_b = tmp_path / "candidate-b.pcamodel"
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--normal-start", time[0].isoformat(), "--normal-end", time[79].isoformat(), "--max-lag", "0", "--model-name", "candidate-b", "--output", str(candidate_b)]) == 0
+    cross_output = tmp_path / "cross-candidate.pcamodel"
+    assert main(["review-validation", "--model", str(candidate_b), "--validation-report", str(report), "--decision", "passed", "--output", str(cross_output)]) == 2
+    assert not cross_output.exists()
+
     assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "insufficient", "--output", str(failed_output)]) == 0
     assert not failed_output.exists()
     assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--comment", "approved", "--output", str(validated), "--source-id", "candidate-run"]) == 0
@@ -418,8 +432,55 @@ def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, c
     np.testing.assert_allclose(candidate_model.scale, validated_model.scale)
     np.testing.assert_allclose(candidate_model.components, validated_model.components)
 
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "failed", "--output", str(validated)]) == 0
+    assert not validated.exists()
+    assert json.loads(report.read_text(encoding="utf-8"))["engineer_decision"]["decision"] == "failed"
+
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--output", str(validated)]) == 0
+    assert validated.exists()
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "insufficient", "--output", str(validated)]) == 0
+    assert not validated.exists()
+
     assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "failed", "--output", str(candidate)]) == 2
     assert "must differ" in capsys.readouterr().err
+
+
+def test_cli_review_transaction_keeps_report_and_candidate_on_commit_failure(
+    tmp_path, monkeypatch
+):
+    time = pd.date_range("2026-01-01", periods=120, freq="5min")
+    rng = np.random.default_rng(98)
+    frame = pd.DataFrame({"time": time, "A": rng.normal(size=120), "B": rng.normal(size=120), "C": rng.normal(size=120)})
+    csv_path = tmp_path / "history.csv"
+    candidate = tmp_path / "candidate.pcamodel"
+    report_path = tmp_path / "report.json"
+    output = tmp_path / "validated.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--normal-start", time[0].isoformat(), "--normal-end", time[-1].isoformat(), "--max-lag", "0", "--components", "2", "--model-name", "candidate", "--output", str(candidate)]) == 0
+    report = {
+        "model_purpose": "normal_state",
+        "model_status": "candidate",
+        "normal_validation_complete": True,
+        "known_abnormal_complete": True,
+        "source_candidate_package": {"identifier": candidate.name, "filename": candidate.name, "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    original_report = report_path.read_bytes()
+    original_candidate = candidate.read_bytes()
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+
+    def fail_report_replace(source, destination):
+        if Path(destination) == report_path and not failed["value"]:
+            failed["value"] = True
+            raise OSError("simulated report commit failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_report_replace)
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report_path), "--decision", "passed", "--output", str(output)]) == 2
+    assert report_path.read_bytes() == original_report
+    assert candidate.read_bytes() == original_candidate
+    assert not output.exists()
 
 
 def test_cli_training_allows_physical_time_gap(tmp_path):

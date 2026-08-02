@@ -24,7 +24,14 @@ from .compat import (
     training_windows_from_payload,
 )
 from .dpca import fit_dpca
-from .model_io import copy_validated_model_package, load_model_package, save_model_package
+from .model_io import (
+    commit_validation_artifacts,
+    load_model_package,
+    model_package_sha256,
+    save_model_package,
+    validate_validated_model_artifact,
+    validate_validation_report_binding,
+)
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
 from .quality import QualityReport, inspect_data_quality
 from .screening import screen_performance_states
@@ -605,6 +612,9 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             engineering_ranges(tag_configs),
         )
     indexed = _indexed_tags(parsed, timestamp_column, tags)
+    validated_path = RUNS_DIR / run_id / "validated_model.pcamodel"
+    if validated_path.exists():
+        validated_path.unlink()
     validation_result = validate_model_windows(
         model,
         indexed,
@@ -622,6 +632,11 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "run_id": run_id,
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
+        "source_candidate_package": {
+            "identifier": run_id,
+            "filename": model_path.name,
+            "sha256": model_package_sha256(model_path),
+        },
         "engineer_decision_required": True,
         "validation_windows": validation_result["validation_windows"],
         "validation_window_summaries": validation_result["window_summaries"],
@@ -689,30 +704,35 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("候选模型或验证报告不存在")
     _, manifest = load_model_package(model_path)
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    validate_validation_report_binding(
+        model_path, manifest, report, expected_identifier=run_id
+    )
     decision = record_engineer_decision(
         manifest,
         report,
         payload.get("decision"),
         payload.get("comment", ""),
     )
-    report["engineer_decision"] = decision
-    validated_path: Path | None = None
-    if decision["decision"] == "passed":
-        validated_path = run_dir / "validated_model.pcamodel"
-        copy_validated_model_package(
-            model_path,
-            validated_path,
-            validation_summary=report,
-            engineer_decision=decision,
-            source_identifier=run_id,
-        )
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    updated_report = dict(report)
+    updated_report["engineer_decision"] = decision
+    validated_path = run_dir / "validated_model.pcamodel"
+    commit_validation_artifacts(
+        model_path,
+        validated_path,
+        report_path,
+        report=updated_report,
+        engineer_decision=decision,
+        source_identifier=run_id,
+        previous_report=report,
+    )
     return {
         "run_id": run_id,
         "engineer_decision": decision,
-        "model_status": "validated" if validated_path else manifest["model_status"],
+        "model_status": "validated" if decision["decision"] == "passed" else manifest["model_status"],
         "validated_model_download": (
-            f"/download/validated-model?run_id={run_id}" if validated_path else None
+            f"/download/validated-model?run_id={run_id}"
+            if decision["decision"] == "passed"
+            else None
         ),
     }
 
@@ -1103,8 +1123,20 @@ class _Handler(BaseHTTPRequestHandler):
                 run_id = _validated_id(
                     parse_qs(parsed.query).get("run_id", [""])[0], "run_id"
                 )
+                run_dir = RUNS_DIR / run_id
+                candidate_path = run_dir / "model.pcamodel"
+                report_path = run_dir / "validation_report.json"
+                if not candidate_path.is_file() or not report_path.is_file():
+                    raise ValueError("当前已验证模型证据不存在")
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                validate_validated_model_artifact(
+                    candidate_path,
+                    run_dir / "validated_model.pcamodel",
+                    report,
+                    expected_identifier=run_id,
+                )
                 self._send_download(
-                    RUNS_DIR / run_id / "validated_model.pcamodel",
+                    run_dir / "validated_model.pcamodel",
                     "application/octet-stream",
                     "validated_model.pcamodel",
                 )
@@ -1548,6 +1580,7 @@ INDEX_HTML = r"""<!doctype html>
 <script>
 const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
+function hideValidatedModelDownload() { const validatedModelDownload=el("validatedModelDownload"); validatedModelDownload.hidden=true; validatedModelDownload.removeAttribute("href"); }
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
 function setBusy(button, busy, text) { if (!button.dataset.label) button.dataset.label=button.textContent; button.disabled=busy; button.textContent=busy?text:button.dataset.label; }
@@ -1655,7 +1688,7 @@ el("uploadButton").addEventListener("click", async () => {
   try {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderTrainingWindows(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.performance=null; state.trend=null; state.validation=null; state.excludedTags=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.validationWindows=[]; state.selectedTag=null; state.selectedModelTags.clear(); hideValidatedModelDownload(); renderTrainingWindows(); renderValidationWindows(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -1666,7 +1699,7 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.validation=null; el("validatedModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.validation=null; hideValidatedModelDownload(); state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
@@ -1783,7 +1816,7 @@ async function trainModel(modelPurpose) {
     const components=el("components").value.trim();
     const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
+    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; hideValidatedModelDownload(); renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1811,6 +1844,7 @@ el("addValidationWindow").addEventListener("click",()=>{
 el("validateButton").addEventListener("click", async () => {
   const button=el("validateButton"); setBusy(button,true,"回放中…"); setStatus("正在使用训练参数回放独立验证窗口。","info");
   try {
+    hideValidatedModelDownload();
     if(!state.validationWindows.length) { state.validationWindows.push({id:"validation-default-001",type:"normal_validation",start:el("validationStart").value,end:el("validationEnd").value,enabled:true,comment:""}); renderValidationWindows(); }
     const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_windows:state.validationWindows,label_column:el("labelColumn").value};
     const data=await api("/api/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
@@ -1823,7 +1857,7 @@ el("recordValidationDecision").addEventListener("click",async()=>{
   const button=el("recordValidationDecision"); setBusy(button,true,"保存中…");
   try {
     const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
-    if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; }
+    if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; } else { hideValidatedModelDownload(); }
     setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已创建新的已验证模型包。":"工程师结论已保存；候选模型保持不变。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1937,6 +1971,7 @@ function renderTrainingWindowSummary(windows) {
 }
 
 function renderValidation(data) {
+  hideValidatedModelDownload();
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型状态（草稿）","待工程确认");
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");

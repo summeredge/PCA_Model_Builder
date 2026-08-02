@@ -1,6 +1,8 @@
 import json
+import hashlib
 import inspect
 from io import BytesIO
+from pathlib import Path
 import zipfile
 
 import numpy as np
@@ -10,6 +12,7 @@ import pytest
 
 from pca_model_builder.cli import build_parser
 from pca_model_builder import cli, web, web_model_results
+import pca_model_builder.model_io as model_io
 from pca_model_builder.model_io import load_model_package
 from pca_model_builder.preprocessing import (
     PreprocessingConfig,
@@ -100,6 +103,8 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
         assert element_id in html
     for label in ("正常样本验证", "已知异常验证", "通过", "结论不足", "不通过"):
         assert label in html
+    assert 'validatedModelDownload.removeAttribute("href")' in html
+    assert html.count("hideValidatedModelDownload()") >= 5
 
 
 def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
@@ -834,6 +839,10 @@ def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
     assert result["normal_validation_complete"] is True
     assert result["known_abnormal_complete"] is True
     assert {item["type"] for item in result["validation_window_summaries"]} == {"normal_validation", "known_abnormal"}
+    report_path = tmp_path / "runs" / trained["run_id"] / "validation_report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["source_candidate_package"]["identifier"] == trained["run_id"]
+    assert report["source_candidate_package"]["sha256"] == hashlib.sha256((tmp_path / "runs" / trained["run_id"] / "model.pcamodel").read_bytes()).hexdigest()
 
     run_dir = tmp_path / "runs" / trained["run_id"]
     candidate = run_dir / "model.pcamodel"
@@ -847,7 +856,77 @@ def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
     assert candidate_manifest["model_status"] == "candidate"
     assert validated_manifest["model_status"] == "validated"
     assert validated_manifest["source_candidate_package"]["identifier"] == trained["run_id"]
+    candidate_bytes = candidate.read_bytes()
     assert validated_model.feature_names == tuple(candidate_manifest["feature_names"])
+
+    web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
+    assert not (run_dir / "validated_model.pcamodel").exists()
+    assert "engineer_decision" not in json.loads(report_path.read_text(encoding="utf-8"))
+    assert web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved again"})["model_status"] == "validated"
+    assert web.validation_decision_payload({"run_id": trained["run_id"], "decision": "insufficient", "comment": "still insufficient"})["validated_model_download"] is None
+    assert not (run_dir / "validated_model.pcamodel").exists()
+    assert web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved final"})["model_status"] == "validated"
+    assert web.validation_decision_payload({"run_id": trained["run_id"], "decision": "failed", "comment": "rejected"})["validated_model_download"] is None
+    assert not (run_dir / "validated_model.pcamodel").exists()
+    assert json.loads(report_path.read_text(encoding="utf-8"))["engineer_decision"]["decision"] == "failed"
+    assert candidate.read_bytes() == candidate_bytes
+
+
+def test_web_rejects_validation_report_after_candidate_replacement(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    common = {"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "normal_start": "2026-01-01T00:00:00", "normal_end": "2026-01-01T07:55:00", "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 0, "lag_step_minutes": 5}
+    first = web.train_payload({**common, "model_name": "first"})
+    windows = [
+        {"id": "normal-001", "type": "normal_validation", "start": "2026-01-01T08:00:00", "end": "2026-01-01T09:55:00", "enabled": True, "comment": "normal"},
+        {"id": "abnormal-001", "type": "known_abnormal", "start": "2026-01-01T10:50:00", "end": "2026-01-01T14:55:00", "enabled": True, "comment": "event"},
+    ]
+    web.validate_payload({"run_id": first["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
+    second = web.train_payload({**common, "model_name": "second"})
+    first_path = tmp_path / "runs" / first["run_id"] / "model.pcamodel"
+    second_path = tmp_path / "runs" / second["run_id"] / "model.pcamodel"
+    first_path.write_bytes(second_path.read_bytes())
+
+    with pytest.raises(ValueError, match="验证报告与当前候选模型包不匹配"):
+        web.validation_decision_payload({"run_id": first["run_id"], "decision": "passed", "comment": "should reject"})
+    assert not (tmp_path / "runs" / first["run_id"] / "validated_model.pcamodel").exists()
+
+
+def test_web_review_transaction_keeps_report_and_candidate_on_commit_failure(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    trained = web.train_payload({"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "normal_start": "2026-01-01T00:00:00", "normal_end": "2026-01-01T07:55:00", "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 0, "lag_step_minutes": 5, "model_name": "candidate"})
+    windows = [
+        {"id": "normal-001", "type": "normal_validation", "start": "2026-01-01T08:00:00", "end": "2026-01-01T09:55:00", "enabled": True, "comment": "normal"},
+        {"id": "abnormal-001", "type": "known_abnormal", "start": "2026-01-01T10:50:00", "end": "2026-01-01T14:55:00", "enabled": True, "comment": "event"},
+    ]
+    web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
+    run_dir = tmp_path / "runs" / trained["run_id"]
+    candidate = run_dir / "model.pcamodel"
+    report = run_dir / "validation_report.json"
+    original_candidate = candidate.read_bytes()
+    original_report = report.read_bytes()
+    original_replace = model_io.os.replace
+    failed = {"value": False}
+
+    def fail_report_replace(source, destination):
+        if Path(destination) == report and not failed["value"]:
+            failed["value"] = True
+            raise OSError("simulated report commit failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(model_io.os, "replace", fail_report_replace)
+    with pytest.raises(OSError, match="simulated report commit failure"):
+        web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved"})
+    assert candidate.read_bytes() == original_candidate
+    assert report.read_bytes() == original_report
+    assert not (run_dir / "validated_model.pcamodel").exists()
 
 
 def test_validation_download_artifact_uses_fixed_whitelist():

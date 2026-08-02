@@ -13,7 +13,13 @@ from .compat import (
     training_windows_from_payload,
 )
 from .dpca import fit_dpca
-from .model_io import copy_validated_model_package, load_model_package, save_model_package
+from .model_io import (
+    commit_validation_artifacts,
+    load_model_package,
+    model_package_sha256,
+    save_model_package,
+    validate_validation_report_binding,
+)
 from .preprocessing import PreprocessingConfig
 from .quality import QualityReport, inspect_data_quality
 from .tag_config import engineering_ranges, normalize_tag_configs
@@ -267,6 +273,11 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         "model": str(args.model),
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
+        "source_candidate_package": {
+            "identifier": args.model.name,
+            "filename": args.model.name,
+            "sha256": model_package_sha256(args.model),
+        },
         "validation_windows": validation_result["validation_windows"],
         "validation_window_summaries": validation_result["window_summaries"],
         "normal_validation_complete": validation_result["normal_validation_complete"],
@@ -297,19 +308,33 @@ def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("validated model output must differ from the candidate package")
     _, manifest = load_model_package(args.model)
     report = json.loads(args.validation_report.read_text(encoding="utf-8"))
+    validate_validation_report_binding(args.model, manifest, report)
+    binding_identifier = report["source_candidate_package"]["identifier"]
+    source_identifier = args.source_id or binding_identifier
+    if args.source_id:
+        updated_binding = dict(report["source_candidate_package"])
+        updated_binding["identifier"] = source_identifier
+        report = dict(report)
+        report["source_candidate_package"] = updated_binding
+        validate_validation_report_binding(
+            args.model, manifest, report, expected_identifier=source_identifier
+        )
     decision = record_engineer_decision(manifest, report, args.decision, args.comment)
-    report["engineer_decision"] = decision
-    _write_json(args.validation_report, report)
-    if args.decision != "passed":
-        return {"engineer_decision": decision, "validated_model": None}
-    copy_validated_model_package(
+    updated_report = dict(report)
+    updated_report["engineer_decision"] = decision
+    commit_validation_artifacts(
         args.model,
         args.output,
-        validation_summary=report,
+        args.validation_report,
+        report=updated_report,
         engineer_decision=decision,
-        source_identifier=args.source_id or args.model.name,
+        source_identifier=source_identifier,
+        previous_report=report,
     )
-    return {"engineer_decision": decision, "validated_model": str(args.output)}
+    return {
+        "engineer_decision": decision,
+        "validated_model": str(args.output) if args.decision == "passed" else None,
+    }
 
 
 def _read_csv(path: Path, timestamp_column: str, encoding: str) -> pd.DataFrame:
