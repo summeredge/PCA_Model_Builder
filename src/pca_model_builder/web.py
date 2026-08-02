@@ -21,7 +21,6 @@ import pandas as pd
 from .clustering import cluster_model_scores, cluster_operating_states
 from .compat import (
     MODEL_PURPOSES,
-    normalize_manifest_training_windows,
     training_windows_from_payload,
 )
 from .contribution import contribution_event_records, exceedance_contribution_tables
@@ -578,7 +577,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     training_windows = [
         (pd.Timestamp(window["start"]), pd.Timestamp(window["end"]))
-        for window in normalize_manifest_training_windows(manifest)
+        for window in manifest["training_windows"]
         if window["enabled"]
     ]
     ensure_disjoint_windows(training_windows, [validation_window])

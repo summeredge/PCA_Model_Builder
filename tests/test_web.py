@@ -1,6 +1,7 @@
 import json
 import inspect
 from io import BytesIO
+import zipfile
 
 import numpy as np
 from openpyxl import load_workbook
@@ -382,6 +383,29 @@ def test_training_windows_api_normalizes_operations_and_reports_summary():
 
     assert result["training_windows"][0]["comment"] == "工程师确认"
     assert result["summary"][0]["duration_minutes"] == 10
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_web_validates_legacy_window_packages_without_reconversion(tmp_path, monkeypatch, schema_version):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    trained = web.train_payload({"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "normal_start": "2026-01-01T00:00:00", "normal_end": "2026-01-01T09:55:00", "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 10, "lag_step_minutes": 5, "model_name": "legacy"})
+    path = tmp_path / "runs" / trained["run_id"] / "model.pcamodel"
+    with zipfile.ZipFile(path) as package:
+        manifest, arrays = json.loads(package.read("manifest.json")), package.read("arrays.npz")
+    window = manifest["training_windows"][0]
+    manifest["schema_version"], manifest["training_windows"] = schema_version, [[window["start"], window["end"]]]
+    if schema_version == 1:
+        manifest["validation_status"] = "draft"
+        manifest.pop("model_purpose"); manifest.pop("model_status")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest)); package.writestr("arrays.npz", arrays)
+    with pytest.raises(ValueError, match="overlap"):
+        web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_start": "2026-01-01T00:00:00", "validation_end": "2026-01-01T00:10:00"})
+    result = web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_start": "2026-01-01T10:00:00", "validation_end": "2026-01-01T14:55:00"})
+    assert result["scored_rows"] and result["status_counts"] and result["validation_downloads"]
 
 
 def test_validation_download_artifact_uses_fixed_whitelist():

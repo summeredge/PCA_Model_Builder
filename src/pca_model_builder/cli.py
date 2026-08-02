@@ -11,7 +11,6 @@ import pandas as pd
 
 from .contribution import contribution_event_records, exceedance_contribution_tables
 from .compat import (
-    normalize_manifest_training_windows,
     training_windows_from_payload,
 )
 from .dpca import fit_dpca
@@ -212,7 +211,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
     training_windows = [
         (pd.Timestamp(window["start"]), pd.Timestamp(window["end"]))
-        for window in normalize_manifest_training_windows(manifest)
+        for window in manifest["training_windows"]
         if window["enabled"]
     ]
     validation_window = (

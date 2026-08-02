@@ -1,4 +1,5 @@
 import json
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -6,6 +7,22 @@ import pytest
 
 from pca_model_builder.cli import main
 from pca_model_builder.model_io import load_model_package
+
+
+def _rewrite_as_legacy_window_package(path, schema_version):
+    with zipfile.ZipFile(path) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays = package.read("arrays.npz")
+    window = manifest["training_windows"][0]
+    manifest["schema_version"] = schema_version
+    manifest["training_windows"] = [[window["start"], window["end"]]]
+    if schema_version == 1:
+        manifest["validation_status"] = "draft"
+        manifest.pop("model_purpose")
+        manifest.pop("model_status")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)
 
 
 def test_cli_trains_and_replays_independent_validation_window(tmp_path):
@@ -278,6 +295,26 @@ def test_cli_training_windows_file_writes_canonical_window_objects(tmp_path):
     _, manifest = load_model_package(model_path)
     assert manifest["training_windows"][0]["id"] == "window-001"
     assert manifest["training_windows"][0]["comment"] == "稳定"
+
+
+@pytest.mark.parametrize("schema_version", [1, 2])
+def test_cli_validates_legacy_window_packages_without_reconversion(tmp_path, schema_version):
+    rng = np.random.default_rng(91)
+    time = pd.date_range("2026-01-01", periods=120, freq="5min")
+    a = rng.normal(size=len(time))
+    frame = pd.DataFrame({"time": time, "A": a, "B": 1.5 * a + rng.normal(scale=0.1, size=len(time)), "C": rng.normal(size=len(time))})
+    csv_path, model_path = tmp_path / "history.csv", tmp_path / "legacy.pcamodel"
+    scores, report, contributions = tmp_path / "scores.csv", tmp_path / "report.json", tmp_path / "contributions.json"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--normal-start", time[0].isoformat(), "--normal-end", time[59].isoformat(), "--max-lag", "0", "--model-name", "legacy", "--output", str(model_path)]) == 0
+    _rewrite_as_legacy_window_package(model_path, schema_version)
+    _, manifest = load_model_package(model_path)
+    assert isinstance(manifest["training_windows"][0], dict)
+    assert manifest["model_purpose"] == "normal_state"
+    assert manifest["model_status"] == ("draft" if schema_version == 1 else "candidate")
+    assert main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[0].isoformat(), "--validation-end", time[1].isoformat()]) == 2
+    assert main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[60].isoformat(), "--validation-end", time[-1].isoformat(), "--scores-output", str(scores), "--report-output", str(report), "--contributions-output", str(contributions)]) == 0
+    assert scores.exists() and report.exists() and contributions.exists()
 
 
 def test_cli_training_allows_physical_time_gap(tmp_path):
