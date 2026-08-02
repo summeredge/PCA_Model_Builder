@@ -1354,7 +1354,6 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div class="group">
         <div class="group-title">3. 参考状态与 DPCA 参数</div>
-        <input id="normalStart" type="datetime-local" hidden><input id="normalEnd" type="datetime-local" hidden>
         <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入手工候选</button></div>
         <h3>正常候选时段</h3><div id="trainingWindows" class="table-wrap"><div class="empty">检查数据后可管理候选时段。</div></div>
         <div class="help">候选加入后默认不启用；只有工程师明确启用的时段会参与质量检查和训练。</div>
@@ -1540,6 +1539,7 @@ function invalidateQuality(reason) { state.quality=null; el("trainButton").disab
 function commonPayload() { return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function trainingWindowsPayload() { return state.trainingWindows; }
+function updateQualityButtonAvailability() { el("qualityButton").disabled=!state.inspection||!state.trainingWindows.some(window=>window.enabled); }
 function windowSummary(id) { return state.trainingWindowSummary.find(item=>item.id===id)||{}; }
 function showCandidateTrend(window) { el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); }
 function renderTrainingWindows() {
@@ -1564,12 +1564,11 @@ function renderTrainingWindows() {
   }); table.append(head,body); container.append(table);
 }
 async function updateTrainingWindows(operation, affectsTraining) {
-  try { const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation})}); state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); if(affectsTraining) invalidateQuality("启用的正常候选时段已修改"); }
+  try { const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation})}); state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); updateQualityButtonAvailability(); if(affectsTraining) invalidateQuality("启用的正常候选时段已修改"); }
   catch(error) { renderTrainingWindows(); setStatus(error.message,"error"); }
 }
-function addCandidateWindow(source,start,end,sourceRef=null,comment="") { if(!start||!end) { setStatus("候选时段需要开始和结束时间。","warning"); return; } updateTrainingWindows({action:"add",window:{id:candidateId(),start,end,source,source_ref:sourceRef,enabled:false,comment}},false); }
+function addCandidateWindow(source,start,end,sourceRef=null,comment="") { if(!start||!end) { setStatus("候选时段需要开始和结束时间。","warning"); return; } updateTrainingWindows({action:"add",window:{id:candidateId(),start,end,source,source_ref:sourceRef,enabled:false,comment}},true); }
 function editTrainingWindow(window) { const start=prompt("候选开始时间",localTime(window.start)); if(start===null) return; const end=prompt("候选结束时间",localTime(window.end)); if(end===null) return; const comment=prompt("备注",window.comment||""); if(comment===null) return; updateTrainingWindows({action:"update",id:window.id,changes:{start,end,comment}},window.enabled); }
-async function refreshTrainingWindows() { await updateTrainingWindows(null,false); }
 
 async function api(path, options={}) {
   const response = await fetch(path, options);
@@ -1605,7 +1604,7 @@ el("uploadButton").addEventListener("click", async () => {
   try {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.selectedTag=null; state.selectedModelTags.clear(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderTrainingWindows(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -1618,10 +1617,10 @@ el("inspectButton").addEventListener("click", async () => {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
     state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
-    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("normalStart").value=localTime(data.time_start); el("normalEnd").value=localTime(data.suggested_normal_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"manual-window-001",start:el("normalStart").value,end:el("normalEnd").value,source:"manual",source_ref:null,enabled:true,comment:""}]; state.trainingWindowSummary=[]; await refreshTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
+    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end);
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
-    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=false; el("trendButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
+    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
     el("templateDownload").href=`/download/tag-config-template?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
     if(data.numeric_columns.length) selectTag(data.numeric_columns[0]);
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count}) ${item.tag||""}`).join("、");
@@ -1772,7 +1771,7 @@ function renderQuality(data) {
     card.innerHTML=`<strong>${escapeHtml(item.tag)} · ${escapeHtml(item.status)}</strong><span>参考期样本 ${profile.sample_count}；有效 ${profile.valid_count}；唯一值 ${profile.unique_count}；标准差 ${profile.standard_deviation??"—"}</span>${item.issues.map(issue=>`<span>${escapeHtml(issue.message)}</span>`).join("")}`;
     const actions=document.createElement("div"); actions.className="actions";
     if(item.issues.some(issue=>issue.code==="constant_tag")) { const exclude=document.createElement("button"); exclude.className="secondary"; exclude.textContent="从本次模型排除"; exclude.addEventListener("click",()=>excludeConstantTag(item)); actions.append(exclude); }
-    const trend=document.createElement("button"); trend.className="secondary"; trend.textContent="在趋势页查看"; trend.addEventListener("click",()=>{ [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); el("trendStart").value=el("normalStart").value; el("trendEnd").value=el("normalEnd").value; document.querySelector('[data-panel="trendPanel"]').click(); }); actions.append(trend); card.append(actions); container.append(card);
+    const trend=document.createElement("button"); trend.className="secondary"; trend.textContent="在趋势页查看"; trend.addEventListener("click",()=>{ const window=state.trainingWindows.find(value=>value.enabled)||state.trainingWindows[0]; if(window) showCandidateTrend(window); [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); document.querySelector('[data-panel="trendPanel"]').click(); }); actions.append(trend); card.append(actions); container.append(card);
   });
   el("excludeAllConstants").disabled=!data.tags.some(item=>item.issues.some(issue=>issue.code==="constant_tag"));
   if(!container.children.length) { container.className="empty"; container.textContent="所选Tag和时间轴没有需要处理的问题。"; }

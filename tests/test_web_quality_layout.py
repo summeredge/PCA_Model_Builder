@@ -157,6 +157,8 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     assert 'addCandidateWindow("trend"' in html
     assert 'addCandidateWindow("performance"' in html
     assert 'button.textContent="填入正常期"' not in html
+    assert "normalStart" not in html
+    assert "normalEnd" not in html
 
 
 def test_candidate_actions_do_not_replace_the_training_window() -> None:
@@ -174,6 +176,61 @@ def test_candidate_actions_do_not_replace_the_training_window() -> None:
     assert 'normalEnd' not in cluster_source
     assert 'normalStart' not in performance_source
     assert 'normalEnd' not in performance_source
+
+
+def test_inspection_creates_only_a_disabled_suggested_candidate() -> None:
+    html = web_model_results.INDEX_HTML
+    inspect_source = html.split('el("inspectButton").addEventListener("click", async () => {', 1)[1].split(
+        'el("selectAllTags").addEventListener', 1
+    )[0]
+
+    assert 'state.trainingWindows=[{id:"suggested-window-001"' in inspect_source
+    assert 'source:"suggested",source_ref:"inspect-default",enabled:false' in inspect_source
+    assert '系统建议的初始正常候选时段' in inspect_source
+    assert 'enabled:true' not in inspect_source
+    assert 'el("qualityButton").disabled=true' in inspect_source
+
+
+def test_upload_success_clears_candidate_and_previous_file_state() -> None:
+    html = web_model_results.INDEX_HTML
+    upload_source = html.split('el("uploadButton").addEventListener("click", async () => {', 1)[1].split(
+        'el("inspectButton").addEventListener', 1
+    )[0]
+
+    for statement in (
+        "state.trainingWindows=[]",
+        "state.trainingWindowSummary=[]",
+        "renderTrainingWindows()",
+        "state.quality=null",
+        "state.training=null",
+        "state.runId=null",
+        "state.exploratoryRunId=null",
+        "state.excludedTags=[]",
+    ):
+        assert statement in upload_source
+
+
+def test_candidate_view_and_mutations_preserve_explicit_enablement() -> None:
+    html = web_model_results.INDEX_HTML
+    view_source = html.split("function showCandidateTrend(window)", 1)[1].split(
+        "function renderTrainingWindows", 1
+    )[0]
+    mutation_source = html.split("function renderTrainingWindows", 1)[1].split(
+        "async function api", 1
+    )[0]
+
+    assert "window.enabled" not in view_source
+    assert "set_enabled" not in view_source
+    assert "state.trainingWindows" not in view_source
+    assert 'action:"set_enabled"' in mutation_source
+    assert 'enabled:false' in mutation_source
+    assert 'enabled:false,comment}},true);' in mutation_source
+    assert "function updateQualityButtonAvailability()" in html
+    assert "!state.trainingWindows.some(window=>window.enabled)" in html
+    assert "renderTrainingWindows(); updateQualityButtonAvailability();" in mutation_source
+    assert '["编辑",()=>editTrainingWindow(window)]' in mutation_source
+    assert '["删除",()=>updateTrainingWindows({action:"remove",id:window.id},window.enabled)]' in mutation_source
+    assert "if(affectsTraining) invalidateQuality" in mutation_source
 
 
 def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -442,8 +442,8 @@ def test_training_windows_api_preserves_candidate_sources_and_disabled_state():
             "end": "2026-01-01T00:10:00",
             "source": "manual",
             "source_ref": None,
-            "enabled": True,
-            "comment": "手工确认",
+            "enabled": False,
+            "comment": "手工候选",
         },
         *[
             {
@@ -467,13 +467,182 @@ def test_training_windows_api_preserves_candidate_sources_and_disabled_state():
         "trend",
         "performance",
     ]
-    assert [item["enabled"] for item in result["training_windows"]] == [
-        True,
-        False,
-        False,
-        False,
-    ]
+    assert [item["enabled"] for item in result["training_windows"]] == [False] * 4
     assert result["training_windows"][1]["source_ref"] == "cluster-1"
+
+
+def test_web_quality_and_training_reject_all_disabled_candidate_windows(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    windows = [
+        {
+            "id": "suggested-window-001",
+            "start": history.time.iloc[0].isoformat(),
+            "end": history.time.iloc[79].isoformat(),
+            "source": "suggested",
+            "source_ref": "inspect-default",
+            "enabled": False,
+            "comment": "系统建议",
+        },
+        {
+            "id": "manual-window-001",
+            "start": history.time.iloc[100].isoformat(),
+            "end": history.time.iloc[-1].isoformat(),
+            "source": "manual",
+            "source_ref": None,
+            "enabled": False,
+            "comment": "工程师尚未启用",
+        },
+    ]
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "training_windows": windows,
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "n_components": 2,
+        "model_name": "DISABLED_WINDOWS",
+    }
+
+    with pytest.raises(ValueError, match="至少需要一个启用的training_windows窗口"):
+        web.quality_payload(payload)
+    with pytest.raises(ValueError, match="至少需要一个启用的training_windows窗口"):
+        web.train_payload(payload)
+
+
+def test_explicitly_enabled_candidate_can_complete_quality_and_training(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    suggested = {
+        "id": "suggested-window-001",
+        "start": history.time.iloc[0].isoformat(),
+        "end": history.time.iloc[79].isoformat(),
+        "source": "suggested",
+        "source_ref": "inspect-default",
+        "enabled": False,
+        "comment": "系统建议",
+    }
+    manual = {
+        "id": "manual-window-001",
+        "start": history.time.iloc[100].isoformat(),
+        "end": history.time.iloc[-1].isoformat(),
+        "source": "manual",
+        "source_ref": None,
+        "enabled": False,
+        "comment": "工程师确认",
+    }
+    added = web.training_windows_payload(
+        {
+            "training_windows": [suggested],
+            "operation": {"action": "add", "window": manual},
+        }
+    )
+    assert added["training_windows"][1]["enabled"] is False
+    enabled = web.training_windows_payload(
+        {
+            "training_windows": added["training_windows"],
+            "operation": {
+                "action": "set_enabled",
+                "id": "manual-window-001",
+                "enabled": True,
+            },
+        }
+    )
+    assert enabled["training_windows"][1]["enabled"] is True
+
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "training_windows": enabled["training_windows"],
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "n_components": 2,
+        "model_name": "EXPLICITLY_ENABLED",
+    }
+    quality = web.quality_payload(payload)
+    trained = web.train_payload(payload)
+    _, manifest = load_model_package(
+        tmp_path / "runs" / trained["run_id"] / "model.pcamodel"
+    )
+
+    assert quality["can_train"]
+    assert [item["status"] for item in trained["training_window_summary"]] == [
+        "disabled",
+        "used",
+    ]
+    assert manifest["training_windows"] == enabled["training_windows"]
+    assert [item["status"] for item in manifest["config"]["training_summary"]] == [
+        "disabled",
+        "used",
+    ]
+
+
+def test_training_window_edits_and_removals_preserve_other_enablement():
+    windows = [
+        {
+            "id": "enabled-window-001",
+            "start": "2026-01-01T00:00:00",
+            "end": "2026-01-01T00:10:00",
+            "source": "manual",
+            "source_ref": None,
+            "enabled": True,
+            "comment": "已确认",
+        },
+        {
+            "id": "disabled-window-001",
+            "start": "2026-01-01T00:20:00",
+            "end": "2026-01-01T00:30:00",
+            "source": "trend",
+            "source_ref": "trend-current",
+            "enabled": False,
+            "comment": "待确认",
+        },
+    ]
+    edited = web.training_windows_payload(
+        {
+            "training_windows": windows,
+            "operation": {
+                "action": "update",
+                "id": "disabled-window-001",
+                "changes": {"comment": "已编辑"},
+            },
+        }
+    )["training_windows"]
+    without_disabled = web.training_windows_payload(
+        {
+            "training_windows": edited,
+            "operation": {"action": "remove", "id": "disabled-window-001"},
+        }
+    )["training_windows"]
+    without_enabled = web.training_windows_payload(
+        {
+            "training_windows": windows,
+            "operation": {"action": "set_enabled", "id": "enabled-window-001", "enabled": False},
+        }
+    )["training_windows"]
+
+    assert edited[1]["comment"] == "已编辑"
+    assert edited[1]["enabled"] is False
+    assert without_disabled == [windows[0]]
+    assert not any(window["enabled"] for window in without_enabled)
 
 
 def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
