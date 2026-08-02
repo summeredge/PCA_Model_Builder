@@ -166,8 +166,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       tags: unique,
       start: $("dpTrendStart").value,
       end: $("dpTrendEnd").value,
-      normal_start: $("normalStart").value,
-      normal_end: $("normalEnd").value,
       display_mode: "raw",
       max_points: Number($("dpTrendMaxPoints").value || 10000),
       purpose,
@@ -209,9 +207,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   });
 
   $("dpTrendToReference").addEventListener("click", () => {
-    $("normalStart").value = $("dpTrendStart").value;
-    $("normalEnd").value = $("dpTrendEnd").value;
-    invalidateQuality("参考状态候选期已从趋势页更新");
+    addCandidateWindow("trend", $("dpTrendStart").value, $("dpTrendEnd").value, "trend-current", "");
   });
 
   $("dpDrawScatter").addEventListener("click", async () => {

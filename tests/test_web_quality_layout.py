@@ -126,6 +126,56 @@ def test_supported_web_entrypoints_use_model_results_page() -> None:
     )
 
 
+def test_final_web_entry_exposes_candidate_window_manager() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for element_id in (
+        'id="candidateStart"',
+        'id="candidateEnd"',
+        'id="candidateComment"',
+        'id="addManualCandidate"',
+        'id="trainingWindows"',
+    ):
+        assert element_id in html
+    for label in (
+        "启用",
+        "来源",
+        "持续时间",
+        "原始 / 有效",
+        "质量",
+        "备注",
+        "查看趋势",
+        "编辑",
+        "删除",
+    ):
+        assert label in html
+    assert "trainingWindows:[]" in html
+    assert 'function addCandidateWindow(source,start,end,sourceRef=null,comment="")' in html
+    assert 'enabled:false' in html
+    assert 'addCandidateWindow("manual"' in html
+    assert 'addCandidateWindow("cluster"' in html
+    assert 'addCandidateWindow("trend"' in html
+    assert 'addCandidateWindow("performance"' in html
+    assert 'button.textContent="填入正常期"' not in html
+
+
+def test_candidate_actions_do_not_replace_the_training_window() -> None:
+    html = web_model_results.INDEX_HTML
+    cluster_source = html.split("function renderClustering", 1)[1].split(
+        "function renderTrainingWindowSummary", 1
+    )[0]
+    performance_source = html.split("function renderPerformance(data)", 1)[1].split(
+        "function renderClustering", 1
+    )[0]
+
+    assert 'addCandidateWindow("cluster"' in cluster_source
+    assert 'addCandidateWindow("performance"' in performance_source
+    assert 'normalStart' not in cluster_source
+    assert 'normalEnd' not in cluster_source
+    assert 'normalStart' not in performance_source
+    assert 'normalEnd' not in performance_source
+
+
 def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     original = cli_entry.cli._serve
     monkeypatch.setattr(cli_entry.cli, "main", lambda argv=None: 0)

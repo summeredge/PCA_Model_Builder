@@ -386,6 +386,96 @@ def test_training_windows_api_normalizes_operations_and_reports_summary():
     assert result["summary"][0]["duration_minutes"] == 10
 
 
+def test_web_quality_uses_all_enabled_candidate_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    windows = [
+        {
+            "id": "manual-window-001",
+            "start": history.time.iloc[0].isoformat(),
+            "end": history.time.iloc[79].isoformat(),
+            "source": "manual",
+            "source_ref": None,
+            "enabled": True,
+            "comment": "稳定工况一",
+        },
+        {
+            "id": "trend-window-001",
+            "start": history.time.iloc[100].isoformat(),
+            "end": history.time.iloc[-1].isoformat(),
+            "source": "trend",
+            "source_ref": "trend-current",
+            "enabled": True,
+            "comment": "稳定工况二",
+        },
+    ]
+
+    result = web.quality_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": ["A", "B", "C"],
+            "training_windows": windows,
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 10,
+            "max_lag_minutes": 10,
+            "lag_step_minutes": 5,
+        }
+    )
+
+    assert [item["id"] for item in result["training_window_summary"]] == [
+        "manual-window-001",
+        "trend-window-001",
+    ]
+    assert all(item["status"] == "used" for item in result["training_window_summary"])
+    assert all(item["effective_samples"] > 0 for item in result["training_window_summary"])
+
+
+def test_training_windows_api_preserves_candidate_sources_and_disabled_state():
+    windows = [
+        {
+            "id": "manual-window-001",
+            "start": "2026-01-01T00:00:00",
+            "end": "2026-01-01T00:10:00",
+            "source": "manual",
+            "source_ref": None,
+            "enabled": True,
+            "comment": "手工确认",
+        },
+        *[
+            {
+                "id": f"{source}-window-001",
+                "start": f"2026-01-01T0{index}:00:00",
+                "end": f"2026-01-01T0{index}:10:00",
+                "source": source,
+                "source_ref": f"{source}-1",
+                "enabled": False,
+                "comment": f"{source}候选",
+            }
+            for index, source in enumerate(("cluster", "trend", "performance"), start=2)
+        ],
+    ]
+
+    result = web.training_windows_payload({"training_windows": windows})
+
+    assert [item["source"] for item in result["training_windows"]] == [
+        "manual",
+        "cluster",
+        "trend",
+        "performance",
+    ]
+    assert [item["enabled"] for item in result["training_windows"]] == [
+        True,
+        False,
+        False,
+        False,
+    ]
+    assert result["training_windows"][1]["source_ref"] == "cluster-1"
+
+
 def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")

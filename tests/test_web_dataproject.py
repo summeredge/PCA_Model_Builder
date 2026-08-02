@@ -31,6 +31,7 @@ def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls()
     assert 'id="trendTags"' in html
     assert 'id="trendStart"' in html
     assert 'id="trendEnd"' in html
+    assert 'addCandidateWindow("trend", $("dpTrendStart").value, $("dpTrendEnd").value, "trend-current", "")' in html
 
 
 def test_missing_values_are_not_converted_to_zero_by_frontend_contract() -> None:

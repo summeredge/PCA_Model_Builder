@@ -26,6 +26,7 @@ def build_training_matrix(
     config: PreprocessingConfig,
     training_windows: object,
     engineering_ranges: dict[str, tuple[float, float]] | None = None,
+    validate_dynamic: bool = True,
 ) -> TrainingBuildResult:
     """Build each enabled window and physical segment independently."""
     windows = normalize_training_windows(training_windows)
@@ -103,13 +104,16 @@ def build_training_matrix(
         dynamic_parts.extend(window_parts)
 
     if not dynamic_parts:
-        raise ValueError("所有启用窗口在平滑和 Lag 扩展后均无有效训练样本")
-    dynamic = pd.concat(dynamic_parts).sort_index()
+        if validate_dynamic:
+            raise ValueError("所有启用窗口在平滑和 Lag 扩展后均无有效训练样本")
+        dynamic = pd.DataFrame()
+    else:
+        dynamic = pd.concat(dynamic_parts).sort_index()
     return TrainingBuildResult(
         dynamic=dynamic,
         window_summaries=summaries,
         reference=pd.concat(reference_parts).sort_values(timestamp_column),
-        global_quality_warnings=_validate_dynamic_matrix(dynamic),
+        global_quality_warnings=_validate_dynamic_matrix(dynamic) if validate_dynamic else [],
     )
 
 
