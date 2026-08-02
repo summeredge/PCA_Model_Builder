@@ -41,6 +41,7 @@ from .tag_config_io import (
     parse_tag_config_workbook,
 )
 from .tag_profile import model_quality_payload, profile_tag
+from .training import build_training_matrix
 from .trend import trend_payload_data
 from .validation import (
     build_validation_matrix,
@@ -169,27 +170,30 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         tags, {tag: registry[tag] for tag in tags}
     )
     training_windows = training_windows_from_payload(payload)
-    window = _single_enabled_training_window(training_windows)
-    normal = _select_window(parsed, timestamp_column, window["start"], window["end"])
-    _require_clean_data(
-        normal,
-        timestamp_column,
-        tags,
-        config.sample_interval_minutes,
-        engineering_ranges(tag_configs),
+    enabled_windows = [window for window in training_windows if window["enabled"]]
+    if not enabled_windows:
+        raise ValueError("至少需要一个启用的training_windows窗口")
+    normal = _select_window(
+        parsed, timestamp_column, enabled_windows[0]["start"], enabled_windows[0]["end"]
     )
+    for window in enabled_windows:
+        selected = _select_window(
+            parsed, timestamp_column, window["start"], window["end"]
+        )
+        _require_clean_data(
+            selected,
+            timestamp_column,
+            tags,
+            config.sample_interval_minutes,
+            engineering_ranges(tag_configs),
+        )
     excluded_tags = _excluded_tag_records(
         payload.get("excluded_tags"), normal, tags, registry
     )
-    indexed = _indexed_tags(normal, timestamp_column, tags)
-    dynamic = build_dynamic_matrix(
-        indexed,
-        tags,
-        config,
-        infer_segment_ids(indexed.index, config.sample_interval_minutes),
+    training_result = build_training_matrix(
+        parsed, timestamp_column, tags, config, training_windows
     )
-    if dynamic.empty:
-        raise ValueError("平滑和 Lag 扩展后没有足够的训练样本")
+    dynamic = training_result.dynamic
     components_value = payload.get("n_components")
     n_components = None if components_value in {None, ""} else int(components_value)
     variance_threshold = float(payload.get("variance_threshold", 0.95))
@@ -215,6 +219,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "tag_configs": tag_configs,
         "source_tag_configs": registry,
         "excluded_tags": excluded_tags,
+        "training_summary": training_result.window_summaries,
     }
     save_model_package(
         run_dir / "model.pcamodel",
@@ -231,6 +236,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "model_purpose": model_purpose,
         "model_status": model_status,
         "training_rows": len(dynamic),
+        "training_window_summary": training_result.window_summaries,
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
         "cumulative_explained_variance": float(
@@ -1423,6 +1429,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="modelEmpty" class="empty">完成训练后显示主元解释率、T²/SPE 和模型下载。</div>
         <div id="modelContent" hidden>
           <div id="modelMetrics" class="metrics"></div>
+          <h3>训练窗口与连续段</h3><div id="trainingWindowSummary"></div>
           <h3>主元解释率</h3><div id="varianceChart" class="variance"></div>
           <div class="chart-grid">
             <div class="chart-card"><h3>训练期 T²</h3><div id="t2Chart" class="chart"></div></div>
@@ -1800,9 +1807,25 @@ function renderTraining(data) {
   el("modelEmpty").hidden=true; el("modelContent").hidden=false;
   const purpose=data.model_purpose==="exploratory"?"探索模型":"正常状态模型"; const status=data.model_status==="draft"?"草稿":"候选";
   el("modelMetrics").innerHTML=metric("模型用途",purpose)+metric("模型状态",status)+metric("训练动态样本",data.training_rows)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
+  renderTrainingWindowSummary(data.training_window_summary||[]);
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
   data.explained_variance.slice(0,30).forEach((value,index)=>{ const bar=document.createElement("div"); bar.className=`variance-bar ${index<data.n_components?"selected":""}`; bar.style.height=`${Math.max(3,value/max*95)}px`; const label=document.createElement("span"); label.textContent=`${(value*100).toFixed(0)}%`; bar.title=`PC${index+1}: ${(value*100).toFixed(2)}%`; bar.append(label); variance.append(bar); });
   lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download;
+}
+
+function renderTrainingWindowSummary(windows) {
+  const container=el("trainingWindowSummary"); container.replaceChildren();
+  if(!windows.length) { container.textContent="未提供训练窗口摘要。"; return; }
+  const table=document.createElement("table"), head=document.createElement("thead"), body=document.createElement("tbody");
+  const header=document.createElement("tr"); ["范围","状态","原始样本","有效动态样本","平滑/Lag 损失","原因"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
+  windows.forEach(window=>{
+    const row=document.createElement("tr");
+    [`窗口 ${window.id}: ${window.start.slice(0,16)} ～ ${window.end.slice(0,16)}`,window.status,window.raw_samples,window.effective_samples,window.smoothing_lag_loss??"—",window.dropped_reason??"—"].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; row.append(td); }); body.append(row);
+    (window.segments||[]).forEach(segment=>{ const segmentRow=document.createElement("tr");
+      [`连续段 ${segment.start.slice(0,16)} ～ ${segment.end.slice(0,16)}`,segment.status,segment.raw_samples,segment.effective_samples,segment.smoothing_lag_loss,segment.dropped_reason??"—"].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; segmentRow.append(td); }); body.append(segmentRow);
+    });
+  });
+  table.append(head,body); container.append(table);
 }
 
 function renderValidation(data) {

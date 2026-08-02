@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.cli import main
+from pca_model_builder import cli
 from pca_model_builder.model_io import load_model_package
 
 
@@ -295,6 +296,28 @@ def test_cli_training_windows_file_writes_canonical_window_objects(tmp_path):
     _, manifest = load_model_package(model_path)
     assert manifest["training_windows"][0]["id"] == "window-001"
     assert manifest["training_windows"][0]["comment"] == "稳定"
+
+
+def test_cli_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
+    rng = np.random.default_rng(92)
+    time = pd.date_range("2026-01-01", periods=100, freq="5min")
+    frame = pd.DataFrame({"time": time, "A": rng.normal(size=100), "B": rng.normal(size=100), "C": rng.normal(size=100)})
+    csv_path, windows_path, model_path = tmp_path / "history.csv", tmp_path / "windows.json", tmp_path / "model.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    windows_path.write_text(json.dumps([
+        {"id": "window-001", "start": time[0].isoformat(), "end": time[49].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-002", "start": time[50].isoformat(), "end": time[-1].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+    ]), encoding="utf-8")
+    original = cli.build_training_matrix
+    calls = []
+
+    def recorded(*args, **kwargs):
+        calls.append(args[4])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "build_training_matrix", recorded)
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--max-lag", "0", "--components", "2", "--model-name", "shared", "--output", str(model_path)]) == 0
+    assert [window["id"] for window in calls[0]] == ["window-001", "window-002"]
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])

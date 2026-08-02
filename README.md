@@ -87,7 +87,7 @@ pca-model-builder train-normal `
 [{"id":"window-001","start":"2026-01-01T00:00:00","end":"2026-01-02T00:00:00","source":"manual","source_ref":null,"enabled":true,"comment":"稳定运行"}]
 ```
 
-通过 `--training-windows windows.json` 读取。当前训练路径仍只接受一个启用窗口；多窗口独立预处理将在后续阶段提供。
+通过 `--training-windows windows.json` 读取。所有启用窗口会分别按物理连续段执行尾随平滑和 Lag 扩展，仅合并各段的有效动态样本；窗口之间不共享平滑或 Lag 上下文。模型包会保存每个窗口和连续段的原始/有效样本数、平滑与 Lag 损失及丢弃原因。有效动态样本按行合并，因此较长窗口在训练中自然占更大权重。
 
 ## 独立窗口验证
 

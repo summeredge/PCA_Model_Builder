@@ -15,13 +15,10 @@ from .compat import (
 )
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
-from .preprocessing import (
-    PreprocessingConfig,
-    build_dynamic_matrix,
-    infer_segment_ids,
-)
+from .preprocessing import PreprocessingConfig
 from .quality import QualityReport, inspect_data_quality
 from .tag_config import engineering_ranges, normalize_tag_configs
+from .training import build_training_matrix
 from .validation import (
     build_validation_matrix,
     ensure_disjoint_windows,
@@ -141,20 +138,21 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
     tag_configs = _read_tag_configs(args.tag_config, args.tags)
     training_windows = _training_windows_from_args(args)
     enabled_windows = [window for window in training_windows if window["enabled"]]
-    if len(enabled_windows) != 1:
-        raise ValueError("当前训练仅支持一个启用的training_windows窗口")
-    window = enabled_windows[0]
-    normal = _select_window(raw, args.timestamp, window["start"], window["end"])
-    _require_clean_data(
-        normal,
-        args.timestamp,
-        args.tags,
-        expected_interval_minutes=config.sample_interval_minutes,
-        configured_engineering_ranges=engineering_ranges(tag_configs),
+    if not enabled_windows:
+        raise ValueError("至少需要一个启用的training_windows窗口")
+    for window in enabled_windows:
+        normal = _select_window(raw, args.timestamp, window["start"], window["end"])
+        _require_clean_data(
+            normal,
+            args.timestamp,
+            args.tags,
+            expected_interval_minutes=config.sample_interval_minutes,
+            configured_engineering_ranges=engineering_ranges(tag_configs),
+        )
+    training_result = build_training_matrix(
+        raw, args.timestamp, args.tags, config, training_windows
     )
-    indexed = _to_indexed_frame(normal, args.timestamp, args.tags)
-    segments = infer_segment_ids(indexed.index, config.sample_interval_minutes)
-    dynamic = build_dynamic_matrix(indexed, args.tags, config, segments)
+    dynamic = training_result.dynamic
     model = fit_dpca(
         dynamic,
         variance_threshold=args.variance_threshold,
@@ -171,6 +169,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         "lag_step_minutes": config.lag_step_minutes,
         "variance_threshold": args.variance_threshold,
         "tag_configs": tag_configs,
+        "training_summary": training_result.window_summaries,
     }
     save_model_package(
         args.output,
@@ -187,6 +186,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         if args.model_purpose == "exploratory"
         else "candidate",
         "training_rows": len(dynamic),
+        "training_window_summary": training_result.window_summaries,
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
         "cumulative_explained_variance": float(

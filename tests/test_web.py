@@ -385,6 +385,51 @@ def test_training_windows_api_normalizes_operations_and_reports_summary():
     assert result["summary"][0]["duration_minutes"] == 10
 
 
+def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    windows = [
+        {"id": "window-001", "start": history.time.iloc[0].isoformat(), "end": history.time.iloc[79].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-002", "start": history.time.iloc[80].isoformat(), "end": history.time.iloc[159].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+    ]
+    original = web.build_training_matrix
+    calls = []
+
+    def recorded(*args, **kwargs):
+        calls.append(args[4])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(web, "build_training_matrix", recorded)
+    trained = web.train_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": ["A", "B", "C"],
+            "training_windows": windows,
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 10,
+            "max_lag_minutes": 10,
+            "lag_step_minutes": 5,
+            "n_components": 2,
+            "model_name": "MULTIWINDOW",
+        }
+    )
+
+    assert [window["id"] for window in calls[0]] == ["window-001", "window-002"]
+    assert trained["training_rows"] > 0
+    assert len(trained["training_window_summary"]) == 2
+    assert 'id="trainingWindowSummary"' in web.INDEX_HTML
+    assert "renderTrainingWindowSummary(data.training_window_summary||[])" in web.INDEX_HTML
+    _, manifest = load_model_package(
+        tmp_path / "runs" / trained["run_id"] / "model.pcamodel"
+    )
+    assert manifest["config"]["training_summary"] == trained["training_window_summary"]
+
+
 @pytest.mark.parametrize("schema_version", [1, 2])
 def test_web_validates_legacy_window_packages_without_reconversion(tmp_path, monkeypatch, schema_version):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
