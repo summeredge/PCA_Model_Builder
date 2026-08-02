@@ -248,6 +248,38 @@ def test_cli_rejects_exploratory_model_validation_before_creating_outputs(
     assert not contributions_path.exists()
 
 
+def test_cli_training_windows_file_writes_canonical_window_objects(tmp_path):
+    rng = np.random.default_rng(90)
+    time = pd.date_range("2026-01-01", periods=100, freq="5min")
+    a = rng.normal(size=len(time))
+    frame = pd.DataFrame(
+        {
+            "time": time,
+            "A": a,
+            "B": a * 1.5 + rng.normal(scale=0.1, size=len(time)),
+            "C": rng.normal(size=len(time)),
+        }
+    )
+    csv_path = tmp_path / "history.csv"
+    windows_path = tmp_path / "windows.json"
+    model_path = tmp_path / "model.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    windows_path.write_text(
+        json.dumps(
+            [{"id": "window-001", "start": time[0].isoformat(), "end": time[-1].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": "稳定"}]
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(
+        ["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--max-lag", "0", "--model-name", "WINDOWS_DPCA", "--output", str(model_path)]
+    ) == 0
+
+    _, manifest = load_model_package(model_path)
+    assert manifest["training_windows"][0]["id"] == "window-001"
+    assert manifest["training_windows"][0]["comment"] == "稳定"
+
+
 def test_cli_training_allows_physical_time_gap(tmp_path):
     rng = np.random.default_rng(3)
     timestamps = pd.date_range("2026-01-01", periods=120, freq="5min").to_series()

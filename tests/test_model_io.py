@@ -31,10 +31,21 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
         assert set(package.namelist()) == {"manifest.json", "arrays.npz"}
         assert "validation_status" not in json.loads(package.read("manifest.json"))
     pd.testing.assert_frame_equal(model.score(frame), loaded.score(frame))
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert manifest["model_purpose"] == "normal_state"
     assert manifest["model_status"] == "candidate"
     assert "validation_status" not in manifest
+    assert manifest["training_windows"] == [
+        {
+            "id": "legacy-window-001",
+            "start": "2026-01-01T00:00:00",
+            "end": "2026-01-02T00:00:00",
+            "source": "legacy",
+            "source_ref": None,
+            "enabled": True,
+            "comment": "",
+        }
+    ]
     assert manifest["config"]["tags"] == ["A", "B", "C"]
 
 
@@ -120,6 +131,7 @@ def test_schema_v1_statuses_do_not_upgrade_model_semantics(tmp_path, legacy_stat
         manifest = json.loads(package.read("manifest.json"))
         arrays = package.read("arrays.npz")
     manifest["schema_version"] = 1
+    manifest["training_windows"] = [["2026-01-01", "2026-01-02"]]
     manifest["validation_status"] = legacy_status
     manifest.pop("model_purpose")
     manifest.pop("model_status")
@@ -220,19 +232,19 @@ def test_model_package_rejects_invalid_numeric_arrays(
         ),
         (
             lambda manifest: manifest.__setitem__("training_windows", []),
-            "must be a non-empty list",
+            "training_windows必须是非空列表",
         ),
         (
             lambda manifest: manifest.__setitem__(
-                "training_windows", [["2026-01-01"]]
+                "training_windows", [{"id": "window-001"}]
             ),
-            "must contain start and end",
+            "training_windows窗口字段无效",
         ),
         (
             lambda manifest: manifest.__setitem__(
-                "training_windows", [["2026-01-02", "2026-01-01"]]
+                "training_windows", [{"id": "window-001", "start": "2026-01-02", "end": "2026-01-01", "source": "manual", "source_ref": None, "enabled": True, "comment": ""}]
             ),
-            "start follows its end",
+            "training_windows起止时间无效",
         ),
         (
             lambda manifest: manifest["config"].__setitem__(

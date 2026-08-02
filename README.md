@@ -79,7 +79,15 @@ pca-model-builder train-normal `
 默认参数为 10 分钟尾随平滑、最大 Lag 60 分钟、Lag 步长 5 分钟、累计解释率 95%。采样间隔默认 5 分钟，可通过命令行调整。Lag 和平滑均不跨物理时间缺口。
 累计解释率必须小于 100%，模型至少保留 PC1、PC2，并为 SPE 保留一个有效残差维度。
 
-模型包只包含 `manifest.json` 和 `arrays.npz`，不保存原始过程数据，也不使用 pickle。新模型包使用 schema v2：`train-exploratory` 生成 `exploratory/draft`，`train-normal` 生成 `normal_state/candidate`。旧 `train` 命令保持兼容，生成正常状态候选模型。schema v1 包继续只读加载，并一律显示为 `normal_state/draft`；其旧 `validation_status` 仅保留为历史来源信息，不能升级模型状态。
+模型包只包含 `manifest.json` 和 `arrays.npz`，不保存原始过程数据，也不使用 pickle。新模型包使用 schema v3：训练窗口保存为带 ID、来源、启用状态和备注的对象。`train-exploratory` 生成 `exploratory/draft`，`train-normal` 生成 `normal_state/candidate`。旧 `train` 命令保持兼容，生成正常状态候选模型。schema v1/v2 包继续只读加载，旧二元训练窗口会转换为 `legacy-window-001...`；schema v1 的旧 `validation_status` 仅保留为历史来源信息，不能升级模型状态。
+
+训练命令可使用 UTF-8 JSON 窗口文件替代旧的单个 `--normal-start/--normal-end`：
+
+```json
+[{"id":"window-001","start":"2026-01-01T00:00:00","end":"2026-01-02T00:00:00","source":"manual","source_ref":null,"enabled":true,"comment":"稳定运行"}]
+```
+
+通过 `--training-windows windows.json` 读取。当前训练路径仍只接受一个启用窗口；多窗口独立预处理将在后续阶段提供。
 
 ## 独立窗口验证
 

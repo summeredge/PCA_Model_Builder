@@ -10,6 +10,10 @@ from typing import Any, Sequence
 import pandas as pd
 
 from .contribution import contribution_event_records, exceedance_contribution_tables
+from .compat import (
+    normalize_manifest_training_windows,
+    training_windows_from_payload,
+)
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
 from .preprocessing import (
@@ -96,8 +100,9 @@ def _add_train_parser(
     train = subparsers.add_parser(command, help=help_text)
     _add_data_arguments(train)
     train.add_argument("--tags", nargs="+", required=True)
-    train.add_argument("--normal-start", required=True)
-    train.add_argument("--normal-end", required=True)
+    train.add_argument("--normal-start")
+    train.add_argument("--normal-end")
+    train.add_argument("--training-windows", type=Path)
     train.add_argument("--sample-interval", type=int, default=5)
     train.add_argument("--smoothing-window", type=int, default=10)
     train.add_argument("--max-lag", type=int, default=60)
@@ -135,9 +140,12 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         lag_step_minutes=args.lag_step,
     )
     tag_configs = _read_tag_configs(args.tag_config, args.tags)
-    normal = _select_window(
-        raw, args.timestamp, args.normal_start, args.normal_end
-    )
+    training_windows = _training_windows_from_args(args)
+    enabled_windows = [window for window in training_windows if window["enabled"]]
+    if len(enabled_windows) != 1:
+        raise ValueError("当前训练仅支持一个启用的training_windows窗口")
+    window = enabled_windows[0]
+    normal = _select_window(raw, args.timestamp, window["start"], window["end"])
     _require_clean_data(
         normal,
         args.timestamp,
@@ -154,10 +162,6 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         n_components=args.components,
     )
 
-    training_window = [
-        pd.Timestamp(args.normal_start).isoformat(),
-        pd.Timestamp(args.normal_end).isoformat(),
-    ]
     stored_config = {
         "model_name": args.model_name,
         "tags": list(args.tags),
@@ -173,7 +177,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         args.output,
         model,
         config=stored_config,
-        training_windows=[training_window],
+        training_windows=training_windows,
         model_purpose=args.model_purpose,
         model_status="draft" if args.model_purpose == "exploratory" else "candidate",
     )
@@ -207,8 +211,9 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     tags = list(config_data["tags"])
     tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
     training_windows = [
-        (pd.Timestamp(start), pd.Timestamp(end))
-        for start, end in manifest["training_windows"]
+        (pd.Timestamp(window["start"]), pd.Timestamp(window["end"]))
+        for window in normalize_manifest_training_windows(manifest)
+        if window["enabled"]
     ]
     validation_window = (
         pd.Timestamp(args.validation_start),
@@ -364,6 +369,17 @@ def _read_tag_configs(
         return {}
     value = json.loads(path.read_text(encoding="utf-8-sig"))
     return normalize_tag_configs(tags, value)
+
+
+def _training_windows_from_args(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if args.training_windows is not None:
+        if args.normal_start is not None or args.normal_end is not None:
+            raise ValueError("--training-windows不能与--normal-start/--normal-end同时使用")
+        value = json.loads(args.training_windows.read_text(encoding="utf-8-sig"))
+        return training_windows_from_payload({"training_windows": value})
+    return training_windows_from_payload(
+        {"normal_start": args.normal_start, "normal_end": args.normal_end}
+    )
 
 
 if __name__ == "__main__":

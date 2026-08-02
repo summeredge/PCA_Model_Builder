@@ -359,6 +359,31 @@ def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
     np.testing.assert_allclose(points["pc2"], expected_scores["pc2"])
 
 
+def test_training_windows_api_normalizes_operations_and_reports_summary():
+    window = {
+        "id": "window-001",
+        "start": "2026-01-01T00:00:00",
+        "end": "2026-01-01T00:10:00",
+        "source": "manual",
+        "source_ref": None,
+        "enabled": True,
+        "comment": "",
+    }
+    result = web.training_windows_payload(
+        {
+            "training_windows": [window],
+            "operation": {
+                "action": "update",
+                "id": "window-001",
+                "changes": {"comment": "工程师确认"},
+            },
+        }
+    )
+
+    assert result["training_windows"][0]["comment"] == "工程师确认"
+    assert result["summary"][0]["duration_minutes"] == 10
+
+
 def test_validation_download_artifact_uses_fixed_whitelist():
     assert web._validation_artifact("scores") == (
         "validation_scores.csv",

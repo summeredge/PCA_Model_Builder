@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from .windows import (
+    legacy_single_window_to_training_windows,
+    legacy_training_windows_to_canonical,
+    normalize_training_windows,
+)
+
 
 MODEL_PURPOSES = frozenset({"exploratory", "normal_state"})
 _WRITABLE_MODEL_SEMANTICS = {
@@ -33,3 +39,23 @@ def normalize_model_semantics(manifest: dict[str, Any]) -> dict[str, str]:
         "model_purpose": str(manifest["model_purpose"]),
         "model_status": str(manifest["model_status"]),
     }
+
+
+def normalize_manifest_training_windows(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    if manifest.get("schema_version") in {1, 2}:
+        return legacy_training_windows_to_canonical(manifest["training_windows"])
+    return normalize_training_windows(manifest["training_windows"])
+
+
+def normalize_training_windows_for_write(value: object) -> list[dict[str, Any]]:
+    if isinstance(value, list) and value and isinstance(value[0], list):
+        return legacy_training_windows_to_canonical(value)
+    return normalize_training_windows(value)
+
+
+def training_windows_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    if "training_windows" in payload:
+        return normalize_training_windows(payload["training_windows"])
+    return legacy_single_window_to_training_windows(
+        payload.get("normal_start"), payload.get("normal_end")
+    )

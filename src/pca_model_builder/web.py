@@ -19,7 +19,11 @@ import numpy as np
 import pandas as pd
 
 from .clustering import cluster_model_scores, cluster_operating_states
-from .compat import MODEL_PURPOSES
+from .compat import (
+    MODEL_PURPOSES,
+    normalize_manifest_training_windows,
+    training_windows_from_payload,
+)
 from .contribution import contribution_event_records, exceedance_contribution_tables
 from .dpca import fit_dpca
 from .model_io import load_model_package, save_model_package
@@ -43,6 +47,13 @@ from .validation import (
     build_validation_matrix,
     ensure_disjoint_windows,
     validation_context_start,
+)
+from .windows import (
+    add_training_window,
+    remove_training_window,
+    set_enabled_training_window,
+    summarize_training_windows,
+    update_training_window,
 )
 
 
@@ -158,12 +169,9 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tag_configs = normalize_tag_configs(
         tags, {tag: registry[tag] for tag in tags}
     )
-    normal = _select_window(
-        parsed,
-        timestamp_column,
-        _required_text(payload, "normal_start"),
-        _required_text(payload, "normal_end"),
-    )
+    training_windows = training_windows_from_payload(payload)
+    window = _single_enabled_training_window(training_windows)
+    normal = _select_window(parsed, timestamp_column, window["start"], window["end"])
     _require_clean_data(
         normal,
         timestamp_column,
@@ -196,10 +204,6 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     model_name = _required_text(payload, "model_name")
-    training_window = [
-        pd.Timestamp(payload["normal_start"]).isoformat(),
-        pd.Timestamp(payload["normal_end"]).isoformat(),
-    ]
     stored_config = {
         "model_name": model_name,
         "tags": tags,
@@ -217,7 +221,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         run_dir / "model.pcamodel",
         model,
         config=stored_config,
-        training_windows=[training_window],
+        training_windows=training_windows,
         model_purpose=model_purpose,
         model_status=model_status,
     )
@@ -253,12 +257,8 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tags = _required_tags(payload)
     _require_continuous_roles(tags, registry)
     config = _preprocessing_config(payload)
-    reference = _select_window(
-        parsed,
-        timestamp_column,
-        _required_text(payload, "normal_start"),
-        _required_text(payload, "normal_end"),
-    )
+    window = _single_enabled_training_window(training_windows_from_payload(payload))
+    reference = _select_window(parsed, timestamp_column, window["start"], window["end"])
     result = model_quality_payload(
         parsed,
         reference,
@@ -302,6 +302,41 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    windows = training_windows_from_payload(payload)
+    operation = payload.get("operation")
+    if operation is not None:
+        if not isinstance(operation, dict):
+            raise ValueError("training_windows操作必须是对象")
+        action = operation.get("action")
+        if action == "add":
+            windows = add_training_window(windows, operation.get("window", {}))
+        elif action == "update":
+            windows = update_training_window(
+                windows, str(operation.get("id", "")), operation.get("changes", {})
+            )
+        elif action == "remove":
+            windows = remove_training_window(windows, str(operation.get("id", "")))
+        elif action == "set_enabled":
+            windows = set_enabled_training_window(
+                windows, str(operation.get("id", "")), operation.get("enabled")
+            )
+        else:
+            raise ValueError("training_windows操作无效")
+    timestamps = None
+    if payload.get("file_id"):
+        timestamp_column = _required_text(payload, "timestamp_column")
+        timestamps = _parse_timestamp_column(_read_upload(payload), timestamp_column)[
+            timestamp_column
+        ]
+    return {
+        "training_windows": windows,
+        "summary": summarize_training_windows(
+            windows, timestamps, int(payload.get("sample_interval_minutes", 5))
+        ),
+    }
+
+
 def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
     parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
@@ -321,6 +356,10 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
     indexed = parsed.set_index(timestamp_column).sort_index()
     reference_start = _optional_timestamp(payload.get("normal_start"))
     reference_end = _optional_timestamp(payload.get("normal_end"))
+    if "training_windows" in payload:
+        window = _single_enabled_training_window(training_windows_from_payload(payload))
+        reference_start = pd.Timestamp(window["start"])
+        reference_end = pd.Timestamp(window["end"])
     return trend_payload_data(
         indexed,
         tags,
@@ -538,8 +577,9 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         pd.Timestamp(_required_text(payload, "validation_end")),
     )
     training_windows = [
-        (pd.Timestamp(start), pd.Timestamp(end))
-        for start, end in manifest["training_windows"]
+        (pd.Timestamp(window["start"]), pd.Timestamp(window["end"]))
+        for window in normalize_manifest_training_windows(manifest)
+        if window["enabled"]
     ]
     ensure_disjoint_windows(training_windows, [validation_window])
 
@@ -709,6 +749,15 @@ def _model_purpose(value: object) -> str:
     if value not in MODEL_PURPOSES:
         raise ValueError("model_purpose必须是exploratory或normal_state")
     return str(value)
+
+
+def _single_enabled_training_window(
+    training_windows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    enabled = [window for window in training_windows if window["enabled"]]
+    if len(enabled) != 1:
+        raise ValueError("当前训练仅支持一个启用的training_windows窗口")
+    return enabled[0]
 
 
 def _require_continuous_roles(
@@ -1063,6 +1112,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/quality":
                 self._send_json(quality_payload(payload))
+                return
+            if parsed.path == "/api/training-windows":
+                self._send_json(training_windows_payload(payload))
                 return
             if parsed.path == "/api/trend":
                 self._send_json(trend_payload(payload))
@@ -1483,6 +1535,7 @@ function saveCurrentTagConfig() {
 }
 function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent="尚未执行或结果已失效"; } el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
 function commonPayload() { return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
+function trainingWindowsPayload() { return [{id:"legacy-window-001",start:el("normalStart").value,end:el("normalEnd").value,source:"legacy",source_ref:null,enabled:true,comment:""}]; }
 
 async function api(path, options={}) {
   const response = await fetch(path, options);
@@ -1583,7 +1636,7 @@ el("qualityButton").addEventListener("click",async()=>{
   const tags=selectedTags(); if(tags.length<2) { setStatus("至少选择两个continuous_input Tag。","warning"); return; }
   const button=el("qualityButton"); setBusy(button,true,"检查中…");
   try {
-    const payload={...commonPayload(),tags,normal_start:el("normalStart").value,normal_end:el("normalEnd").value};
+    const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
     const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; renderQuality(data); renderTagList(); el("trainButton").disabled=!data.can_train; el("trainExploratoryButton").disabled=!data.can_train;
     document.querySelector('[data-panel="configPanel"]').click(); document.querySelector('[data-inner="qualityPanel"]').click();
     setStatus(data.can_train?"统一质量检查通过，可以训练草稿模型。":"仍有阻止训练的问题，请排除问题Tag或调整参考期后重新检查。",data.can_train?"success":"error");
@@ -1602,7 +1655,7 @@ el("trendButton").addEventListener("click",async()=>{
   const tags=[...el("trendTags").selectedOptions].map(option=>option.value); if(!tags.length||tags.length>8) { setStatus("趋势浏览请选择1至8个Tag。","warning"); return; }
   const button=el("trendButton"); setBusy(button,true,"读取中…");
   try {
-    const payload={...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value,normal_start:el("normalStart").value,normal_end:el("normalEnd").value,display_mode:el("trendMode").value};
+    const payload={...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value,training_windows:trainingWindowsPayload(),display_mode:el("trendMode").value};
     const data=await api("/api/trend",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.trend=data; renderTrend(data); setStatus("趋势与统计已更新；数据未被修改或插值。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1643,7 +1696,7 @@ async function trainModel(modelPurpose) {
   const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   try {
     const components=el("components").value.trim();
-    const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,model_purpose:modelPurpose,normal_start:el("normalStart").value,normal_end:el("normalEnd").value,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
+    const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");

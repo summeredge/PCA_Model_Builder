@@ -16,10 +16,16 @@ import pandas as pd
 from .dpca import DPCAModel
 from .preprocessing import PreprocessingConfig
 from .tag_config import normalize_tag_configs, normalize_tag_registry
-from .compat import normalize_model_semantics, validate_new_model_semantics
+from .compat import (
+    normalize_manifest_training_windows,
+    normalize_model_semantics,
+    normalize_training_windows_for_write,
+    validate_new_model_semantics,
+)
+from .windows import normalize_training_windows
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _ARRAY_NAMES = {
     "mean",
     "scale",
@@ -59,7 +65,7 @@ def save_model_package(
     path: str | Path,
     model: DPCAModel,
     config: dict[str, Any],
-    training_windows: list[list[str]],
+    training_windows: list[object],
     model_purpose: str = "normal_state",
     model_status: str = "candidate",
 ) -> None:
@@ -77,7 +83,7 @@ def save_model_package(
         "t2_limits": {str(key): value for key, value in model.t2_limits.items()},
         "q_limits": {str(key): value for key, value in model.q_limits.items()},
         "config": config,
-        "training_windows": training_windows,
+        "training_windows": normalize_training_windows_for_write(training_windows),
     }
     arrays = BytesIO()
     np.savez_compressed(
@@ -148,7 +154,11 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
         raise ValueError("model package is not a valid ZIP archive") from error
     except (KeyError, TypeError, AttributeError, IndexError) as error:
         raise ValueError("model package structure is invalid") from error
-    manifest = {**manifest, **normalize_model_semantics(manifest)}
+    manifest = {
+        **manifest,
+        **normalize_model_semantics(manifest),
+        "training_windows": normalize_manifest_training_windows(manifest),
+    }
     _validate_loaded_model(model, manifest)
     return model, manifest
 
@@ -161,7 +171,7 @@ def _validate_manifest_structure(manifest: object) -> None:
     missing = sorted(fields - set(manifest))
     if missing:
         raise ValueError(f"model package manifest is missing: {', '.join(missing)}")
-    if schema_version not in {1, SCHEMA_VERSION}:
+    if schema_version not in {1, 2, SCHEMA_VERSION}:
         raise ValueError("unsupported model package schema version")
     normalize_model_semantics(manifest)
     if (
@@ -189,7 +199,7 @@ def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
     ):
         raise ValueError("model package feature names are invalid")
     config, preprocessing = _validate_config(manifest["config"])
-    _validate_training_windows(manifest["training_windows"])
+    normalize_training_windows(manifest["training_windows"])
     _validate_dynamic_features(feature_names, config["tags"], preprocessing)
 
     feature_count = len(feature_names)
@@ -355,29 +365,6 @@ def _validate_excluded_tags(value: object) -> set[str]:
         ):
             raise ValueError("excluded_tags constant metadata is invalid")
     return seen
-
-
-def _validate_training_windows(value: object) -> None:
-    if not isinstance(value, list) or not value:
-        raise ValueError("model package training_windows must be a non-empty list")
-    for window in value:
-        if not isinstance(window, list) or len(window) != 2:
-            raise ValueError("model package training window must contain start and end")
-        if not all(isinstance(item, str) and item.strip() for item in window):
-            raise ValueError("model package training window values must be strings")
-        try:
-            start = pd.Timestamp(window[0])
-            end = pd.Timestamp(window[1])
-        except (TypeError, ValueError) as error:
-            raise ValueError("model package training window is not parseable") from error
-        if pd.isna(start) or pd.isna(end):
-            raise ValueError("model package training window is not parseable")
-        try:
-            reversed_window = start > end
-        except TypeError as error:
-            raise ValueError("model package training window timezones are inconsistent") from error
-        if reversed_window:
-            raise ValueError("model package training window start follows its end")
 
 
 def _validate_dynamic_features(

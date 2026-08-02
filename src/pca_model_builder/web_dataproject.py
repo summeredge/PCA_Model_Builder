@@ -583,6 +583,14 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("最大绘图点数必须是整数") from error
     max_points = min(100000, max(100, max_points))
     indexed = parsed.set_index(timestamp_column).sort_index()
+    reference_start = base_web._optional_timestamp(payload.get("normal_start"))
+    reference_end = base_web._optional_timestamp(payload.get("normal_end"))
+    if "training_windows" in payload:
+        training_window = base_web._single_enabled_training_window(
+            base_web.training_windows_from_payload(payload)
+        )
+        reference_start = pd.Timestamp(training_window["start"])
+        reference_end = pd.Timestamp(training_window["end"])
     return _trend_payload_data(
         indexed,
         tags,
@@ -591,8 +599,8 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         pd.Timestamp(base_web._required_text(payload, "end")),
         registry,
         max_points,
-        base_web._optional_timestamp(payload.get("normal_start")),
-        base_web._optional_timestamp(payload.get("normal_end")),
+        reference_start,
+        reference_end,
     )
 
 
