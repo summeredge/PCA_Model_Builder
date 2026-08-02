@@ -33,6 +33,7 @@ def inspect_data_quality(
     tag_columns: Sequence[str],
     engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
     expected_interval_minutes: float | None = None,
+    include_variability: bool = True,
 ) -> QualityReport:
     """Inspect input without modifying it or silently repairing problems."""
     missing_columns = [
@@ -153,7 +154,7 @@ def inspect_data_quality(
                     tag,
                 )
             )
-        if not finite.empty and finite.nunique() <= 1:
+        if include_variability and not finite.empty and finite.nunique() <= 1:
             constant_value = float(finite.iloc[0])
             issues.append(
                 QualityIssue(
@@ -174,7 +175,7 @@ def inspect_data_quality(
                     },
                 )
             )
-        elif not finite.empty:
+        elif include_variability and not finite.empty:
             standard_deviation = float(finite.std(ddof=0))
             near_constant_limit = max(abs(float(finite.mean())), 1.0) * 1e-6
             if 0 < standard_deviation <= near_constant_limit:

@@ -137,20 +137,13 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
     )
     tag_configs = _read_tag_configs(args.tag_config, args.tags)
     training_windows = _training_windows_from_args(args)
-    enabled_windows = [window for window in training_windows if window["enabled"]]
-    if not enabled_windows:
-        raise ValueError("至少需要一个启用的training_windows窗口")
-    for window in enabled_windows:
-        normal = _select_window(raw, args.timestamp, window["start"], window["end"])
-        _require_clean_data(
-            normal,
-            args.timestamp,
-            args.tags,
-            expected_interval_minutes=config.sample_interval_minutes,
-            configured_engineering_ranges=engineering_ranges(tag_configs),
-        )
     training_result = build_training_matrix(
-        raw, args.timestamp, args.tags, config, training_windows
+        raw,
+        args.timestamp,
+        args.tags,
+        config,
+        training_windows,
+        engineering_ranges(tag_configs),
     )
     dynamic = training_result.dynamic
     model = fit_dpca(
@@ -170,6 +163,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         "variance_threshold": args.variance_threshold,
         "tag_configs": tag_configs,
         "training_summary": training_result.window_summaries,
+        "training_quality_warnings": training_result.global_quality_warnings,
     }
     save_model_package(
         args.output,
@@ -187,6 +181,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         else "candidate",
         "training_rows": len(dynamic),
         "training_window_summary": training_result.window_summaries,
+        "training_quality_warnings": training_result.global_quality_warnings,
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
         "cumulative_explained_variance": float(

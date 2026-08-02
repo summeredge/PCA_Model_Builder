@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.preprocessing import PreprocessingConfig, build_dynamic_matrix
 from pca_model_builder.training import build_training_matrix
 
@@ -27,9 +28,29 @@ def _frame(periods=80):
         {
             "time": time,
             "A": np.arange(periods, dtype=float),
-            "B": np.arange(periods, dtype=float) * 2.0 + 1.0,
-            "C": np.arange(periods, dtype=float) * -0.5,
+            "B": np.sin(np.arange(periods, dtype=float) / 3.0),
+            "C": np.cos(np.arange(periods, dtype=float) / 5.0),
         }
+    )
+
+
+def _multistate_frame(second_value=20.0):
+    rng = np.random.default_rng(73)
+    time = pd.date_range("2026-01-01", periods=120, freq="5min")
+    return pd.DataFrame(
+        {
+            "time": time,
+            "A": [10.0] * 60 + [second_value] * 60,
+            "B": rng.normal(size=120),
+            "C": rng.normal(size=120),
+        }
+    )
+
+
+def _two_windows(frame):
+    return _windows(
+        (frame.time.iloc[0], frame.time.iloc[59], True),
+        (frame.time.iloc[60], frame.time.iloc[119], True),
     )
 
 
@@ -140,3 +161,78 @@ def test_training_records_short_dropped_segments_and_blocks_when_everything_is_i
     assert result.window_summaries[1]["dropped_reason"] == "insufficient_after_smoothing_and_lag"
     with pytest.raises(ValueError, match="所有启用窗口"):
         build_training_matrix(frame, "time", ["A", "B", "C"], config, only_short)
+
+
+def test_training_checks_variability_after_merging_independent_windows():
+    frame = _multistate_frame()
+    config = PreprocessingConfig(5, 5, 0, 5)
+
+    result = build_training_matrix(
+        frame, "time", ["A", "B", "C"], config, _two_windows(frame)
+    )
+    model = fit_dpca(result.dynamic, n_components=2)
+
+    assert result.dynamic["A__lag_000min"].std(ddof=0) > 0
+    assert len(result.dynamic) == 120
+    assert [summary["effective_samples"] for summary in result.window_summaries] == [60, 60]
+    np.testing.assert_allclose(model.mean, result.dynamic.mean().to_numpy())
+    np.testing.assert_allclose(model.scale, result.dynamic.std(ddof=0).to_numpy())
+
+
+def test_training_rejects_features_that_remain_constant_after_merging():
+    frame = _multistate_frame(second_value=10.0)
+
+    with pytest.raises(ValueError, match="常量动态特征.*A__lag_000min"):
+        build_training_matrix(
+            frame,
+            "time",
+            ["A", "B", "C"],
+            PreprocessingConfig(5, 5, 0, 5),
+            _two_windows(frame),
+        )
+
+
+def test_training_reports_global_near_constant_feature_without_window_blocking():
+    frame = _multistate_frame()
+    frame.loc[:59, "A"] = 10.0 + np.arange(60) * 1e-8
+    frame.loc[60:, "A"] = 10.0 + np.arange(60) * 1e-8
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(5, 5, 0, 5),
+        _two_windows(frame),
+    )
+
+    assert any(
+        warning["code"] == "near_constant_feature"
+        and warning["feature"] == "A__lag_000min"
+        for warning in result.global_quality_warnings
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "code"),
+    [
+        (lambda frame: frame.__setitem__("A", [1.0] * 60 + [None] + [2.0] * 59), "missing_value"),
+        (lambda frame: frame.__setitem__("A", [1.0] * 60 + ["bad"] + [2.0] * 59), "non_numeric_value"),
+        (lambda frame: frame.__setitem__("A", [1.0] * 60 + [float("inf")] + [2.0] * 59), "non_finite_value"),
+        (lambda frame: frame.__setitem__("A", [1.0] * 60 + [1000.0] + [2.0] * 59), "engineering_range"),
+        (lambda frame: frame.__setitem__("time", list(frame.time.iloc[:60]) + [frame.time.iloc[61]] + list(frame.time.iloc[61:])), "duplicate_timestamp"),
+        (lambda frame: frame.__setitem__("time", list(frame.time.iloc[:60]) + [frame.time.iloc[60] + pd.Timedelta(minutes=2)] + list(frame.time.iloc[61:])), "irregular_sampling"),
+    ],
+)
+def test_training_keeps_per_window_safety_checks(mutate, code):
+    frame = _multistate_frame()
+    mutate(frame)
+
+    with pytest.raises(ValueError, match=code):
+        build_training_matrix(
+            frame,
+            "time",
+            ["A", "B", "C"],
+            PreprocessingConfig(5, 5, 0, 5),
+            _two_windows(frame),
+            {"A": (-100.0, 100.0)},
+        )

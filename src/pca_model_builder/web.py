@@ -170,28 +170,16 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         tags, {tag: registry[tag] for tag in tags}
     )
     training_windows = training_windows_from_payload(payload)
-    enabled_windows = [window for window in training_windows if window["enabled"]]
-    if not enabled_windows:
-        raise ValueError("至少需要一个启用的training_windows窗口")
-    normal = _select_window(
-        parsed, timestamp_column, enabled_windows[0]["start"], enabled_windows[0]["end"]
-    )
-    for window in enabled_windows:
-        selected = _select_window(
-            parsed, timestamp_column, window["start"], window["end"]
-        )
-        _require_clean_data(
-            selected,
-            timestamp_column,
-            tags,
-            config.sample_interval_minutes,
-            engineering_ranges(tag_configs),
-        )
-    excluded_tags = _excluded_tag_records(
-        payload.get("excluded_tags"), normal, tags, registry
-    )
     training_result = build_training_matrix(
-        parsed, timestamp_column, tags, config, training_windows
+        parsed,
+        timestamp_column,
+        tags,
+        config,
+        training_windows,
+        engineering_ranges(tag_configs),
+    )
+    excluded_tags = _excluded_tag_records(
+        payload.get("excluded_tags"), training_result.reference, tags, registry
     )
     dynamic = training_result.dynamic
     components_value = payload.get("n_components")
@@ -220,6 +208,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "source_tag_configs": registry,
         "excluded_tags": excluded_tags,
         "training_summary": training_result.window_summaries,
+        "training_quality_warnings": training_result.global_quality_warnings,
     }
     save_model_package(
         run_dir / "model.pcamodel",
@@ -237,6 +226,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "model_status": model_status,
         "training_rows": len(dynamic),
         "training_window_summary": training_result.window_summaries,
+        "training_quality_warnings": training_result.global_quality_warnings,
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
         "cumulative_explained_variance": float(
@@ -1430,6 +1420,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="modelContent" hidden>
           <div id="modelMetrics" class="metrics"></div>
           <h3>训练窗口与连续段</h3><div id="trainingWindowSummary"></div>
+          <div id="trainingQualityWarnings" class="hint"></div>
           <h3>主元解释率</h3><div id="varianceChart" class="variance"></div>
           <div class="chart-grid">
             <div class="chart-card"><h3>训练期 T²</h3><div id="t2Chart" class="chart"></div></div>
@@ -1808,6 +1799,7 @@ function renderTraining(data) {
   const purpose=data.model_purpose==="exploratory"?"探索模型":"正常状态模型"; const status=data.model_status==="draft"?"草稿":"候选";
   el("modelMetrics").innerHTML=metric("模型用途",purpose)+metric("模型状态",status)+metric("训练动态样本",data.training_rows)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
   renderTrainingWindowSummary(data.training_window_summary||[]);
+  const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
   data.explained_variance.slice(0,30).forEach((value,index)=>{ const bar=document.createElement("div"); bar.className=`variance-bar ${index<data.n_components?"selected":""}`; bar.style.height=`${Math.max(3,value/max*95)}px`; const label=document.createElement("span"); label.textContent=`${(value*100).toFixed(0)}%`; bar.title=`PC${index+1}: ${(value*100).toFixed(2)}%`; bar.append(label); variance.append(bar); });
   lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download;

@@ -8,6 +8,8 @@ import pytest
 from pca_model_builder.cli import main
 from pca_model_builder import cli
 from pca_model_builder.model_io import load_model_package
+from pca_model_builder.preprocessing import PreprocessingConfig
+from pca_model_builder.training import build_training_matrix
 
 
 def _rewrite_as_legacy_window_package(path, schema_version):
@@ -305,8 +307,8 @@ def test_cli_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
     csv_path, windows_path, model_path = tmp_path / "history.csv", tmp_path / "windows.json", tmp_path / "model.pcamodel"
     frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
     windows_path.write_text(json.dumps([
-        {"id": "window-001", "start": time[0].isoformat(), "end": time[49].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
-        {"id": "window-002", "start": time[50].isoformat(), "end": time[-1].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-001", "start": time[0].isoformat(), "end": time[89].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-002", "start": time[90].isoformat(), "end": time[90].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
     ]), encoding="utf-8")
     original = cli.build_training_matrix
     calls = []
@@ -318,6 +320,47 @@ def test_cli_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "build_training_matrix", recorded)
     assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--max-lag", "0", "--components", "2", "--model-name", "shared", "--output", str(model_path)]) == 0
     assert [window["id"] for window in calls[0]] == ["window-001", "window-002"]
+    _, manifest = load_model_package(model_path)
+    assert manifest["config"]["training_summary"][1]["status"] == "dropped"
+    assert manifest["config"]["training_summary"][1]["dropped_reason"] == "insufficient_after_smoothing_and_lag"
+
+
+def test_cli_multistate_windows_allow_local_constants_and_use_global_statistics(tmp_path):
+    rng = np.random.default_rng(93)
+    time = pd.date_range("2026-01-01", periods=120, freq="5min")
+    frame = pd.DataFrame({"time": time, "A": [10.0] * 60 + [20.0] * 60, "B": rng.normal(size=120), "C": rng.normal(size=120)})
+    csv_path, windows_path, model_path = tmp_path / "history.csv", tmp_path / "windows.json", tmp_path / "model.pcamodel"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    windows = [
+        {"id": "window-001", "start": time[0].isoformat(), "end": time[59].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-002", "start": time[60].isoformat(), "end": time[-1].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+    ]
+    windows_path.write_text(json.dumps(windows), encoding="utf-8")
+
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--smoothing-window", "5", "--max-lag", "0", "--components", "2", "--model-name", "multistate", "--output", str(model_path)]) == 0
+
+    model, manifest = load_model_package(model_path)
+    expected = build_training_matrix(
+        frame, "time", ["A", "B", "C"], PreprocessingConfig(5, 5, 0, 5), windows
+    )
+    assert len(manifest["config"]["training_summary"]) == 2
+    np.testing.assert_allclose(model.mean, expected.dynamic.mean().to_numpy())
+    np.testing.assert_allclose(model.scale, expected.dynamic.std(ddof=0).to_numpy())
+
+
+def test_cli_multistate_windows_reject_global_constant_feature(tmp_path, capsys):
+    rng = np.random.default_rng(94)
+    time = pd.date_range("2026-01-01", periods=120, freq="5min")
+    frame = pd.DataFrame({"time": time, "A": [10.0] * 120, "B": rng.normal(size=120), "C": rng.normal(size=120)})
+    csv_path, windows_path = tmp_path / "history.csv", tmp_path / "windows.json"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    windows_path.write_text(json.dumps([
+        {"id": "window-001", "start": time[0].isoformat(), "end": time[59].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-002", "start": time[60].isoformat(), "end": time[-1].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+    ]), encoding="utf-8")
+
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--smoothing-window", "5", "--max-lag", "0", "--components", "2", "--model-name", "constant", "--output", str(tmp_path / "constant.pcamodel")]) == 2
+    assert "常量动态特征" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])
@@ -476,8 +519,8 @@ def test_cli_training_reports_constant_tag_name(tmp_path, capsys):
 
     assert result == 2
     error = capsys.readouterr().err
-    assert "constant_tag(20) [FIXED]" in error
-    assert "固定值50" in error
+    assert "合并后的训练矩阵存在常量动态特征" in error
+    assert "FIXED__lag_000min" in error
 
 
 def test_cli_training_rejects_variance_threshold_of_one(tmp_path):

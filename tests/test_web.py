@@ -9,13 +9,14 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.cli import build_parser
-from pca_model_builder import web
+from pca_model_builder import cli, web
 from pca_model_builder.model_io import load_model_package
 from pca_model_builder.preprocessing import (
     PreprocessingConfig,
     build_dynamic_matrix,
     infer_segment_ids,
 )
+from pca_model_builder.training import build_training_matrix
 
 
 def _history_frame() -> pd.DataFrame:
@@ -393,8 +394,8 @@ def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
         "history.csv", history.to_csv(index=False).encode("utf-8-sig")
     )
     windows = [
-        {"id": "window-001", "start": history.time.iloc[0].isoformat(), "end": history.time.iloc[79].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
-        {"id": "window-002", "start": history.time.iloc[80].isoformat(), "end": history.time.iloc[159].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-001", "start": history.time.iloc[0].isoformat(), "end": history.time.iloc[159].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-002", "start": history.time.iloc[160].isoformat(), "end": history.time.iloc[162].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
     ]
     original = web.build_training_matrix
     calls = []
@@ -422,12 +423,65 @@ def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
     assert [window["id"] for window in calls[0]] == ["window-001", "window-002"]
     assert trained["training_rows"] > 0
     assert len(trained["training_window_summary"]) == 2
+    assert trained["training_window_summary"][1]["status"] == "dropped"
+    assert trained["training_window_summary"][1]["dropped_reason"] == "insufficient_after_smoothing_and_lag"
     assert 'id="trainingWindowSummary"' in web.INDEX_HTML
+    assert 'id="trainingQualityWarnings"' in web.INDEX_HTML
     assert "renderTrainingWindowSummary(data.training_window_summary||[])" in web.INDEX_HTML
     _, manifest = load_model_package(
         tmp_path / "runs" / trained["run_id"] / "model.pcamodel"
     )
     assert manifest["config"]["training_summary"] == trained["training_window_summary"]
+
+
+def test_web_multistate_windows_allow_local_constants_and_use_global_reference(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    rng = np.random.default_rng(95)
+    time = pd.date_range("2026-01-01", periods=120, freq="5min")
+    frame = pd.DataFrame({"time": time, "A": [10.0] * 60 + [20.0] * 60, "B": rng.normal(size=120), "C": rng.normal(size=120), "FIXED": [7.0] * 60 + [8.0] * 60})
+    uploaded = web.save_upload("history.csv", frame.to_csv(index=False).encode("utf-8-sig"))
+    windows = [
+        {"id": "window-001", "start": time[0].isoformat(), "end": time[59].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        {"id": "window-002", "start": time[60].isoformat(), "end": time[-1].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+    ]
+    payload = {"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "training_windows": windows, "sample_interval_minutes": 5, "smoothing_window_minutes": 5, "max_lag_minutes": 0, "lag_step_minutes": 5, "n_components": 2, "model_name": "multistate"}
+
+    trained = web.train_payload(payload)
+    model, manifest = load_model_package(
+        tmp_path / "runs" / trained["run_id"] / "model.pcamodel"
+    )
+    expected = build_training_matrix(
+        frame, "time", ["A", "B", "C"], PreprocessingConfig(5, 5, 0, 5), windows
+    )
+
+    assert len(trained["training_window_summary"]) == 2
+    assert manifest["config"]["training_summary"] == trained["training_window_summary"]
+    np.testing.assert_allclose(model.mean, expected.dynamic.mean().to_numpy())
+    np.testing.assert_allclose(model.scale, expected.dynamic.std(ddof=0).to_numpy())
+    with pytest.raises(ValueError, match="并非参考期精确常量"):
+        web.train_payload({**payload, "excluded_tags": [{"tag": "FIXED", "reason": "constant_in_reference_window"}]})
+
+
+def test_web_multistate_windows_reject_global_constant_feature(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    rng = np.random.default_rng(96)
+    time = pd.date_range("2026-01-01", periods=120, freq="5min")
+    frame = pd.DataFrame({"time": time, "A": [10.0] * 120, "B": rng.normal(size=120), "C": rng.normal(size=120)})
+    uploaded = web.save_upload("history.csv", frame.to_csv(index=False).encode("utf-8-sig"))
+
+    with pytest.raises(ValueError, match="常量动态特征.*A__lag_000min"):
+        web.train_payload({"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "training_windows": [
+            {"id": "window-001", "start": time[0].isoformat(), "end": time[59].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+            {"id": "window-002", "start": time[60].isoformat(), "end": time[-1].isoformat(), "source": "manual", "source_ref": None, "enabled": True, "comment": ""},
+        ], "sample_interval_minutes": 5, "smoothing_window_minutes": 5, "max_lag_minutes": 0, "lag_step_minutes": 5, "n_components": 2, "model_name": "constant"})
+
+
+def test_training_entrypoints_delegate_window_quality_to_shared_builder():
+    assert "_require_clean_data(" not in inspect.getsource(cli._train)
+    assert "_require_clean_data(" not in inspect.getsource(web.train_payload)
+    assert "include_variability=False" in inspect.getsource(build_training_matrix)
 
 
 @pytest.mark.parametrize("schema_version", [1, 2])
@@ -626,7 +680,7 @@ def test_web_quality_blocks_constant_tag_and_training_records_confirmed_exclusio
 
     assert not blocking["can_train"]
     assert issue["tag"] == "FIXED"
-    with pytest.raises(ValueError, match="FIXED.*参考状态窗口内为常量"):
+    with pytest.raises(ValueError, match="常量动态特征.*FIXED__lag_000min"):
         web.train_payload(
             {
                 **common,
