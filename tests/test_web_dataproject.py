@@ -2,11 +2,27 @@ from __future__ import annotations
 
 import inspect
 import re
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 from pca_model_builder import cli, web_dataproject
+
+
+def _loaded(frame: pd.DataFrame) -> SimpleNamespace:
+    timestamp_column = str(frame.columns[0])
+    return SimpleNamespace(
+        frame=frame.copy(deep=True),
+        metadata=SimpleNamespace(
+            row_count=len(frame),
+            numeric_candidate_columns=tuple(
+                str(column) for column in frame.columns if column != timestamp_column
+            ),
+        ),
+        loaded_column_count=len(frame.columns),
+        cache_hit=False,
+    )
 
 
 def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls() -> None:
@@ -69,7 +85,11 @@ def test_dataproject_trend_payload_preserves_physical_gap_and_statistics(
             "B": [20.0, 19.0, 18.0],
         }
     )
-    monkeypatch.setattr(web_dataproject.base_web, "_read_upload", lambda payload: frame)
+    monkeypatch.setattr(
+        web_dataproject.base_web,
+        "_load_required_upload",
+        lambda payload, columns, prefix: _loaded(frame.loc[:, ["TIME", *columns]]),
+    )
 
     result = web_dataproject.trend_payload(
         {
@@ -99,6 +119,14 @@ def test_dataproject_trend_payload_preserves_physical_gap_and_statistics(
     assert result["statistics"]["A"]["current"]["mean"] == pytest.approx(11.0)
     assert result["statistics"]["A"]["reference"]["sample_count"] == 2
     assert sum(result["histograms"]["A"]["counts"]) == 3
+    assert result["data_usage"] == {
+        "source_row_count": 3,
+        "analysis_row_count": 3,
+        "display_point_count": 3,
+        "loaded_column_count": 3,
+        "cache_hit": False,
+        "stage": "completed",
+    }
 
 
 def test_dataproject_trend_payload_keeps_missing_as_null(
@@ -111,7 +139,11 @@ def test_dataproject_trend_payload_keeps_missing_as_null(
             "B": [20.0, 19.0, 18.0],
         }
     )
-    monkeypatch.setattr(web_dataproject.base_web, "_read_upload", lambda payload: frame)
+    monkeypatch.setattr(
+        web_dataproject.base_web,
+        "_load_required_upload",
+        lambda payload, columns, prefix: _loaded(frame.loc[:, ["TIME", *columns]]),
+    )
 
     result = web_dataproject.trend_payload(
         {
@@ -147,7 +179,11 @@ def test_trend_and_scatter_tag_limits_are_separate(
             **{tag: [1.0, 2.0, 3.0] for tag in tags},
         }
     )
-    monkeypatch.setattr(web_dataproject.base_web, "_read_upload", lambda payload: frame)
+    monkeypatch.setattr(
+        web_dataproject.base_web,
+        "_load_required_upload",
+        lambda payload, columns, prefix: _loaded(frame.loc[:, ["TIME", *columns]]),
+    )
     common = {
         "file_id": "ignored-by-test",
         "timestamp_column": "TIME",

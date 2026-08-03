@@ -23,6 +23,7 @@ from .compat import (
     MODEL_PURPOSES,
     training_windows_from_payload,
 )
+from .data_session import DataLoadResult, DataSessionCache, DataSessionMetadata
 from .dpca import fit_dpca
 from .model_io import copy_validated_model_package, load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
@@ -75,6 +76,7 @@ _VALIDATION_ARTIFACTS = {
         "application/json; charset=utf-8",
     ),
 }
+DATA_SESSIONS = DataSessionCache()
 
 
 def run_server(
@@ -107,6 +109,7 @@ def save_upload(filename: str, content: bytes) -> dict[str, Any]:
     encoding, columns = _read_header(path)
     if not columns:
         path.unlink(missing_ok=True)
+        DATA_SESSIONS.remove_dataset(file_id)
         raise ValueError("CSV 不包含列")
     return {
         "file_id": file_id,
@@ -128,10 +131,10 @@ def _read_header(path: Path) -> tuple[str, list[str]]:
 
 
 def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    frame = _read_upload(payload)
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(frame, timestamp_column)
-    numeric_columns = _numeric_candidates(parsed, timestamp_column)
+    loaded = _load_upload(payload, None)
+    parsed = loaded.frame
+    numeric_columns = list(loaded.metadata.numeric_candidate_columns)
     if len(numeric_columns) < 2:
         raise ValueError("至少需要两个可用的连续数值 Tag")
     report = inspect_data_quality(parsed, timestamp_column, numeric_columns)
@@ -140,7 +143,7 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("至少需要三个有效时间点")
     normal_end_index = max(0, min(len(timestamps) - 2, int(len(timestamps) * 0.65)))
     validation_start_index = normal_end_index + 1
-    return {
+    result = {
         "rows": len(parsed),
         "columns": list(parsed.columns),
         "numeric_columns": numeric_columns,
@@ -154,15 +157,30 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "can_train_without_review": report.can_train,
         "quality_issues": [asdict(issue) for issue in report.issues],
     }
+    return _with_data_usage(result, loaded, len(parsed), len(parsed))
 
 
 def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    frame = _read_upload(payload)
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(frame, timestamp_column)
-    all_tags = _numeric_candidates(parsed, timestamp_column)
-    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     tags = _required_tags(payload)
+    excluded = payload.get("excluded_tags")
+    excluded_tags = (
+        [
+            str(item.get("tag", "")).strip()
+            for item in excluded
+            if isinstance(item, dict)
+        ]
+        if isinstance(excluded, list)
+        else []
+    )
+    loaded = _load_required_upload(
+        payload,
+        list(dict.fromkeys([*tags, *excluded_tags])),
+        "找不到 Tag：",
+    )
+    parsed = loaded.frame
+    all_tags = list(loaded.metadata.numeric_candidate_columns)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
     model_purpose = _model_purpose(payload.get("model_purpose"))
     model_status = "draft" if model_purpose == "exploratory" else "candidate"
@@ -179,7 +197,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         training_windows,
         engineering_ranges(tag_configs),
     )
-    excluded_tags = _excluded_tag_records(
+    excluded_tag_records = _excluded_tag_records(
         payload.get("excluded_tags"), training_result.reference, tags, registry
     )
     dynamic = training_result.dynamic
@@ -207,7 +225,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "variance_threshold": variance_threshold,
         "tag_configs": tag_configs,
         "source_tag_configs": registry,
-        "excluded_tags": excluded_tags,
+        "excluded_tags": excluded_tag_records,
         "training_summary": training_result.window_summaries,
         "training_quality_warnings": training_result.global_quality_warnings,
     }
@@ -220,7 +238,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         model_status=model_status,
     )
     scores = model.score(dynamic)
-    return {
+    result = {
         "run_id": run_id,
         "model_name": model_name,
         "model_purpose": model_purpose,
@@ -242,15 +260,21 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "scores": _score_payload(scores),
         "model_download": f"/download/model?run_id={run_id}",
     }
+    return _with_data_usage(
+        result,
+        loaded,
+        len(training_result.reference),
+        len(result["scores"]),
+    )
 
 
 def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    frame = _read_upload(payload)
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(frame, timestamp_column)
-    all_tags = _numeric_candidates(parsed, timestamp_column)
-    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     tags = _required_tags(payload)
+    loaded = _load_required_upload(payload, tags, "找不到 Tag：")
+    parsed = loaded.frame
+    all_tags = list(loaded.metadata.numeric_candidate_columns)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
     config = _preprocessing_config(payload)
     training_result = build_training_matrix(
@@ -298,7 +322,9 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
         result["can_train"] = False
     result["training_window_summary"] = training_result.window_summaries
     result["training_quality_warnings"] = training_result.global_quality_warnings
-    return result
+    return _with_data_usage(
+        result, loaded, len(training_result.reference), len(training_result.reference)
+    )
 
 
 def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -327,24 +353,26 @@ def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             raise ValueError("training_windows操作无效")
     timestamps = None
+    loaded = None
     if payload.get("file_id"):
         timestamp_column = _required_text(payload, "timestamp_column")
-        timestamps = _parse_timestamp_column(_read_upload(payload), timestamp_column)[
-            timestamp_column
-        ]
-    return {
+        loaded = _load_upload(payload, [])
+        timestamps = loaded.frame[timestamp_column]
+    result = {
         "training_windows": windows,
         "summary": summarize_training_windows(
             windows, timestamps, int(payload.get("sample_interval_minutes", 5))
         ),
     }
+    return (
+        _with_data_usage(result, loaded, len(timestamps), len(timestamps))
+        if loaded is not None and timestamps is not None
+        else result
+    )
 
 
 def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
-    all_tags = _numeric_candidates(parsed, timestamp_column)
-    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     raw_tags = payload.get("tags")
     if not isinstance(raw_tags, list) or not raw_tags:
         raise ValueError("趋势Tag必须是非空列表")
@@ -353,6 +381,10 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("趋势Tag不能重复")
     if len(tags) > 8:
         raise ValueError("趋势浏览一次最多选择8个Tag")
+    loaded = _load_required_upload(payload, tags, "找不到趋势Tag：")
+    parsed = loaded.frame
+    all_tags = list(loaded.metadata.numeric_candidate_columns)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     missing = [tag for tag in tags if tag not in all_tags]
     if missing:
         raise ValueError(f"找不到趋势Tag：{', '.join(missing)}")
@@ -363,7 +395,7 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         window = _single_enabled_training_window(training_windows_from_payload(payload))
         reference_start = pd.Timestamp(window["start"])
         reference_end = pd.Timestamp(window["end"])
-    return trend_payload_data(
+    result = trend_payload_data(
         indexed,
         tags,
         _preprocessing_config(payload),
@@ -374,18 +406,20 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         reference_start,
         reference_end,
     )
+    analysis_rows = int(result["statistics"][tags[0]]["current"]["sample_count"])
+    return _with_data_usage(result, loaded, analysis_rows, len(result["rows"]))
 
 
 def tag_config_template_payload(payload: dict[str, Any]) -> bytes:
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
-    return build_tag_config_template(_numeric_candidates(parsed, timestamp_column))
+    metadata, _ = _upload_metadata(payload, timestamp_column)
+    return build_tag_config_template(list(metadata.numeric_candidate_columns))
 
 
 def tag_config_export_payload(payload: dict[str, Any]) -> bytes:
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
-    tags = _numeric_candidates(parsed, timestamp_column)
+    metadata, _ = _upload_metadata(payload, timestamp_column)
+    tags = list(metadata.numeric_candidate_columns)
     return export_tag_config_workbook(tags, payload.get("tag_configs"))
 
 
@@ -398,18 +432,16 @@ def tag_config_import_payload(
 ) -> dict[str, Any]:
     if Path(filename).suffix.lower() != ".xlsx":
         raise ValueError("工程配置仅接受无宏的.xlsx文件")
-    parsed = _parse_timestamp_column(
-        _read_upload(
-            {
-                "file_id": file_id,
-                "timestamp_column": timestamp_column,
-                "encoding": encoding,
-            }
-        ),
+    metadata, _ = _upload_metadata(
+        {
+            "file_id": file_id,
+            "timestamp_column": timestamp_column,
+            "encoding": encoding,
+        },
         timestamp_column,
     )
     return parse_tag_config_workbook(
-        content, _numeric_candidates(parsed, timestamp_column)
+        content, list(metadata.numeric_candidate_columns)
     )
 
 
@@ -420,12 +452,12 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
             payload,
             _validated_id(str(exploratory_run_id), "exploratory_run_id"),
         )
-    frame = _read_upload(payload)
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(frame, timestamp_column)
-    all_tags = _numeric_candidates(parsed, timestamp_column)
-    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     tags = _required_tags(payload)
+    loaded = _load_required_upload(payload, tags, "找不到 Tag：")
+    parsed = loaded.frame
+    all_tags = list(loaded.metadata.numeric_candidate_columns)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
     config = _preprocessing_config(payload)
     tag_configs = normalize_tag_configs(
@@ -459,7 +491,8 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
         variance_threshold=float(payload.get("variance_threshold", 0.95)),
         sample_interval_minutes=config.sample_interval_minutes,
     )
-    return _cluster_result_payload(result)
+    response = _cluster_result_payload(result)
+    return _with_data_usage(response, loaded, len(analysis), len(response["points"]))
 
 
 def _cluster_exploratory_payload(
@@ -483,7 +516,8 @@ def _cluster_exploratory_payload(
         max_lag_minutes=int(config_data["max_lag_minutes"]),
         lag_step_minutes=int(config_data["lag_step_minutes"]),
     )
-    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    loaded = _load_required_upload(payload, tags, "找不到 Tag：")
+    parsed = loaded.frame
     analysis = _select_window(
         parsed,
         timestamp_column,
@@ -512,10 +546,11 @@ def _cluster_exploratory_payload(
         n_clusters=int(payload.get("n_clusters", 3)),
         sample_interval_minutes=config.sample_interval_minutes,
     )
-    return {
+    response = {
         **_cluster_result_payload(result),
         "exploratory_run_id": exploratory_run_id,
     }
+    return _with_data_usage(response, loaded, len(analysis), len(response["points"]))
 
 
 def _cluster_result_payload(result: Any) -> dict[str, Any]:
@@ -545,22 +580,33 @@ def _cluster_result_payload(result: Any) -> dict[str, Any]:
 
 def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
-    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    raw_conditions = payload.get("conditions")
+    if not isinstance(raw_conditions, list):
+        raise ValueError("性能条件必须是列表")
+    columns = [
+        str(item.get("column", "")).strip()
+        for item in raw_conditions
+        if isinstance(item, dict)
+    ]
+    loaded = _load_required_upload(
+        payload,
+        list(dict.fromkeys(columns)),
+        "missing performance columns: ",
+    )
+    parsed = loaded.frame
     analysis = _select_window(
         parsed,
         timestamp_column,
         _required_text(payload, "analysis_start"),
         _required_text(payload, "analysis_end"),
     )
-    raw_conditions = payload.get("conditions")
-    if not isinstance(raw_conditions, list):
-        raise ValueError("性能条件必须是列表")
     indexed = analysis.set_index(timestamp_column)
-    return screen_performance_states(
+    result = screen_performance_states(
         indexed,
         raw_conditions,
         sample_interval_minutes=int(payload.get("sample_interval_minutes", 5)),
     )
+    return _with_data_usage(result, loaded, len(analysis), len(analysis))
 
 
 def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -581,7 +627,20 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for window in manifest["training_windows"]
         if window["enabled"]
     ]
-    parsed = _parse_timestamp_column(_read_upload(payload), timestamp_column)
+    label_column = str(payload.get("label_column", "")).strip()
+    requested_columns = list(
+        dict.fromkeys([*tags, *([label_column] if label_column else [])])
+    )
+    try:
+        loaded = _load_upload(payload, requested_columns)
+    except ValueError as error:
+        missing = _missing_columns_from_error(error)
+        if missing is None:
+            raise
+        if label_column and label_column in missing:
+            raise ValueError(f"找不到工程标签列：{label_column}") from error
+        raise ValueError(f"找不到 Tag：{', '.join(missing)}") from error
+    parsed = loaded.frame
     config = PreprocessingConfig(
         sample_interval_minutes=int(config_data["sample_interval_minutes"]),
         smoothing_window_minutes=int(config_data["smoothing_window_minutes"]),
@@ -640,7 +699,6 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if len(validation_result["validation_windows"]) == 1:
         window = validation_result["validation_windows"][0]
         result["validation_window"] = [window["start"], window["end"]]
-    label_column = str(payload.get("label_column", "")).strip()
     if label_column:
         if label_column not in parsed.columns:
             raise ValueError(f"找不到工程标签列：{label_column}")
@@ -677,7 +735,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         artifact: f"/download/validation?run_id={run_id}&artifact={artifact}"
         for artifact in _VALIDATION_ARTIFACTS
     }
-    return result
+    return _with_data_usage(result, loaded, len(scores), len(result["scores"]))
 
 
 def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -717,12 +775,88 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _read_upload(payload: dict[str, Any]) -> pd.DataFrame:
+def clear_data_session_cache() -> None:
+    DATA_SESSIONS.clear()
+
+
+def remove_data_session(file_id: str) -> None:
+    DATA_SESSIONS.remove_dataset(file_id)
+
+
+def _upload_source(payload: dict[str, Any]) -> tuple[str, Path, str]:
     file_id = _validated_id(_required_text(payload, "file_id"), "file_id")
     path = UPLOADS_DIR / f"{file_id}.csv"
     if not path.is_file():
+        DATA_SESSIONS.remove_dataset(file_id)
         raise ValueError("上传文件不存在，请重新上传")
-    return pd.read_csv(path, encoding=str(payload.get("encoding", "utf-8-sig")))
+    return file_id, path, str(payload.get("encoding", "utf-8-sig"))
+
+
+def _upload_metadata(
+    payload: dict[str, Any], timestamp_column: str
+) -> tuple[DataSessionMetadata, bool]:
+    file_id, path, encoding = _upload_source(payload)
+    return DATA_SESSIONS.get_metadata(
+        file_id, path, encoding, timestamp_column
+    )
+
+
+def _load_upload(
+    payload: dict[str, Any], requested_columns: Sequence[str] | None
+) -> DataLoadResult:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    file_id, path, encoding = _upload_source(payload)
+    return DATA_SESSIONS.load_columns(
+        file_id,
+        path,
+        encoding,
+        timestamp_column,
+        requested_columns,
+    )
+
+
+def _load_required_upload(
+    payload: dict[str, Any],
+    requested_columns: Sequence[str],
+    missing_prefix: str,
+) -> DataLoadResult:
+    try:
+        return _load_upload(payload, requested_columns)
+    except ValueError as error:
+        missing = _missing_columns_from_error(error)
+        if missing is None:
+            raise
+        raise ValueError(missing_prefix + ", ".join(missing)) from error
+
+
+def _missing_columns_from_error(error: ValueError) -> list[str] | None:
+    marker = "找不到列："
+    message = str(error)
+    if not message.startswith(marker):
+        return None
+    return [column.strip() for column in message[len(marker) :].split(",")]
+
+
+def _read_upload(payload: dict[str, Any]) -> pd.DataFrame:
+    """Compatibility wrapper for callers that still require all CSV columns."""
+    return _load_upload(payload, None).frame
+
+
+def _with_data_usage(
+    result: dict[str, Any],
+    loaded: DataLoadResult,
+    analysis_row_count: int,
+    display_point_count: int,
+) -> dict[str, Any]:
+    result["data_usage"] = {
+        "source_row_count": loaded.metadata.row_count,
+        "analysis_row_count": int(analysis_row_count),
+        "display_point_count": int(display_point_count),
+        "loaded_column_count": loaded.loaded_column_count,
+        "cache_hit": loaded.cache_hit,
+        "stage": "completed",
+    }
+    return result
 
 
 def _parse_timestamp_column(frame: pd.DataFrame, timestamp_column: str) -> pd.DataFrame:

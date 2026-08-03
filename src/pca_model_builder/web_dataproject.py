@@ -552,11 +552,6 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         return _BASE_TREND_PAYLOAD(payload)
 
     timestamp_column = base_web._required_text(payload, "timestamp_column")
-    parsed = base_web._parse_timestamp_column(
-        base_web._read_upload(payload), timestamp_column
-    )
-    all_tags = base_web._numeric_candidates(parsed, timestamp_column)
-    registry = base_web.normalize_tag_registry(all_tags, payload.get("tag_configs"))
     raw_tags = payload.get("tags")
     if not isinstance(raw_tags, list) or not raw_tags:
         raise ValueError("趋势Tag必须是非空列表")
@@ -570,6 +565,10 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if purpose == "scatter"
             else "趋势图一次最多选择4个Tag"
         )
+    loaded = base_web._load_required_upload(payload, tags, "找不到趋势Tag：")
+    parsed = loaded.frame
+    all_tags = list(loaded.metadata.numeric_candidate_columns)
+    registry = base_web.normalize_tag_registry(all_tags, payload.get("tag_configs"))
     missing = [tag for tag in tags if tag not in all_tags]
     if missing:
         raise ValueError(f"找不到趋势Tag：{', '.join(missing)}")
@@ -587,7 +586,7 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         reference_start = pd.Timestamp(training_window["start"])
         reference_end = pd.Timestamp(training_window["end"])
-    return _trend_payload_data(
+    result = _trend_payload_data(
         indexed,
         tags,
         base_web._preprocessing_config(payload),
@@ -597,6 +596,12 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         max_points,
         reference_start,
         reference_end,
+    )
+    return base_web._with_data_usage(
+        result,
+        loaded,
+        int(result["raw_rows"]),
+        int(result["rows_count"]),
     )
 
 

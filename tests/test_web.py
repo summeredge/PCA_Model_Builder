@@ -102,6 +102,63 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
         assert label in html
 
 
+def test_final_web_entry_uses_cached_base_reading_paths() -> None:
+    from pca_model_builder import web_dataproject
+
+    assert "_BASE_WEB.train_payload(payload)" in inspect.getsource(
+        web_model_results.train_payload
+    )
+    assert "base_web._load_required_upload(payload, tags" in inspect.getsource(
+        web_dataproject.trend_payload
+    )
+
+
+def test_repeated_final_web_trend_reuses_only_requested_columns(
+    tmp_path, monkeypatch
+) -> None:
+    from pca_model_builder import data_session, web_dataproject
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    common = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "encoding": "utf-8-sig",
+        "tags": ["A", "B"],
+        "purpose": "trend",
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "start": history.time.iloc[0].isoformat(),
+        "end": history.time.iloc[-1].isoformat(),
+        "max_points": 100,
+    }
+    web.inspect_payload(common)
+    original = data_session.pd.read_csv
+    calls = []
+
+    def recorded(*args, **kwargs):
+        calls.append(kwargs.copy())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(data_session.pd, "read_csv", recorded)
+    first = web_dataproject.trend_payload(common)
+    second = web_dataproject.trend_payload({**common, "tags": ["B", "A"]})
+
+    assert len(calls) == 1
+    assert calls[0]["usecols"] == ["time", "A", "B"]
+    assert first["data_usage"]["loaded_column_count"] == 3
+    assert first["data_usage"]["cache_hit"]
+    assert second["data_usage"]["cache_hit"]
+    assert second["tags"] == ["B", "A"]
+
+
 def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
     html = web.INDEX_HTML
     render_source = html.split("function renderTagList()", 1)[1].split(
@@ -243,18 +300,35 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     assert inspected["numeric_columns"] == ["A", "B", "C"]
     assert inspected["sample_interval_minutes"] == 5.0
     assert inspected["suggested_normal_end"] < inspected["suggested_validation_start"]
+    assert inspected["data_usage"] == {
+        "source_row_count": 180,
+        "analysis_row_count": 180,
+        "display_point_count": 180,
+        "loaded_column_count": 5,
+        "cache_hit": False,
+        "stage": "completed",
+    }
     assert clustered["engineer_decision_required"] is True
     assert clustered["sample_count"] == 177
     assert len(clustered["clusters"]) == 2
     assert {point["cluster"] for point in clustered["points"]} == {1, 2}
+    assert clustered["data_usage"]["source_row_count"] == 180
+    assert clustered["data_usage"]["analysis_row_count"] == 180
+    assert clustered["data_usage"]["display_point_count"] == len(
+        clustered["points"]
+    )
+    assert clustered["data_usage"]["loaded_column_count"] == 4
     assert screened["engineer_decision_required"] is True
     assert 0 < screened["matched_rows"] < screened["total_rows"]
     assert screened["representative_windows"]
+    assert screened["data_usage"]["loaded_column_count"] == 3
     assert trained["model_purpose"] == "normal_state"
     assert trained["model_status"] == "candidate"
     assert trained["n_components"] >= 2
     assert {"pc1", "pc2"}.issubset(trained["scores"][0])
     assert trained["training_rows"] > 0
+    assert trained["data_usage"]["analysis_row_count"] == 120
+    assert trained["data_usage"]["display_point_count"] == len(trained["scores"])
     assert trained["model_download"].endswith(trained["run_id"])
     assert (tmp_path / "runs" / trained["run_id"] / "model.pcamodel").exists()
     loaded_model, manifest = load_model_package(
@@ -275,6 +349,9 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     assert "known_event" in validated["status_by_engineering_label"]
     assert validated["status_counts"].get("abnormal", 0) > 0
     assert validated["contributions"]
+    assert validated["data_usage"]["source_row_count"] == 180
+    assert validated["data_usage"]["analysis_row_count"] == validated["scored_rows"]
+    assert validated["data_usage"]["loaded_column_count"] == 5
     assert all(
         item["statistic_value"] >= item["limit_95"]
         for item in validated["contributions"]
