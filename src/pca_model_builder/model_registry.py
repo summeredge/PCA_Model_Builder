@@ -125,8 +125,14 @@ def _resolve_registry_parent(
     _version_number(version)
     package = Path(registry_root) / model_id / version / "model.pcamodel"
     try:
-        model, manifest = load_model_package(package)
-        integrity = verify_model_package_integrity(package, require_external=True)
+        validated = validate_registry_package(
+            package,
+            registry_root=registry_root,
+            require_external=True,
+            allowed_statuses={("normal_state", "validated"), ("normal_state", "published")},
+        )
+        model, manifest = validated["model"], validated["manifest"]
+        integrity = validated["integrity"]
         _validate_parent_package(package, manifest, model_id, version)
     except (OSError, ValueError) as error:
         raise ValueError(f"指定父模型版本无效：{model_id}/{version}：{error}") from error
@@ -187,6 +193,58 @@ def verify_model_package_integrity(
     }
 
 
+def validate_registry_package(
+    package_path: str | Path,
+    *,
+    registry_root: str | Path,
+    require_external: bool = True,
+    allowed_statuses: set[tuple[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Validate package integrity and its identity inside one registry."""
+    package = Path(package_path).resolve()
+    registry = Path(registry_root).resolve()
+    if package.name != "model.pcamodel":
+        raise ValueError("registry模型包文件名必须为model.pcamodel")
+    try:
+        relative = package.relative_to(registry)
+    except ValueError as error:
+        raise ValueError("模型包不在指定registry内") from error
+    if len(relative.parts) != 3 or _VERSION_PATTERN.fullmatch(relative.parts[1]) is None:
+        raise ValueError("模型版本目录结构无效")
+    directory_model_id, directory_version, _ = relative.parts
+    model, manifest = load_model_package(package)
+    if manifest.get("schema_version") != 4:
+        raise ValueError("registry模型包schema必须为4")
+    integrity = verify_model_package_integrity(package, require_external=require_external)
+    if (
+        manifest.get("model_id") != directory_model_id
+        or manifest.get("version") != directory_version
+    ):
+        raise ValueError("模型版本目录与manifest不一致")
+    parent_model_id = manifest.get("parent_model_id")
+    parent_version = manifest.get("parent_version")
+    if (parent_model_id is None) != (parent_version is None):
+        raise ValueError("模型父版本字段不完整")
+    if parent_model_id is not None:
+        if parent_model_id != directory_model_id:
+            raise ValueError("父模型必须属于相同model_id")
+        if not isinstance(parent_version, str) or _VERSION_PATTERN.fullmatch(parent_version) is None:
+            raise ValueError("模型父版本号无效")
+        if _version_number(parent_version) >= _version_number(directory_version):
+            raise ValueError("父模型版本必须早于当前版本")
+    validate_loadable_model_semantics(manifest["model_purpose"], manifest["model_status"])
+    if allowed_statuses is not None and (
+        manifest["model_purpose"], manifest["model_status"]
+    ) not in allowed_statuses:
+        raise ValueError("模型版本生命周期状态无效")
+    return {
+        "path": package,
+        "model": model,
+        "manifest": manifest,
+        "integrity": integrity,
+    }
+
+
 def _record(package_path: Path, manifest: Mapping[str, Any], integrity: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "model_id": manifest.get("model_id"),
@@ -218,10 +276,13 @@ def create_model_version(
     model_status: str | None = None,
     engineer_comment: str | None = None,
     applicability_scope: object | None = None,
+    as_existing_version: bool | None = None,
 ) -> dict[str, Any]:
     """Create one immutable schema-v4 copy without changing the source."""
     source = Path(source_path)
     model, manifest = load_model_package(source)
+    if manifest.get("schema_version") == 4:
+        verify_model_package_integrity(source, require_external=True)
     if (
         manifest.get("model_status") in {"validated", "published"}
         and classify_validation_evidence(manifest.get("validation_summary")) != "current"
@@ -242,11 +303,23 @@ def create_model_version(
         raise ValueError("parent_model_id和parent_version必须同时提供")
     if parent_model_id is not None and parent_model_id != resolved_model_id:
         raise ValueError("父模型必须属于相同model_id")
+    model_root = Path(registry_root) / resolved_model_id
+    family_exists = model_root.is_dir()
+    if not family_exists and parent_version is not None:
+        raise ValueError("新模型族不得指定parent_version")
+    if as_existing_version is False and family_exists:
+        raise ValueError("model_id已存在，请明确选择作为现有模型的新版本")
+    if as_existing_version is True and not family_exists:
+        raise ValueError("所选现有model_id不存在")
+    if family_exists and as_existing_version is not True and parent_version is None:
+        raise ValueError("model_id已存在，请明确选择作为现有模型的新版本")
     selected_parent = None
-    if parent_version is not None:
+    if family_exists:
         selected_parent = _resolve_registry_parent(
             registry_root, resolved_model_id, parent_version
         )
+        if selected_parent is None:
+            raise ValueError("模型族存在，但没有完整性通过的有效父版本")
     if selected_parent is not None:
         _validate_version_compatibility(
             model,
@@ -371,9 +444,12 @@ def list_model_versions(
             if not package.is_file() or _VERSION_PATTERN.fullmatch(version_dir.name) is None:
                 continue
             try:
-                _, manifest = load_model_package(package)
-                integrity = verify_model_package_integrity(package, require_external=True)
-                records.append(_record(package, manifest, integrity))
+                validated = validate_registry_package(
+                    package, registry_root=registry, require_external=True
+                )
+                records.append(
+                    _record(package, validated["manifest"], validated["integrity"])
+                )
             except (OSError, ValueError) as error:
                 records.append(
                     {

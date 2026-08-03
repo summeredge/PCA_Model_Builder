@@ -37,7 +37,7 @@ from .model_registry import (
     compare_model_versions,
     list_model_versions,
     publish_model_version,
-    verify_model_package_integrity,
+    validate_registry_package,
 )
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
 from .quality import QualityReport, inspect_data_quality
@@ -773,10 +773,9 @@ def model_compare_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def model_verify_payload(payload: dict[str, Any]) -> dict[str, Any]:
     path = _registry_package_path(_required_text(payload, "model_path"))
-    return verify_model_package_integrity(
-        path,
-        require_external=bool(payload.get("require_external", False)),
-    )
+    return validate_registry_package(
+        path, registry_root=MODEL_REGISTRY_DIR, require_external=True
+    )["integrity"]
 
 
 def model_publish_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -804,8 +803,10 @@ def model_publish_payload(payload: dict[str, Any]) -> dict[str, Any]:
         validate_validated_model_artifact(candidate, path, report, expected_identifier=run_id)
     else:
         path = _registry_package_path(_required_text(payload, "model_path"))
-        _, source_manifest = load_model_package(path)
-        verify_model_package_integrity(path, require_external=True)
+        validated_source = validate_registry_package(
+            path, registry_root=MODEL_REGISTRY_DIR, require_external=True
+        )
+        source_manifest = validated_source["manifest"]
         if source_manifest.get("schema_version") != 4 or source_manifest.get("model_status") != "validated" or source_manifest.get("model_purpose") != "normal_state":
             raise ValueError("registry发布源必须是schema v4 normal_state/validated模型")
     scope = payload.get("applicability_scope")
@@ -835,19 +836,9 @@ def _registry_package_path(value: object) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("模型版本路径无效")
     package = Path(value).resolve()
-    registry = MODEL_REGISTRY_DIR.resolve()
-    try:
-        package.relative_to(registry)
-    except ValueError as error:
-        raise ValueError("模型版本路径必须位于本地模型仓库") from error
-    if package.name != "model.pcamodel":
-        raise ValueError("模型版本路径无效")
-    if not package.is_file():
-        raise ValueError("模型版本不存在")
-    _, manifest = load_model_package(package)
-    if manifest.get("schema_version") != 4 or package.parent.name != manifest.get("version") or package.parent.parent.name != manifest.get("model_id"):
-        raise ValueError("模型版本路径与manifest不一致")
-    return package
+    return validate_registry_package(
+        package, registry_root=MODEL_REGISTRY_DIR, require_external=True
+    )["path"]
 
 
 def _read_upload(payload: dict[str, Any]) -> pd.DataFrame:
@@ -1243,7 +1234,6 @@ class _Handler(BaseHTTPRequestHandler):
                     sidecar = package.with_name(f"{package.name}.sha256")
                     self._send_download(sidecar, "text/plain; charset=utf-8", sidecar.name)
                 else:
-                    verify_model_package_integrity(package, require_external=True)
                     self._send_download(package, "application/zip", package.name)
             except Exception as error:
                 self._send_json({"error": str(error)}, 400)

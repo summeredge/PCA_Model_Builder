@@ -251,6 +251,43 @@ def test_web_model_registry_lists_compares_verifies_and_publishes(tmp_path, monk
     assert run_id in str(run_dir)
 
 
+def test_web_registry_operations_share_identity_validation(tmp_path, monkeypatch):
+    _, _, run_dir, _ = _create_passed_web_run(tmp_path, monkeypatch)
+    registry = tmp_path / "models"
+    monkeypatch.setattr(web, "MODEL_REGISTRY_DIR", registry)
+    valid = create_model_version(
+        run_dir / "validated_model.pcamodel", registry, model_id="D330_DPCA"
+    )
+    wrong = registry / "OTHER" / "v0002" / "model.pcamodel"
+    wrong.parent.mkdir(parents=True)
+    wrong.write_bytes(Path(valid["path"]).read_bytes())
+    digest = hashlib.sha256(wrong.read_bytes()).hexdigest()
+    Path(f"{wrong}.sha256").write_text(
+        f"{digest}  model.pcamodel\n", encoding="ascii"
+    )
+
+    listed = web.model_versions_payload()["models"]
+    invalid = next(item for item in listed if item["model_id"] == "OTHER")
+    assert invalid["integrity"]["valid"] is False
+    for operation in (
+        lambda: web.model_verify_payload({"model_path": str(wrong)}),
+        lambda: web.model_compare_payload(
+            {"left_model": str(wrong), "right_model": valid["path"]}
+        ),
+        lambda: web.model_publish_payload(
+            {
+                "model_path": str(wrong),
+                "engineer_confirmation": True,
+                "applicability_scope": "D330",
+            }
+        ),
+    ):
+        with pytest.raises(ValueError, match="目录与manifest"):
+            operation()
+    status, _ = _http_get(f"/download/model-version?path={quote(str(wrong))}")
+    assert status == 400
+
+
 def test_web_publishes_registry_validated_version_as_child(tmp_path, monkeypatch):
     _, _, run_dir, _ = _create_passed_web_run(tmp_path, monkeypatch)
     registry = tmp_path / "models"
