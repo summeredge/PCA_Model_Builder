@@ -137,6 +137,45 @@ def _rewrite_as_legacy_window_package(path, schema_version):
         package.writestr("arrays.npz", arrays)
 
 
+def test_cli_repeat_validation_replaces_the_same_validated_output(tmp_path):
+    csv_path, candidate, report, validated = _create_cli_passed_run(
+        tmp_path, "repeat"
+    )
+    candidate_bytes = candidate.read_bytes()
+    first_validated = validated.read_bytes()
+    windows = tmp_path / "repeat-windows.json"
+    scores = tmp_path / "repeat-scores.csv"
+    contributions = tmp_path / "repeat-contributions.json"
+
+    assert main(
+        [
+            "validate", "--model", str(candidate), "--csv", str(csv_path),
+            "--timestamp", "time", "--validation-windows", str(windows),
+            "--scores-output", str(scores), "--report-output", str(report),
+            "--contributions-output", str(contributions),
+        ]
+    ) == 0
+    assert validated.read_bytes() == first_validated
+    assert main(
+        [
+            "review-validation", "--model", str(candidate),
+            "--validation-report", str(report), "--scores", str(scores),
+            "--contributions", str(contributions), "--decision", "passed",
+            "--comment", "second approval", "--output", str(validated),
+        ]
+    ) == 0
+
+    second_report = json.loads(report.read_text(encoding="utf-8"))
+    _, manifest = load_model_package(validated)
+    assert candidate.read_bytes() == candidate_bytes
+    assert validated.read_bytes() != first_validated
+    assert manifest["validation_evidence_status"] == "current"
+    assert manifest["validation_summary"] == second_report
+    assert manifest["engineer_decision"]["comment"] == "second approval"
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert not list(tmp_path.glob(".*.bak"))
+
+
 def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     rng = np.random.default_rng(42)
     timestamps = pd.date_range("2026-01-01", periods=160, freq="5min")
@@ -725,7 +764,7 @@ def test_cli_failed_review_rejects_validated_output_from_another_candidate(tmp_p
     assert validated_a.read_bytes() == validated_a_bytes
 
 
-def test_cli_failed_review_rejects_manual_old_validated_after_report_failed(tmp_path):
+def test_cli_nonpassed_review_accepts_trusted_old_validated_after_report_failed(tmp_path):
     _, candidate, report, output = _create_cli_passed_run(tmp_path, "manual-old")
     old_validated = output.read_bytes()
     candidate_bytes = candidate.read_bytes()
@@ -758,10 +797,10 @@ def test_cli_failed_review_rejects_manual_old_validated_after_report_failed(tmp_
             "--output",
             str(output),
         ]
-    ) == 2
+    ) == 0
     assert candidate.read_bytes() == candidate_bytes
-    assert report.read_bytes() == failed_report
-    assert output.read_bytes() == old_validated
+    assert report.read_bytes() != failed_report
+    assert not output.exists()
 
 
 def test_cli_training_allows_physical_time_gap(tmp_path):

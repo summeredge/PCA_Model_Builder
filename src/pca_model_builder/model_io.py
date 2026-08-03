@@ -363,6 +363,76 @@ def validate_validated_model_artifact(
     return validated_manifest
 
 
+def validate_existing_validated_artifact(
+    candidate_path: str | Path,
+    validated_path: str | Path,
+    *,
+    expected_identifier: str | None = None,
+) -> dict[str, Any]:
+    """Validate an existing validated package using only its embedded evidence."""
+    candidate = Path(candidate_path)
+    validated = Path(validated_path)
+    if candidate.resolve() == validated.resolve():
+        raise ValueError("validated model output must differ from the candidate package")
+    candidate_model, candidate_manifest = load_model_package(candidate)
+    if not validated.is_file():
+        raise ValueError("已验证模型工件不存在")
+    validated_model, validated_manifest = load_model_package(validated)
+    source_package = validated_manifest.get("source_candidate_package")
+    validation_summary = validated_manifest.get("validation_summary")
+    engineer_decision = validated_manifest.get("engineer_decision")
+    if (
+        candidate_manifest.get("model_purpose") != "normal_state"
+        or candidate_manifest.get("model_status") != "candidate"
+        or validated_manifest.get("model_purpose") != "normal_state"
+        or validated_manifest.get("model_status") != "validated"
+        or validated_manifest.get("validation_evidence_status") != "current"
+        or not isinstance(source_package, Mapping)
+        or not isinstance(validation_summary, Mapping)
+        or validation_summary.get("source_candidate_package") != source_package
+        or not isinstance(engineer_decision, Mapping)
+        or engineer_decision.get("decision") != "passed"
+    ):
+        raise ValueError("已有validated模型来源或证据无效，拒绝覆盖")
+    candidate_sha256 = model_package_sha256(candidate)
+    if (
+        source_package.get("filename") != candidate.name
+        or source_package.get("sha256") != candidate_sha256
+        or (
+            expected_identifier is not None
+            and source_package.get("identifier") != expected_identifier
+        )
+    ):
+        raise ValueError("已有validated模型来源或证据无效，拒绝覆盖")
+    try:
+        normalize_and_validate_validation_evidence(
+            validation_summary,
+            candidate_path=candidate,
+            expected_identifier=expected_identifier,
+        )
+    except ValueError as error:
+        raise ValueError("已有validated模型来源或证据无效，拒绝覆盖") from error
+    model_fields = (
+        "mean",
+        "scale",
+        "components",
+        "eigenvalues",
+        "explained_variance_ratio",
+    )
+    if (
+        candidate_model.feature_names != validated_model.feature_names
+        or candidate_model.n_samples != validated_model.n_samples
+        or candidate_model.t2_limits != validated_model.t2_limits
+        or candidate_model.q_limits != validated_model.q_limits
+        or any(
+            not np.array_equal(getattr(candidate_model, field), getattr(validated_model, field))
+            for field in model_fields
+        )
+    ):
+        raise ValueError("已有validated模型来源或证据无效，拒绝覆盖")
+    return validated_manifest
+
+
 def commit_validation_artifacts(
     candidate_path: str | Path,
     validated_path: str | Path,
@@ -393,13 +463,8 @@ def commit_validation_artifacts(
         if contributions_path is None and isinstance(artifacts.get("contributions"), Mapping):
             contributions_path = report_file.parent / str(artifacts["contributions"].get("filename", ""))
     if validated.exists():
-        if previous_report is None:
-            raise ValueError("已有validated工件来源无法验证，拒绝覆盖")
-        validate_validated_model_artifact(
-            candidate,
-            validated,
-            previous_report,
-            expected_identifier=source_identifier,
+        validate_existing_validated_artifact(
+            candidate, validated, expected_identifier=source_identifier
         )
 
     temporary_validated: Path | None = None
