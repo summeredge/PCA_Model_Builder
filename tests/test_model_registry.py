@@ -168,6 +168,94 @@ def test_publish_creates_published_child_without_overwriting_source(tmp_path):
     assert load_model_package(source)[1]["model_status"] == "validated"
 
 
+def test_registry_validated_version_is_published_as_its_child(tmp_path):
+    registry = tmp_path / "models"
+    validated = create_model_version(
+        _validated(tmp_path), registry, model_id="D330_DPCA"
+    )
+    source = Path(validated["path"])
+    source_bytes = source.read_bytes()
+    source_sha256 = model_package_sha256(source)
+
+    published = publish_model_version(
+        source,
+        registry,
+        model_id="D330_DPCA",
+        as_existing_version=True,
+        engineer_confirmation=True,
+        applicability_scope="D330",
+    )
+
+    _, manifest = load_model_package(published["path"])
+    assert (published["version"], manifest["parent_version"]) == ("v0002", "v0001")
+    assert manifest["parent_model_id"] == "D330_DPCA"
+    assert manifest["published_from"] == {
+        "sha256": source_sha256,
+        "filename": "model.pcamodel",
+        "model_id": "D330_DPCA",
+        "version": "v0001",
+        "schema_version": 4,
+    }
+    assert source.read_bytes() == source_bytes
+    assert verify_model_package_integrity(published["path"], require_external=True)["valid"]
+    assert [item["version"] for item in list_model_versions(registry)] == ["v0001", "v0002"]
+
+
+def test_create_model_version_cross_registry_copy_has_no_parent(tmp_path):
+    first = create_model_version(
+        _validated(tmp_path), tmp_path / "registry-a", model_id="D330_DPCA"
+    )
+    copied = create_model_version(first["path"], tmp_path / "registry-b")
+    _, manifest = load_model_package(copied["path"])
+    assert copied["version"] == "v0001"
+    assert manifest["parent_model_id"] is None
+    assert manifest["parent_version"] is None
+
+
+def test_create_model_version_validates_explicit_parent_before_reserving(tmp_path):
+    source = _validated(tmp_path)
+    registry = tmp_path / "models"
+    with pytest.raises(ValueError, match="指定父模型版本无效"):
+        create_model_version(
+            source,
+            registry,
+            model_id="D330_DPCA",
+            parent_model_id="D330_DPCA",
+            parent_version="v9999",
+        )
+    assert not (registry / "D330_DPCA").exists()
+
+
+def test_create_model_version_appends_to_real_compatible_parent(tmp_path):
+    source = _validated(tmp_path)
+    registry = tmp_path / "models"
+    first = create_model_version(source, registry, model_id="D330_DPCA")
+    first_bytes = Path(first["path"]).read_bytes()
+    second = create_model_version(
+        source,
+        registry,
+        model_id="D330_DPCA",
+        parent_model_id="D330_DPCA",
+        parent_version="v0001",
+    )
+    _, manifest = load_model_package(second["path"])
+    assert manifest["parent_model_id"] == "D330_DPCA"
+    assert manifest["parent_version"] == "v0001"
+    assert Path(first["path"]).read_bytes() == first_bytes
+    assert verify_model_package_integrity(second["path"], require_external=True)["valid"]
+
+
+def test_create_model_version_rejects_cross_family_parent(tmp_path):
+    with pytest.raises(ValueError, match="相同model_id"):
+        create_model_version(
+            _validated(tmp_path),
+            tmp_path / "models",
+            model_id="MODEL_A",
+            parent_model_id="MODEL_B",
+            parent_version="v0001",
+        )
+
+
 def test_registry_reserves_unique_versions_for_concurrent_copies(tmp_path):
     source = _candidate(tmp_path)
     registry = tmp_path / "models"

@@ -88,14 +88,10 @@ def _latest_registry_parent(
         key=lambda item: _version_number(item.name),
     )
     for version_dir in reversed(candidates):
-        package = version_dir / "model.pcamodel"
         try:
-            _, manifest = load_model_package(package)
-            verify_model_package_integrity(package, require_external=True)
-            _validate_parent_package(package, manifest, model_id, version_dir.name)
-        except (OSError, ValueError):
+            return _resolve_registry_parent(registry_root, model_id, version_dir.name)
+        except ValueError:
             continue
-        return {"model_id": model_id, "version": version_dir.name, "path": package, "manifest": manifest}
     return None
 
 
@@ -113,21 +109,32 @@ def _validate_parent_package(
         or package.parent.name != version
         or package.parent.parent.name != model_id
         or manifest.get("model_purpose") != "normal_state"
-        or manifest.get("model_status") != "published"
+        or manifest.get("model_status") not in {"validated", "published"}
     ):
         raise ValueError("父模型版本目录、manifest或状态无效")
 
 
-def _registry_parent(registry_root: str | Path, model_id: str, version: str) -> dict[str, Any]:
+def _resolve_registry_parent(
+    registry_root: str | Path, model_id: str, version: str | None = None
+) -> dict[str, Any] | None:
+    if version is None:
+        return _latest_registry_parent(registry_root, model_id)
     _version_number(version)
     package = Path(registry_root) / model_id / version / "model.pcamodel"
     try:
-        _, manifest = load_model_package(package)
-        verify_model_package_integrity(package, require_external=True)
+        model, manifest = load_model_package(package)
+        integrity = verify_model_package_integrity(package, require_external=True)
         _validate_parent_package(package, manifest, model_id, version)
     except (OSError, ValueError) as error:
         raise ValueError(f"指定父模型版本无效：{model_id}/{version}：{error}") from error
-    return {"model_id": model_id, "version": version, "path": package, "manifest": manifest}
+    return {
+        "model_id": model_id,
+        "version": version,
+        "path": package,
+        "model": model,
+        "manifest": manifest,
+        "integrity": integrity,
+    }
 
 
 def _write_external_hash(package_path: Path) -> str:
@@ -219,9 +226,21 @@ def create_model_version(
     validate_loadable_model_semantics(purpose, status)
     if status == "published":
         raise ValueError("published版本只能通过显式发布操作创建")
-    if parent_model_id is None and manifest.get("model_id"):
-        parent_model_id = str(manifest["model_id"])
-        parent_version = str(manifest.get("version"))
+    if (parent_model_id is None) != (parent_version is None):
+        raise ValueError("parent_model_id和parent_version必须同时提供")
+    if parent_model_id is not None and parent_model_id != resolved_model_id:
+        raise ValueError("父模型必须属于相同model_id")
+    selected_parent = None
+    if parent_version is not None:
+        selected_parent = _resolve_registry_parent(
+            registry_root, resolved_model_id, parent_version
+        )
+    if selected_parent is not None:
+        _validate_version_compatibility(
+            model, manifest, selected_parent["model"], selected_parent["manifest"]
+        )
+        parent_model_id = resolved_model_id
+        parent_version = selected_parent["version"]
     if engineer_comment is None:
         engineer_comment = str(manifest.get("engineer_comment", ""))
     if applicability_scope is None:
@@ -488,9 +507,9 @@ def publish_model_version(
     model_root = Path(registry_root) / resolved_model_id
     family_exists = model_root.is_dir()
     selected_parent = (
-        _registry_parent(registry_root, resolved_model_id, parent_version)
+        _resolve_registry_parent(registry_root, resolved_model_id, parent_version)
         if parent_version is not None and family_exists
-        else _latest_registry_parent(registry_root, resolved_model_id)
+        else _resolve_registry_parent(registry_root, resolved_model_id)
     )
     if parent_version is not None and not family_exists:
         raise ValueError("新模型族不得指定parent_version")
@@ -501,8 +520,7 @@ def publish_model_version(
     if as_existing_version is True and not family_exists:
         raise ValueError("所选现有model_id不存在")
     if selected_parent is not None:
-        parent_path = selected_parent["path"]
-        latest_model, latest_manifest = load_model_package(parent_path)
+        latest_model, latest_manifest = selected_parent["model"], selected_parent["manifest"]
         _validate_version_compatibility(model, source_manifest, latest_model, latest_manifest)
         parent_model_id = resolved_model_id
         resolved_parent_version = selected_parent["version"]

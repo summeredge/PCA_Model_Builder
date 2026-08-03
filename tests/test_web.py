@@ -18,6 +18,7 @@ from pca_model_builder.cli import build_parser
 from pca_model_builder import cli, web, web_model_results
 import pca_model_builder.model_io as model_io
 from pca_model_builder.model_io import load_model_package
+from pca_model_builder.model_registry import create_model_version
 from pca_model_builder.preprocessing import (
     PreprocessingConfig,
     build_dynamic_matrix,
@@ -248,6 +249,34 @@ def test_web_model_registry_lists_compares_verifies_and_publishes(tmp_path, monk
     assert status == 200
     assert body == Path(f"{path}.sha256").read_bytes()
     assert run_id in str(run_dir)
+
+
+def test_web_publishes_registry_validated_version_as_child(tmp_path, monkeypatch):
+    _, _, run_dir, _ = _create_passed_web_run(tmp_path, monkeypatch)
+    registry = tmp_path / "models"
+    monkeypatch.setattr(web, "MODEL_REGISTRY_DIR", registry)
+    validated = create_model_version(
+        run_dir / "validated_model.pcamodel",
+        registry,
+        model_id="D330_DPCA",
+    )
+
+    status, published = _http_post(
+        "/api/models/publish",
+        {
+            "model_path": validated["path"],
+            "model_id": "D330_DPCA",
+            "parent_model_id": "D330_DPCA",
+            "engineer_confirmation": True,
+            "applicability_scope": "D330",
+        },
+    )
+
+    assert status == 200
+    assert published["version"] == "v0002"
+    _, manifest = load_model_package(published["path"])
+    assert manifest["parent_version"] == "v0001"
+    assert manifest["published_from"]["version"] == "v0001"
 
 
 def test_web_model_list_ignores_client_registry_directory(tmp_path, monkeypatch):
