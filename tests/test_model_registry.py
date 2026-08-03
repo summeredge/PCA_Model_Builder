@@ -19,6 +19,7 @@ from pca_model_builder.model_registry import (
     create_model_version,
     list_model_versions,
     publish_model_version,
+    validate_registry_package,
     validate_publish_preconditions,
     verify_model_package_integrity,
 )
@@ -266,10 +267,68 @@ def test_create_model_version_cross_registry_copy_has_no_parent(tmp_path):
     assert manifest["parent_version"] is None
 
 
+@pytest.mark.parametrize("sidecar_change", ["missing", "invalid", "mismatch"])
+def test_create_model_version_rejects_invalid_v4_source_sidecar(tmp_path, sidecar_change):
+    source_record = create_model_version(
+        _validated(tmp_path), tmp_path / "registry-a", model_id="D330_DPCA"
+    )
+    source = Path(source_record["path"])
+    sidecar = Path(f"{source}.sha256")
+    if sidecar_change == "missing":
+        sidecar.unlink()
+    elif sidecar_change == "invalid":
+        sidecar.write_text("not-a-sha\n", encoding="ascii")
+    else:
+        source.write_bytes(source.read_bytes() + b"changed")
+
+    target = tmp_path / "registry-b"
+    with pytest.raises(ValueError, match="SHA-256"):
+        create_model_version(source, target)
+    assert not target.exists()
+
+
+def test_existing_family_requires_explicit_mode_and_never_creates_second_root(tmp_path):
+    registry = tmp_path / "models"
+    source = _validated(tmp_path)
+    create_model_version(source, registry, model_id="D330_DPCA")
+
+    with pytest.raises(ValueError, match="明确选择"):
+        create_model_version(source, registry, model_id="D330_DPCA")
+    child = create_model_version(
+        source, registry, model_id="D330_DPCA", as_existing_version=True
+    )
+    manifests = [load_model_package(item["path"])[1] for item in list_model_versions(registry)]
+    assert child["version"] == "v0002"
+    assert [(item["parent_model_id"], item["parent_version"]) for item in manifests] == [
+        (None, None),
+        ("D330_DPCA", "v0001"),
+    ]
+
+
+def test_registry_identity_mismatch_is_invalid_everywhere(tmp_path):
+    registry = tmp_path / "models"
+    valid = create_model_version(
+        _validated(tmp_path), registry, model_id="D330_DPCA"
+    )
+    wrong = registry / "OTHER" / "v0002" / "model.pcamodel"
+    wrong.parent.mkdir(parents=True)
+    wrong.write_bytes(Path(valid["path"]).read_bytes())
+    Path(f"{wrong}.sha256").write_text(
+        f"{model_package_sha256(wrong)}  model.pcamodel\n", encoding="ascii"
+    )
+
+    record = next(item for item in list_model_versions(registry) if item["model_id"] == "OTHER")
+    assert record["version"] == "v0002"
+    assert record["integrity"]["valid"] is False
+    assert "目录与manifest" in record["integrity"]["error"]
+    with pytest.raises(ValueError, match="目录与manifest"):
+        validate_registry_package(wrong, registry_root=registry)
+
+
 def test_create_model_version_validates_explicit_parent_before_reserving(tmp_path):
     source = _validated(tmp_path)
     registry = tmp_path / "models"
-    with pytest.raises(ValueError, match="指定父模型版本无效"):
+    with pytest.raises(ValueError, match="新模型族不得指定"):
         create_model_version(
             source,
             registry,
@@ -437,17 +496,20 @@ def test_create_model_version_rejects_cross_family_parent(tmp_path):
 
 
 def test_registry_reserves_unique_versions_for_concurrent_copies(tmp_path):
-    source = _candidate(tmp_path)
+    source = _validated(tmp_path)
     registry = tmp_path / "models"
+    create_model_version(source, registry, model_id="D330_DPCA")
     with ThreadPoolExecutor(max_workers=2) as executor:
         records = list(
             executor.map(
-                lambda _: create_model_version(source, registry),
+                lambda _: create_model_version(
+                    source, registry, model_id="D330_DPCA", as_existing_version=True
+                ),
                 range(2),
             )
         )
-    assert {record["version"] for record in records} == {"v0001", "v0002"}
-    assert len(list_model_versions(registry)) == 2
+    assert {record["version"] for record in records} == {"v0002", "v0003"}
+    assert len(list_model_versions(registry)) == 3
 
 
 def test_published_source_is_not_a_direct_copy_target(tmp_path):
@@ -492,11 +554,10 @@ def test_publish_preconditions_reject_missing_confirmation_scope_and_evidence(tm
 
 
 def test_compare_versions_reports_required_fields(tmp_path):
-    source = _candidate(tmp_path)
+    source = _validated(tmp_path)
     registry = tmp_path / "models"
     first = create_model_version(source, registry)
-    second = create_model_version(source, registry)
-    comparison = compare_model_versions(first["path"], second["path"])
+    comparison = compare_model_versions(first["path"], first["path"])
     assert comparison["equal"] is True
     assert {
         "feature_names",
