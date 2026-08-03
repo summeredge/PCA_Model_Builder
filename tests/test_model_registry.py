@@ -56,38 +56,23 @@ def _validated(tmp_path: Path, *, seed: int = 123, model_name: str = "REGISTRY_T
     candidate = _candidate(tmp_path, seed=seed, model_name=model_name)
     validated = tmp_path / f"validated-{seed}.pcamodel"
     candidate_sha = model_package_sha256(candidate)
+    scores = tmp_path / f"scores-{seed}.csv"
+    contributions = tmp_path / f"contributions-{seed}.json"
+    scores.write_text("time,status\n2026-01-03,normal\n2026-01-04,normal\n", encoding="utf-8")
+    contributions.write_text("[]", encoding="utf-8")
+    from pca_model_builder.validation import validation_artifact_metadata
+    windows = [
+        {"id": "normal-001", "type": "normal_validation", "start": "2026-01-03T00:00:00", "end": "2026-01-03T01:00:00", "enabled": True, "comment": "normal"},
+        {"id": "abnormal-001", "type": "known_abnormal", "start": "2026-01-03T02:00:00", "end": "2026-01-03T03:00:00", "enabled": True, "comment": "abnormal"},
+    ]
+    summaries = [{**window, "status": "scored", "scored_rows": 1, "expected_rows": 1, "coverage": 1.0, "t2_exceedance_95": 0.0, "t2_exceedance_99": 0.0, "spe_exceedance_95": 0.0, "spe_exceedance_99": 0.0, "maximum_t2": 1.0, "maximum_spe": 1.0, "event_count": 0, "longest_event_minutes": 0} for window in windows]
     summary = {
-        "model_purpose": "normal_state",
-        "model_status": "candidate",
-        "normal_validation_complete": True,
-        "known_abnormal_complete": True,
-        "validation_windows": [
-            {
-                "id": "normal-001",
-                "type": "normal_validation",
-                "start": "2026-01-03T00:00:00",
-                "end": "2026-01-03T01:00:00",
-                "enabled": True,
-                "comment": "normal",
-            },
-            {
-                "id": "abnormal-001",
-                "type": "known_abnormal",
-                "start": "2026-01-03T02:00:00",
-                "end": "2026-01-03T03:00:00",
-                "enabled": True,
-                "comment": "abnormal",
-            },
-        ],
-        "validation_window_summaries": [
-            {"id": "normal-001", "type": "normal_validation", "start": "2026-01-03T00:00:00", "end": "2026-01-03T01:00:00"},
-            {"id": "abnormal-001", "type": "known_abnormal", "start": "2026-01-03T02:00:00", "end": "2026-01-03T03:00:00"},
-        ],
-        "source_candidate_package": {
-            "identifier": "candidate-run",
-            "filename": candidate.name,
-            "sha256": candidate_sha,
-        },
+        "validation_schema_version": 2, "model_purpose": "normal_state", "model_status": "candidate",
+        "normal_validation_complete": True, "known_abnormal_complete": True,
+        "validation_windows": windows, "validation_window_summaries": summaries,
+        "scored_rows": 2, "status_counts": {"normal": 2}, "maximum_t2": 1.0, "maximum_spe": 1.0,
+        "validation_artifacts": {"scores": validation_artifact_metadata(scores), "contributions": validation_artifact_metadata(contributions)},
+        "source_candidate_package": {"identifier": "candidate-run", "filename": candidate.name, "sha256": candidate_sha},
     }
     copy_validated_model_package(
         candidate,
@@ -99,6 +84,8 @@ def _validated(tmp_path: Path, *, seed: int = 123, model_name: str = "REGISTRY_T
             "reviewed_at": "2026-01-04T00:00:00+00:00",
         },
         "candidate-run",
+        scores_path=scores,
+        contributions_path=contributions,
     )
     return validated
 

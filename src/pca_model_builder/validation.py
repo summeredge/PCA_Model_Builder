@@ -33,6 +33,17 @@ _REQUIRED_REPORT_FIELDS = {
 }
 
 
+def classify_validation_evidence(report: object) -> str:
+    if not isinstance(report, Mapping):
+        return "invalid"
+    version = report.get("validation_schema_version")
+    if version == 2:
+        return "current"
+    if version is None or version == 1:
+        return "legacy"
+    return "invalid"
+
+
 def validation_artifact_metadata(path: str | Path, *, filename: str | None = None) -> dict[str, Any]:
     artifact = Path(path)
     data = artifact.read_bytes()
@@ -56,7 +67,7 @@ def normalize_and_validate_validation_evidence(
     """Validate schema-v2 evidence, optionally binding it to files on disk."""
     if not isinstance(report, Mapping):
         raise ValueError("验证报告证据不完整")
-    if report.get("validation_schema_version") != 2:
+    if classify_validation_evidence(report) != "current":
         raise ValueError("旧验证报告不能用于validated或published，请重新执行完整验证")
     missing = sorted(_REQUIRED_REPORT_FIELDS - set(report))
     if missing:
@@ -73,10 +84,14 @@ def normalize_and_validate_validation_evidence(
     if not isinstance(summaries, list):
         raise ValueError("validation_window_summaries必须是列表")
     enabled_ids = {window["id"] for window in enabled}
-    relevant = [item for item in summaries if isinstance(item, Mapping) and item.get("id") in enabled_ids]
-    if len(relevant) != len(enabled) or {item.get("id") for item in relevant} != enabled_ids:
+    if any(not isinstance(item, Mapping) for item in summaries):
+        raise ValueError("验证窗口摘要必须是对象")
+    summary_ids = [item.get("id") for item in summaries]
+    if len(summary_ids) != len(set(summary_ids)) or set(summary_ids) != enabled_ids:
         raise ValueError("每个启用验证窗口必须有且只有一个摘要")
+    relevant = summaries
     total_rows = 0
+    maxima = {"maximum_t2": [], "maximum_spe": []}
     for window in enabled:
         matches = [item for item in relevant if item.get("id") == window["id"]]
         if len(matches) != 1:
@@ -96,18 +111,27 @@ def normalize_and_validate_validation_evidence(
             if not 0 <= value <= 1:
                 raise ValueError(f"{field}必须在[0, 1]内")
         for field in ("maximum_t2", "maximum_spe", "longest_event_minutes"):
-            if _finite_number(summary.get(field), field) < 0:
+            value = _finite_number(summary.get(field), field)
+            if value < 0:
                 raise ValueError(f"{field}不能为负数")
+            if field in maxima:
+                maxima[field].append(value)
         _nonnegative_int(summary.get("event_count"), "event_count")
         total_rows += scored_rows
     if _nonnegative_int(report.get("scored_rows"), "scored_rows") != total_rows:
         raise ValueError("顶层scored_rows与窗口摘要总和不一致")
     for field in ("maximum_t2", "maximum_spe"):
-        _finite_number(report.get(field), field)
-    if not isinstance(report.get("status_counts"), Mapping):
-        raise ValueError("status_counts必须是对象")
-    for value in report["status_counts"].values():
+        if not math.isclose(_finite_number(report.get(field), field), max(maxima[field]), rel_tol=1e-9, abs_tol=1e-12):
+            raise ValueError(f"顶层{field}与窗口摘要不一致")
+    status_counts = report.get("status_counts")
+    if not isinstance(status_counts, Mapping) or not status_counts:
+        raise ValueError("status_counts必须是非空对象")
+    for key, value in status_counts.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("status_counts状态名称必须是非空字符串")
         _nonnegative_int(value, "status_counts")
+    if sum(status_counts.values()) != total_rows:
+        raise ValueError("status_counts总数与scored_rows不一致")
     normal_complete = any(item["type"] == "normal_validation" for item in enabled)
     abnormal_complete = any(item["type"] == "known_abnormal" for item in enabled)
     if report.get("normal_validation_complete") is not normal_complete or report.get("known_abnormal_complete") is not abnormal_complete:

@@ -422,8 +422,10 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
             "run_id": trained["run_id"],
             "file_id": uploaded["file_id"],
             "timestamp_column": "time",
-            "validation_start": "2026-01-01T10:00:00",
-            "validation_end": "2026-01-01T14:55:00",
+            "validation_windows": [
+                {"id": "normal", "type": "normal_validation", "start": "2026-01-01T10:00:00", "end": "2026-01-01T11:55:00", "enabled": True, "comment": ""},
+                {"id": "abnormal", "type": "known_abnormal", "start": "2026-01-01T12:00:00", "end": "2026-01-01T14:55:00", "enabled": True, "comment": ""},
+            ],
             "label_column": "engineering_label",
         }
     )
@@ -1002,8 +1004,8 @@ def test_web_validates_legacy_window_packages_without_reconversion(tmp_path, mon
         package.writestr("manifest.json", json.dumps(manifest)); package.writestr("arrays.npz", arrays)
     with pytest.raises(ValueError, match="overlap"):
         web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_start": "2026-01-01T00:00:00", "validation_end": "2026-01-01T00:10:00"})
-    result = web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_start": "2026-01-01T10:00:00", "validation_end": "2026-01-01T14:55:00"})
-    assert result["scored_rows"] and result["status_counts"] and result["validation_downloads"]
+    with pytest.raises(ValueError, match="candidate|两类启用窗口"):
+        web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_start": "2026-01-01T10:00:00", "validation_end": "2026-01-01T14:55:00"})
 
 
 def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
