@@ -250,6 +250,17 @@ def test_web_model_registry_lists_compares_verifies_and_publishes(tmp_path, monk
     assert run_id in str(run_dir)
 
 
+def test_web_model_list_ignores_client_registry_directory(tmp_path, monkeypatch):
+    registry = tmp_path / "fixed"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.setattr(web, "MODEL_REGISTRY_DIR", registry)
+    assert web.model_versions_payload({"registry_dir": str(outside)}) == {"models": []}
+    status, body = _http_get(f"/api/models?registry_dir={quote(str(outside))}")
+    assert status == 200
+    assert json.loads(body) == {"models": []}
+
+
 def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
     html = web.INDEX_HTML
     render_source = html.split("function renderTagList()", 1)[1].split(

@@ -638,15 +638,21 @@ def _validate_manifest_structure(manifest: object) -> None:
 
 
 def _validate_v4_metadata(manifest: dict[str, Any]) -> None:
-    if not isinstance(manifest.get("model_id"), str) or not manifest["model_id"].strip():
+    model_id_pattern = r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}"
+    if not isinstance(manifest.get("model_id"), str) or re.fullmatch(model_id_pattern, manifest["model_id"]) is None:
         raise ValueError("model package model_id must be a non-empty string")
     version = manifest.get("version")
     if not isinstance(version, str) or re.fullmatch(r"v\d{4}", version) is None:
         raise ValueError("model package version is invalid")
-    for field in ("parent_model_id", "parent_version"):
-        value = manifest.get(field)
-        if value is not None and (not isinstance(value, str) or not value.strip()):
-            raise ValueError(f"model package {field} is invalid")
+    parent_model_id = manifest.get("parent_model_id")
+    parent_version = manifest.get("parent_version")
+    if (parent_model_id is None) != (parent_version is None):
+        raise ValueError("model package parent reference is incomplete")
+    if parent_model_id is not None:
+        if not isinstance(parent_model_id, str) or re.fullmatch(model_id_pattern, parent_model_id) is None:
+            raise ValueError("model package parent_model_id is invalid")
+        if not isinstance(parent_version, str) or re.fullmatch(r"v\d{4}", parent_version) is None:
+            raise ValueError("model package parent_version is invalid")
     if not isinstance(manifest.get("software_version"), str) or not manifest[
         "software_version"
     ].strip():

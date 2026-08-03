@@ -147,7 +147,7 @@ pca-model-builder models publish `
   --engineer-comment "工程师确认"
 ```
 
-发布只接受 `normal_state/validated` 包，并要求正常验证与已知异常验证两类窗口及摘要完整、`passed` 人工结论、非空适用范围、显式确认和完整性校验通过。Web 可直接以当前运行目录中的已验证工件发布，无需先注册；也可明确选择仓库中的 schema v4 已验证版本。`model_id` 优先使用显式值，否则由模型名称安全规范化生成；兼容重训可用同一 `model_id` 递增版本，不兼容的 Tag 或动态预处理配置会被拒绝。发布会复制生成新的 `normal_state/published` schema v4 包，并在 `published_from` 中持久化实际来源 SHA-256、文件名、schema 和可用的来源版本身份；普通训练入口仍只生成 `normal_state/candidate`。
+发布只接受 `normal_state/validated` 包，并要求正常验证与已知异常验证两类窗口及摘要完整、`passed` 人工结论、非空适用范围、显式确认和完整性校验通过。Web 可直接以当前运行目录中的已验证工件发布，无需先注册；也可明确选择仓库中的 schema v4 已验证版本。`model_id` 优先使用显式值，否则由模型名称安全规范化生成；兼容重训可用同一 `model_id` 递增版本，不兼容的 Tag 或动态预处理配置会被拒绝。已有模型族未指定父版本时，会跳过损坏或缺少外部 SHA-256 的版本并选择最高的完整有效发布版本；若没有任何有效版本则拒绝发布。发布会复制生成新的 `normal_state/published` schema v4 包，并在 `published_from` 中持久化实际来源 SHA-256、文件名、schema 和可用的来源版本身份；普通训练入口仍只生成 `normal_state/candidate`。
 
 ## 测试
 

@@ -288,6 +288,14 @@ def test_cli_models_list_compare_verify_and_publish(tmp_path, capsys):
     ) == 2
     assert "明确的工程师确认" in capsys.readouterr().err
 
+    assert main(
+        [
+            "models", "publish", "--model", str(validated), "--registry", str(registry),
+            "--confirm", "--applicability-scope", "D330", "--parent-version", "v0001",
+        ]
+    ) == 2
+    assert "--parent-version只能与--model-id同时使用" in capsys.readouterr().err
+
 
 @pytest.mark.parametrize(
     ("command", "model_purpose", "model_status"),
