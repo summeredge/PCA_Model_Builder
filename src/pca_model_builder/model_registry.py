@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import re
 import shutil
+import threading
+import time
 from typing import Any
 
 from .compat import validate_loadable_model_semantics
@@ -20,6 +24,78 @@ DEFAULT_REGISTRY_DIR = Path(".web_data") / "models"
 SOFTWARE_VERSION = "0.1.0"
 _MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 _VERSION_PATTERN = re.compile(r"^v(?P<number>\d{4})$")
+_PROCESS_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def registry_model_lock(
+    registry_root: str | Path,
+    model_id: str,
+    *,
+    timeout_seconds: float = 10.0,
+):
+    """Serialize writes to one model family across threads and processes."""
+    if timeout_seconds < 0:
+        raise ValueError("模型仓库锁超时时间不能为负数")
+    registry = Path(registry_root).resolve()
+    safe_model_id = _safe_model_id(model_id)
+    key = (str(registry), safe_model_id)
+    with _PROCESS_LOCKS_GUARD:
+        thread_lock = _PROCESS_LOCKS.setdefault(key, threading.Lock())
+    deadline = time.monotonic() + timeout_seconds
+    if not thread_lock.acquire(timeout=timeout_seconds):
+        raise TimeoutError(f"获取模型仓库写锁超时：{safe_model_id}")
+    handle = None
+    locked = False
+    try:
+        lock_dir = registry / ".locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = lock_dir / f"{safe_model_id}.lock"
+        handle = lock_path.open("a+b")
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            if handle.read(1) == b"":
+                handle.seek(0)
+                handle.write(b"0")
+                handle.flush()
+            while time.monotonic() <= deadline:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError:
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        else:
+            import fcntl
+
+            while time.monotonic() <= deadline:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError:
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        if not locked:
+            raise TimeoutError(f"获取模型仓库写锁超时：{safe_model_id}")
+        yield
+    finally:
+        if handle is not None:
+            if locked:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+        thread_lock.release()
 
 
 def _sidecar_path(package_path: Path) -> Path:
@@ -199,6 +275,7 @@ def validate_registry_package(
     registry_root: str | Path,
     require_external: bool = True,
     allowed_statuses: set[tuple[str, str]] | None = None,
+    validate_lineage: bool = True,
 ) -> dict[str, Any]:
     """Validate package integrity and its identity inside one registry."""
     package = Path(package_path).resolve()
@@ -237,12 +314,138 @@ def validate_registry_package(
         manifest["model_purpose"], manifest["model_status"]
     ) not in allowed_statuses:
         raise ValueError("模型版本生命周期状态无效")
-    return {
+    result = {
         "path": package,
         "model": model,
         "manifest": manifest,
         "integrity": integrity,
     }
+    if validate_lineage:
+        lineage = _analyze_registry_lineage(registry, directory_model_id)
+        version_result = lineage["versions"].get(directory_version)
+        if version_result is None:
+            raise ValueError(f"模型版本{directory_model_id}/{directory_version}不存在")
+        if not version_result["valid"]:
+            raise ValueError(version_result["error"])
+        result["lineage"] = lineage
+    return result
+
+
+def _analyze_registry_lineage(
+    registry_root: str | Path, model_id: str
+) -> dict[str, Any]:
+    registry = Path(registry_root).resolve()
+    safe_model_id = _safe_model_id(model_id)
+    model_root = registry / safe_model_id
+    versions: dict[str, dict[str, Any]] = {}
+    if model_root.is_dir():
+        for version_dir in sorted(model_root.iterdir()):
+            if not version_dir.is_dir() or _VERSION_PATTERN.fullmatch(version_dir.name) is None:
+                continue
+            package = version_dir / "model.pcamodel"
+            try:
+                validated = validate_registry_package(
+                    package,
+                    registry_root=registry,
+                    require_external=True,
+                    validate_lineage=False,
+                )
+                versions[version_dir.name] = {
+                    "valid": True,
+                    "package": package,
+                    "model": validated["model"],
+                    "manifest": validated["manifest"],
+                    "integrity": validated["integrity"],
+                }
+            except (OSError, ValueError) as error:
+                versions[version_dir.name] = {
+                    "valid": False,
+                    "package": package,
+                    "error": str(error),
+                }
+
+    roots = sorted(
+        version
+        for version, item in versions.items()
+        if "manifest" in item
+        and item["manifest"].get("parent_model_id") is None
+        and item["manifest"].get("parent_version") is None
+    )
+    root_version = roots[0] if len(roots) == 1 else None
+    if len(roots) != 1 and versions:
+        if roots:
+            family_error = f"模型族{safe_model_id}存在多个根版本：{'、'.join(roots)}"
+        else:
+            family_error = f"模型族{safe_model_id}不存在有效根版本"
+        for item in versions.values():
+            if roots or "manifest" in item:
+                item["valid"] = False
+                item["error"] = family_error
+    elif root_version is not None:
+        for version, item in versions.items():
+            if not item["valid"]:
+                continue
+            path: list[str] = []
+            current = version
+            error = None
+            while current != root_version:
+                if current in path:
+                    error = f"模型版本{safe_model_id}/{version}的祖先链存在循环"
+                    break
+                path.append(current)
+                current_item = versions.get(current)
+                if current_item is None:
+                    error = f"模型版本{safe_model_id}/{version}引用的父版本{current}不存在"
+                    break
+                if not current_item["valid"] or "manifest" not in current_item:
+                    error = f"模型版本{safe_model_id}/{version}的祖先链包含无效版本{current}"
+                    break
+                parent_model_id = current_item["manifest"].get("parent_model_id")
+                parent_version = current_item["manifest"].get("parent_version")
+                if parent_model_id != safe_model_id or not isinstance(parent_version, str):
+                    error = f"模型版本{safe_model_id}/{version}的祖先链断裂"
+                    break
+                parent_item = versions.get(parent_version)
+                if parent_item is None:
+                    error = f"模型版本{safe_model_id}/{current}引用的父版本{parent_version}不存在"
+                    break
+                if not parent_item["valid"] or "manifest" not in parent_item:
+                    error = f"模型版本{safe_model_id}/{version}的祖先链包含无效父版本{parent_version}"
+                    break
+                try:
+                    _validate_parent_package(
+                        parent_item["package"], parent_item["manifest"], safe_model_id, parent_version
+                    )
+                except ValueError as parent_error:
+                    error = f"模型版本{safe_model_id}/{version}的父版本{parent_version}无效：{parent_error}"
+                    break
+                current = parent_version
+            if error is not None:
+                item["valid"] = False
+                item["error"] = error
+    return {
+        "model_id": safe_model_id,
+        "root_version": root_version,
+        "versions": versions,
+        "valid": bool(versions) and all(item["valid"] for item in versions.values()),
+    }
+
+
+def validate_registry_lineage(
+    registry_root: str | Path, model_id: str
+) -> dict[str, Any]:
+    """Validate every package and complete ancestor chain in a model family."""
+    lineage = _analyze_registry_lineage(registry_root, model_id)
+    if not lineage["versions"]:
+        raise ValueError(f"模型族{model_id}不存在模型版本")
+    if not lineage["valid"]:
+        errors = dict.fromkeys(
+            item.get("error", "模型谱系无效")
+            for item in lineage["versions"].values()
+            if not item["valid"]
+        )
+        raise ValueError("；".join(errors))
+    return lineage
 
 
 def _record(package_path: Path, manifest: Mapping[str, Any], integrity: Mapping[str, Any]) -> dict[str, Any]:
@@ -303,6 +506,42 @@ def create_model_version(
         raise ValueError("parent_model_id和parent_version必须同时提供")
     if parent_model_id is not None and parent_model_id != resolved_model_id:
         raise ValueError("父模型必须属于相同model_id")
+    with registry_model_lock(registry_root, resolved_model_id):
+        result = _create_model_version_locked(
+            model,
+            manifest,
+            registry_root,
+            resolved_model_id=resolved_model_id,
+            parent_model_id=parent_model_id,
+            parent_version=parent_version,
+            purpose=purpose,
+            status=status,
+            effective_manifest=effective_manifest,
+            engineer_comment=engineer_comment,
+            applicability_scope=applicability_scope,
+            as_existing_version=as_existing_version,
+            source_sha256=source_sha256,
+        )
+    result["model_id_source"] = "explicit" if model_id else ("manifest" if manifest.get("model_id") else id_source)
+    return result
+
+
+def _create_model_version_locked(
+    model: Any,
+    manifest: Mapping[str, Any],
+    registry_root: str | Path,
+    *,
+    resolved_model_id: str,
+    parent_model_id: str | None,
+    parent_version: str | None,
+    purpose: str,
+    status: str,
+    effective_manifest: Mapping[str, Any],
+    engineer_comment: str | None,
+    applicability_scope: object | None,
+    as_existing_version: bool | None,
+    source_sha256: str,
+) -> dict[str, Any]:
     model_root = Path(registry_root) / resolved_model_id
     family_exists = model_root.is_dir()
     if not family_exists and parent_version is not None:
@@ -333,7 +572,7 @@ def create_model_version(
         engineer_comment = str(manifest.get("engineer_comment", ""))
     if applicability_scope is None:
         applicability_scope = manifest.get("applicability_scope", {})
-    result = _write_registry_version(
+    return _write_registry_version(
         model,
         manifest,
         registry_root,
@@ -347,8 +586,6 @@ def create_model_version(
         source_sha256=source_sha256,
         published_from=None,
     )
-    result["model_id_source"] = "explicit" if model_id else ("manifest" if manifest.get("model_id") else id_source)
-    return result
 
 
 def _write_registry_version(
@@ -435,7 +672,10 @@ def list_model_versions(
     if not registry.is_dir():
         return []
     records: list[dict[str, Any]] = []
-    for model_root in sorted(item for item in registry.iterdir() if item.is_dir()):
+    for model_root in sorted(
+        item for item in registry.iterdir() if item.is_dir() and item.name != ".locks"
+    ):
+        lineage = _analyze_registry_lineage(registry, model_root.name)
         for version_dir in sorted(
             (item for item in model_root.iterdir() if item.is_dir()),
             key=lambda item: (_version_number(item.name) if _VERSION_PATTERN.fullmatch(item.name) else 10000, item.name),
@@ -443,10 +683,15 @@ def list_model_versions(
             package = version_dir / "model.pcamodel"
             if not package.is_file() or _VERSION_PATTERN.fullmatch(version_dir.name) is None:
                 continue
+            lineage_item = lineage["versions"].get(version_dir.name)
             try:
-                validated = validate_registry_package(
-                    package, registry_root=registry, require_external=True
-                )
+                if lineage_item is None or not lineage_item["valid"]:
+                    raise ValueError(
+                        lineage_item.get("error", "模型谱系无效")
+                        if lineage_item is not None
+                        else "模型谱系无效"
+                    )
+                validated = lineage_item
                 records.append(
                     _record(package, validated["manifest"], validated["integrity"])
                 )
@@ -579,9 +824,42 @@ def publish_model_version(
     source_sha256 = preconditions["integrity"]["sha256"]
     derived_id, id_source = _derived_model_id(source, manifest)
     resolved_model_id = _safe_model_id(model_id or manifest.get("model_id") or derived_id)
+    model, source_manifest = load_model_package(source)
+    with registry_model_lock(registry_root, resolved_model_id):
+        result = _publish_model_version_locked(
+            source,
+            model,
+            source_manifest,
+            manifest,
+            registry_root,
+            resolved_model_id=resolved_model_id,
+            parent_version=parent_version,
+            as_existing_version=as_existing_version,
+            engineer_comment=engineer_comment,
+            applicability_scope=applicability_scope,
+            source_sha256=source_sha256,
+        )
+    result["published_from_sha256"] = source_sha256
+    result["model_id_source"] = "explicit" if model_id else ("manifest" if manifest.get("model_id") else id_source)
+    return result
+
+
+def _publish_model_version_locked(
+    source: Path,
+    model: Any,
+    source_manifest: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    registry_root: str | Path,
+    *,
+    resolved_model_id: str,
+    parent_version: str | None,
+    as_existing_version: bool | None,
+    engineer_comment: str,
+    applicability_scope: object,
+    source_sha256: str,
+) -> dict[str, Any]:
     parent_model_id = None
     resolved_parent_version = None
-    model, source_manifest = load_model_package(source)
     model_root = Path(registry_root) / resolved_model_id
     family_exists = model_root.is_dir()
     selected_parent = (
@@ -609,7 +887,7 @@ def publish_model_version(
         "version": manifest.get("version") if manifest.get("schema_version") == 4 else None,
         "schema_version": manifest["schema_version"],
     }
-    result = _write_registry_version(
+    return _write_registry_version(
         model,
         source_manifest,
         registry_root,
@@ -623,9 +901,6 @@ def publish_model_version(
         source_sha256=source_sha256,
         published_from=published_from,
     )
-    result["published_from_sha256"] = source_sha256
-    result["model_id_source"] = "explicit" if model_id else ("manifest" if manifest.get("model_id") else id_source)
-    return result
 
 
 def _validate_version_compatibility(model: Any, manifest: Mapping[str, Any], existing_model: Any, existing_manifest: Mapping[str, Any]) -> None:

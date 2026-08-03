@@ -1,7 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 from pathlib import Path
 import zipfile
+from threading import Barrier
 
 import numpy as np
 import pandas as pd
@@ -19,10 +20,25 @@ from pca_model_builder.model_registry import (
     create_model_version,
     list_model_versions,
     publish_model_version,
+    registry_model_lock,
+    validate_registry_lineage,
     validate_registry_package,
     validate_publish_preconditions,
     verify_model_package_integrity,
 )
+
+
+def _rewrite_registry_manifest(package: Path, changes: dict[str, object]) -> None:
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        arrays = archive.read("arrays.npz")
+    manifest.update(changes)
+    with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr("arrays.npz", arrays)
+    Path(f"{package}.sha256").write_text(
+        f"{model_package_sha256(package)}  model.pcamodel\n", encoding="ascii"
+    )
 
 
 def _config() -> dict[str, object]:
@@ -510,6 +526,96 @@ def test_registry_reserves_unique_versions_for_concurrent_copies(tmp_path):
         )
     assert {record["version"] for record in records} == {"v0002", "v0003"}
     assert len(list_model_versions(registry)) == 3
+
+
+def test_concurrent_first_create_has_exactly_one_root(tmp_path):
+    source = _validated(tmp_path)
+    registry = tmp_path / "models"
+    barrier = Barrier(2)
+
+    def create():
+        barrier.wait()
+        return create_model_version(source, registry, model_id="D330_DPCA")
+
+    results, errors = [], []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(create) for _ in range(2)]
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except ValueError as error:
+                errors.append(str(error))
+
+    assert [item["version"] for item in results] == ["v0001"]
+    assert len(errors) == 1 and "明确选择" in errors[0]
+    assert not (registry / "D330_DPCA" / "v0002").exists()
+    assert validate_registry_lineage(registry, "D330_DPCA")["root_version"] == "v0001"
+
+
+def test_concurrent_first_publish_creates_one_root_and_one_child(tmp_path):
+    source = _validated(tmp_path)
+    registry = tmp_path / "models"
+    barrier = Barrier(2)
+
+    def publish():
+        barrier.wait()
+        return publish_model_version(
+            source,
+            registry,
+            model_id="D330_DPCA",
+            engineer_confirmation=True,
+            applicability_scope="D330",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        records = list(executor.map(lambda _: publish(), range(2)))
+    assert {item["version"] for item in records} == {"v0001", "v0002"}
+    lineage = validate_registry_lineage(registry, "D330_DPCA")
+    assert lineage["root_version"] == "v0001"
+    assert lineage["versions"]["v0002"]["manifest"]["parent_version"] == "v0001"
+
+
+def test_registry_model_lock_times_out_and_releases(tmp_path):
+    registry = tmp_path / "models"
+    with registry_model_lock(registry, "D330_DPCA"):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                lambda: registry_model_lock(
+                    registry, "D330_DPCA", timeout_seconds=0.01
+                ).__enter__()
+            )
+            with pytest.raises(TimeoutError, match="写锁超时"):
+                future.result()
+    with registry_model_lock(registry, "D330_DPCA", timeout_seconds=0.1):
+        pass
+
+
+def test_lineage_rejects_multiple_roots_and_missing_parent(tmp_path):
+    registry = tmp_path / "models"
+    first = create_model_version(_validated(tmp_path), registry, model_id="D330_DPCA")
+    second = registry / "D330_DPCA" / "v0002" / "model.pcamodel"
+    second.parent.mkdir()
+    second.write_bytes(Path(first["path"]).read_bytes())
+    _rewrite_registry_manifest(second, {"version": "v0002"})
+
+    with pytest.raises(ValueError, match="多个根版本.*v0001.*v0002"):
+        validate_registry_lineage(registry, "D330_DPCA")
+    assert all(not item["integrity"]["valid"] for item in list_model_versions(registry))
+
+    second.parent.rename(registry / "D330_DPCA" / "v0003")
+    second = registry / "D330_DPCA" / "v0003" / "model.pcamodel"
+    _rewrite_registry_manifest(
+        second,
+        {
+            "version": "v0003",
+            "parent_model_id": "D330_DPCA",
+            "parent_version": "v0002",
+        },
+    )
+    records = {item["version"]: item for item in list_model_versions(registry)}
+    assert records["v0001"]["integrity"]["valid"] is True
+    assert records["v0003"]["integrity"]["valid"] is False
+    assert "父版本v0002不存在" in records["v0003"]["integrity"]["error"]
 
 
 def test_published_source_is_not_a_direct_copy_target(tmp_path):

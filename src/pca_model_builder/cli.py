@@ -25,7 +25,7 @@ from .model_registry import (
     compare_model_versions,
     list_model_versions,
     publish_model_version,
-    verify_model_package_integrity,
+    validate_registry_package,
 )
 from .preprocessing import PreprocessingConfig
 from .quality import QualityReport, inspect_data_quality
@@ -121,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     models_compare.add_argument("--right", dest="right_option", type=Path)
     models_compare.add_argument("--left-model", dest="left_model", type=Path)
     models_compare.add_argument("--right-model", dest="right_model", type=Path)
+    models_compare.add_argument("--registry", type=Path, default=Path(".web_data/models"))
     models_compare.set_defaults(handler=_models_compare)
 
     models_publish = model_subparsers.add_parser("publish", help="复制发布已验证模型")
@@ -138,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     models_verify.add_argument("--model", dest="model_option", type=Path)
     models_verify.add_argument("--model-path", dest="model_path", type=Path)
     models_verify.add_argument("--require-external", action="store_true")
+    models_verify.add_argument("--registry", type=Path, default=Path(".web_data/models"))
     models_verify.set_defaults(handler=_models_verify)
     return parser
 
@@ -267,6 +269,12 @@ def _models_compare(args: argparse.Namespace) -> dict[str, Any]:
     right = args.right_model or args.right_option or args.right
     if left is None or right is None:
         raise ValueError("compare需要两个模型包路径")
+    validate_registry_package(
+        left, registry_root=args.registry, require_external=True, validate_lineage=True
+    )
+    validate_registry_package(
+        right, registry_root=args.registry, require_external=True, validate_lineage=True
+    )
     return compare_model_versions(left, right)
 
 
@@ -300,10 +308,13 @@ def _models_verify(args: argparse.Namespace) -> dict[str, Any]:
     model = args.model_path or args.model_option or args.model
     if model is None:
         raise ValueError("verify需要模型包路径")
-    return verify_model_package_integrity(
+    validated = validate_registry_package(
         model,
-        require_external=args.require_external,
+        registry_root=args.registry,
+        require_external=True,
+        validate_lineage=True,
     )
+    return validated["integrity"]
 
 
 def _validate(args: argparse.Namespace) -> dict[str, Any]:

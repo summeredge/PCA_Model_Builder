@@ -316,10 +316,15 @@ def test_cli_models_list_compare_verify_and_publish(tmp_path, capsys):
     ) == 0
     published = next(registry.glob("*/v0001/model.pcamodel"))
     assert main(
-        ["models", "verify", "--model-path", str(published), "--require-external"]
+        [
+            "models", "verify", "--model-path", str(published),
+            "--require-external", "--registry", str(registry),
+        ]
     ) == 0
     assert main(["models", "list", "--registry", str(registry)]) == 0
-    assert main(["models", "compare", str(published), str(published)]) == 0
+    assert main(
+        ["models", "compare", str(published), str(published), "--registry", str(registry)]
+    ) == 0
     assert main(
         [
             "models",
@@ -361,20 +366,38 @@ def test_cli_publish_builds_explicit_parent_version_chain(tmp_path):
             "--parent-version", "v0001",
         ]
     ) == 0
-
     first = registry / "D330_DPCA" / "v0001" / "model.pcamodel"
     second = registry / "D330_DPCA" / "v0002" / "model.pcamodel"
     assert load_model_package(second)[1]["parent_version"] == "v0001"
     assert hashlib.sha256(first.read_bytes()).hexdigest() != hashlib.sha256(
         second.read_bytes()
     ).hexdigest()
-    assert main(
-        ["models", "verify", "--model-path", str(first), "--require-external"]
-    ) == 0
-    assert main(
-        ["models", "verify", "--model-path", str(second), "--require-external"]
-    ) == 0
+    for package in (first, second):
+        assert main(
+            [
+                "models", "verify", "--model-path", str(package),
+                "--require-external", "--registry", str(registry),
+            ]
+        ) == 0
 
+
+def test_cli_registry_verify_requires_registry_identity_and_external_hash(tmp_path, capsys):
+    _, _, _, validated = _create_cli_passed_run(tmp_path, prefix="strict-verify")
+    registry = tmp_path / "models"
+    assert main(
+        [
+            "models", "publish", "--model", str(validated),
+            "--registry", str(registry), "--confirm",
+            "--applicability-scope", "D330",
+        ]
+    ) == 0
+    package = next(registry.glob("*/v0001/model.pcamodel"))
+
+    assert main(["models", "verify", str(package), "--registry", str(tmp_path / "other")]) == 2
+    assert "不在指定registry内" in capsys.readouterr().err
+    Path(f"{package}.sha256").unlink()
+    assert main(["models", "verify", str(package), "--registry", str(registry)]) == 2
+    assert "缺少外部SHA-256" in capsys.readouterr().err
 
 @pytest.mark.parametrize(
     ("command", "model_purpose", "model_status"),
