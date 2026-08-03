@@ -57,6 +57,7 @@ from .tag_profile import model_quality_payload, profile_tag
 from .training import build_training_matrix
 from .trend import trend_payload_data
 from .validation import (
+    normalize_and_validate_validation_evidence,
     record_engineer_decision,
     validate_model_windows,
     validation_context_start,
@@ -634,6 +635,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     contributions = validation_result["contributions"]
 
     result: dict[str, Any] = {
+        "validation_schema_version": 2,
         "run_id": run_id,
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
@@ -698,6 +700,7 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         previous_report=previous_report,
         source_identifier=run_id,
     )
+    result["validation_artifacts"] = report["validation_artifacts"]
     result["validation_downloads"] = {
         artifact: f"/download/validation?run_id={run_id}&artifact={artifact}"
         for artifact in _VALIDATION_ARTIFACTS
@@ -714,6 +717,15 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("候选模型或验证报告不存在")
     _, manifest = load_model_package(model_path)
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    if payload.get("decision") == "passed":
+        normalize_and_validate_validation_evidence(
+            report,
+            candidate_path=model_path,
+            scores_path=run_dir / "validation_scores.csv",
+            contributions_path=run_dir / "validation_contributions.json",
+            require_artifact_files=True,
+            expected_identifier=run_id,
+        )
     validate_validation_report_binding(
         model_path, manifest, report, expected_identifier=run_id
     )
@@ -734,6 +746,8 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
         engineer_decision=decision,
         source_identifier=run_id,
         previous_report=report,
+        scores_path=run_dir / "validation_scores.csv",
+        contributions_path=run_dir / "validation_contributions.json",
     )
     return {
         "run_id": run_id,

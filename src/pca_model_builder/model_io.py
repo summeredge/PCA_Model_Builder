@@ -26,6 +26,10 @@ from .compat import (
     validate_new_model_semantics,
 )
 from .windows import normalize_training_windows
+from .validation import (
+    normalize_and_validate_validation_evidence,
+    validation_artifact_metadata,
+)
 
 
 SCHEMA_VERSION = 3
@@ -185,6 +189,8 @@ def copy_validated_model_package(
     validation_summary: dict[str, Any],
     engineer_decision: dict[str, Any],
     source_identifier: str,
+    scores_path: str | Path | None = None,
+    contributions_path: str | Path | None = None,
 ) -> None:
     source = Path(source_path)
     destination = Path(destination_path)
@@ -206,6 +212,8 @@ def copy_validated_model_package(
         engineer_decision,
         expected_identifier=source_identifier,
         actual_sha256=actual_sha256,
+        scores_path=scores_path,
+        contributions_path=contributions_path,
     )
     source_binding = dict(validation_summary["source_candidate_package"])
     source_binding["sha256"] = actual_sha256
@@ -279,17 +287,17 @@ def _validate_review_evidence(
     engineer_decision: Mapping[str, Any],
     expected_identifier: str,
     actual_sha256: str,
+    scores_path: str | Path | None = None,
+    contributions_path: str | Path | None = None,
 ) -> None:
-    if not isinstance(validation_summary, Mapping):
-        raise ValueError("验证报告证据不完整")
-    if validation_summary.get("model_purpose") != "normal_state" or validation_summary.get(
-        "model_status"
-    ) != "candidate":
-        raise ValueError("验证报告与当前候选模型包不匹配")
-    if validation_summary.get("normal_validation_complete") is not True or validation_summary.get(
-        "known_abnormal_complete"
-    ) is not True:
-        raise ValueError("通过前必须完成正常验证和已知异常验证")
+    normalize_and_validate_validation_evidence(
+        validation_summary,
+        candidate_path=source,
+        expected_identifier=expected_identifier,
+        scores_path=scores_path,
+        contributions_path=contributions_path,
+        require_artifact_files=True,
+    )
     if not isinstance(engineer_decision, Mapping):
         raise ValueError("验证人工结论不完整")
     if engineer_decision.get("decision") != "passed":
@@ -362,6 +370,8 @@ def commit_validation_artifacts(
     engineer_decision: Mapping[str, Any],
     source_identifier: str,
     previous_report: Mapping[str, Any] | None = None,
+    scores_path: str | Path | None = None,
+    contributions_path: str | Path | None = None,
 ) -> None:
     """Atomically commit the report and optional validated copy as one review."""
     candidate = Path(candidate_path)
@@ -400,6 +410,8 @@ def commit_validation_artifacts(
                 validation_summary=dict(report),
                 engineer_decision=dict(engineer_decision),
                 source_identifier=source_identifier,
+                scores_path=scores_path,
+                contributions_path=contributions_path,
             )
         temporary_report = _reserve_temporary_path(report_file, ".json.tmp")
         temporary_report.write_text(
@@ -496,6 +508,25 @@ def commit_validation_run_artifacts(
         temporary_contributions.write_text(
             json.dumps(contributions, ensure_ascii=False, indent=2),
             encoding="utf-8",
+        )
+        if not isinstance(report, dict):
+            raise ValueError("验证报告必须是可更新对象")
+        report["validation_artifacts"] = {
+            "scores": validation_artifact_metadata(
+                temporary_scores, filename=scores_file.name
+            ),
+            "contributions": validation_artifact_metadata(
+                temporary_contributions, filename=contributions_file.name
+            ),
+        }
+        normalize_and_validate_validation_evidence(
+            report,
+            candidate_path=candidate,
+            scores_path=temporary_scores,
+            contributions_path=temporary_contributions,
+            require_artifact_files=True,
+            expected_identifier=source_identifier,
+            allow_temporary_artifact_names=True,
         )
         temporary_report = _reserve_temporary_path(report_file, ".json.tmp")
         temporary_report.write_text(
@@ -732,11 +763,7 @@ def _validate_validated_evidence(manifest: dict[str, Any]) -> None:
     if not isinstance(engineer_decision.get("comment"), str):
         raise ValueError("validated model package decision comment is invalid")
     _validate_reviewed_at(engineer_decision.get("reviewed_at"))
-    if (
-        validation_summary.get("normal_validation_complete") is not True
-        or validation_summary.get("known_abnormal_complete") is not True
-    ):
-        raise ValueError("validated model package validation evidence is incomplete")
+    normalize_and_validate_validation_evidence(validation_summary)
     summary_binding = validation_summary.get("source_candidate_package")
     if not isinstance(summary_binding, dict):
         raise ValueError("validated model package validation binding is missing")

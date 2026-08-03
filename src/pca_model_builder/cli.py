@@ -31,7 +31,9 @@ from .quality import QualityReport, inspect_data_quality
 from .tag_config import engineering_ranges, normalize_tag_configs
 from .training import build_training_matrix
 from .validation import (
+    normalize_and_validate_validation_evidence,
     record_engineer_decision,
+    validation_artifact_metadata,
     validate_model_windows,
     validation_context_start,
     validation_windows_from_payload,
@@ -91,6 +93,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("--model", type=Path, required=True)
     review.add_argument("--validation-report", type=Path, required=True)
+    review.add_argument("--scores", type=Path)
+    review.add_argument("--contributions", type=Path)
     review.add_argument("--decision", choices=("passed", "insufficient", "failed"), required=True)
     review.add_argument("--comment", default="")
     review.add_argument("--output", type=Path, required=True)
@@ -357,6 +361,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     _write_json(args.contributions_output, contribution_records)
 
     report: dict[str, Any] = {
+        "validation_schema_version": 2,
         "model": str(args.model),
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
@@ -374,6 +379,10 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         "maximum_t2": float(scores["t2"].max()),
         "maximum_spe": float(scores["spe"].max()),
         "engineer_decision_required": True,
+        "validation_artifacts": {
+            "scores": validation_artifact_metadata(args.scores_output),
+            "contributions": validation_artifact_metadata(args.contributions_output),
+        },
     }
     if len(validation_result["validation_windows"]) == 1:
         window = validation_result["validation_windows"][0]
@@ -386,6 +395,14 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
             str(label): dict(Counter(scores.loc[labels == label, "status"]))
             for label in labels.dropna().unique()
         }
+    normalize_and_validate_validation_evidence(
+        report,
+        candidate_path=args.model,
+        scores_path=args.scores_output,
+        contributions_path=args.contributions_output,
+        require_artifact_files=True,
+        expected_identifier=args.model.name,
+    )
     _write_json(args.report_output, report)
     return report
 
@@ -406,6 +423,15 @@ def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
         validate_validation_report_binding(
             args.model, manifest, report, expected_identifier=source_identifier
         )
+    if args.decision == "passed":
+        normalize_and_validate_validation_evidence(
+            report,
+            candidate_path=args.model,
+            scores_path=args.scores,
+            contributions_path=args.contributions,
+            require_artifact_files=True,
+            expected_identifier=source_identifier,
+        )
     decision = record_engineer_decision(manifest, report, args.decision, args.comment)
     updated_report = dict(report)
     updated_report["engineer_decision"] = decision
@@ -417,6 +443,8 @@ def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
         engineer_decision=decision,
         source_identifier=source_identifier,
         previous_report=report,
+        scores_path=args.scores,
+        contributions_path=args.contributions,
     )
     return {
         "engineer_decision": decision,
