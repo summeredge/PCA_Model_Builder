@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 import re
+import shutil
 from typing import Any
 
 from .compat import validate_loadable_model_semantics
@@ -37,8 +38,12 @@ def _safe_model_id(value: str) -> str:
     return value
 
 
-def _derived_model_id(source_path: Path) -> str:
-    return f"model-{model_package_sha256(source_path)[:16]}"
+def _derived_model_id(source_path: Path, manifest: Mapping[str, Any]) -> tuple[str, str]:
+    name = str(manifest.get("config", {}).get("model_name", "")).strip()
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-_")[:80]
+    if normalized and _MODEL_ID_PATTERN.fullmatch(normalized):
+        return normalized, "model_name"
+    return f"model-{model_package_sha256(source_path)[:16]}", "sha256_fallback"
 
 
 def _version_number(version: str) -> int:
@@ -152,6 +157,7 @@ def _record(package_path: Path, manifest: Mapping[str, Any], integrity: Mapping[
         "engineer_comment": manifest.get("engineer_comment", ""),
         "applicability_scope": manifest.get("applicability_scope"),
         "file_hashes": manifest.get("file_hashes"),
+        "published_from": manifest.get("published_from"),
         "path": str(package_path),
         "integrity": dict(integrity),
     }
@@ -173,9 +179,8 @@ def create_model_version(
     source = Path(source_path)
     model, manifest = load_model_package(source)
     source_sha256 = model_package_sha256(source)
-    resolved_model_id = _safe_model_id(
-        model_id or manifest.get("model_id") or _derived_model_id(source)
-    )
+    derived_id, id_source = _derived_model_id(source, manifest)
+    resolved_model_id = _safe_model_id(model_id or manifest.get("model_id") or derived_id)
     purpose = model_purpose or str(manifest["model_purpose"])
     status = model_status or str(manifest["model_status"])
     validate_loadable_model_semantics(purpose, status)
@@ -200,7 +205,9 @@ def create_model_version(
         engineer_comment=engineer_comment,
         applicability_scope=applicability_scope,
         source_sha256=source_sha256,
+        published_from=None,
     )
+    result["model_id_source"] = "explicit" if model_id else ("manifest" if manifest.get("model_id") else id_source)
     return result
 
 
@@ -217,6 +224,7 @@ def _write_registry_version(
     engineer_comment: str,
     applicability_scope: object,
     source_sha256: str,
+    published_from: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Reserve one version directory and write its package exactly once."""
     registry = Path(registry_root)
@@ -232,6 +240,8 @@ def _write_registry_version(
         "engineer_comment": engineer_comment,
         "applicability_scope": applicability_scope,
     }
+    if published_from is not None:
+        metadata["published_from"] = dict(published_from)
     try:
         _write_model_package(
             package,
@@ -247,21 +257,18 @@ def _write_registry_version(
             lifecycle_metadata=metadata,
         )
         integrity_sha256 = _write_external_hash(package)
+        _, stored_manifest = load_model_package(package)
+        integrity = verify_model_package_integrity(package, require_external=True)
+        if package.name != "model.pcamodel" or version_dir.parent.name != stored_manifest.get("model_id") or version_dir.name != stored_manifest.get("version"):
+            raise ValueError("模型版本目录与manifest不一致")
+        result = _record(package, stored_manifest, integrity)
+        result["source_sha256"] = source_sha256
+        result["file_hashes"] = stored_manifest["file_hashes"]
+        result["integrity"]["sha256"] = integrity_sha256
+        return result
     except Exception:
-        if package.exists():
-            package.unlink()
-        sidecar = _sidecar_path(package)
-        if sidecar.exists():
-            sidecar.unlink()
-        version_dir.rmdir()
+        shutil.rmtree(version_dir, ignore_errors=True)
         raise
-    _, stored_manifest = load_model_package(package)
-    integrity = verify_model_package_integrity(package, require_external=True)
-    result = _record(package, stored_manifest, integrity)
-    result["source_sha256"] = source_sha256
-    result["file_hashes"] = stored_manifest["file_hashes"]
-    result["integrity"]["sha256"] = integrity_sha256
-    return result
 
 
 def list_model_versions(
@@ -323,6 +330,9 @@ def _comparison_value(model: Any, manifest: Mapping[str, Any]) -> dict[str, Any]
         "validation_summary": validation_summary,
         "engineer_decision": manifest.get("engineer_decision"),
         "applicability_scope": manifest.get("applicability_scope"),
+        "published_from": manifest.get("published_from"),
+        "parent_model_id": manifest.get("parent_model_id"),
+        "parent_version": manifest.get("parent_version"),
     }
 
 
@@ -357,24 +367,36 @@ def validate_publish_preconditions(
     del model
     if manifest.get("model_purpose") != "normal_state" or manifest.get("model_status") != "validated":
         raise ValueError("只有normal_state/validated模型可以发布")
+    if engineer_confirmation is not True:
+        raise ValueError("发布必须提供明确的工程师确认")
+    if not _nonempty_scope(applicability_scope):
+        raise ValueError("发布必须提供适用范围")
     if not any(window.get("enabled") for window in manifest.get("training_windows", [])):
         raise ValueError("发布前必须存在启用的训练窗口")
     summary = manifest.get("validation_summary")
     validation_windows = (
         summary.get("validation_windows") if isinstance(summary, Mapping) else None
     )
-    if not isinstance(validation_windows, list) or not any(
-        isinstance(window, Mapping) and window.get("enabled")
-        for window in validation_windows
-    ):
-        raise ValueError("发布前必须存在启用的验证窗口")
+    summaries = summary.get("validation_window_summaries") if isinstance(summary, Mapping) else None
+    if not isinstance(validation_windows, list) or not isinstance(summaries, list):
+        raise ValueError("发布前必须重新执行包含双类型窗口摘要的完整验证")
+    if summary.get("normal_validation_complete") is not True or summary.get("known_abnormal_complete") is not True:
+        raise ValueError("发布前必须完成正常和已知异常两类验证")
+    enabled = [window for window in validation_windows if isinstance(window, Mapping) and window.get("enabled")]
+    window_ids = [window.get("id") for window in enabled]
+    summary_ids = [item.get("id") for item in summaries if isinstance(item, Mapping)]
+    if len(window_ids) != len(set(window_ids)) or len(summary_ids) != len(set(summary_ids)):
+        raise ValueError("验证窗口或摘要ID重复")
+    by_id = {item.get("id"): item for item in summaries if isinstance(item, Mapping)}
+    if not {"normal_validation", "known_abnormal"}.issubset({window.get("type") for window in enabled}):
+        raise ValueError("发布前必须存在正常和已知异常两类启用验证窗口")
+    for window in enabled:
+        item = by_id.get(window.get("id"))
+        if item is None or any(item.get(key) != window.get(key) for key in ("id", "type", "start", "end")):
+            raise ValueError("验证窗口与摘要证据不一致")
     decision = manifest.get("engineer_decision")
     if not isinstance(decision, Mapping) or decision.get("decision") != "passed":
         raise ValueError("发布前必须有工程师passed结论")
-    if engineer_confirmation is not True:
-        raise ValueError("发布必须提供明确的工程师确认")
-    if not _nonempty_scope(applicability_scope):
-        raise ValueError("发布必须提供适用范围")
     integrity = verify_model_package_integrity(
         source, require_external=manifest.get("schema_version") == 4
     )
@@ -392,6 +414,9 @@ def publish_model_version(
     engineer_confirmation: object,
     applicability_scope: object,
     engineer_comment: str = "",
+    model_id: str | None = None,
+    parent_version: str | None = None,
+    as_existing_version: bool | None = None,
 ) -> dict[str, Any]:
     source = Path(source_path)
     preconditions = validate_publish_preconditions(
@@ -401,26 +426,50 @@ def publish_model_version(
     )
     manifest = preconditions["manifest"]
     source_sha256 = preconditions["integrity"]["sha256"]
-    model_id = manifest.get("model_id") or _derived_model_id(source)
-    parent_model_id = manifest.get("model_id") or f"legacy-{source_sha256[:16]}"
-    parent_version = manifest.get("version") or "legacy"
+    derived_id, id_source = _derived_model_id(source, manifest)
+    resolved_model_id = _safe_model_id(model_id or manifest.get("model_id") or derived_id)
+    parent_model_id = manifest.get("model_id")
+    resolved_parent_version = parent_version or manifest.get("version")
     model, source_manifest = load_model_package(source)
-    resolved_model_id = _safe_model_id(str(model_id))
     latest_parent = _latest_registry_parent(registry_root, resolved_model_id)
+    if as_existing_version is False and latest_parent is not None:
+        raise ValueError("model_id已存在，请明确选择作为现有模型的新版本")
+    if as_existing_version is True and latest_parent is None:
+        raise ValueError("所选现有model_id不存在")
     if latest_parent is not None:
-        parent_model_id, parent_version = latest_parent
+        latest_model, latest_manifest = load_model_package(Path(registry_root) / resolved_model_id / latest_parent[1] / "model.pcamodel")
+        _validate_version_compatibility(model, source_manifest, latest_model, latest_manifest)
+        parent_model_id = resolved_model_id
+        resolved_parent_version = parent_version or latest_parent[1]
+    published_from = {
+        "sha256": source_sha256,
+        "filename": source.name,
+        "model_id": manifest.get("model_id") if manifest.get("schema_version") == 4 else None,
+        "version": manifest.get("version") if manifest.get("schema_version") == 4 else None,
+        "schema_version": manifest["schema_version"],
+    }
     result = _write_registry_version(
         model,
         source_manifest,
         registry_root,
         model_id=resolved_model_id,
-        parent_model_id=str(parent_model_id),
-        parent_version=str(parent_version),
+        parent_model_id=str(parent_model_id) if parent_model_id is not None else None,
+        parent_version=str(resolved_parent_version) if resolved_parent_version is not None else None,
         model_purpose="normal_state",
         model_status="published",
         engineer_comment=engineer_comment,
         applicability_scope=applicability_scope,
         source_sha256=source_sha256,
+        published_from=published_from,
     )
     result["published_from_sha256"] = source_sha256
+    result["model_id_source"] = "explicit" if model_id else ("manifest" if manifest.get("model_id") else id_source)
     return result
+
+
+def _validate_version_compatibility(model: Any, manifest: Mapping[str, Any], existing_model: Any, existing_manifest: Mapping[str, Any]) -> None:
+    config, existing = manifest["config"], existing_manifest["config"]
+    fields = ("model_name", "tags", "sample_interval_minutes", "smoothing_window_minutes", "max_lag_minutes", "lag_step_minutes")
+    incompatible = manifest["model_purpose"] != existing_manifest["model_purpose"] or list(model.feature_names) != list(existing_model.feature_names) or any(config.get(key) != existing.get(key) for key in fields)
+    if incompatible:
+        raise ValueError("模型与现有model_id不兼容，请创建新的model_id")

@@ -616,6 +616,8 @@ def _validate_manifest_structure(manifest: object) -> None:
     if schema_version not in {1, 2, SCHEMA_VERSION, 4}:
         raise ValueError("unsupported model package schema version")
     normalize_model_semantics(manifest)
+    if manifest.get("model_status") == "published" and schema_version != 4:
+        raise ValueError("published model packages require schema version 4")
     if schema_version == 4:
         _validate_v4_metadata(manifest)
     if manifest.get("model_status") in {"validated", "published"}:
@@ -660,8 +662,33 @@ def _validate_v4_metadata(manifest: dict[str, Any]) -> None:
         or (isinstance(scope, (list, dict)) and bool(scope))
     ):
         raise ValueError("published model package applicability_scope is required")
+    if manifest.get("model_status") == "published":
+        _validate_published_from(manifest.get("published_from"))
     if not isinstance(manifest.get("file_hashes"), dict):
         raise ValueError("model package file_hashes are required")
+
+
+def _validate_published_from(value: object) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("published model package published_from is required")
+    if set(value) != {"sha256", "filename", "model_id", "version", "schema_version"}:
+        raise ValueError("published model package published_from is invalid")
+    if not isinstance(value.get("sha256"), str) or _SHA256_PATTERN.fullmatch(value["sha256"]) is None:
+        raise ValueError("published model package source SHA-256 is invalid")
+    filename = value.get("filename")
+    if not isinstance(filename, str) or not filename or Path(filename).name != filename or filename in {".", ".."}:
+        raise ValueError("published model package source filename is invalid")
+    schema_version = value.get("schema_version")
+    if not isinstance(schema_version, int) or isinstance(schema_version, bool) or schema_version not in {1, 2, 3, 4}:
+        raise ValueError("published model package source schema version is invalid")
+    model_id, version = value.get("model_id"), value.get("version")
+    if (model_id is None) != (version is None):
+        raise ValueError("published model package source identity is incomplete")
+    if model_id is not None:
+        if not isinstance(model_id, str) or not model_id.strip():
+            raise ValueError("published model package source model_id is invalid")
+        if not isinstance(version, str) or re.fullmatch(r"v\d{4}", version) is None:
+            raise ValueError("published model package source version is invalid")
 
 
 def _validate_array_file_hash(manifest: Mapping[str, Any], arrays_bytes: bytes) -> None:

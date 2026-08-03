@@ -5,7 +5,7 @@ from io import BytesIO
 from pathlib import Path
 import threading
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from urllib.parse import quote
 import zipfile
 
@@ -74,6 +74,20 @@ def _http_get(path: str) -> tuple[int, bytes]:
             return response.status, response.read()
     except HTTPError as error:
         return error.code, error.read()
+    finally:
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def _http_post(path: str, payload: dict[str, object]) -> tuple[int, dict[str, object]]:
+    server = web.ThreadingHTTPServer(("127.0.0.1", 0), web._Handler)
+    thread = threading.Thread(target=server.handle_request)
+    thread.start()
+    body = json.dumps(payload).encode("utf-8")
+    try:
+        request = Request(f"http://127.0.0.1:{server.server_port}{path}", data=body, headers={"Content-Type": "application/json"})
+        with urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
     finally:
         thread.join(timeout=5)
         server.server_close()
@@ -206,14 +220,16 @@ def test_web_model_registry_lists_compares_verifies_and_publishes(tmp_path, monk
                 "applicability_scope": "D330",
             }
         )
-    published = web.model_publish_payload(
+    status, published = _http_post(
+        "/api/models/publish",
         {
-            "model_path": str(validated),
+            "run_id": run_id,
             "engineer_confirmation": True,
             "applicability_scope": {"unit": "D330"},
             "engineer_comment": "web review",
         }
     )
+    assert status == 200
     assert published["model_status"] == "published"
     listed = web.model_versions_payload()
     assert len(listed["models"]) == 1

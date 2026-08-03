@@ -69,7 +69,19 @@ def _validated(tmp_path: Path) -> Path:
                 "end": "2026-01-03T01:00:00",
                 "enabled": True,
                 "comment": "normal",
-            }
+            },
+            {
+                "id": "abnormal-001",
+                "type": "known_abnormal",
+                "start": "2026-01-03T02:00:00",
+                "end": "2026-01-03T03:00:00",
+                "enabled": True,
+                "comment": "abnormal",
+            },
+        ],
+        "validation_window_summaries": [
+            {"id": "normal-001", "type": "normal_validation", "start": "2026-01-03T00:00:00", "end": "2026-01-03T01:00:00"},
+            {"id": "abnormal-001", "type": "known_abnormal", "start": "2026-01-03T02:00:00", "end": "2026-01-03T03:00:00"},
         ],
         "source_candidate_package": {
             "identifier": "candidate-run",
@@ -133,7 +145,14 @@ def test_publish_creates_published_child_without_overwriting_source(tmp_path):
     _, first_manifest = load_model_package(first["path"])
     assert first_manifest["model_status"] == "published"
     assert first_manifest["model_purpose"] == "normal_state"
-    assert first_manifest["parent_version"] == "legacy"
+    assert first_manifest["parent_version"] is None
+    assert first_manifest["published_from"] == {
+        "sha256": model_package_sha256(source),
+        "filename": source.name,
+        "model_id": None,
+        "version": None,
+        "schema_version": 3,
+    }
     assert source.read_bytes() == source_bytes
 
     second = publish_model_version(
@@ -224,7 +243,35 @@ def test_compare_versions_reports_required_fields(tmp_path):
         "validation_summary",
         "engineer_decision",
         "applicability_scope",
+        "published_from",
+        "parent_model_id",
+        "parent_version",
     } <= set(comparison["fields"])
+
+
+def test_explicit_model_id_builds_stable_retraining_chain(tmp_path):
+    source = _validated(tmp_path)
+    registry = tmp_path / "models"
+    first = publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
+    second = publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
+    assert (first["model_id"], first["version"]) == ("D330_DPCA", "v0001")
+    assert (second["model_id"], second["version"]) == ("D330_DPCA", "v0002")
+    assert load_model_package(second["path"])[1]["parent_version"] == "v0001"
+
+
+@pytest.mark.parametrize("failure", ["_write_external_hash", "load_model_package", "verify_model_package_integrity"])
+def test_registry_write_failures_remove_reserved_version(tmp_path, monkeypatch, failure):
+    import pca_model_builder.model_registry as registry_module
+
+    source = _candidate(tmp_path)
+    original = getattr(registry_module, failure)
+    def fail(*args, **kwargs):
+        raise RuntimeError("simulated failure")
+    monkeypatch.setattr(registry_module, failure, fail)
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        create_model_version(source, tmp_path / "models", model_id="ROLLBACK")
+    assert not (tmp_path / "models" / "ROLLBACK" / "v0001").exists()
+    monkeypatch.setattr(registry_module, failure, original)
 
 
 def test_integrity_detects_tampered_arrays_and_sidecar(tmp_path):
