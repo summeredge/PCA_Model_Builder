@@ -279,6 +279,8 @@ def _parse_applicability_scope(value: str) -> object:
 
 
 def _models_publish(args: argparse.Namespace) -> dict[str, Any]:
+    if args.parent_version is not None and args.model_id is None:
+        raise ValueError("--parent-version只能与--model-id同时使用")
     return publish_model_version(
         args.model,
         args.registry,

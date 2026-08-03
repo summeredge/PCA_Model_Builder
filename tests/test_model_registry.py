@@ -37,24 +37,24 @@ def _config() -> dict[str, object]:
     }
 
 
-def _candidate(tmp_path: Path) -> Path:
+def _candidate(tmp_path: Path, *, seed: int = 123, model_name: str = "REGISTRY_TEST") -> Path:
     frame = pd.DataFrame(
-        np.random.default_rng(123).normal(size=(100, 3)),
+        np.random.default_rng(seed).normal(size=(100, 3)),
         columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
     )
     path = tmp_path / "candidate.pcamodel"
     save_model_package(
         path,
         fit_dpca(frame, n_components=2),
-        _config(),
+        {**_config(), "model_name": model_name},
         [["2026-01-01", "2026-01-02"]],
     )
     return path
 
 
-def _validated(tmp_path: Path) -> Path:
-    candidate = _candidate(tmp_path)
-    validated = tmp_path / "validated.pcamodel"
+def _validated(tmp_path: Path, *, seed: int = 123, model_name: str = "REGISTRY_TEST") -> Path:
+    candidate = _candidate(tmp_path, seed=seed, model_name=model_name)
+    validated = tmp_path / f"validated-{seed}.pcamodel"
     candidate_sha = model_package_sha256(candidate)
     summary = {
         "model_purpose": "normal_state",
@@ -250,13 +250,46 @@ def test_compare_versions_reports_required_fields(tmp_path):
 
 
 def test_explicit_model_id_builds_stable_retraining_chain(tmp_path):
+    source = _validated(tmp_path, model_name="D330_DPCA_Model_V1")
+    retrained = _validated(tmp_path, seed=456, model_name="D330_DPCA_Model_V2")
+    registry = tmp_path / "models"
+    first = publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
+    second = publish_model_version(retrained, registry, model_id="D330_DPCA", parent_version="v0001", engineer_confirmation=True, applicability_scope="D330")
+    assert (first["model_id"], first["version"]) == ("D330_DPCA", "v0001")
+    assert (second["model_id"], second["version"]) == ("D330_DPCA", "v0002")
+    assert load_model_package(second["path"])[1]["parent_version"] == "v0001"
+    assert model_package_sha256(first["path"]) != model_package_sha256(second["path"])
+    assert verify_model_package_integrity(first["path"], require_external=True)["valid"]
+    assert verify_model_package_integrity(second["path"], require_external=True)["valid"]
+
+
+def test_explicit_parent_must_exist_and_does_not_reserve_version(tmp_path):
+    source = _validated(tmp_path)
+    registry = tmp_path / "models"
+    publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
+    with pytest.raises(ValueError, match="指定父模型版本无效"):
+        publish_model_version(source, registry, model_id="D330_DPCA", parent_version="v9999", engineer_confirmation=True, applicability_scope="D330")
+    assert not (registry / "D330_DPCA" / "v0002").exists()
+
+
+def test_automatic_parent_skips_corrupt_latest_version(tmp_path):
     source = _validated(tmp_path)
     registry = tmp_path / "models"
     first = publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
     second = publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
-    assert (first["model_id"], first["version"]) == ("D330_DPCA", "v0001")
-    assert (second["model_id"], second["version"]) == ("D330_DPCA", "v0002")
-    assert load_model_package(second["path"])[1]["parent_version"] == "v0001"
+    Path(f"{second['path']}.sha256").unlink()
+    third = publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
+    assert load_model_package(third["path"])[1]["parent_version"] == first["version"]
+
+
+def test_cleanup_failure_reports_original_error_and_residual_path(tmp_path, monkeypatch):
+    import pca_model_builder.model_registry as registry_module
+
+    source = _candidate(tmp_path)
+    monkeypatch.setattr(registry_module, "_write_external_hash", lambda path: (_ for _ in ()).throw(RuntimeError("write failed")))
+    monkeypatch.setattr(registry_module.shutil, "rmtree", lambda path: (_ for _ in ()).throw(OSError("cleanup failed")))
+    with pytest.raises(RuntimeError, match=r"(?s)write failed.*cleanup failed.*ROLLBACK[/\\]v0001"):
+        create_model_version(source, tmp_path / "models", model_id="ROLLBACK")
 
 
 @pytest.mark.parametrize("failure", ["_write_external_hash", "load_model_package", "verify_model_package_integrity"])

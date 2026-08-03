@@ -75,7 +75,7 @@ def _reserve_version_directory(registry_root: Path, model_id: str) -> tuple[str,
 
 def _latest_registry_parent(
     registry_root: str | Path, model_id: str
-) -> tuple[str, str] | None:
+) -> dict[str, Any] | None:
     model_root = Path(registry_root) / model_id
     if not model_root.is_dir():
         return None
@@ -91,10 +91,43 @@ def _latest_registry_parent(
         package = version_dir / "model.pcamodel"
         try:
             _, manifest = load_model_package(package)
+            verify_model_package_integrity(package, require_external=True)
+            _validate_parent_package(package, manifest, model_id, version_dir.name)
         except (OSError, ValueError):
             continue
-        return str(manifest["model_id"]), str(manifest["version"])
+        return {"model_id": model_id, "version": version_dir.name, "path": package, "manifest": manifest}
     return None
+
+
+def _validate_parent_package(
+    package: Path,
+    manifest: Mapping[str, Any],
+    model_id: str,
+    version: str,
+) -> None:
+    if (
+        package.name != "model.pcamodel"
+        or manifest.get("schema_version") != 4
+        or manifest.get("model_id") != model_id
+        or manifest.get("version") != version
+        or package.parent.name != version
+        or package.parent.parent.name != model_id
+        or manifest.get("model_purpose") != "normal_state"
+        or manifest.get("model_status") != "published"
+    ):
+        raise ValueError("父模型版本目录、manifest或状态无效")
+
+
+def _registry_parent(registry_root: str | Path, model_id: str, version: str) -> dict[str, Any]:
+    _version_number(version)
+    package = Path(registry_root) / model_id / version / "model.pcamodel"
+    try:
+        _, manifest = load_model_package(package)
+        verify_model_package_integrity(package, require_external=True)
+        _validate_parent_package(package, manifest, model_id, version)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"指定父模型版本无效：{model_id}/{version}：{error}") from error
+    return {"model_id": model_id, "version": version, "path": package, "manifest": manifest}
 
 
 def _write_external_hash(package_path: Path) -> str:
@@ -266,8 +299,25 @@ def _write_registry_version(
         result["file_hashes"] = stored_manifest["file_hashes"]
         result["integrity"]["sha256"] = integrity_sha256
         return result
-    except Exception:
-        shutil.rmtree(version_dir, ignore_errors=True)
+    except Exception as original_error:
+        cleanup_error: Exception | None = None
+        try:
+            shutil.rmtree(version_dir)
+            if version_dir.exists():
+                raise OSError("删除后目录仍然存在")
+            model_root = version_dir.parent
+            if model_root.is_dir() and not any(model_root.iterdir()):
+                try:
+                    model_root.rmdir()
+                except OSError:
+                    pass
+        except Exception as error:
+            cleanup_error = error
+        if cleanup_error is not None:
+            raise RuntimeError(
+                "模型版本创建失败，且无法清理无效目录：\n"
+                f"原始错误：{original_error}\n清理错误：{cleanup_error}\n残留路径：{version_dir}"
+            ) from original_error
         raise
 
 
@@ -419,6 +469,10 @@ def publish_model_version(
     as_existing_version: bool | None = None,
 ) -> dict[str, Any]:
     source = Path(source_path)
+    if parent_version is not None and model_id is None:
+        raise ValueError("--parent-version只能与--model-id同时使用")
+    if parent_version is not None:
+        _version_number(parent_version)
     preconditions = validate_publish_preconditions(
         source,
         engineer_confirmation=engineer_confirmation,
@@ -428,19 +482,30 @@ def publish_model_version(
     source_sha256 = preconditions["integrity"]["sha256"]
     derived_id, id_source = _derived_model_id(source, manifest)
     resolved_model_id = _safe_model_id(model_id or manifest.get("model_id") or derived_id)
-    parent_model_id = manifest.get("model_id")
-    resolved_parent_version = parent_version or manifest.get("version")
+    parent_model_id = None
+    resolved_parent_version = None
     model, source_manifest = load_model_package(source)
-    latest_parent = _latest_registry_parent(registry_root, resolved_model_id)
-    if as_existing_version is False and latest_parent is not None:
+    model_root = Path(registry_root) / resolved_model_id
+    family_exists = model_root.is_dir()
+    selected_parent = (
+        _registry_parent(registry_root, resolved_model_id, parent_version)
+        if parent_version is not None and family_exists
+        else _latest_registry_parent(registry_root, resolved_model_id)
+    )
+    if parent_version is not None and not family_exists:
+        raise ValueError("新模型族不得指定parent_version")
+    if family_exists and selected_parent is None:
+        raise ValueError("模型族存在，但没有完整性通过的有效父版本")
+    if as_existing_version is False and family_exists:
         raise ValueError("model_id已存在，请明确选择作为现有模型的新版本")
-    if as_existing_version is True and latest_parent is None:
+    if as_existing_version is True and not family_exists:
         raise ValueError("所选现有model_id不存在")
-    if latest_parent is not None:
-        latest_model, latest_manifest = load_model_package(Path(registry_root) / resolved_model_id / latest_parent[1] / "model.pcamodel")
+    if selected_parent is not None:
+        parent_path = selected_parent["path"]
+        latest_model, latest_manifest = load_model_package(parent_path)
         _validate_version_compatibility(model, source_manifest, latest_model, latest_manifest)
         parent_model_id = resolved_model_id
-        resolved_parent_version = parent_version or latest_parent[1]
+        resolved_parent_version = selected_parent["version"]
     published_from = {
         "sha256": source_sha256,
         "filename": source.name,
@@ -469,7 +534,13 @@ def publish_model_version(
 
 def _validate_version_compatibility(model: Any, manifest: Mapping[str, Any], existing_model: Any, existing_manifest: Mapping[str, Any]) -> None:
     config, existing = manifest["config"], existing_manifest["config"]
-    fields = ("model_name", "tags", "sample_interval_minutes", "smoothing_window_minutes", "max_lag_minutes", "lag_step_minutes")
-    incompatible = manifest["model_purpose"] != existing_manifest["model_purpose"] or list(model.feature_names) != list(existing_model.feature_names) or any(config.get(key) != existing.get(key) for key in fields)
-    if incompatible:
-        raise ValueError("模型与现有model_id不兼容，请创建新的model_id")
+    differences = []
+    if manifest["model_purpose"] != existing_manifest["model_purpose"]:
+        differences.append("model_purpose")
+    if list(model.feature_names) != list(existing_model.feature_names):
+        differences.append("feature_names")
+    for field in ("tags", "sample_interval_minutes", "smoothing_window_minutes", "max_lag_minutes", "lag_step_minutes"):
+        if config.get(field) != existing.get(field):
+            differences.append(field)
+    if differences:
+        raise ValueError(f"模型与现有model_id不兼容：{'、'.join(differences)}")

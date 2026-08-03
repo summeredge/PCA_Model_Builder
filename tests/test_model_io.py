@@ -785,6 +785,36 @@ def _valid_config() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize(
+    ("parent_model_id", "parent_version"),
+    [
+        ("D330_DPCA", None),
+        (None, "v0001"),
+        ("D330_DPCA", "legacy"),
+        ("D330_DPCA", "v1"),
+        ("D330_DPCA", "v00001"),
+        ("../D330", "v0001"),
+    ],
+)
+def test_schema_v4_rejects_invalid_parent_reference(tmp_path, parent_model_id, parent_version):
+    from pca_model_builder.model_registry import create_model_version
+
+    frame = pd.DataFrame(np.random.default_rng(9).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    source = tmp_path / "source.pcamodel"
+    save_model_package(source, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+    package = Path(create_model_version(source, tmp_path / "models")["path"])
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        arrays = archive.read("arrays.npz")
+    manifest["parent_model_id"] = parent_model_id
+    manifest["parent_version"] = parent_version
+    with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr("arrays.npz", arrays)
+    with pytest.raises(ValueError, match="parent"):
+        load_model_package(package)
+
+
 def _bound_report(path, identifier):
     return {
         "model_purpose": "normal_state",

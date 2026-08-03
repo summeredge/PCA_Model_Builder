@@ -748,9 +748,7 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def model_versions_payload(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = payload or {}
-    registry = Path(payload.get("registry_dir", MODEL_REGISTRY_DIR))
-    return {"models": list_model_versions(registry)}
+    return {"models": list_model_versions(MODEL_REGISTRY_DIR)}
 
 
 def model_compare_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1185,12 +1183,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "port": self.server.server_port})
             return
         if parsed.path in {"/api/models", "/api/model-versions"}:
-            query = parse_qs(parsed.query)
-            self._send_json(
-                model_versions_payload(
-                    {"registry_dir": query.get("registry_dir", [str(MODEL_REGISTRY_DIR)])[0]}
-                )
-            )
+            self._send_json(model_versions_payload())
             return
         if parsed.path == "/download/tag-config-template":
             try:
