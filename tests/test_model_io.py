@@ -16,6 +16,7 @@ from pca_model_builder.model_io import (
     copy_validated_model_package,
     load_model_package,
     save_model_package,
+    validate_existing_validated_artifact,
 )
 
 
@@ -417,6 +418,64 @@ def _review_transaction_fixture(tmp_path):
 def _assert_transaction_clean(tmp_path):
     assert not list(tmp_path.glob(".*.tmp"))
     assert not list(tmp_path.glob(".*.bak"))
+
+
+def test_existing_validated_artifact_uses_its_embedded_current_evidence(tmp_path):
+    candidate, _, validated, report, decision = _review_transaction_fixture(tmp_path)
+    _copy_validated_model_package(candidate, validated, report, decision, "run-001")
+
+    manifest = validate_existing_validated_artifact(
+        candidate, validated, expected_identifier="run-001"
+    )
+
+    assert manifest["model_status"] == "validated"
+    assert manifest["validation_evidence_status"] == "current"
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["legacy", "sha256", "identifier", "decision", "summary", "arrays"],
+)
+def test_existing_validated_artifact_rejects_untrusted_package(tmp_path, tamper):
+    candidate, _, validated, report, decision = _review_transaction_fixture(tmp_path)
+    _copy_validated_model_package(candidate, validated, report, decision, "run-001")
+    with zipfile.ZipFile(validated) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays_bytes = package.read("arrays.npz")
+    if tamper == "legacy":
+        manifest["validation_summary"].pop("validation_schema_version")
+    elif tamper == "sha256":
+        bad_sha = "0" * 64
+        manifest["source_candidate_package"]["sha256"] = bad_sha
+        manifest["validation_summary"]["source_candidate_package"]["sha256"] = bad_sha
+    elif tamper == "identifier":
+        manifest["source_candidate_package"]["identifier"] = "other"
+        manifest["validation_summary"]["source_candidate_package"]["identifier"] = "other"
+    elif tamper == "decision":
+        manifest["engineer_decision"]["decision"] = "failed"
+    elif tamper == "summary":
+        manifest["validation_summary"]["scored_rows"] += 1
+    else:
+        with np.load(BytesIO(arrays_bytes), allow_pickle=False) as arrays:
+            values = {name: arrays[name].copy() for name in arrays.files}
+        values["mean"][0] += 1
+        buffer = BytesIO()
+        np.savez_compressed(buffer, **values)
+        arrays_bytes = buffer.getvalue()
+    with zipfile.ZipFile(validated, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays_bytes)
+
+    with pytest.raises(ValueError):
+        validate_existing_validated_artifact(
+            candidate, validated, expected_identifier="run-001"
+        )
+
+
+def test_existing_validated_artifact_rejects_same_path(tmp_path):
+    candidate, _, _, _, _ = _review_transaction_fixture(tmp_path)
+    with pytest.raises(ValueError, match="must differ"):
+        validate_existing_validated_artifact(candidate, candidate)
 
 
 def test_review_transaction_rolls_back_when_validated_copy_fails(tmp_path, monkeypatch):
