@@ -5,6 +5,7 @@ import inspect
 
 from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.validation import (
+    normalize_and_validate_validation_evidence,
     _combined_exceedance_events,
     build_validation_matrix,
     ensure_disjoint_windows,
@@ -12,6 +13,48 @@ from pca_model_builder.validation import (
     record_engineer_decision,
     validate_model_windows,
 )
+
+
+def _evidence():
+    windows = [
+        {"id": "n", "type": "normal_validation", "start": "2026-01-01T00:00:00", "end": "2026-01-01T00:05:00", "enabled": True, "comment": ""},
+        {"id": "a", "type": "known_abnormal", "start": "2026-01-01T01:00:00", "end": "2026-01-01T01:05:00", "enabled": True, "comment": ""},
+    ]
+    summaries = []
+    for window in windows:
+        summaries.append({**window, "status": "scored", "scored_rows": 2, "expected_rows": 2, "coverage": 1.0, "t2_exceedance_95": 0.0, "t2_exceedance_99": 0.0, "spe_exceedance_95": 0.0, "spe_exceedance_99": 0.0, "maximum_t2": 1.0, "maximum_spe": 1.0, "event_count": 0, "longest_event_minutes": 0.0})
+    return {"validation_schema_version": 2, "model_purpose": "normal_state", "model_status": "candidate", "source_candidate_package": {"identifier": "run", "filename": "candidate.pcamodel", "sha256": "0" * 64}, "validation_windows": windows, "validation_window_summaries": summaries, "normal_validation_complete": True, "known_abnormal_complete": True, "scored_rows": 4, "status_counts": {"normal": 4}, "maximum_t2": 1.0, "maximum_spe": 1.0, "validation_artifacts": {"scores": {"filename": "validation_scores.csv", "sha256": "0" * 64, "bytes": 1}, "contributions": {"filename": "validation_contributions.json", "sha256": "1" * 64, "bytes": 1}}}
+
+
+def test_validation_evidence_recomputes_completion_and_coverage():
+    report = _evidence()
+    normalize_and_validate_validation_evidence(report)
+    report["validation_window_summaries"][0]["coverage"] = 0.5
+    with pytest.raises(ValueError, match="coverage"):
+        normalize_and_validate_validation_evidence(report)
+
+
+@pytest.mark.parametrize("mutation", ["windows", "status", "rows", "type"])
+def test_validation_evidence_rejects_forged_complete_flags(mutation):
+    report = _evidence()
+    if mutation == "windows":
+        report["validation_windows"] = []
+    elif mutation == "status":
+        report["validation_window_summaries"][0]["status"] = "complete"
+    elif mutation == "rows":
+        report["validation_window_summaries"][0]["scored_rows"] = 0
+    else:
+        report["validation_windows"][1]["enabled"] = False
+        report["validation_window_summaries"][1]["enabled"] = False
+    with pytest.raises(ValueError):
+        normalize_and_validate_validation_evidence(report)
+
+
+def test_validation_evidence_rejects_legacy_schema():
+    report = _evidence()
+    report.pop("validation_schema_version")
+    with pytest.raises(ValueError, match="重新执行完整验证"):
+        normalize_and_validate_validation_evidence(report)
 
 
 def test_validation_windows_must_not_overlap_training_windows():

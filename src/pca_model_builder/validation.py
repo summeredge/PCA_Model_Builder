@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+import hashlib
+import math
+from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -20,6 +24,148 @@ TimeWindow = tuple[pd.Timestamp, pd.Timestamp]
 _VALIDATION_WINDOW_FIELDS = {"id", "type", "start", "end", "enabled", "comment"}
 _VALIDATION_TYPES = {"normal_validation", "known_abnormal"}
 _ENGINEER_DECISIONS = {"passed", "insufficient", "failed"}
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_REQUIRED_REPORT_FIELDS = {
+    "model_purpose", "model_status", "source_candidate_package",
+    "validation_windows", "validation_window_summaries",
+    "normal_validation_complete", "known_abnormal_complete", "scored_rows",
+    "status_counts", "maximum_t2", "maximum_spe", "validation_artifacts",
+}
+
+
+def validation_artifact_metadata(path: str | Path, *, filename: str | None = None) -> dict[str, Any]:
+    artifact = Path(path)
+    data = artifact.read_bytes()
+    return {
+        "filename": filename or artifact.name,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "bytes": len(data),
+    }
+
+
+def normalize_and_validate_validation_evidence(
+    report: object,
+    *,
+    candidate_path: str | Path | None = None,
+    scores_path: str | Path | None = None,
+    contributions_path: str | Path | None = None,
+    require_artifact_files: bool = False,
+    expected_identifier: str | None = None,
+    allow_temporary_artifact_names: bool = False,
+) -> dict[str, Any]:
+    """Validate schema-v2 evidence, optionally binding it to files on disk."""
+    if not isinstance(report, Mapping):
+        raise ValueError("验证报告证据不完整")
+    if report.get("validation_schema_version") != 2:
+        raise ValueError("旧验证报告不能用于validated或published，请重新执行完整验证")
+    missing = sorted(_REQUIRED_REPORT_FIELDS - set(report))
+    if missing:
+        raise ValueError(f"验证报告证据缺少字段: {', '.join(missing)}")
+    if report.get("model_purpose") != "normal_state" or report.get("model_status") != "candidate":
+        raise ValueError("验证报告必须来自normal_state/candidate模型")
+
+    windows = normalize_validation_windows(report["validation_windows"])
+    enabled = [window for window in windows if window["enabled"]]
+    types = {window["type"] for window in enabled}
+    if types != _VALIDATION_TYPES:
+        raise ValueError("验证证据必须包含正常和已知异常两类启用窗口")
+    summaries = report["validation_window_summaries"]
+    if not isinstance(summaries, list):
+        raise ValueError("validation_window_summaries必须是列表")
+    enabled_ids = {window["id"] for window in enabled}
+    relevant = [item for item in summaries if isinstance(item, Mapping) and item.get("id") in enabled_ids]
+    if len(relevant) != len(enabled) or {item.get("id") for item in relevant} != enabled_ids:
+        raise ValueError("每个启用验证窗口必须有且只有一个摘要")
+    total_rows = 0
+    for window in enabled:
+        matches = [item for item in relevant if item.get("id") == window["id"]]
+        if len(matches) != 1:
+            raise ValueError("每个启用验证窗口必须有且只有一个摘要")
+        summary = matches[0]
+        if any(summary.get(key) != window[key] for key in ("id", "type", "start", "end", "enabled")):
+            raise ValueError("验证窗口与摘要证据不一致")
+        if summary.get("status") != "scored":
+            raise ValueError("启用验证窗口摘要必须为scored")
+        scored_rows = _positive_int(summary.get("scored_rows"), "scored_rows")
+        expected_rows = _positive_int(summary.get("expected_rows"), "expected_rows")
+        coverage = _finite_number(summary.get("coverage"), "coverage")
+        if not 0 < coverage <= 1 or not math.isclose(coverage, scored_rows / expected_rows, rel_tol=1e-9, abs_tol=1e-12):
+            raise ValueError("验证窗口coverage与评分行数不一致")
+        for field in ("t2_exceedance_95", "t2_exceedance_99", "spe_exceedance_95", "spe_exceedance_99"):
+            value = _finite_number(summary.get(field), field)
+            if not 0 <= value <= 1:
+                raise ValueError(f"{field}必须在[0, 1]内")
+        for field in ("maximum_t2", "maximum_spe", "longest_event_minutes"):
+            if _finite_number(summary.get(field), field) < 0:
+                raise ValueError(f"{field}不能为负数")
+        _nonnegative_int(summary.get("event_count"), "event_count")
+        total_rows += scored_rows
+    if _nonnegative_int(report.get("scored_rows"), "scored_rows") != total_rows:
+        raise ValueError("顶层scored_rows与窗口摘要总和不一致")
+    for field in ("maximum_t2", "maximum_spe"):
+        _finite_number(report.get(field), field)
+    if not isinstance(report.get("status_counts"), Mapping):
+        raise ValueError("status_counts必须是对象")
+    for value in report["status_counts"].values():
+        _nonnegative_int(value, "status_counts")
+    normal_complete = any(item["type"] == "normal_validation" for item in enabled)
+    abnormal_complete = any(item["type"] == "known_abnormal" for item in enabled)
+    if report.get("normal_validation_complete") is not normal_complete or report.get("known_abnormal_complete") is not abnormal_complete:
+        raise ValueError("验证complete字段与实际评分证据不一致")
+    _validate_artifacts(report["validation_artifacts"], scores_path, contributions_path, require_artifact_files, allow_temporary_artifact_names)
+
+    binding = report.get("source_candidate_package")
+    if not isinstance(binding, Mapping) or not isinstance(binding.get("identifier"), str) or not binding["identifier"].strip():
+        raise ValueError("验证报告候选模型绑定无效")
+    if expected_identifier is not None and binding["identifier"] != expected_identifier:
+        raise ValueError("验证报告候选模型identifier不匹配")
+    if candidate_path is not None:
+        candidate = Path(candidate_path)
+        if binding.get("filename") != candidate.name or binding.get("sha256") != hashlib.sha256(candidate.read_bytes()).hexdigest():
+            raise ValueError("验证报告与当前候选模型包不匹配")
+    return dict(report)
+
+
+def _validate_artifacts(value: object, scores_path: str | Path | None, contributions_path: str | Path | None, required: bool, allow_temporary_names: bool) -> None:
+    if not isinstance(value, Mapping) or set(value) != {"scores", "contributions"}:
+        raise ValueError("validation_artifacts结构无效")
+    paths = {"scores": scores_path, "contributions": contributions_path}
+    for name, path in paths.items():
+        metadata = value.get(name)
+        if not isinstance(metadata, Mapping) or set(metadata) != {"filename", "sha256", "bytes"}:
+            raise ValueError(f"{name}工件元数据无效")
+        filename = metadata.get("filename")
+        if not isinstance(filename, str) or not filename or Path(filename).name != filename or "/" in filename or "\\" in filename or ".." in filename:
+            raise ValueError(f"{name}工件文件名不安全")
+        if not isinstance(metadata.get("sha256"), str) or _SHA256_PATTERN.fullmatch(metadata["sha256"]) is None:
+            raise ValueError(f"{name}工件SHA-256无效")
+        _nonnegative_int(metadata.get("bytes"), f"{name}工件bytes")
+        if required and path is None:
+            raise ValueError(f"passed审查必须提供{name}工件")
+        if path is not None:
+            artifact = Path(path)
+            actual = validation_artifact_metadata(artifact, filename=filename)
+            if not artifact.is_file() or (not allow_temporary_names and artifact.name != filename) or actual != dict(metadata):
+                raise ValueError(f"{name}工件与验证报告绑定不一致")
+
+
+def _finite_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{field}必须是有限数值")
+    return float(value)
+
+
+def _nonnegative_int(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field}必须是非负整数")
+    return value
+
+
+def _positive_int(value: object, field: str) -> int:
+    value = _nonnegative_int(value, field)
+    if value == 0:
+        raise ValueError(f"{field}必须大于0")
+    return value
 
 
 def normalize_validation_windows(value: object) -> list[dict[str, Any]]:
@@ -239,11 +385,8 @@ def record_engineer_decision(
         raise ValueError("工程师结论必须是passed、insufficient或failed")
     if not isinstance(comment, str):
         raise ValueError("工程师备注必须是文本")
-    if decision == "passed" and not (
-        validation_summary.get("normal_validation_complete") is True
-        and validation_summary.get("known_abnormal_complete") is True
-    ):
-        raise ValueError("通过前必须完成正常验证和已知异常验证")
+    if decision == "passed":
+        normalize_and_validate_validation_evidence(validation_summary)
     return {
         "decision": decision,
         "comment": comment,

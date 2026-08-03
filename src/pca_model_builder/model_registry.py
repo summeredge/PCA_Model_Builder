@@ -13,6 +13,7 @@ from .model_io import (
     load_model_package,
     model_package_sha256,
 )
+from .validation import normalize_and_validate_validation_evidence
 
 
 DEFAULT_REGISTRY_DIR = Path(".web_data") / "models"
@@ -449,26 +450,7 @@ def validate_publish_preconditions(
     if not any(window.get("enabled") for window in manifest.get("training_windows", [])):
         raise ValueError("发布前必须存在启用的训练窗口")
     summary = manifest.get("validation_summary")
-    validation_windows = (
-        summary.get("validation_windows") if isinstance(summary, Mapping) else None
-    )
-    summaries = summary.get("validation_window_summaries") if isinstance(summary, Mapping) else None
-    if not isinstance(validation_windows, list) or not isinstance(summaries, list):
-        raise ValueError("发布前必须重新执行包含双类型窗口摘要的完整验证")
-    if summary.get("normal_validation_complete") is not True or summary.get("known_abnormal_complete") is not True:
-        raise ValueError("发布前必须完成正常和已知异常两类验证")
-    enabled = [window for window in validation_windows if isinstance(window, Mapping) and window.get("enabled")]
-    window_ids = [window.get("id") for window in enabled]
-    summary_ids = [item.get("id") for item in summaries if isinstance(item, Mapping)]
-    if len(window_ids) != len(set(window_ids)) or len(summary_ids) != len(set(summary_ids)):
-        raise ValueError("验证窗口或摘要ID重复")
-    by_id = {item.get("id"): item for item in summaries if isinstance(item, Mapping)}
-    if not {"normal_validation", "known_abnormal"}.issubset({window.get("type") for window in enabled}):
-        raise ValueError("发布前必须存在正常和已知异常两类启用验证窗口")
-    for window in enabled:
-        item = by_id.get(window.get("id"))
-        if item is None or any(item.get(key) != window.get(key) for key in ("id", "type", "start", "end")):
-            raise ValueError("验证窗口与摘要证据不一致")
+    normalize_and_validate_validation_evidence(summary)
     decision = manifest.get("engineer_decision")
     if not isinstance(decision, Mapping) or decision.get("decision") != "passed":
         raise ValueError("发布前必须有工程师passed结论")
