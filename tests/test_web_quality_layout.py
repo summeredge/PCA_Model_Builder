@@ -179,6 +179,8 @@ def test_final_web_page_exposes_model_registry_and_publish_controls() -> None:
     assert "/api/models/compare" in html
     assert "/api/models/publish" in html
     assert "不可变发布版本" in html
+    assert "旧证据·只读" in html
+    assert "当前证据" in html
     assert "normalEnd" not in html
 
 

@@ -12,10 +12,46 @@ import pca_model_builder.model_io as model_io
 from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.model_io import (
     commit_validation_artifacts,
+    commit_validation_run_artifacts,
     copy_validated_model_package,
     load_model_package,
     save_model_package,
 )
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("candidate", "report"),
+        ("candidate", "scores"),
+        ("candidate", "contributions"),
+        ("candidate", "validated"),
+        ("report", "scores"),
+        ("report", "contributions"),
+        ("report", "validated"),
+        ("scores", "contributions"),
+        ("scores", "validated"),
+        ("contributions", "validated"),
+    ],
+)
+def test_validation_run_rejects_all_artifact_path_collisions_before_writing(
+    tmp_path, left, right
+):
+    paths = {name: tmp_path / name for name in ("candidate", "report", "scores", "contributions", "validated")}
+    for path in paths.values():
+        path.write_bytes(path.name.encode())
+    original = {name: path.read_bytes() for name, path in paths.items()}
+    paths[right] = paths[left]
+
+    with pytest.raises(ValueError, match="路径必须互不相同"):
+        commit_validation_run_artifacts(
+            paths["candidate"], paths["report"], paths["scores"],
+            paths["contributions"], paths["validated"], {}, pd.DataFrame(), [], "time"
+        )
+
+    assert all(path.read_bytes() == original[name] for name, path in paths.items() if name != right)
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert not list(tmp_path.glob(".*.bak"))
 
 
 def _copy_validated_model_package(source, destination, validation_summary, engineer_decision, source_identifier, **kwargs):

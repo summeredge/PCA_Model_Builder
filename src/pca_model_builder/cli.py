@@ -392,7 +392,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         args.report_output,
         args.scores_output,
         args.contributions_output,
-        args.report_output.parent / "validated_model.pcamodel",
+        None,
         report,
         scores,
         contribution_records,
@@ -403,8 +403,10 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
-    if args.model.resolve() == args.output.resolve():
-        raise ValueError("validated model output must differ from the candidate package")
+    protected_paths = [args.model, args.validation_report]
+    protected_paths.extend(path for path in (args.scores, args.contributions) if path is not None)
+    if args.output.resolve() in {path.resolve() for path in protected_paths}:
+        raise ValueError("validated output must differ from the candidate package and validation evidence files")
     _, manifest = load_model_package(args.model)
     report = json.loads(args.validation_report.read_text(encoding="utf-8"))
     validate_validation_report_binding(args.model, manifest, report)

@@ -465,7 +465,7 @@ def commit_validation_run_artifacts(
     report_path: str | Path,
     scores_path: str | Path,
     contributions_path: str | Path,
-    validated_path: str | Path,
+    validated_path: str | Path | None,
     report: Mapping[str, Any],
     scores: pd.DataFrame,
     contributions: Any,
@@ -478,16 +478,15 @@ def commit_validation_run_artifacts(
     report_file = Path(report_path)
     scores_file = Path(scores_path)
     contributions_file = Path(contributions_path)
-    validated = Path(validated_path)
+    validated = Path(validated_path) if validated_path is not None else None
     if not isinstance(report, Mapping) or "engineer_decision" in report:
         raise ValueError("新的验证报告不得包含人工结论")
-    if validated.resolve() == candidate.resolve():
-        raise ValueError("validated model output must differ from the candidate package")
-    evidence_paths = [report_file, scores_file, contributions_file]
-    resolved = [path.resolve() for path in evidence_paths]
-    if len(set(resolved)) != len(resolved) or candidate.resolve() in resolved:
-        raise ValueError("验证报告、scores、contributions和候选模型路径必须互不相同")
-    if validated.exists():
+    targets = [candidate, report_file, scores_file, contributions_file]
+    if validated is not None:
+        targets.append(validated)
+    if len({path.resolve() for path in targets}) != len(targets):
+        raise ValueError("候选模型、验证报告、scores、contributions和validated路径必须互不相同")
+    if validated is not None and validated.exists():
         if previous_report is None or not isinstance(source_identifier, str) or not source_identifier.strip():
             raise ValueError("已有validated工件来源无法验证，拒绝覆盖")
         validate_validated_model_artifact(
@@ -497,7 +496,10 @@ def commit_validation_run_artifacts(
             expected_identifier=source_identifier,
         )
 
-    for target in (report_file, scores_file, contributions_file, validated):
+    artifact_targets = [report_file, scores_file, contributions_file]
+    if validated is not None:
+        artifact_targets.append(validated)
+    for target in artifact_targets:
         target.parent.mkdir(parents=True, exist_ok=True)
 
     temporary_scores: Path | None = None
@@ -545,7 +547,7 @@ def commit_validation_run_artifacts(
             encoding="utf-8",
         )
 
-        for target in (report_file, scores_file, contributions_file, validated):
+        for target in artifact_targets:
             if target.exists():
                 backup = _reserve_temporary_path(target, ".bak")
                 os.replace(target, backup)

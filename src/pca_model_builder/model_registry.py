@@ -195,6 +195,7 @@ def _record(package_path: Path, manifest: Mapping[str, Any], integrity: Mapping[
         "parent_version": manifest.get("parent_version"),
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
+        "validation_evidence_status": manifest.get("validation_evidence_status"),
         "created_at": manifest.get("created_at"),
         "software_version": manifest.get("software_version"),
         "engineer_comment": manifest.get("engineer_comment", ""),
@@ -221,6 +222,11 @@ def create_model_version(
     """Create one immutable schema-v4 copy without changing the source."""
     source = Path(source_path)
     model, manifest = load_model_package(source)
+    if (
+        manifest.get("model_status") in {"validated", "published"}
+        and classify_validation_evidence(manifest.get("validation_summary")) != "current"
+    ):
+        raise ValueError("旧验证证据仅支持只读查看，不能创建新的模型版本")
     source_sha256 = model_package_sha256(source)
     derived_id, id_source = _derived_model_id(source, manifest)
     resolved_model_id = _safe_model_id(model_id or manifest.get("model_id") or derived_id)
@@ -386,6 +392,7 @@ def _comparison_value(model: Any, manifest: Mapping[str, Any]) -> dict[str, Any]
     return {
         "model_purpose": manifest["model_purpose"],
         "model_status": manifest["model_status"],
+        "validation_evidence_status": manifest.get("validation_evidence_status"),
         "software_version": manifest.get("software_version"),
         "feature_names": list(model.feature_names),
         "tags": list(config["tags"]),
