@@ -942,3 +942,36 @@ def test_cli_training_rejects_variance_threshold_of_one(tmp_path):
     )
 
     assert result == 2
+
+
+def test_cli_validate_can_repeat_after_review_without_touching_validated(tmp_path):
+    prefix = "repeat-validation"
+    csv_path, candidate, report, validated = _create_cli_passed_run(tmp_path, prefix)
+    candidate_bytes = candidate.read_bytes()
+    validated_bytes = validated.read_bytes()
+    scores = tmp_path / f"{prefix}-scores.csv"
+    contributions = tmp_path / f"{prefix}-contributions.json"
+    report.write_text("stale", encoding="utf-8")
+    scores.write_text("stale", encoding="utf-8")
+    contributions.write_text("stale", encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "validate", "--model", str(candidate), "--csv", str(csv_path),
+                "--timestamp", "time", "--validation-windows",
+                str(tmp_path / f"{prefix}-windows.json"), "--scores-output",
+                str(scores), "--report-output", str(report),
+                "--contributions-output", str(contributions),
+            ]
+        )
+        == 0
+    )
+
+    assert json.loads(report.read_text(encoding="utf-8"))["validation_schema_version"] == 2
+    assert scores.read_text(encoding="utf-8-sig") != "stale"
+    assert json.loads(contributions.read_text(encoding="utf-8"))
+    assert candidate.read_bytes() == candidate_bytes
+    assert validated.read_bytes() == validated_bytes
+    assert not list(tmp_path.glob(".*.tmp"))
+    assert not list(tmp_path.glob(".*.bak"))

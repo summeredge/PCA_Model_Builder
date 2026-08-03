@@ -90,6 +90,20 @@ def _validated(tmp_path: Path, *, seed: int = 123, model_name: str = "REGISTRY_T
     return validated
 
 
+def _legacy_validated(tmp_path: Path) -> Path:
+    current = _validated(tmp_path)
+    legacy = tmp_path / "legacy-validated.pcamodel"
+    with zipfile.ZipFile(current) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        arrays = archive.read("arrays.npz")
+    manifest["validation_summary"].pop("validation_schema_version")
+    manifest["validation_summary"].pop("validation_artifacts")
+    with zipfile.ZipFile(legacy, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest))
+        archive.writestr("arrays.npz", arrays)
+    return legacy
+
+
 def _candidate_with_config(
     tmp_path: Path,
     *,
@@ -153,6 +167,21 @@ def test_create_model_version_writes_schema_v4_and_external_hash(tmp_path):
     pd.testing.assert_frame_equal(
         source_model.score(score_frame), copied_model.score(score_frame)
     )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"model_status": "candidate"}, {"model_purpose": "exploratory", "model_status": "draft"}],
+)
+def test_create_model_version_rejects_legacy_validated_even_with_status_override(
+    tmp_path, overrides
+):
+    registry = tmp_path / "models"
+    with pytest.raises(ValueError, match="旧验证证据仅支持只读查看"):
+        create_model_version(
+            _legacy_validated(tmp_path), registry, model_id="D330_DPCA", **overrides
+        )
+    assert not (registry / "D330_DPCA").exists()
 
 
 def test_publish_creates_published_child_without_overwriting_source(tmp_path):
@@ -485,6 +514,7 @@ def test_compare_versions_reports_required_fields(tmp_path):
         "published_from",
         "parent_model_id",
         "parent_version",
+        "validation_evidence_status",
     } <= set(comparison["fields"])
 
 
