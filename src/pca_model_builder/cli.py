@@ -125,6 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
     models_publish.add_argument("--confirm", "--confirm-publish", action="store_true")
     models_publish.add_argument("--applicability-scope", required=True)
     models_publish.add_argument("--engineer-comment", default="")
+    models_publish.add_argument("--model-id")
+    models_publish.add_argument("--parent-version")
     models_publish.set_defaults(handler=_models_publish)
 
     models_verify = model_subparsers.add_parser("verify", help="校验模型包完整性")
@@ -283,6 +285,8 @@ def _models_publish(args: argparse.Namespace) -> dict[str, Any]:
         engineer_confirmation=args.confirm,
         applicability_scope=_parse_applicability_scope(args.applicability_scope),
         engineer_comment=args.engineer_comment,
+        model_id=args.model_id,
+        parent_version=args.parent_version,
     )
 
 

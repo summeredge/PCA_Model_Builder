@@ -754,13 +754,13 @@ def model_versions_payload(payload: dict[str, Any] | None = None) -> dict[str, A
 
 
 def model_compare_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    left = _required_text(payload, "left_model")
-    right = _required_text(payload, "right_model")
+    left = _registry_package_path(_required_text(payload, "left_model"))
+    right = _registry_package_path(_required_text(payload, "right_model"))
     return compare_model_versions(left, right)
 
 
 def model_verify_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    path = _required_text(payload, "model_path")
+    path = _registry_package_path(_required_text(payload, "model_path"))
     return verify_model_package_integrity(
         path,
         require_external=bool(payload.get("require_external", False)),
@@ -768,16 +768,46 @@ def model_verify_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def model_publish_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    path = _required_text(payload, "model_path")
     if payload.get("engineer_confirmation") is not True:
         raise ValueError("发布必须提供明确的工程师确认")
+    if payload.get("run_id"):
+        if payload.get("model_path"):
+            raise ValueError("使用run_id发布时不得提交model_path")
+        run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+        run_dir = RUNS_DIR / run_id
+        candidate = run_dir / "model.pcamodel"
+        report_path = run_dir / "validation_report.json"
+        path = run_dir / "validated_model.pcamodel"
+        if not candidate.is_file() or not report_path.is_file() or not path.is_file():
+            raise ValueError("候选模型、验证报告或已验证模型不存在")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        validate_validated_model_artifact(candidate, path, report, expected_identifier=run_id)
+    else:
+        path = _registry_package_path(_required_text(payload, "model_path"))
+        _, source_manifest = load_model_package(path)
+        verify_model_package_integrity(path, require_external=True)
+        if source_manifest.get("schema_version") != 4 or source_manifest.get("model_status") != "validated" or source_manifest.get("model_purpose") != "normal_state":
+            raise ValueError("registry发布源必须是schema v4 normal_state/validated模型")
     scope = payload.get("applicability_scope")
+    requested_model_id = payload.get("model_id")
+    parent_model_id = payload.get("parent_model_id")
+    if parent_model_id is not None and parent_model_id != requested_model_id:
+        raise ValueError("parent_model_id必须与所选model_id一致")
+    if isinstance(requested_model_id, str) and requested_model_id:
+        family_exists = (MODEL_REGISTRY_DIR / requested_model_id).is_dir()
+        if parent_model_id is None and family_exists:
+            raise ValueError("model_id已存在，请明确选择作为现有模型的新版本")
+        if parent_model_id is not None and not family_exists:
+            raise ValueError("所选现有model_id不存在")
     return publish_model_version(
         path,
-        Path(payload.get("registry_dir", MODEL_REGISTRY_DIR)),
+        MODEL_REGISTRY_DIR,
         engineer_confirmation=True,
         applicability_scope=scope,
         engineer_comment=str(payload.get("engineer_comment", "")),
+        model_id=requested_model_id,
+        parent_version=payload.get("parent_version"),
+        as_existing_version=parent_model_id is not None,
     )
 
 
@@ -792,6 +822,11 @@ def _registry_package_path(value: object) -> Path:
         raise ValueError("模型版本路径必须位于本地模型仓库") from error
     if package.name != "model.pcamodel":
         raise ValueError("模型版本路径无效")
+    if not package.is_file():
+        raise ValueError("模型版本不存在")
+    _, manifest = load_model_package(package)
+    if manifest.get("schema_version") != 4 or package.parent.name != manifest.get("version") or package.parent.parent.name != manifest.get("model_id"):
+        raise ValueError("模型版本路径与manifest不一致")
     return package
 
 
@@ -1669,6 +1704,10 @@ INDEX_HTML = r"""<!doctype html>
             <div class="row"><label>左侧版本<select id="modelCompareLeft"></select></label><label>右侧版本<select id="modelCompareRight"></select></label></div>
             <div id="modelVersionTable" class="table-wrap"><div class="empty">尚未读取模型版本。</div></div>
             <div id="modelCompareResult" class="help"></div>
+            <label>发布来源<select id="modelPublishSource"><option value="current">当前已验证模型</option><option value="registry">现有已验证版本</option></select></label>
+            <label>版本方式<select id="modelPublishMode"><option value="new">创建新模型</option><option value="existing">作为现有模型的新版本</option></select></label>
+            <label>模型ID<input id="modelPublishModelId" type="text" placeholder="新模型ID或已有模型ID"></label>
+            <label>现有已验证版本<select id="modelPublishRegistrySource"></select></label>
             <label>适用范围<input id="modelPublishScope" type="text" placeholder="装置、工况或适用范围"></label>
             <label>工程备注<textarea id="modelPublishComment"></textarea></label>
             <label><input id="modelPublishConfirm" type="checkbox"> 我确认该 normal_state/validated 模型满足发布条件</label>
@@ -1679,9 +1718,9 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[], modelVersions:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, currentValidatedPublishable:false, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[], modelVersions:[] };
 const el = (id) => document.getElementById(id);
-function hideValidatedModelDownload() { const validatedModelDownload=el("validatedModelDownload"); validatedModelDownload.hidden=true; validatedModelDownload.removeAttribute("href"); }
+function hideValidatedModelDownload() { state.currentValidatedPublishable=false; const validatedModelDownload=el("validatedModelDownload"); validatedModelDownload.hidden=true; validatedModelDownload.removeAttribute("href"); }
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
 function setBusy(button, busy, text) { if (!button.dataset.label) button.dataset.label=button.textContent; button.disabled=busy; button.textContent=busy?text:button.dataset.label; }
@@ -1958,16 +1997,16 @@ el("recordValidationDecision").addEventListener("click",async()=>{
   const button=el("recordValidationDecision"); setBusy(button,true,"保存中…");
   try {
     const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
-    if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; } else { hideValidatedModelDownload(); }
+    if(data.validated_model_download) { state.currentValidatedPublishable=true; el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; } else { hideValidatedModelDownload(); }
     await loadModelVersions(); setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已创建新的已验证模型包。":"工程师结论已保存；候选模型保持不变。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
 
 function renderModelVersions() {
-  const left=el("modelCompareLeft"), right=el("modelCompareRight");
-  left.replaceChildren(); right.replaceChildren();
-  state.modelVersions.forEach((item,index)=>{ if(!item.integrity?.valid) return; const label=`${item.model_id||"legacy"}/${item.version||"legacy"} · ${item.model_status}`; [left,right].forEach(select=>{ const option=document.createElement("option"); option.value=item.path; option.textContent=label; select.append(option); }); if(index===1) right.selectedIndex=1; });
+  const left=el("modelCompareLeft"), right=el("modelCompareRight"), publishSource=el("modelPublishRegistrySource");
+  left.replaceChildren(); right.replaceChildren(); publishSource.replaceChildren();
+  state.modelVersions.forEach((item,index)=>{ if(!item.integrity?.valid) return; const label=`${item.model_id||"legacy"}/${item.version||"legacy"} · ${item.model_status}`; [left,right].forEach(select=>{ const option=document.createElement("option"); option.value=item.path; option.textContent=label; select.append(option); }); if(item.model_status==="validated") { const option=document.createElement("option"); option.value=item.path; option.textContent=label; publishSource.append(option); } if(index===1) right.selectedIndex=1; });
   const table=el("modelVersionTable"); table.replaceChildren();
   if(!state.modelVersions.length) { table.innerHTML='<div class="empty">尚未发现模型版本。</div>'; return; }
   const rows=state.modelVersions.map(item=>{ const path=String(item.path||""); const encoded=encodeURIComponent(path); return `<tr><td>${escapeHtml(item.model_id||"legacy")}</td><td>${escapeHtml(item.version||"legacy")}</td><td>${escapeHtml(item.model_purpose||"—")}</td><td>${escapeHtml(item.model_status||"—")}</td><td>${item.integrity?.valid?"通过":"失败"}</td><td><a href="/download/model-version?path=${encoded}">模型包</a> <a href="/download/model-version?path=${encoded}&artifact=sha256">SHA-256</a></td></tr>`; }).join("");
@@ -1976,7 +2015,7 @@ function renderModelVersions() {
 async function loadModelVersions() { const data=await api("/api/models"); state.modelVersions=data.models||[]; renderModelVersions(); }
 el("refreshModelVersions").addEventListener("click",async()=>{ try { await loadModelVersions(); setStatus("模型版本列表已刷新。","success"); } catch(error) { setStatus(error.message,"error"); } });
 el("compareModelVersions").addEventListener("click",async()=>{ try { const left=el("modelCompareLeft").value,right=el("modelCompareRight").value; if(!left||!right) throw new Error("请选择两个模型版本"); const data=await api("/api/models/compare",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({left_model:left,right_model:right})}); el("modelCompareResult").textContent=data.equal?"两个模型版本的比较字段全部一致。":`模型版本存在差异：${Object.entries(data.fields).filter(([,value])=>!value.equal).map(([key])=>key).join("、")}`; } catch(error) { setStatus(error.message,"error"); } });
-el("publishModelVersion").addEventListener("click",async()=>{ try { if(!state.modelVersions.length) throw new Error("请先刷新模型版本"); const selected=state.modelVersions.find(item=>item.path===el("modelCompareLeft").value)||state.modelVersions.find(item=>item.model_status==="validated"); if(!selected) throw new Error("请选择已验证模型"); const data=await api("/api/models/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_path:selected.path,engineer_confirmation:el("modelPublishConfirm").checked,applicability_scope:el("modelPublishScope").value.trim(),engineer_comment:el("modelPublishComment").value.trim()})}); await loadModelVersions(); el("modelIntegrity").textContent=`已创建不可变发布版本 ${data.model_id}/${data.version}，完整性校验通过。`; setStatus("已创建新的不可变发布版本。","success"); } catch(error) { setStatus(error.message,"error"); } });
+el("publishModelVersion").addEventListener("click",async()=>{ try { const source=el("modelPublishSource").value; if(source==="current"&&!state.currentValidatedPublishable) throw new Error("当前运行没有passed的已验证模型"); const selected=state.modelVersions.find(item=>item.path===el("modelPublishRegistrySource").value); if(source==="registry"&&(!selected||selected.model_status!=="validated")) throw new Error("请选择现有已验证版本"); const modelId=el("modelPublishModelId").value.trim(); const existingMode=el("modelPublishMode").value==="existing"; if(existingMode&&!modelId) throw new Error("作为新版本时必须选择已有model_id"); const request={engineer_confirmation:el("modelPublishConfirm").checked,applicability_scope:el("modelPublishScope").value.trim(),engineer_comment:el("modelPublishComment").value.trim(),model_id:modelId||null,parent_model_id:existingMode?modelId:null}; if(source==="current") request.run_id=state.runId; else request.model_path=selected.path; const data=await api("/api/models/publish",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(request)}); await loadModelVersions(); el("modelIntegrity").textContent=`已创建不可变发布版本 ${data.model_id}/${data.version}，完整性校验通过。`; setStatus("已创建新的不可变发布版本。","success"); } catch(error) { setStatus(error.message,"error"); } });
 loadModelVersions().catch(()=>{});
 
 function metric(label,value) { return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
