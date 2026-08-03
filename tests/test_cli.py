@@ -110,6 +110,10 @@ def _create_cli_passed_run(tmp_path, prefix="candidate"):
             "passed",
             "--comment",
             "approved",
+            "--scores",
+            str(tmp_path / f"{prefix}-scores.csv"),
+            "--contributions",
+            str(tmp_path / f"{prefix}-contributions.json"),
             "--output",
             str(validated),
         ]
@@ -152,6 +156,7 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     report_path = tmp_path / "report.json"
     contributions_path = tmp_path / "contributions.json"
     tag_config_path = tmp_path / "tags.json"
+    validation_windows_path = tmp_path / "validation-windows.json"
     frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
     tag_config_path.write_text(
         json.dumps(
@@ -173,6 +178,10 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
         ),
         encoding="utf-8",
     )
+    validation_windows_path.write_text(json.dumps([
+        {"id": "normal", "type": "normal_validation", "start": timestamps[100].isoformat(), "end": timestamps[119].isoformat(), "enabled": True, "comment": ""},
+        {"id": "abnormal", "type": "known_abnormal", "start": timestamps[120].isoformat(), "end": timestamps[-1].isoformat(), "enabled": True, "comment": ""},
+    ]), encoding="utf-8")
 
     train_result = main(
         [
@@ -213,10 +222,8 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
             str(csv_path),
             "--timestamp",
             "time",
-            "--validation-start",
-            str(timestamps[100]),
-            "--validation-end",
-            str(timestamps[-1]),
+            "--validation-windows",
+            str(validation_windows_path),
             "--label-column",
             "engineering_label",
             "--scores-output",
@@ -569,8 +576,7 @@ def test_cli_validates_legacy_window_packages_without_reconversion(tmp_path, sch
     assert manifest["model_purpose"] == "normal_state"
     assert manifest["model_status"] == ("draft" if schema_version == 1 else "candidate")
     assert main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[0].isoformat(), "--validation-end", time[1].isoformat()]) == 2
-    assert main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[60].isoformat(), "--validation-end", time[-1].isoformat(), "--scores-output", str(scores), "--report-output", str(report), "--contributions-output", str(contributions)]) == 0
-    assert scores.exists() and report.exists() and contributions.exists()
+    assert main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[60].isoformat(), "--validation-end", time[-1].isoformat(), "--scores-output", str(scores), "--report-output", str(report), "--contributions-output", str(contributions)]) == 2
 
 
 def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, capsys):
@@ -605,7 +611,7 @@ def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, c
 
     assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "insufficient", "--output", str(failed_output)]) == 0
     assert not failed_output.exists()
-    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--comment", "approved", "--output", str(validated), "--source-id", "candidate-run"]) == 0
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--scores", str(tmp_path / "scores.csv"), "--contributions", str(tmp_path / "contributions.json"), "--decision", "passed", "--comment", "approved", "--output", str(validated), "--source-id", "candidate-run"]) == 0
     candidate_model, candidate_manifest = load_model_package(candidate)
     validated_model, validated_manifest = load_model_package(validated)
     assert candidate_manifest["model_status"] == "candidate"
@@ -618,7 +624,7 @@ def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, c
     assert not validated.exists()
     assert json.loads(report.read_text(encoding="utf-8"))["engineer_decision"]["decision"] == "failed"
 
-    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--output", str(validated)]) == 0
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--scores", str(tmp_path / "scores.csv"), "--contributions", str(tmp_path / "contributions.json"), "--decision", "passed", "--output", str(validated)]) == 0
     assert validated.exists()
     assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "insufficient", "--output", str(validated)]) == 0
     assert not validated.exists()

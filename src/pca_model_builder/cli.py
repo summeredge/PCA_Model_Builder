@@ -15,6 +15,7 @@ from .compat import (
 from .dpca import fit_dpca
 from .model_io import (
     commit_validation_artifacts,
+    commit_validation_run_artifacts,
     load_model_package,
     model_package_sha256,
     save_model_package,
@@ -33,7 +34,6 @@ from .training import build_training_matrix
 from .validation import (
     normalize_and_validate_validation_evidence,
     record_engineer_decision,
-    validation_artifact_metadata,
     validate_model_windows,
     validation_context_start,
     validation_windows_from_payload,
@@ -354,11 +354,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         tag_configs,
     )
     scores = validation_result["scores"]
-    args.scores_output.parent.mkdir(parents=True, exist_ok=True)
-    scores.to_csv(args.scores_output, index_label=args.timestamp)
-
     contribution_records = validation_result["contributions"]
-    _write_json(args.contributions_output, contribution_records)
 
     report: dict[str, Any] = {
         "validation_schema_version": 2,
@@ -379,10 +375,6 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         "maximum_t2": float(scores["t2"].max()),
         "maximum_spe": float(scores["spe"].max()),
         "engineer_decision_required": True,
-        "validation_artifacts": {
-            "scores": validation_artifact_metadata(args.scores_output),
-            "contributions": validation_artifact_metadata(args.contributions_output),
-        },
     }
     if len(validation_result["validation_windows"]) == 1:
         window = validation_result["validation_windows"][0]
@@ -395,15 +387,18 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
             str(label): dict(Counter(scores.loc[labels == label, "status"]))
             for label in labels.dropna().unique()
         }
-    normalize_and_validate_validation_evidence(
+    commit_validation_run_artifacts(
+        args.model,
+        args.report_output,
+        args.scores_output,
+        args.contributions_output,
+        args.report_output.parent / "validated_model.pcamodel",
         report,
-        candidate_path=args.model,
-        scores_path=args.scores_output,
-        contributions_path=args.contributions_output,
-        require_artifact_files=True,
-        expected_identifier=args.model.name,
+        scores,
+        contribution_records,
+        args.timestamp,
+        source_identifier=args.model.name,
     )
-    _write_json(args.report_output, report)
     return report
 
 
@@ -424,6 +419,8 @@ def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
             args.model, manifest, report, expected_identifier=source_identifier
         )
     if args.decision == "passed":
+        if args.scores is None or args.contributions is None:
+            raise ValueError("passed审查必须提供--scores和--contributions")
         normalize_and_validate_validation_evidence(
             report,
             candidate_path=args.model,

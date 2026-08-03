@@ -18,6 +18,22 @@ from pca_model_builder.model_io import (
 )
 
 
+def _copy_validated_model_package(source, destination, validation_summary, engineer_decision, source_identifier, **kwargs):
+    if validation_summary.get("validation_schema_version") != 2:
+        windows = [
+            {"id": "normal", "type": "normal_validation", "start": "2026-01-03T00:00:00", "end": "2026-01-03T01:00:00", "enabled": True, "comment": ""},
+            {"id": "abnormal", "type": "known_abnormal", "start": "2026-01-03T02:00:00", "end": "2026-01-03T03:00:00", "enabled": True, "comment": ""},
+        ]
+        summaries = [{**w, "status": "scored", "scored_rows": 1, "expected_rows": 1, "coverage": 1.0, "t2_exceedance_95": 0.0, "t2_exceedance_99": 0.0, "spe_exceedance_95": 0.0, "spe_exceedance_99": 0.0, "maximum_t2": 1.0, "maximum_spe": 1.0, "event_count": 0, "longest_event_minutes": 0} for w in windows]
+        validation_summary = {"validation_schema_version": 2, "validation_windows": windows, "validation_window_summaries": summaries, "scored_rows": 2, "status_counts": {"normal": 2}, "maximum_t2": 1.0, "maximum_spe": 1.0, **validation_summary}
+    scores = Path(source).parent / "validation_scores.csv"
+    contributions = Path(source).parent / "validation_contributions.json"
+    scores.write_text("time,status\n0,normal\n", encoding="utf-8")
+    contributions.write_text("[]", encoding="utf-8")
+    validation_summary["validation_artifacts"] = {"scores": model_io.validation_artifact_metadata(scores), "contributions": model_io.validation_artifact_metadata(contributions)}
+    return copy_validated_model_package(source, destination, validation_summary, engineer_decision, source_identifier, scores_path=scores, contributions_path=contributions, **kwargs)
+
+
 def test_model_package_round_trip_uses_json_and_npz(tmp_path):
     rng = np.random.default_rng(9)
     frame = pd.DataFrame(
@@ -95,6 +111,32 @@ def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
     assert manifest["config"]["excluded_tags"][0]["tag"] == "FIXED"
 
 
+def test_legacy_validated_package_loads_read_only_and_cannot_be_copied(tmp_path):
+    frame = pd.DataFrame(
+        np.random.default_rng(119).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    candidate = tmp_path / "candidate.pcamodel"
+    current = tmp_path / "current.pcamodel"
+    legacy = tmp_path / "legacy.pcamodel"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+    _copy_validated_model_package(candidate, current, _bound_report(candidate, "run-legacy"), {"decision": "passed", "comment": "ok", "reviewed_at": "2026-01-03T00:00:00+00:00"}, "run-legacy")
+    with zipfile.ZipFile(current) as package:
+        manifest, arrays = json.loads(package.read("manifest.json")), package.read("arrays.npz")
+    manifest["validation_summary"].pop("validation_schema_version")
+    manifest["validation_summary"].pop("validation_artifacts")
+    with zipfile.ZipFile(legacy, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)
+
+    _, loaded = load_model_package(legacy)
+
+    assert loaded["model_status"] == "validated"
+    assert loaded["validation_evidence_status"] == "legacy_read_only"
+    with pytest.raises(ValueError, match="重新执行完整验证"):
+        copy_validated_model_package(candidate, tmp_path / "new.pcamodel", loaded["validation_summary"], loaded["engineer_decision"], "run-legacy")
+
+
 def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
     frame = pd.DataFrame(
         np.random.default_rng(20).normal(size=(100, 3)),
@@ -118,7 +160,7 @@ def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
         },
     }
 
-    copy_validated_model_package(
+    _copy_validated_model_package(
         candidate,
         validated,
         validation_summary=report,
@@ -152,7 +194,7 @@ def test_validated_copy_rejects_candidate_output_path(tmp_path):
     save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
 
     with pytest.raises(ValueError, match="must differ"):
-        copy_validated_model_package(
+        _copy_validated_model_package(
             candidate,
             candidate,
             validation_summary={},
@@ -198,7 +240,7 @@ def test_validated_copy_requires_complete_bound_evidence(tmp_path, mutate):
     mutate(report)
 
     with pytest.raises(ValueError):
-        copy_validated_model_package(
+        _copy_validated_model_package(
             candidate,
             validated,
             report,
@@ -220,7 +262,7 @@ def test_validated_copy_rejects_nonpassed_decisions(tmp_path, decision):
     report = _bound_report(candidate, "run-001")
 
     with pytest.raises(ValueError):
-        copy_validated_model_package(
+        _copy_validated_model_package(
             candidate,
             validated,
             report,
@@ -252,7 +294,7 @@ def test_tampered_validated_manifest_is_rejected_on_load(tmp_path, mutate):
     validated = tmp_path / "validated.pcamodel"
     save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
     report = _bound_report(candidate, "run-001")
-    copy_validated_model_package(
+    _copy_validated_model_package(
         candidate,
         validated,
         report,
@@ -445,7 +487,7 @@ def test_review_transaction_with_old_validated_restores_both_on_report_failure(
     old_report = report_path.read_bytes()
     old_validated = validated.read_bytes()
     original_candidate = candidate.read_bytes()
-    new_report = {**report, "status_counts": {"normal": 1}, "engineer_decision": decision}
+    new_report = {**report, "status_counts": {"normal": 2, "changed": 0}, "engineer_decision": decision}
     original_replace = model_io.os.replace
     failed = {"value": False}
 
@@ -504,7 +546,7 @@ def test_review_transaction_restores_when_existing_artifact_backup_fails(
         return original_replace(source, destination)
 
     monkeypatch.setattr(model_io.os, "replace", fail_backup)
-    new_report = {**report, "engineer_decision": decision, "status_counts": {"normal": 1}}
+    new_report = {**report, "engineer_decision": decision, "status_counts": {"normal": 2, "changed": 0}}
     with pytest.raises(OSError, match=f"simulated {backup_target} backup failure"):
         commit_validation_artifacts(
             candidate,
@@ -835,14 +877,20 @@ def test_schema_v4_rejects_self_referencing_parent(tmp_path):
 
 
 def _bound_report(path, identifier):
+    windows = [
+        {"id": "normal", "type": "normal_validation", "start": "2026-01-03T00:00:00", "end": "2026-01-03T01:00:00", "enabled": True, "comment": ""},
+        {"id": "abnormal", "type": "known_abnormal", "start": "2026-01-03T02:00:00", "end": "2026-01-03T03:00:00", "enabled": True, "comment": ""},
+    ]
+    summaries = [{**w, "status": "scored", "scored_rows": 1, "expected_rows": 1, "coverage": 1.0, "t2_exceedance_95": 0.0, "t2_exceedance_99": 0.0, "spe_exceedance_95": 0.0, "spe_exceedance_99": 0.0, "maximum_t2": 1.0, "maximum_spe": 1.0, "event_count": 0, "longest_event_minutes": 0} for w in windows]
+    scores = Path(path).parent / "validation_scores.csv"
+    contributions = Path(path).parent / "validation_contributions.json"
+    scores.write_text("time,status\n0,normal\n", encoding="utf-8")
+    contributions.write_text("[]", encoding="utf-8")
     return {
-        "model_purpose": "normal_state",
-        "model_status": "candidate",
-        "normal_validation_complete": True,
-        "known_abnormal_complete": True,
-        "source_candidate_package": {
-            "identifier": identifier,
-            "filename": path.name,
-            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        },
+        "validation_schema_version": 2, "model_purpose": "normal_state", "model_status": "candidate",
+        "normal_validation_complete": True, "known_abnormal_complete": True,
+        "validation_windows": windows, "validation_window_summaries": summaries, "scored_rows": 2,
+        "status_counts": {"normal": 2}, "maximum_t2": 1.0, "maximum_spe": 1.0,
+        "validation_artifacts": {"scores": model_io.validation_artifact_metadata(scores), "contributions": model_io.validation_artifact_metadata(contributions)},
+        "source_candidate_package": {"identifier": identifier, "filename": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()},
     }

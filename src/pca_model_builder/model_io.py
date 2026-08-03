@@ -27,6 +27,7 @@ from .compat import (
 )
 from .windows import normalize_training_windows
 from .validation import (
+    classify_validation_evidence,
     normalize_and_validate_validation_evidence,
     validation_artifact_metadata,
 )
@@ -385,6 +386,12 @@ def commit_validation_artifacts(
     decision = engineer_decision.get("decision")
     if decision not in {"passed", "insufficient", "failed"}:
         raise ValueError("工程师结论无效")
+    if decision == "passed" and isinstance(report.get("validation_artifacts"), Mapping):
+        artifacts = report["validation_artifacts"]
+        if scores_path is None and isinstance(artifacts.get("scores"), Mapping):
+            scores_path = report_file.parent / str(artifacts["scores"].get("filename", ""))
+        if contributions_path is None and isinstance(artifacts.get("contributions"), Mapping):
+            contributions_path = report_file.parent / str(artifacts["contributions"].get("filename", ""))
     if validated.exists():
         if previous_report is None:
             raise ValueError("已有validated工件来源无法验证，拒绝覆盖")
@@ -476,6 +483,10 @@ def commit_validation_run_artifacts(
         raise ValueError("新的验证报告不得包含人工结论")
     if validated.resolve() == candidate.resolve():
         raise ValueError("validated model output must differ from the candidate package")
+    evidence_paths = [report_file, scores_file, contributions_file]
+    resolved = [path.resolve() for path in evidence_paths]
+    if len(set(resolved)) != len(resolved) or candidate.resolve() in resolved:
+        raise ValueError("验证报告、scores、contributions和候选模型路径必须互不相同")
     if validated.exists():
         if previous_report is None or not isinstance(source_identifier, str) or not source_identifier.strip():
             raise ValueError("已有validated工件来源无法验证，拒绝覆盖")
@@ -627,6 +638,11 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
         **normalize_model_semantics(manifest),
         "training_windows": normalize_manifest_training_windows(manifest),
     }
+    if manifest.get("model_status") in {"validated", "published"}:
+        manifest["validation_evidence_status"] = (
+            "current" if classify_validation_evidence(manifest.get("validation_summary")) == "current"
+            else "legacy_read_only"
+        )
     _validate_loaded_model(model, manifest)
     return model, manifest
 
@@ -763,7 +779,11 @@ def _validate_validated_evidence(manifest: dict[str, Any]) -> None:
     if not isinstance(engineer_decision.get("comment"), str):
         raise ValueError("validated model package decision comment is invalid")
     _validate_reviewed_at(engineer_decision.get("reviewed_at"))
-    normalize_and_validate_validation_evidence(validation_summary)
+    evidence_kind = classify_validation_evidence(validation_summary)
+    if evidence_kind == "current":
+        normalize_and_validate_validation_evidence(validation_summary)
+    elif evidence_kind != "legacy":
+        raise ValueError("validated model package validation evidence is invalid")
     summary_binding = validation_summary.get("source_candidate_package")
     if not isinstance(summary_binding, dict):
         raise ValueError("validated model package validation binding is missing")

@@ -13,7 +13,7 @@ from .model_io import (
     load_model_package,
     model_package_sha256,
 )
-from .validation import normalize_and_validate_validation_evidence
+from .validation import classify_validation_evidence, normalize_and_validate_validation_evidence
 
 
 DEFAULT_REGISTRY_DIR = Path(".web_data") / "models"
@@ -113,6 +113,8 @@ def _validate_parent_package(
         or manifest.get("model_status") not in {"validated", "published"}
     ):
         raise ValueError("父模型版本目录、manifest或状态无效")
+    if classify_validation_evidence(manifest.get("validation_summary")) != "current":
+        raise ValueError("旧验证证据仅支持只读查看，请重新执行完整验证")
 
 
 def _resolve_registry_parent(
@@ -450,6 +452,11 @@ def validate_publish_preconditions(
     if not any(window.get("enabled") for window in manifest.get("training_windows", [])):
         raise ValueError("发布前必须存在启用的训练窗口")
     summary = manifest.get("validation_summary")
+    evidence_kind = classify_validation_evidence(summary)
+    if evidence_kind == "legacy":
+        raise ValueError("旧验证证据仅支持只读查看，请重新执行完整验证后发布")
+    if evidence_kind != "current":
+        raise ValueError("验证证据无效，请重新执行完整验证后发布")
     normalize_and_validate_validation_evidence(summary)
     decision = manifest.get("engineer_decision")
     if not isinstance(decision, Mapping) or decision.get("decision") != "passed":

@@ -793,6 +793,14 @@ def model_publish_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not candidate.is_file() or not report_path.is_file() or not path.is_file():
             raise ValueError("候选模型、验证报告或已验证模型不存在")
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        normalize_and_validate_validation_evidence(
+            report,
+            candidate_path=candidate,
+            scores_path=run_dir / "validation_scores.csv",
+            contributions_path=run_dir / "validation_contributions.json",
+            require_artifact_files=True,
+            expected_identifier=run_id,
+        )
         validate_validated_model_artifact(candidate, path, report, expected_identifier=run_id)
     else:
         path = _registry_package_path(_required_text(payload, "model_path"))

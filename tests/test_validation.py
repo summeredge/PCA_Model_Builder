@@ -5,6 +5,7 @@ import inspect
 
 from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.validation import (
+    classify_validation_evidence,
     normalize_and_validate_validation_evidence,
     _combined_exceedance_events,
     build_validation_matrix,
@@ -54,6 +55,35 @@ def test_validation_evidence_rejects_legacy_schema():
     report = _evidence()
     report.pop("validation_schema_version")
     with pytest.raises(ValueError, match="重新执行完整验证"):
+        normalize_and_validate_validation_evidence(report)
+
+
+def test_validation_evidence_classification_and_top_level_consistency():
+    assert classify_validation_evidence(_evidence()) == "current"
+    assert classify_validation_evidence({}) == "legacy"
+    assert classify_validation_evidence({"validation_schema_version": 1}) == "legacy"
+    assert classify_validation_evidence({"validation_schema_version": 3}) == "invalid"
+    report = _evidence()
+    report["status_counts"] = {"normal": 3}
+    with pytest.raises(ValueError, match="status_counts"):
+        normalize_and_validate_validation_evidence(report)
+    for field in ("maximum_t2", "maximum_spe"):
+        report = _evidence()
+        report[field] = 2.0
+        with pytest.raises(ValueError, match=field):
+            normalize_and_validate_validation_evidence(report)
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "unknown", "enabled"])
+def test_validation_evidence_rejects_inconsistent_summaries(mutation):
+    report = _evidence()
+    if mutation == "duplicate":
+        report["validation_window_summaries"].append(dict(report["validation_window_summaries"][0]))
+    elif mutation == "unknown":
+        report["validation_window_summaries"][0]["id"] = "unknown"
+    else:
+        report["validation_window_summaries"][0]["enabled"] = False
+    with pytest.raises(ValueError):
         normalize_and_validate_validation_evidence(report)
 
 
@@ -110,7 +140,7 @@ def test_typed_validation_windows_reject_overlap_and_preserve_types():
 
 def test_engineer_pass_requires_both_validation_types_and_keeps_candidate_semantics():
     manifest = {"model_purpose": "normal_state", "model_status": "candidate"}
-    with pytest.raises(ValueError, match="正常验证和已知异常验证"):
+    with pytest.raises(ValueError, match="重新执行完整验证"):
         record_engineer_decision(
             manifest,
             {"normal_validation_complete": True, "known_abnormal_complete": False},
@@ -118,12 +148,7 @@ def test_engineer_pass_requires_both_validation_types_and_keeps_candidate_semant
             "",
         )
 
-    decision = record_engineer_decision(
-        manifest,
-        {"normal_validation_complete": True, "known_abnormal_complete": True},
-        "passed",
-        "approved",
-    )
+    decision = record_engineer_decision(manifest, _evidence(), "passed", "approved")
     assert decision["decision"] == "passed"
     assert decision["comment"] == "approved"
 
