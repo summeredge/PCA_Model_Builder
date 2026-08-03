@@ -297,6 +297,39 @@ def test_cli_models_list_compare_verify_and_publish(tmp_path, capsys):
     assert "--parent-version只能与--model-id同时使用" in capsys.readouterr().err
 
 
+def test_cli_publish_builds_explicit_parent_version_chain(tmp_path):
+    _, _, _, validated_v1 = _create_cli_passed_run(tmp_path, prefix="validated-v1")
+    _, _, _, validated_v2 = _create_cli_passed_run(tmp_path, prefix="validated-v2")
+    registry = tmp_path / "models"
+
+    common = [
+        "--registry", str(registry), "--model-id", "D330_DPCA",
+        "--confirm", "--applicability-scope", "D330",
+    ]
+    assert main(
+        ["models", "publish", "--model", str(validated_v1), *common]
+    ) == 0
+    assert main(
+        [
+            "models", "publish", "--model", str(validated_v2), *common,
+            "--parent-version", "v0001",
+        ]
+    ) == 0
+
+    first = registry / "D330_DPCA" / "v0001" / "model.pcamodel"
+    second = registry / "D330_DPCA" / "v0002" / "model.pcamodel"
+    assert load_model_package(second)[1]["parent_version"] == "v0001"
+    assert hashlib.sha256(first.read_bytes()).hexdigest() != hashlib.sha256(
+        second.read_bytes()
+    ).hexdigest()
+    assert main(
+        ["models", "verify", "--model-path", str(first), "--require-external"]
+    ) == 0
+    assert main(
+        ["models", "verify", "--model-path", str(second), "--require-external"]
+    ) == 0
+
+
 @pytest.mark.parametrize(
     ("command", "model_purpose", "model_status"),
     [

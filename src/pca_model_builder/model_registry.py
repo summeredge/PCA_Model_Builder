@@ -224,6 +224,9 @@ def create_model_version(
     purpose = model_purpose or str(manifest["model_purpose"])
     status = model_status or str(manifest["model_status"])
     validate_loadable_model_semantics(purpose, status)
+    effective_manifest = dict(manifest)
+    effective_manifest["model_purpose"] = purpose
+    effective_manifest["model_status"] = status
     if status == "published":
         raise ValueError("published版本只能通过显式发布操作创建")
     if (parent_model_id is None) != (parent_version is None):
@@ -237,7 +240,10 @@ def create_model_version(
         )
     if selected_parent is not None:
         _validate_version_compatibility(
-            model, manifest, selected_parent["model"], selected_parent["manifest"]
+            model,
+            effective_manifest,
+            selected_parent["model"],
+            selected_parent["manifest"],
         )
         parent_model_id = resolved_model_id
         parent_version = selected_parent["version"]

@@ -103,6 +103,44 @@ def _validated(tmp_path: Path, *, seed: int = 123, model_name: str = "REGISTRY_T
     return validated
 
 
+def _candidate_with_config(
+    tmp_path: Path,
+    *,
+    name: str,
+    tags: list[str] | None = None,
+    sample_interval_minutes: int = 5,
+    smoothing_window_minutes: int = 5,
+    max_lag_minutes: int = 0,
+    lag_step_minutes: int = 5,
+    model_purpose: str = "normal_state",
+    model_status: str = "candidate",
+) -> Path:
+    selected_tags = tags or ["A", "B", "C"]
+    lags = range(0, max_lag_minutes + 1, lag_step_minutes)
+    columns = [f"{tag}__lag_{lag:03d}min" for lag in lags for tag in selected_tags]
+    frame = pd.DataFrame(
+        np.random.default_rng(321).normal(size=(100, len(columns))), columns=columns
+    )
+    path = tmp_path / f"{name}.pcamodel"
+    save_model_package(
+        path,
+        fit_dpca(frame, n_components=min(2, len(columns) - 1)),
+        {
+            **_config(),
+            "model_name": name,
+            "tags": selected_tags,
+            "sample_interval_minutes": sample_interval_minutes,
+            "smoothing_window_minutes": smoothing_window_minutes,
+            "max_lag_minutes": max_lag_minutes,
+            "lag_step_minutes": lag_step_minutes,
+        },
+        [["2026-01-01", "2026-01-02"]],
+        model_purpose=model_purpose,
+        model_status=model_status,
+    )
+    return path
+
+
 def test_create_model_version_writes_schema_v4_and_external_hash(tmp_path):
     source = _candidate(tmp_path)
     source_bytes = source.read_bytes()
@@ -245,6 +283,132 @@ def test_create_model_version_appends_to_real_compatible_parent(tmp_path):
     assert verify_model_package_integrity(second["path"], require_external=True)["valid"]
 
 
+@pytest.mark.parametrize(
+    ("field", "changes"),
+    [
+        ("tags", {"tags": ["B", "A", "C"]}),
+        ("feature_names", {"tags": ["A", "B", "D"]}),
+        ("sample_interval_minutes", {"sample_interval_minutes": 1}),
+        ("smoothing_window_minutes", {"smoothing_window_minutes": 10}),
+        ("max_lag_minutes", {"max_lag_minutes": 5}),
+        ("lag_step_minutes", {"lag_step_minutes": 10}),
+    ],
+)
+def test_create_model_version_rejects_each_incompatible_field_without_residue(
+    tmp_path, field, changes
+):
+    registry = tmp_path / "models"
+    source = _validated(tmp_path)
+    first = create_model_version(source, registry, model_id="D330_DPCA")
+    parent_bytes = Path(first["path"]).read_bytes()
+    source_bytes = source.read_bytes()
+    incompatible = _candidate_with_config(tmp_path, name=f"different-{field}", **changes)
+    incompatible_bytes = incompatible.read_bytes()
+
+    with pytest.raises(ValueError, match=field):
+        create_model_version(
+            incompatible,
+            registry,
+            model_id="D330_DPCA",
+            parent_model_id="D330_DPCA",
+            parent_version="v0001",
+        )
+
+    assert not (registry / "D330_DPCA" / "v0002").exists()
+    assert Path(first["path"]).read_bytes() == parent_bytes
+    assert source.read_bytes() == source_bytes
+    assert incompatible.read_bytes() == incompatible_bytes
+    assert [item["version"] for item in list_model_versions(registry)] == ["v0001"]
+
+
+def test_create_model_version_uses_effective_purpose_for_parent_compatibility(tmp_path):
+    registry = tmp_path / "models"
+    parent = create_model_version(_validated(tmp_path), registry, model_id="D330_DPCA")
+    parent_bytes = Path(parent["path"]).read_bytes()
+    normal_source = _candidate(tmp_path)
+    normal_bytes = normal_source.read_bytes()
+
+    with pytest.raises(ValueError, match="model_purpose"):
+        create_model_version(
+            normal_source,
+            registry,
+            model_id="D330_DPCA",
+            parent_model_id="D330_DPCA",
+            parent_version="v0001",
+            model_purpose="exploratory",
+            model_status="draft",
+        )
+    assert not (registry / "D330_DPCA" / "v0002").exists()
+    assert Path(parent["path"]).read_bytes() == parent_bytes
+    assert normal_source.read_bytes() == normal_bytes
+
+    exploratory = _candidate_with_config(
+        tmp_path,
+        name="exploratory-source",
+        model_purpose="exploratory",
+        model_status="draft",
+    )
+    exploratory_bytes = exploratory.read_bytes()
+    child = create_model_version(
+        exploratory,
+        registry,
+        model_id="D330_DPCA",
+        parent_model_id="D330_DPCA",
+        parent_version="v0001",
+        model_purpose="normal_state",
+        model_status="candidate",
+    )
+    _, child_manifest = load_model_package(child["path"])
+    assert child_manifest["model_purpose"] == "normal_state"
+    assert child_manifest["model_status"] == "candidate"
+    assert child_manifest["parent_version"] == "v0001"
+    assert exploratory.read_bytes() == exploratory_bytes
+
+
+@pytest.mark.parametrize(
+    ("parent_semantics", "allowed"),
+    [
+        ("validated", True),
+        ("published", True),
+        ("candidate", False),
+        ("draft", False),
+    ],
+)
+def test_create_model_version_enforces_parent_state_contract(
+    tmp_path, parent_semantics, allowed
+):
+    registry = tmp_path / "models"
+    if parent_semantics == "validated":
+        create_model_version(_validated(tmp_path), registry, model_id="D330_DPCA")
+    elif parent_semantics == "published":
+        publish_model_version(
+            _validated(tmp_path), registry, model_id="D330_DPCA",
+            engineer_confirmation=True, applicability_scope="D330",
+        )
+    elif parent_semantics == "candidate":
+        create_model_version(_candidate(tmp_path), registry, model_id="D330_DPCA")
+    else:
+        create_model_version(
+            _candidate_with_config(
+                tmp_path, name="draft-parent",
+                model_purpose="exploratory", model_status="draft",
+            ),
+            registry,
+            model_id="D330_DPCA",
+        )
+
+    operation = lambda: create_model_version(
+        _candidate(tmp_path), registry, model_id="D330_DPCA",
+        parent_model_id="D330_DPCA", parent_version="v0001",
+    )
+    if allowed:
+        assert operation()["version"] == "v0002"
+    else:
+        with pytest.raises(ValueError, match="父模型版本.*无效|manifest或状态无效"):
+            operation()
+        assert not (registry / "D330_DPCA" / "v0002").exists()
+
+
 def test_create_model_version_rejects_cross_family_parent(tmp_path):
     with pytest.raises(ValueError, match="相同model_id"):
         create_model_version(
@@ -368,6 +532,38 @@ def test_automatic_parent_skips_corrupt_latest_version(tmp_path):
     Path(f"{second['path']}.sha256").unlink()
     third = publish_model_version(source, registry, model_id="D330_DPCA", engineer_confirmation=True, applicability_scope="D330")
     assert load_model_package(third["path"])[1]["parent_version"] == first["version"]
+
+
+@pytest.mark.parametrize("corrupt_latest", [False, True])
+def test_automatic_parent_prefers_highest_valid_version_and_falls_back(
+    tmp_path, corrupt_latest
+):
+    source = _validated(tmp_path)
+    registry = tmp_path / "models"
+    first = publish_model_version(
+        source, registry, model_id="D330_DPCA",
+        engineer_confirmation=True, applicability_scope="D330",
+    )
+    second = create_model_version(
+        source,
+        registry,
+        model_id="D330_DPCA",
+        parent_model_id="D330_DPCA",
+        parent_version="v0001",
+    )
+    assert load_model_package(first["path"])[1]["model_status"] == "published"
+    assert load_model_package(second["path"])[1]["model_status"] == "validated"
+    if corrupt_latest:
+        Path(f"{second['path']}.sha256").write_text("0" * 64, encoding="ascii")
+
+    third = publish_model_version(
+        source, registry, model_id="D330_DPCA",
+        engineer_confirmation=True, applicability_scope="D330",
+    )
+    _, manifest = load_model_package(third["path"])
+    assert third["version"] == "v0003"
+    assert manifest["parent_model_id"] == "D330_DPCA"
+    assert manifest["parent_version"] == ("v0001" if corrupt_latest else "v0002")
 
 
 def test_cleanup_failure_reports_original_error_and_residual_path(tmp_path, monkeypatch):
