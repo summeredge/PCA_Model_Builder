@@ -653,6 +653,8 @@ def _validate_v4_metadata(manifest: dict[str, Any]) -> None:
             raise ValueError("model package parent_model_id is invalid")
         if not isinstance(parent_version, str) or re.fullmatch(r"v\d{4}", parent_version) is None:
             raise ValueError("model package parent_version is invalid")
+        if parent_model_id == manifest["model_id"] and parent_version == version:
+            raise ValueError("model package parent reference cannot refer to itself")
     if not isinstance(manifest.get("software_version"), str) or not manifest[
         "software_version"
     ].strip():
