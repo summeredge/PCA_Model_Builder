@@ -460,6 +460,78 @@ def test_filter_context_invalid_history_is_lag_context_not_warmup():
     assert result.dynamic_valid_mask.loc[index[3]]
 
 
+def test_missing_input_without_filter_or_lag_has_no_context_losses():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [1.0, np.nan, 3.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+        validate_quality=False,
+        include_intermediates=True,
+    )
+
+    assert result.summary.input_invalid_loss == 1
+    assert result.summary.filter_warmup_loss == 0
+    assert result.summary.filter_context_invalid_loss == 0
+    assert result.summary.lag_warmup_loss == 0
+    assert result.summary.lag_context_invalid_loss == 0
+    assert result.summary.final_dynamic_row_count == 2
+    assert result.input_invalid_mask.loc[index[1]]
+    assert not result.dynamic_valid_mask.loc[index[1]]
+    assert result.dynamic_valid_mask.loc[index[0]]
+    assert result.dynamic_valid_mask.loc[index[2]]
+    masks = [
+        result.empty_bin_mask.reindex(result.state_filtered.index, fill_value=False),
+        result.input_invalid_mask,
+        result.filter_warmup_mask,
+        result.filter_context_invalid_mask,
+        result.lag_warmup_mask,
+        result.lag_context_invalid_mask,
+        result.dynamic_valid_mask,
+    ]
+    assert pd.concat(masks, axis=1).sum(axis=1).eq(1).all()
+
+
+def test_empty_resampling_bins_do_not_reduce_aggregation_reduction():
+    index = pd.date_range("2026-01-01 00:01", periods=10, freq="1min").append(
+        pd.date_range("2026-01-01 00:16", periods=5, freq="1min")
+    )
+    result = preprocess_window(
+        pd.DataFrame({"A": np.arange(15, dtype=float)}, index=index),
+        ["A"],
+        PreprocessingConfig(
+            5,
+            0,
+            0,
+            5,
+            resampling_method="mean",
+            filter_method="none",
+            gap_threshold_minutes=10,
+        ),
+        validate_quality=False,
+        include_intermediates=True,
+    )
+
+    empty_timestamp = pd.Timestamp("2026-01-01 00:15")
+    source_rows_in_complete_non_empty_bins = 15
+    non_empty_resampled_bin_count = 3
+    assert result.summary.empty_bin_count == 1
+    assert result.summary.partial_resampling_bin_loss == 0
+    assert result.summary.partial_resampling_row_loss == 0
+    assert result.summary.resampling_row_reduction == (
+        source_rows_in_complete_non_empty_bins - non_empty_resampled_bin_count
+    )
+    assert result.summary.resampling_row_reduction == 12
+    assert result.summary.resampling_row_reduction >= 0
+    assert result.empty_bin_mask.loc[empty_timestamp]
+    assert not result.input_invalid_mask.loc[empty_timestamp]
+    assert not result.filter_warmup_mask.loc[empty_timestamp]
+    assert not result.filter_context_invalid_mask.loc[empty_timestamp]
+    assert not result.lag_warmup_mask.loc[empty_timestamp]
+    assert not result.lag_context_invalid_mask.loc[empty_timestamp]
+    assert not result.dynamic_valid_mask.loc[empty_timestamp]
+
+
 def test_resampling_reduction_excludes_partial_bucket_rows():
     index = pd.date_range("2026-01-01", periods=61, freq="1min")
     result = preprocess_window(
