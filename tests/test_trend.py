@@ -22,16 +22,18 @@ def test_trend_smoothing_is_trailing_and_does_not_cross_gap():
         ]
     )
     frame = pd.DataFrame({"A": [0.0, 10.0, 20.0, 100.0, 120.0]}, index=index)
-    raw, smoothed, segments = prepare_trend_frame(
+    raw, resampled, smoothed, segments, resampled_segments = prepare_trend_frame(
         frame, ["A"], PreprocessingConfig(5, 10, 0, 5)
     )
 
     assert raw.equals(frame)
+    assert resampled.equals(frame)
     assert smoothed.loc[index[1], "A"] == 5.0
     assert smoothed.loc[index[2], "A"] == 15.0
     assert pd.isna(smoothed.loc[index[3], "A"])
     assert smoothed.loc[index[4], "A"] == 110.0
     assert segments.tolist() == [0, 0, 0, 1, 1]
+    assert resampled_segments.tolist() == [0, 0, 0, 1, 1]
 
 
 def test_trend_preview_reuses_resampling_and_filtering_core():
@@ -46,8 +48,10 @@ def test_trend_preview_reuses_resampling_and_filtering_core():
         filter_method="trailing_median",
     )
 
-    resampled, filtered, _ = prepare_trend_frame(frame, ["A"], config)
+    raw, resampled, filtered, _, _ = prepare_trend_frame(frame, ["A"], config)
 
+    assert raw.index.tolist() == index.tolist()
+    assert raw["A"].tolist() == np.arange(11, dtype=float).tolist()
     assert resampled.index.tolist() == [index[0], index[5], index[10]]
     assert resampled["A"].tolist() == [0.0, 3.0, 8.0]
     assert pd.isna(filtered.iloc[0, 0])
@@ -96,7 +100,7 @@ def test_trend_downsampling_preserves_first_last_spike_and_gap_boundaries():
     values = np.zeros(len(index))
     values[713] = 100.0
     frame = pd.DataFrame({"A": values}, index=index)
-    raw, smoothed, segments = prepare_trend_frame(
+    raw, _, smoothed, segments, _ = prepare_trend_frame(
         frame, ["A"], PreprocessingConfig(5, 5, 0, 5)
     )
     positions = downsample_trend(raw, smoothed, segments, limit=120)
@@ -134,6 +138,35 @@ def test_trend_preserves_missing_point_without_modifying_source():
 
     assert result["rows"][2]["A__raw"] is None
     pd.testing.assert_frame_equal(frame, original)
+
+
+def test_trend_payload_separates_raw_resampled_and_filtered_stages():
+    index = pd.date_range("2026-01-01", periods=11, freq="1min")
+    frame = pd.DataFrame({"A": np.arange(11, dtype=float)}, index=index)
+    result = trend_payload_data(
+        frame,
+        ["A"],
+        PreprocessingConfig(
+            5, 10, 0, 5, resampling_method="mean", filter_method="trailing_mean"
+        ),
+        index[0],
+        index[-1],
+        "both",
+        {"A": {}},
+    )
+
+    assert [row["timestamp"] for row in result["stage_rows"]["raw"]] == [
+        timestamp.isoformat() for timestamp in index
+    ]
+    assert [row["timestamp"] for row in result["stage_rows"]["resampled"]] == [
+        index[0].isoformat(), index[5].isoformat(), index[10].isoformat()
+    ]
+    assert result["stage_rows"]["filtered"][0]["A"] is None
+    assert result["series_stage"] == {
+        "raw": "raw",
+        "smoothed": "filtered",
+        "resampling_applied": True,
+    }
 
 
 @pytest.mark.parametrize(

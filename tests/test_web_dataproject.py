@@ -41,6 +41,7 @@ def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls()
     assert 'id="dpScatterChart"' in html
     assert "物理时间缺口不会连线" in html
     assert "页面不会插值、补点或修改原始数据" in html
+    assert "真实原始趋势" in html
 
     # Existing IDs remain in the hidden legacy container so the current
     # quality/contribution jump handlers do not break.
@@ -216,3 +217,40 @@ def test_old_trend_payload_path_is_delegated(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert web_dataproject.trend_payload({"tags": ["A"]}) is sentinel
+
+
+def test_dataproject_trend_does_not_label_resampled_values_as_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame = pd.DataFrame(
+        {
+            "TIME": pd.date_range("2026-01-01", periods=11, freq="1min"),
+            "A": range(11),
+        }
+    )
+    monkeypatch.setattr(
+        web_dataproject.base_web,
+        "_load_required_upload",
+        lambda payload, columns, prefix: _loaded(frame.loc[:, ["TIME", *columns]]),
+    )
+
+    result = web_dataproject.trend_payload(
+        {
+            "purpose": "trend",
+            "file_id": "ignored-by-test",
+            "timestamp_column": "TIME",
+            "tags": ["A"],
+            "sample_interval_minutes": 5,
+            "resampling_method": "mean",
+            "filter_method": "none",
+            "smoothing_window_minutes": 0,
+            "max_lag_minutes": 0,
+            "lag_step_minutes": 5,
+            "start": frame.TIME.iloc[0].isoformat(),
+            "end": frame.TIME.iloc[-1].isoformat(),
+            "max_points": 100,
+        }
+    )
+
+    assert result["raw_rows"] == 11
+    assert [point["y"] for point in result["series"][0]["points"]] == list(range(11))

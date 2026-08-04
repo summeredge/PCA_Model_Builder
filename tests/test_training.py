@@ -267,10 +267,11 @@ def test_training_resamples_each_window_and_records_preprocessing_summary():
 
     summary = result.window_summaries[0]
     assert summary["raw_samples"] == 61
-    assert summary["resampled_samples"] == 13
+    assert summary["resampled_samples"] == 12
+    assert summary["partial_resampling_bin_loss"] == 1
     assert summary["empty_bins"] == 0
     assert summary["filter_warmup_loss"] == 0
-    assert summary["effective_samples"] == 13
+    assert summary["effective_samples"] == 12
 
 
 def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():
@@ -296,3 +297,93 @@ def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():
     assert not any("LOAD" in column for column in result.dynamic.columns)
     assert frame.time.iloc[12] not in result.dynamic.index
     assert result.window_summaries[0]["state_filter_output_rows"] == 16
+
+
+def test_training_resampling_keeps_only_complete_window_bins():
+    values = np.arange(11, dtype=float)
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=11, freq="1min"),
+            "A": values,
+            "B": np.sin(values),
+            "C": np.cos(values),
+        }
+    )
+    config = PreprocessingConfig(
+        5, 0, 0, 5, resampling_method="mean", filter_method="none"
+    )
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        config,
+        _windows((frame.time.iloc[0], frame.time.iloc[-1], True)),
+        validate_dynamic=False,
+    )
+
+    assert result.dynamic.index.tolist() == [frame.time.iloc[5], frame.time.iloc[10]]
+    assert result.reference.time.tolist() == [frame.time.iloc[5], frame.time.iloc[10]]
+    assert result.window_summaries[0]["partial_resampling_bin_loss"] == 1
+
+
+def test_training_drops_windows_split_inside_one_resampling_bin():
+    values = np.arange(6, dtype=float)
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=6, freq="1min"),
+            "A": values,
+            "B": values + 10,
+            "C": values + 20,
+        }
+    )
+    config = PreprocessingConfig(
+        5, 0, 0, 5, resampling_method="mean", filter_method="none"
+    )
+    windows = _windows(
+        (frame.time.iloc[1], frame.time.iloc[2], True),
+        (frame.time.iloc[3], frame.time.iloc[5], True),
+    )
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        config,
+        windows,
+        validate_dynamic=False,
+    )
+
+    assert result.dynamic.empty
+    assert result.reference.empty
+    assert [item["dropped_reason"] for item in result.window_summaries] == [
+        "no_complete_resampling_bins",
+        "no_complete_resampling_bins",
+    ]
+    assert not result.dynamic.index.has_duplicates
+
+
+def test_training_reference_uses_only_state_filtered_conditions():
+    frame = _frame(12)
+    frame["LOAD"] = [1] * 6 + [0] * 6
+    frame["FIXED"] = [7.0] * 6 + list(np.arange(6, dtype=float))
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(
+            5,
+            0,
+            0,
+            5,
+            filter_method="none",
+            state_filters=(StateFilter("LOAD", minimum=1),),
+        ),
+        _windows((frame.time.iloc[0], frame.time.iloc[-1], True)),
+        validate_dynamic=False,
+        reference_columns=["FIXED"],
+    )
+
+    assert result.reference.time.tolist() == frame.time.iloc[:6].tolist()
+    assert result.reference["FIXED"].nunique() == 1
+    assert not any("LOAD" in column for column in result.dynamic.columns)

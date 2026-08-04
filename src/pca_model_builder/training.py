@@ -100,6 +100,9 @@ def build_training_matrix(
                 include_intermediates=True,
                 include_variability=False,
                 preserve_columns=reference_columns,
+                # Training windows are isolated: never complete a boundary bucket
+                # with samples outside the engineer-selected window.
+                resampling_window=(start, end),
             )
         except PreprocessingQualityError as error:
             raise ValueError(
@@ -124,7 +127,9 @@ def build_training_matrix(
             ]
             effective_samples = len(dynamic_segment)
             filter_loss = int(
-                filtered_segment.loc[:, tag_columns].isna().any(axis=1).sum()
+                processed.filter_warmup_mask.reindex(resampled_segment.index)
+                .fillna(False)
+                .sum()
             )
             lag_input = int(
                 state_segment.loc[:, tag_columns].notna().all(axis=1).sum()
@@ -138,7 +143,12 @@ def build_training_matrix(
                     "raw_samples": len(segment),
                     "resampled_samples": len(resampled_segment),
                     "empty_bins": int(
-                        resampled_segment.loc[:, tag_columns].isna().all(axis=1).sum()
+                        processed.empty_bin_mask.reindex(resampled_segment.index)
+                        .fillna(False)
+                        .sum()
+                    ),
+                    "partial_resampling_bin_loss": processed.partial_resampling_bin_loss_by_segment.get(
+                        int(segment_id), 0
                     ),
                     "filter_warmup_loss": filter_loss,
                     "state_filter_input_rows": len(filtered_segment),
@@ -147,14 +157,23 @@ def build_training_matrix(
                     "effective_samples": effective_samples,
                     "smoothing_lag_loss": len(segment) - effective_samples,
                     "status": status,
-                    "dropped_reason": None if effective_samples else "insufficient_after_smoothing_and_lag",
+                    "dropped_reason": (
+                        None
+                        if effective_samples
+                        else "no_complete_resampling_bins"
+                        if resampled_segment.empty
+                        and config.resampling_method != "none"
+                        else "insufficient_after_smoothing_and_lag"
+                    ),
                 }
             )
 
         effective_samples = len(dynamic)
-        reference_parts.append(
-            processed.resampled.reset_index(names=timestamp_column)
-        )
+        reference = processed.resampled.loc[
+            processed.resampled.index.intersection(processed.state_filtered.index)
+        ]
+        if not reference.empty:
+            reference_parts.append(reference.reset_index(names=timestamp_column))
         preprocessing_summary = processed.summary
         summaries.append(
             {
@@ -166,6 +185,7 @@ def build_training_matrix(
                 "resampling_method": config.resampling_method,
                 "resampled_samples": preprocessing_summary.resampled_row_count,
                 "empty_bins": preprocessing_summary.empty_bin_count,
+                "partial_resampling_bin_loss": preprocessing_summary.partial_resampling_bin_loss,
                 "raw_segment_count": preprocessing_summary.raw_segment_count,
                 "raw_gap_count": preprocessing_summary.raw_gap_count,
                 "raw_gap_ranges": list(preprocessing_summary.raw_gap_ranges),
@@ -176,7 +196,14 @@ def build_training_matrix(
                 "lag_warmup_loss": preprocessing_summary.lag_warmup_loss,
                 "effective_samples": effective_samples,
                 "smoothing_lag_loss": len(indexed) - effective_samples,
-                "dropped_reason": None if effective_samples else "insufficient_after_smoothing_and_lag",
+                "dropped_reason": (
+                    None
+                    if effective_samples
+                    else "no_complete_resampling_bins"
+                    if processed.resampled.empty
+                    and config.resampling_method != "none"
+                    else "insufficient_after_smoothing_and_lag"
+                ),
                 "segments": segment_summaries,
             }
         )
@@ -189,10 +216,29 @@ def build_training_matrix(
         dynamic = pd.DataFrame()
     else:
         dynamic = pd.concat(dynamic_parts).sort_index()
+        if dynamic.index.has_duplicates:
+            raise ValueError(
+                "independent training windows produced duplicate dynamic timestamps"
+            )
+    reference = (
+        pd.concat(reference_parts).sort_values(timestamp_column)
+        if reference_parts
+        else pd.DataFrame(columns=[timestamp_column, *dict.fromkeys([
+            *tag_columns,
+            *(condition.column for condition in config.state_filters),
+            *reference_columns,
+        ])])
+    )
+    if reference[timestamp_column].duplicated().any():
+        raise ValueError(
+            "independent training windows produced duplicate reference timestamps"
+        )
+    if sum(item.get("effective_samples", 0) for item in summaries) != len(dynamic):
+        raise ValueError("training window summaries do not match merged dynamic rows")
     return TrainingBuildResult(
         dynamic=dynamic,
         window_summaries=summaries,
-        reference=pd.concat(reference_parts).sort_values(timestamp_column),
+        reference=reference,
         global_quality_warnings=_validate_dynamic_matrix(dynamic) if validate_dynamic else [],
     )
 

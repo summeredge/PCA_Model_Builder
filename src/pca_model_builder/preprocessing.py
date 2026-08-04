@@ -139,6 +139,7 @@ class PreprocessingSummary:
     resampling_method: str
     resampled_row_count: int
     empty_bin_count: int
+    partial_resampling_bin_loss: int
     raw_segment_count: int
     raw_gap_count: int
     raw_gap_ranges: tuple[dict[str, str], ...]
@@ -165,6 +166,9 @@ class PreprocessingResult:
     segment_ids: pd.Series
     raw_segment_ids: pd.Series
     summary: PreprocessingSummary
+    empty_bin_mask: pd.Series
+    filter_warmup_mask: pd.Series
+    partial_resampling_bin_loss_by_segment: Mapping[int, int]
     raw: pd.DataFrame | None = None
     resampled: pd.DataFrame | None = None
     filtered: pd.DataFrame | None = None
@@ -294,8 +298,25 @@ def resample_segment(
         raise ValueError("sample interval must be positive")
     if method not in _RESAMPLING_METHODS:
         raise ValueError(f"unsupported resampling method: {method}")
+    result, counts = _resample_segment_data(
+        frame, method, sample_interval_minutes
+    )
+    return result, int(counts.eq(0).sum())
+
+
+def _resample_segment_data(
+    frame: pd.DataFrame,
+    method: str,
+    sample_interval_minutes: int,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Return one resampled segment and the actual source count per bucket."""
+    _validate_index(frame.index)
+    if sample_interval_minutes <= 0:
+        raise ValueError("sample interval must be positive")
+    if method not in _RESAMPLING_METHODS:
+        raise ValueError(f"unsupported resampling method: {method}")
     if method == "none" or frame.empty:
-        return frame.copy(), 0
+        return frame.copy(), pd.Series(1, index=frame.index, dtype=int)
     source_interval = _source_interval_minutes(frame.index)
     if source_interval is not None and sample_interval_minutes < source_interval:
         raise ValueError(
@@ -314,7 +335,7 @@ def resample_segment(
         result = resampler.aggregate(
             lambda values: values.iloc[-1] if len(values) else np.nan
         )
-    return result, int(counts.eq(0).sum())
+    return result, counts
 
 
 def filter_window_rows(config: PreprocessingConfig) -> int:
@@ -337,10 +358,27 @@ def filter_segment(
     return rolling.mean() if method == "trailing_mean" else rolling.median()
 
 
+def filter_warmup_mask(
+    index: pd.DatetimeIndex,
+    segment_ids: pd.Series,
+    method: str,
+    window_rows: int,
+) -> pd.Series:
+    """Identify only rows unavailable because causal filter history is incomplete."""
+    mask = pd.Series(False, index=index)
+    if method == "none" or window_rows <= 1:
+        return mask
+    aligned = segment_ids.reindex(index)
+    for segment_id in aligned.drop_duplicates():
+        positions = np.flatnonzero(aligned.eq(segment_id).to_numpy())
+        mask.iloc[positions[: min(window_rows - 1, len(positions))]] = True
+    return mask
+
+
 def apply_state_filters(
     frame: pd.DataFrame, conditions: Sequence[StateFilter]
 ) -> pd.DataFrame:
-    if not conditions:
+    if not conditions or frame.empty:
         return frame.copy()
     keep = pd.Series(True, index=frame.index)
     for condition in conditions:
@@ -369,6 +407,7 @@ def preprocess_window(
     include_intermediates: bool = False,
     include_variability: bool = False,
     preserve_columns: Sequence[str] = (),
+    resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> PreprocessingResult:
     """Execute the single causal preprocessing contract for one independent window."""
     _validate_index(frame.index)
@@ -386,42 +425,76 @@ def preprocess_window(
 
     resampled_parts: list[pd.DataFrame] = []
     resampled_segment_parts: list[pd.Series] = []
+    empty_bin_parts: list[pd.Series] = []
     empty_bins = 0
+    partial_bin_loss_by_segment: dict[int, int] = {}
     for segment_id in raw_segments.unique():
         segment = raw.loc[raw_segments.eq(segment_id)]
-        resampled, segment_empty_bins = resample_segment(
+        resampled, counts = _resample_segment_data(
             segment, config.resampling_method, config.sample_interval_minutes
         )
+        partial_loss = 0
+        if resampling_window is not None and config.resampling_method != "none":
+            window_start, window_end = resampling_window
+            interval = pd.Timedelta(minutes=config.sample_interval_minutes)
+            complete = (resampled.index - interval >= window_start) & (
+                resampled.index <= window_end
+            )
+            partial_loss = int((~complete).sum())
+            resampled = resampled.loc[complete]
+            counts = counts.loc[complete]
+        partial_bin_loss_by_segment[int(segment_id)] = partial_loss
         resampled_parts.append(resampled)
         resampled_segment_parts.append(pd.Series(segment_id, index=resampled.index))
-        empty_bins += segment_empty_bins
+        empty_bin_parts.append(counts.eq(0))
+        empty_bins += int(counts.eq(0).sum())
     resampled = pd.concat(resampled_parts).sort_index() if resampled_parts else raw
     resampled_segments = (
         pd.concat(resampled_segment_parts).reindex(resampled.index).astype(int)
         if resampled_segment_parts
         else pd.Series(dtype=int, index=resampled.index)
     )
+    empty_bin_mask = (
+        pd.concat(empty_bin_parts).reindex(resampled.index).astype(bool)
+        if empty_bin_parts
+        else pd.Series(dtype=bool, index=resampled.index)
+    )
     if resampled.index.has_duplicates:
         raise ValueError("resampling produced duplicate timestamps across segments")
 
-    quality_frame = resampled.reset_index(names="__timestamp__")
-    report = inspect_data_quality(
-        quality_frame,
-        "__timestamp__",
-        tag_columns,
-        engineering_ranges=engineering_ranges,
-        expected_interval_minutes=config.sample_interval_minutes,
-        include_variability=include_variability,
-    )
-    if validate_quality and not report.can_train:
-        raise PreprocessingQualityError(report)
+    if not resampled.empty:
+        quality_frame = resampled.reset_index(names="__timestamp__")
+        report = inspect_data_quality(
+            quality_frame,
+            "__timestamp__",
+            tag_columns,
+            engineering_ranges=engineering_ranges,
+            expected_interval_minutes=config.sample_interval_minutes,
+            include_variability=include_variability,
+        )
+        if validate_quality and not report.can_train:
+            raise PreprocessingQualityError(report)
 
     numeric_resampled = resampled.apply(pd.to_numeric, errors="coerce")
     window_rows = filter_window_rows(config)
-    filtered = numeric_resampled.groupby(resampled_segments, sort=False).transform(
-        lambda group: filter_segment(group, config.filter_method, window_rows)
+    filtered = (
+        numeric_resampled.groupby(resampled_segments, sort=False).transform(
+            lambda group: filter_segment(group, config.filter_method, window_rows)
+        )
+        if not numeric_resampled.empty
+        else numeric_resampled.copy()
     )
-    filter_warmup_loss = int(filtered.loc[:, tag_columns].isna().any(axis=1).sum())
+    warmup_mask = filter_warmup_mask(
+        filtered.index, resampled_segments, config.filter_method, window_rows
+    )
+    input_is_valid = pd.Series(
+        np.isfinite(numeric_resampled.loc[:, tag_columns].to_numpy(dtype=float)).all(
+            axis=1
+        ),
+        index=numeric_resampled.index,
+    )
+    warmup_mask &= input_is_valid & ~empty_bin_mask
+    filter_warmup_loss = int(warmup_mask.sum())
     state_filter_input_rows = len(filtered)
     state_filtered = apply_state_filters(filtered, config.state_filters)
     state_filter_output_rows = len(state_filtered)
@@ -443,6 +516,7 @@ def preprocess_window(
         resampling_method=config.resampling_method,
         resampled_row_count=len(resampled),
         empty_bin_count=empty_bins,
+        partial_resampling_bin_loss=sum(partial_bin_loss_by_segment.values()),
         raw_segment_count=int(raw_segments.nunique()) if len(raw_segments) else 0,
         raw_gap_count=len(gap_ranges),
         raw_gap_ranges=gap_ranges,
@@ -462,6 +536,9 @@ def preprocess_window(
         segment_ids=resampled_segments,
         raw_segment_ids=raw_segments,
         summary=summary,
+        empty_bin_mask=empty_bin_mask,
+        filter_warmup_mask=warmup_mask,
+        partial_resampling_bin_loss_by_segment=partial_bin_loss_by_segment,
         raw=raw if include_intermediates else None,
         resampled=numeric_resampled if include_intermediates else None,
         filtered=filtered if include_intermediates else None,

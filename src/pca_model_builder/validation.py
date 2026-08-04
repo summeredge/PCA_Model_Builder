@@ -144,6 +144,8 @@ def _preprocess_validation_window(
     context_start = validation_context_start(validation_start, config)
     context = indexed_frame.loc[context_start:validation_end]
     try:
+        # Validation deliberately includes pre-start context so the requested
+        # first score can use a complete bucket, filter history, and Lag history.
         processed = preprocess_window(
             context, tag_columns, config, engineering_ranges
         )

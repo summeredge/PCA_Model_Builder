@@ -195,6 +195,76 @@ def test_preprocessing_preview_uses_unified_core_and_preserves_empty_bins(
     assert calls == []
 
 
+def test_regular_cluster_loads_and_applies_state_filter_column(
+    tmp_path, monkeypatch
+) -> None:
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    history = _history_frame()
+    history["LOAD"] = [1] * 120 + [0] * 60
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "analysis_start": history.time.iloc[0].isoformat(),
+        "analysis_end": history.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 5,
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "filter_method": "none",
+        "state_filters": [{"column": "LOAD", "minimum": 1}],
+        "tag_configs": {"LOAD": {"role": "state_filter"}},
+        "n_clusters": 2,
+    }
+
+    result = web.cluster_payload(payload)
+
+    assert result["sample_count"] == 120
+    assert result["data_usage"]["loaded_column_count"] == 5
+    with pytest.raises(ValueError, match="state_filter角色"):
+        web.cluster_payload({**payload, "tag_configs": {}})
+    with pytest.raises(ValueError, match="找不到 Tag：MISSING"):
+        web.cluster_payload({**payload, "state_filters": [{"column": "MISSING", "minimum": 1}]})
+
+
+def test_web_quality_reference_statistics_use_state_filtered_rows(
+    tmp_path, monkeypatch
+) -> None:
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    history = _history_frame()
+    history["LOAD"] = [1] * 60 + [0] * 120
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    result = web.quality_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": ["A", "B", "C"],
+            "normal_start": history.time.iloc[0].isoformat(),
+            "normal_end": history.time.iloc[-1].isoformat(),
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 0,
+            "filter_method": "none",
+            "max_lag_minutes": 0,
+            "lag_step_minutes": 5,
+            "state_filters": [{"column": "LOAD", "minimum": 1}],
+        }
+    )
+
+    assert result["data_usage"]["analysis_row_count"] == 60
+    assert all(item["reference"]["sample_count"] == 60 for item in result["tags"])
+
+
 def test_repeated_final_web_trend_reuses_only_requested_columns(
     tmp_path, monkeypatch
 ) -> None:
@@ -1388,6 +1458,7 @@ def test_web_xlsx_preview_and_trend_payload(tmp_path, monkeypatch):
     assert len(trend["rows"]) == 31
     assert trend["statistics"]["A"]["reference"]["sample_count"] == 21
     assert sum(trend["histogram"]["counts"]) == 31
+    assert trend["series_stage"]["raw"] == "raw"
     with pytest.raises(ValueError, match="无宏"):
         web.tag_config_import_payload(
             "config.xlsm",

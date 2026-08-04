@@ -266,3 +266,59 @@ def test_preprocessing_config_validates_new_contract_fields():
     with pytest.raises(ValueError, match="gap threshold"):
         PreprocessingConfig(gap_threshold_minutes=4)
     PreprocessingConfig(smoothing_window_minutes=0, filter_method="none")
+
+
+def test_filter_warmup_loss_excludes_empty_bins_when_filter_is_disabled():
+    index = pd.to_datetime(
+        ["2026-01-01 00:01", "2026-01-01 00:02", "2026-01-01 00:11"]
+    )
+    frame = pd.DataFrame({"A": [1.0, 2.0, 3.0]}, index=index)
+    result = preprocess_window(
+        frame,
+        ["A"],
+        PreprocessingConfig(
+            5,
+            0,
+            0,
+            5,
+            resampling_method="mean",
+            filter_method="none",
+            gap_threshold_minutes=10,
+        ),
+        validate_quality=False,
+    )
+
+    assert result.summary.empty_bin_count == 1
+    assert result.summary.filter_warmup_loss == 0
+
+
+def test_filter_warmup_loss_is_structural_per_physical_segment():
+    index = pd.to_datetime(
+        [
+            "2026-01-01 00:00",
+            "2026-01-01 00:05",
+            "2026-01-01 00:10",
+            "2026-01-01 00:30",
+            "2026-01-01 00:35",
+        ]
+    )
+    frame = pd.DataFrame({"A": [1.0, 2.0, 3.0, 4.0, 5.0]}, index=index)
+    result = preprocess_window(
+        frame, ["A"], PreprocessingConfig(5, 10, 0, 5)
+    )
+
+    assert result.summary.filter_warmup_loss == 2
+    assert result.filter_warmup_mask.tolist() == [True, False, False, True, False]
+
+
+def test_original_missing_value_is_not_counted_as_filter_warmup():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    frame = pd.DataFrame({"A": [np.nan, 2.0, 3.0]}, index=index)
+    result = preprocess_window(
+        frame,
+        ["A"],
+        PreprocessingConfig(5, 10, 0, 5, filter_method="trailing_mean"),
+        validate_quality=False,
+    )
+
+    assert result.summary.filter_warmup_loss == 0

@@ -61,7 +61,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
 
   const markup = `
     <h2>趋势图</h2>
-    <div class="dp-inline-help">最多选择 4 个位号，在同一张图中浏览原始趋势。物理时间缺口不会连线，页面不会插值、补点或修改原始数据。</div>
+    <div class="dp-inline-help">最多选择 4 个位号，在同一张图中浏览真实原始趋势。物理时间缺口不会连线，页面不会插值、补点或修改原始数据。</div>
     <div class="dp-trend-controls">
       <label>数据 1<select id="dpTrendVar1"></select></label>
       <label>数据 2<select id="dpTrendVar2"></select></label>
@@ -451,7 +451,7 @@ def _trend_payload_data(
     reference_start: pd.Timestamp | None,
     reference_end: pd.Timestamp | None,
 ) -> dict[str, Any]:
-    raw, _, segments = trend_module.prepare_trend_frame(indexed, tags, config)
+    raw, _, _, segments, _ = trend_module.prepare_trend_frame(indexed, tags, config)
     mask = (raw.index >= start) & (raw.index <= end)
     if not mask.any():
         raise ValueError("趋势浏览窗口没有数据")

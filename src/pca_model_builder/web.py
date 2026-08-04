@@ -577,12 +577,16 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     timestamp_column = _required_text(payload, "timestamp_column")
     tags = _required_tags(payload)
-    loaded = _load_required_upload(payload, tags, "找不到 Tag：")
+    config = _preprocessing_config(payload)
+    state_columns = [condition.column for condition in config.state_filters]
+    loaded = _load_required_upload(
+        payload, list(dict.fromkeys([*tags, *state_columns])), "找不到 Tag："
+    )
     parsed = loaded.frame
     all_tags = list(loaded.metadata.numeric_candidate_columns)
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
-    config = _preprocessing_config(payload)
+    _require_state_filter_roles(state_columns, registry)
     tag_configs = normalize_tag_configs(
         tags, {tag: registry[tag] for tag in tags}
     )
@@ -596,7 +600,7 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
         indexed = _indexed_tags(
             analysis,
             timestamp_column,
-            [*tags, *_state_filter_columns(payload)],
+            [*tags, *state_columns],
         )
         try:
             dynamic = preprocess_window(
@@ -636,6 +640,11 @@ def _cluster_exploratory_payload(
     state_columns = [condition.column for condition in config.state_filters]
     loaded = _load_required_upload(payload, [*tags, *state_columns], "找不到 Tag：")
     parsed = loaded.frame
+    registry = normalize_tag_registry(
+        list(loaded.metadata.numeric_candidate_columns),
+        config_data.get("source_tag_configs"),
+    )
+    _require_state_filter_roles(state_columns, registry)
     analysis = _select_window(
         parsed,
         timestamp_column,
@@ -1078,6 +1087,20 @@ def _require_continuous_roles(
     if invalid:
         raise ValueError(
             "只有continuous_input角色可以进入PCA：" + ", ".join(invalid)
+        )
+
+
+def _require_state_filter_roles(
+    columns: Sequence[str], registry: dict[str, dict[str, Any]]
+) -> None:
+    invalid = [
+        column
+        for column in columns
+        if column not in registry or registry[column]["role"] != "state_filter"
+    ]
+    if invalid:
+        raise ValueError(
+            "状态过滤列必须配置为state_filter角色：" + ", ".join(invalid)
         )
 
 
@@ -1744,7 +1767,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="trend-controls">
           <label>趋势Tag（最多8个）<select id="trendTags" multiple size="6"></select></label>
           <div><label>时间范围<select id="trendPreset"><option value="all">全部数据</option><option value="1">最近1天</option><option value="3">最近3天</option><option value="7">最近7天</option><option value="custom">自定义</option><option value="reference">参考状态期</option><option value="validation">验证期</option></select></label><div class="row"><label>开始<input id="trendStart" type="datetime-local"></label><label>结束<input id="trendEnd" type="datetime-local"></label></div></div>
-          <div><label>显示<select id="trendMode"><option value="raw">原始值</option><option value="smoothed">平滑值</option><option value="both" selected>原始值和平滑值</option></select></label><label>缩放<input id="trendZoom" type="range" min="1" max="5" value="1"></label><button id="trendButton" class="secondary" disabled>浏览趋势</button></div>
+          <div><label>显示<select id="trendMode"><option value="raw">原始值</option><option value="smoothed">因果滤波值</option><option value="both" selected>原始值和因果滤波值</option></select></label><label>缩放<input id="trendZoom" type="range" min="1" max="5" value="1"></label><button id="trendButton" class="secondary" disabled>浏览趋势</button></div>
         </div>
         <div class="actions"><button id="trendToAnalysis" class="secondary">将当前窗口设为分析期</button><button id="trendToReference" class="secondary">将当前窗口设为参考状态候选期</button><label>直方图范围<select id="histogramScope"><option value="current">当前窗口</option><option value="reference">参考期</option></select></label></div>
         <div id="trendChart" class="trend-chart"><div class="empty">选择Tag和时间范围后浏览原始值、尾随平滑、缺口及工程范围。</div></div>
@@ -2027,7 +2050,7 @@ el("trendButton").addEventListener("click",async()=>{
   const button=el("trendButton"); setBusy(button,true,"读取中…");
   try {
     const payload={...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value,display_mode:el("trendMode").value};
-    const data=await api("/api/trend",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.trend=data; renderTrend(data); setStatus("趋势与统计已更新；数据未被修改或插值。","success");
+    const data=await api("/api/trend",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.trend=data; renderTrend(data); const stage=data.series_stage?.resampling_applied?"原始数据与基于重采样的因果滤波结果":"原始数据与因果滤波结果"; setStatus(`趋势与统计已更新：${stage}；未插值或补点。`,"success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -2176,9 +2199,9 @@ function renderTrend(data) {
 }
 function formatStat(key,value) { if(value===null||value===undefined) return "—"; if(key==="missing_rate") return `${(Number(value)*100).toFixed(2)}%`; return typeof value==="number"?Number(value).toPrecision(5):escapeHtml(value); }
 function trendSvg(data,tag,colorIndex,zoom) {
-  const rows=data.rows,width=760*zoom,height=230,pad={l:48,r:16,t:16,b:28}; const fields=[]; if(data.display_mode!=="smoothed") fields.push([`${tag}__raw`,"#176b87","原始"]); if(data.display_mode!=="raw") fields.push([`${tag}__smoothed`,"#d97706","平滑"]);
+  const rows=data.rows,width=760*zoom,height=230,pad={l:48,r:16,t:16,b:28}; const fields=[]; if(data.display_mode!=="smoothed") fields.push([`${tag}__raw`,"#176b87","原始"]); if(data.display_mode!=="raw") fields.push([`${tag}__smoothed`,"#d97706",data.series_stage?.resampling_applied?"重采样后因果滤波":"因果滤波"]);
   const ranges=data.ranges[tag]||{}; const limits=data.axis_limits[tag]; const minimum=limits.minimum,maximum=limits.maximum,span=maximum-minimum; const x=i=>pad.l+i/Math.max(1,rows.length-1)*(width-pad.l-pad.r),y=value=>height-pad.b-(Number(value)-minimum)/span*(height-pad.t-pad.b);
-  const polylines=fields.map(([field,color,label])=>{ let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row.gap_start) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(row.timestamp)} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(row.timestamp)} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
+  const polylines=fields.map(([field,color,label])=>{ const gapField=field.endsWith("__raw")?"raw_gap_start":"filtered_gap_start"; let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row[gapField]) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(row.timestamp)} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(row.timestamp)} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
   const rangeLine=(key,color,label)=>ranges[key]===null||ranges[key]===undefined?"":`<line x1="${pad.l}" x2="${width-pad.r}" y1="${y(ranges[key])}" y2="${y(ranges[key])}" stroke="${color}" stroke-dasharray="5 4"><title>${label}: ${ranges[key]}</title></line>`;
   const gaps=rows.map((row,i)=>row.gap_start?`<line x1="${x(i)}" x2="${x(i)}" y1="${pad.t}" y2="${height-pad.b}" stroke="#cf3f36" stroke-dasharray="3 3"><title>物理时间缺口</title></line>`:"").join("");
   return `<svg viewBox="0 0 ${width} ${height}" style="width:${width}px" aria-label="${escapeHtml(tag)}趋势">${gaps}${rangeLine("engineering_min","#64748b","工程下限")}${rangeLine("engineering_max","#64748b","工程上限")}${rangeLine("normal_min","#16845b","正常下限")}${rangeLine("normal_max","#16845b","正常上限")}${rangeLine("alarm_min","#cf3f36","报警下限")}${rangeLine("alarm_max","#cf3f36","报警上限")}${polylines}<text x="4" y="20" font-size="10">${maximum.toPrecision(4)}</text><text x="4" y="${height-pad.b}" font-size="10">${minimum.toPrecision(4)}</text></svg>`;

@@ -39,7 +39,7 @@ def prepare_trend_frame(
     frame: pd.DataFrame,
     tags: Sequence[str],
     config: PreprocessingConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
     if len(tags) > MAX_TREND_TAGS:
         raise ValueError("趋势浏览一次最多选择8个Tag")
     if not isinstance(frame.index, pd.DatetimeIndex):
@@ -56,11 +56,14 @@ def prepare_trend_frame(
         validate_quality=False,
         include_intermediates=True,
     )
+    assert result.raw is not None
     assert result.resampled is not None and result.filtered is not None
-    raw = result.resampled.loc[:, tags]
+    raw = result.raw.loc[:, tags]
+    resampled = result.resampled.loc[:, tags]
     filtered = result.filtered.loc[:, tags]
-    segments = result.segment_ids.reindex(raw.index).astype(int)
-    return raw, filtered, segments
+    raw_segments = result.raw_segment_ids.reindex(raw.index).astype(int)
+    resampled_segments = result.segment_ids.reindex(resampled.index).astype(int)
+    return raw, resampled, filtered, raw_segments, resampled_segments
 
 
 def downsample_trend(
@@ -122,20 +125,36 @@ def trend_payload_data(
 ) -> dict[str, Any]:
     if display_mode not in {"raw", "smoothed", "both"}:
         raise ValueError("趋势显示模式无效")
-    raw, smoothed, segments = prepare_trend_frame(indexed, tags, config)
-    mask = (raw.index >= start) & (raw.index <= end)
-    if not mask.any():
+    raw, resampled, filtered, raw_segments, processed_segments = prepare_trend_frame(
+        indexed, tags, config
+    )
+    raw_mask = (raw.index >= start) & (raw.index <= end)
+    processed_mask = (filtered.index >= start) & (filtered.index <= end)
+    if not raw_mask.any():
         raise ValueError("趋势浏览窗口没有数据")
-    current_raw = raw.loc[mask]
-    current_smoothed = smoothed.loc[mask]
-    current_segments = segments.loc[mask]
+    current_raw_values = raw.loc[raw_mask]
+    display_index = (
+        current_raw_values.index
+        if display_mode == "raw"
+        else filtered.loc[processed_mask].index
+        if display_mode == "smoothed"
+        else current_raw_values.index.union(filtered.loc[processed_mask].index).sort_values()
+    )
+    current_raw = raw.reindex(display_index)
+    current_smoothed = filtered.reindex(display_index)
+    raw_gap_starts = _gap_start_mask(raw_segments).reindex(
+        display_index, fill_value=False
+    )
+    filtered_gap_starts = _gap_start_mask(processed_segments).reindex(
+        display_index, fill_value=False
+    )
+    current_segments = (raw_gap_starts | filtered_gap_starts).cumsum().astype(int)
     positions = downsample_trend(
         current_raw, current_smoothed, current_segments
     )
     rows: list[dict[str, Any]] = []
     for position in positions:
         timestamp = current_raw.index[position]
-        full_position = int(raw.index.get_loc(timestamp))
         item: dict[str, Any] = {"timestamp": timestamp.isoformat()}
         for tag in tags:
             if display_mode in {"raw", "both"}:
@@ -144,9 +163,10 @@ def trend_payload_data(
                 item[f"{tag}__smoothed"] = _json_number(
                     current_smoothed.iloc[position][tag]
                 )
+        item["raw_gap_start"] = bool(raw_gap_starts.loc[timestamp])
+        item["filtered_gap_start"] = bool(filtered_gap_starts.loc[timestamp])
         item["gap_start"] = bool(
-            full_position > 0
-            and segments.iloc[full_position] != segments.iloc[full_position - 1]
+            item["raw_gap_start"] or item["filtered_gap_start"]
         )
         rows.append(item)
 
@@ -157,7 +177,7 @@ def trend_payload_data(
     for tag in tags:
         statistics[tag] = {
             "full": profile_tag(raw[tag], tag_configs.get(tag)),
-            "current": profile_tag(current_raw[tag], tag_configs.get(tag)),
+            "current": profile_tag(current_raw_values[tag], tag_configs.get(tag)),
             "reference": (
                 profile_tag(raw.loc[reference_mask, tag], tag_configs.get(tag))
                 if reference_mask is not None and reference_mask.any()
@@ -167,7 +187,7 @@ def trend_payload_data(
     histogram = None
     histograms = {"current": None, "reference": None}
     if len(tags) == 1:
-        histogram = _histogram(tags[0], current_raw[tags[0]])
+        histogram = _histogram(tags[0], current_raw_values[tags[0]])
         histograms["current"] = histogram
         if reference_mask is not None and reference_mask.any():
             histograms["reference"] = _histogram(
@@ -200,6 +220,21 @@ def trend_payload_data(
     return {
         "tags": list(tags),
         "display_mode": display_mode,
+        "series_stage": {
+            "raw": "raw",
+            "smoothed": "filtered",
+            "resampling_applied": config.resampling_method != "none",
+        },
+        "stage_rows": {
+            "raw": _stage_rows(raw.loc[raw_mask, tags], raw_segments),
+            "resampled": _stage_rows(
+                resampled.loc[(resampled.index >= start) & (resampled.index <= end), tags],
+                processed_segments,
+            ),
+            "filtered": _stage_rows(
+                filtered.loc[processed_mask, tags], processed_segments
+            ),
+        },
         "rows": rows,
         "statistics": statistics,
         "histogram": histogram,
@@ -207,6 +242,27 @@ def trend_payload_data(
         "ranges": ranges,
         "axis_limits": axis_limits,
     }
+
+
+def _stage_rows(frame: pd.DataFrame, segments: pd.Series) -> list[dict[str, Any]]:
+    aligned = segments.reindex(frame.index)
+    gap_starts = _gap_start_mask(aligned)
+    return [
+        {
+            "timestamp": timestamp.isoformat(),
+            "gap_start": bool(gap_starts.loc[timestamp]),
+            **{column: _json_number(value) for column, value in row.items()},
+        }
+        for timestamp, row in frame.iterrows()
+    ]
+
+
+def _gap_start_mask(segment_ids: pd.Series) -> pd.Series:
+    if segment_ids.empty:
+        return pd.Series(dtype=bool, index=segment_ids.index)
+    result = segment_ids.ne(segment_ids.shift())
+    result.iloc[0] = True
+    return result.astype(bool)
 
 
 def _spread_positions(values: np.ndarray, count: int) -> np.ndarray:
