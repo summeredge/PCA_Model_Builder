@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import asdict
 from email.parser import BytesParser
 from email.policy import default as email_policy
@@ -23,7 +24,12 @@ from .compat import (
     MODEL_PURPOSES,
     training_windows_from_payload,
 )
-from .data_session import DataLoadResult, DataSessionCache, DataSessionMetadata
+from .data_session import (
+    DataLoadResult,
+    DataSessionCache,
+    DataSessionMetadata,
+    DataSessionStageError,
+)
 from .dpca import fit_dpca
 from .model_io import copy_validated_model_package, load_model_package, save_model_package
 from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
@@ -77,6 +83,27 @@ _VALIDATION_ARTIFACTS = {
     ),
 }
 DATA_SESSIONS = DataSessionCache()
+
+
+class WebStageError(ValueError):
+    def __init__(self, stage: str, error: Exception) -> None:
+        super().__init__(str(error))
+        self.stage = stage
+
+
+@contextmanager
+def _web_stage(stage: str):
+    try:
+        yield
+    except WebStageError:
+        raise
+    except Exception as error:
+        raise WebStageError(stage, error) from error
+
+
+def error_payload(error: Exception) -> dict[str, str]:
+    stage = error.stage if isinstance(error, WebStageError) else "failed"
+    return {"error": str(error), "stage": stage}
 
 
 def run_server(
@@ -134,13 +161,14 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
     loaded = _load_upload(payload, None)
     parsed = loaded.frame
-    numeric_columns = list(loaded.metadata.numeric_candidate_columns)
-    if len(numeric_columns) < 2:
-        raise ValueError("至少需要两个可用的连续数值 Tag")
-    report = inspect_data_quality(parsed, timestamp_column, numeric_columns)
-    timestamps = parsed[timestamp_column].dropna().sort_values().drop_duplicates()
-    if len(timestamps) < 3:
-        raise ValueError("至少需要三个有效时间点")
+    with _web_stage("quality_check"):
+        numeric_columns = list(loaded.metadata.numeric_candidate_columns)
+        if len(numeric_columns) < 2:
+            raise ValueError("至少需要两个可用的连续数值 Tag")
+        report = inspect_data_quality(parsed, timestamp_column, numeric_columns)
+        timestamps = parsed[timestamp_column].dropna().sort_values().drop_duplicates()
+        if len(timestamps) < 3:
+            raise ValueError("至少需要三个有效时间点")
     normal_end_index = max(0, min(len(timestamps) - 2, int(len(timestamps) * 0.65)))
     validation_start_index = normal_end_index + 1
     result = {
@@ -189,7 +217,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         tags, {tag: registry[tag] for tag in tags}
     )
     training_windows = training_windows_from_payload(payload)
-    training_result = build_training_matrix(
+    training_result = _build_training_matrix_with_stage(
         parsed,
         timestamp_column,
         tags,
@@ -197,18 +225,20 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         training_windows,
         engineering_ranges(tag_configs),
     )
-    excluded_tag_records = _excluded_tag_records(
-        payload.get("excluded_tags"), training_result.reference, tags, registry
-    )
+    with _web_stage("quality_check"):
+        excluded_tag_records = _excluded_tag_records(
+            payload.get("excluded_tags"), training_result.reference, tags, registry
+        )
     dynamic = training_result.dynamic
     components_value = payload.get("n_components")
     n_components = None if components_value in {None, ""} else int(components_value)
     variance_threshold = float(payload.get("variance_threshold", 0.95))
-    model = fit_dpca(
-        dynamic,
-        variance_threshold=variance_threshold,
-        n_components=n_components,
-    )
+    with _web_stage("fitting"):
+        model = fit_dpca(
+            dynamic,
+            variance_threshold=variance_threshold,
+            n_components=n_components,
+        )
 
     run_id = uuid.uuid4().hex
     run_dir = RUNS_DIR / run_id
@@ -237,7 +267,8 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         model_purpose=model_purpose,
         model_status=model_status,
     )
-    scores = model.score(dynamic)
+    with _web_stage("scoring"):
+        scores = model.score(dynamic)
     result = {
         "run_id": run_id,
         "model_name": model_name,
@@ -277,49 +308,52 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
     config = _preprocessing_config(payload)
-    training_result = build_training_matrix(
+    training_result = _build_training_matrix_with_stage(
         parsed,
         timestamp_column,
         tags,
         config,
         training_windows_from_payload(payload),
-        engineering_ranges(normalize_tag_configs(tags, {tag: registry[tag] for tag in tags})),
+        engineering_ranges(
+            normalize_tag_configs(tags, {tag: registry[tag] for tag in tags})
+        ),
         validate_dynamic=False,
     )
-    result = model_quality_payload(
-        parsed,
-        training_result.reference,
-        timestamp_column,
-        tags,
-        registry,
-        config.sample_interval_minutes,
-    )
-    if result["can_train"] and training_result.dynamic.empty:
-        result["time_issues"].append(
-            {
-                "code": "dynamic_matrix_empty",
-                "severity": "error",
-                "message": "平滑和Lag预热后没有有效动态样本。",
-                "count": 0,
-                "tag": None,
-                "details": {},
-            }
+    with _web_stage("quality_check"):
+        result = model_quality_payload(
+            parsed,
+            training_result.reference,
+            timestamp_column,
+            tags,
+            registry,
+            config.sample_interval_minutes,
         )
-        result["can_train"] = False
-    elif result["can_train"] and np.linalg.matrix_rank(
-        training_result.dynamic.to_numpy(dtype=float)
-    ) < 3:
-        result["time_issues"].append(
-            {
-                "code": "insufficient_effective_rank",
-                "severity": "error",
-                "message": "有效秩不足3，无法同时建立PC1/PC2和SPE残差空间。",
-                "count": len(training_result.dynamic),
-                "tag": None,
-                "details": {},
-            }
-        )
-        result["can_train"] = False
+        if result["can_train"] and training_result.dynamic.empty:
+            result["time_issues"].append(
+                {
+                    "code": "dynamic_matrix_empty",
+                    "severity": "error",
+                    "message": "平滑和Lag预热后没有有效动态样本。",
+                    "count": 0,
+                    "tag": None,
+                    "details": {},
+                }
+            )
+            result["can_train"] = False
+        elif result["can_train"] and np.linalg.matrix_rank(
+            training_result.dynamic.to_numpy(dtype=float)
+        ) < 3:
+            result["time_issues"].append(
+                {
+                    "code": "insufficient_effective_rank",
+                    "severity": "error",
+                    "message": "有效秩不足3，无法同时建立PC1/PC2和SPE残差空间。",
+                    "count": len(training_result.dynamic),
+                    "tag": None,
+                    "details": {},
+                }
+            )
+            result["can_train"] = False
     result["training_window_summary"] = training_result.window_summaries
     result["training_quality_warnings"] = training_result.global_quality_warnings
     return _with_data_usage(
@@ -395,17 +429,18 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         window = _single_enabled_training_window(training_windows_from_payload(payload))
         reference_start = pd.Timestamp(window["start"])
         reference_end = pd.Timestamp(window["end"])
-    result = trend_payload_data(
-        indexed,
-        tags,
-        _preprocessing_config(payload),
-        pd.Timestamp(_required_text(payload, "start")),
-        pd.Timestamp(_required_text(payload, "end")),
-        str(payload.get("display_mode", "both")),
-        registry,
-        reference_start,
-        reference_end,
-    )
+    with _web_stage("preprocessing"):
+        result = trend_payload_data(
+            indexed,
+            tags,
+            _preprocessing_config(payload),
+            pd.Timestamp(_required_text(payload, "start")),
+            pd.Timestamp(_required_text(payload, "end")),
+            str(payload.get("display_mode", "both")),
+            registry,
+            reference_start,
+            reference_end,
+        )
     analysis_rows = int(result["statistics"][tags[0]]["current"]["sample_count"])
     return _with_data_usage(result, loaded, analysis_rows, len(result["rows"]))
 
@@ -469,28 +504,31 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
         _required_text(payload, "analysis_start"),
         _required_text(payload, "analysis_end"),
     )
-    _require_clean_data(
-        analysis,
-        timestamp_column,
-        tags,
-        config.sample_interval_minutes,
-        engineering_ranges(tag_configs),
-    )
-    indexed = _indexed_tags(analysis, timestamp_column, tags)
-    dynamic = build_dynamic_matrix(
-        indexed,
-        tags,
-        config,
-        infer_segment_ids(indexed.index, config.sample_interval_minutes),
-    )
-    if dynamic.empty:
-        raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
-    result = cluster_operating_states(
-        dynamic,
-        n_clusters=int(payload.get("n_clusters", 3)),
-        variance_threshold=float(payload.get("variance_threshold", 0.95)),
-        sample_interval_minutes=config.sample_interval_minutes,
-    )
+    with _web_stage("quality_check"):
+        _require_clean_data(
+            analysis,
+            timestamp_column,
+            tags,
+            config.sample_interval_minutes,
+            engineering_ranges(tag_configs),
+        )
+    with _web_stage("preprocessing"):
+        indexed = _indexed_tags(analysis, timestamp_column, tags)
+        dynamic = build_dynamic_matrix(
+            indexed,
+            tags,
+            config,
+            infer_segment_ids(indexed.index, config.sample_interval_minutes),
+        )
+        if dynamic.empty:
+            raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
+    with _web_stage("fitting"):
+        result = cluster_operating_states(
+            dynamic,
+            n_clusters=int(payload.get("n_clusters", 3)),
+            variance_threshold=float(payload.get("variance_threshold", 0.95)),
+            sample_interval_minutes=config.sample_interval_minutes,
+        )
     response = _cluster_result_payload(result)
     return _with_data_usage(response, loaded, len(analysis), len(response["points"]))
 
@@ -524,28 +562,31 @@ def _cluster_exploratory_payload(
         _required_text(payload, "analysis_start"),
         _required_text(payload, "analysis_end"),
     )
-    _require_clean_data(
-        analysis,
-        timestamp_column,
-        tags,
-        config.sample_interval_minutes,
-        engineering_ranges(tag_configs),
-    )
-    indexed = _indexed_tags(analysis, timestamp_column, tags)
-    dynamic = build_dynamic_matrix(
-        indexed,
-        tags,
-        config,
-        infer_segment_ids(indexed.index, config.sample_interval_minutes),
-    )
-    if dynamic.empty:
-        raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
-    result = cluster_model_scores(
-        model,
-        dynamic,
-        n_clusters=int(payload.get("n_clusters", 3)),
-        sample_interval_minutes=config.sample_interval_minutes,
-    )
+    with _web_stage("quality_check"):
+        _require_clean_data(
+            analysis,
+            timestamp_column,
+            tags,
+            config.sample_interval_minutes,
+            engineering_ranges(tag_configs),
+        )
+    with _web_stage("preprocessing"):
+        indexed = _indexed_tags(analysis, timestamp_column, tags)
+        dynamic = build_dynamic_matrix(
+            indexed,
+            tags,
+            config,
+            infer_segment_ids(indexed.index, config.sample_interval_minutes),
+        )
+        if dynamic.empty:
+            raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
+    with _web_stage("fitting"):
+        result = cluster_model_scores(
+            model,
+            dynamic,
+            n_clusters=int(payload.get("n_clusters", 3)),
+            sample_interval_minutes=config.sample_interval_minutes,
+        )
     response = {
         **_cluster_result_payload(result),
         "exploratory_run_id": exploratory_run_id,
@@ -601,11 +642,12 @@ def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
         _required_text(payload, "analysis_end"),
     )
     indexed = analysis.set_index(timestamp_column)
-    result = screen_performance_states(
-        indexed,
-        raw_conditions,
-        sample_interval_minutes=int(payload.get("sample_interval_minutes", 5)),
-    )
+    with _web_stage("quality_check"):
+        result = screen_performance_states(
+            indexed,
+            raw_conditions,
+            sample_interval_minutes=int(payload.get("sample_interval_minutes", 5)),
+        )
     return _with_data_usage(result, loaded, len(analysis), len(analysis))
 
 
@@ -656,26 +698,31 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             validation_context_start(pd.Timestamp(window["start"]), config).isoformat(),
             window["end"],
         )
-        _require_clean_data(
-            context,
-            timestamp_column,
+        with _web_stage("quality_check"):
+            _require_clean_data(
+                context,
+                timestamp_column,
+                tags,
+                config.sample_interval_minutes,
+                engineering_ranges(tag_configs),
+            )
+    with _web_stage("preprocessing"):
+        indexed = _indexed_tags(parsed, timestamp_column, tags)
+    with _web_stage("scoring"):
+        validation_result = validate_model_windows(
+            model,
+            indexed,
             tags,
-            config.sample_interval_minutes,
-            engineering_ranges(tag_configs),
+            config,
+            training_windows,
+            validation_windows,
+            tag_configs,
         )
-    indexed = _indexed_tags(parsed, timestamp_column, tags)
-    validation_result = validate_model_windows(
-        model,
-        indexed,
-        tags,
-        config,
-        training_windows,
-        validation_windows,
-        tag_configs,
-    )
-    scores = validation_result["scores"]
-    focus_timestamp = _focus_timestamp(scores, model.t2_limits[0.99], model.q_limits[0.99])
-    contributions = validation_result["contributions"]
+        scores = validation_result["scores"]
+        focus_timestamp = _focus_timestamp(
+            scores, model.t2_limits[0.99], model.q_limits[0.99]
+        )
+        contributions = validation_result["contributions"]
 
     result: dict[str, Any] = {
         "run_id": run_id,
@@ -788,7 +835,7 @@ def _upload_source(payload: dict[str, Any]) -> tuple[str, Path, str]:
     path = UPLOADS_DIR / f"{file_id}.csv"
     if not path.is_file():
         DATA_SESSIONS.remove_dataset(file_id)
-        raise ValueError("上传文件不存在，请重新上传")
+        raise WebStageError("loading", ValueError("上传文件不存在，请重新上传"))
     return file_id, path, str(payload.get("encoding", "utf-8-sig"))
 
 
@@ -796,9 +843,12 @@ def _upload_metadata(
     payload: dict[str, Any], timestamp_column: str
 ) -> tuple[DataSessionMetadata, bool]:
     file_id, path, encoding = _upload_source(payload)
-    return DATA_SESSIONS.get_metadata(
-        file_id, path, encoding, timestamp_column
-    )
+    try:
+        return DATA_SESSIONS.get_metadata(
+            file_id, path, encoding, timestamp_column
+        )
+    except DataSessionStageError as error:
+        raise WebStageError(error.stage, error) from error
 
 
 def _load_upload(
@@ -806,13 +856,30 @@ def _load_upload(
 ) -> DataLoadResult:
     timestamp_column = _required_text(payload, "timestamp_column")
     file_id, path, encoding = _upload_source(payload)
-    return DATA_SESSIONS.load_columns(
-        file_id,
-        path,
-        encoding,
-        timestamp_column,
-        requested_columns,
-    )
+    try:
+        return DATA_SESSIONS.load_columns(
+            file_id,
+            path,
+            encoding,
+            timestamp_column,
+            requested_columns,
+        )
+    except DataSessionStageError as error:
+        raise WebStageError(error.stage, error) from error
+
+
+def _build_training_matrix_with_stage(*args: Any, **kwargs: Any) -> Any:
+    try:
+        return build_training_matrix(*args, **kwargs)
+    except WebStageError:
+        raise
+    except Exception as error:
+        stage = (
+            "quality_check"
+            if "数据质量问题尚未处理" in str(error)
+            else "preprocessing"
+        )
+        raise WebStageError(stage, error) from error
 
 
 def _load_required_upload(
@@ -1221,7 +1288,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "PCA_Tag_Config_Template.xlsx",
                 )
             except Exception as error:
-                self._send_json({"error": str(error)}, 400)
+                self._send_json(error_payload(error), 400)
             return
         if parsed.path == "/download/model":
             try:
@@ -1230,7 +1297,7 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 self._send_model(run_id)
             except Exception as error:
-                self._send_json({"error": str(error)}, 400)
+                self._send_json(error_payload(error), 400)
             return
         if parsed.path == "/download/validated-model":
             try:
@@ -1243,7 +1310,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "validated_model.pcamodel",
                 )
             except Exception as error:
-                self._send_json({"error": str(error)}, 400)
+                self._send_json(error_payload(error), 400)
             return
         if parsed.path == "/download/validation":
             try:
@@ -1257,7 +1324,7 @@ class _Handler(BaseHTTPRequestHandler):
                     filename,
                 )
             except Exception as error:
-                self._send_json({"error": str(error)}, 400)
+                self._send_json(error_payload(error), 400)
             return
         self._send_json({"error": "Not found"}, 404)
 
@@ -1318,7 +1385,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({"error": "Not found"}, 404)
         except Exception as error:
-            self._send_json({"error": str(error)}, 400)
+            self._send_json(error_payload(error), 400)
 
     def log_message(self, format: str, *args: Any) -> None:
         return

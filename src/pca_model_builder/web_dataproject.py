@@ -586,17 +586,18 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
         reference_start = pd.Timestamp(training_window["start"])
         reference_end = pd.Timestamp(training_window["end"])
-    result = _trend_payload_data(
-        indexed,
-        tags,
-        base_web._preprocessing_config(payload),
-        pd.Timestamp(base_web._required_text(payload, "start")),
-        pd.Timestamp(base_web._required_text(payload, "end")),
-        registry,
-        max_points,
-        reference_start,
-        reference_end,
-    )
+    with base_web._web_stage("preprocessing"):
+        result = _trend_payload_data(
+            indexed,
+            tags,
+            base_web._preprocessing_config(payload),
+            pd.Timestamp(base_web._required_text(payload, "start")),
+            pd.Timestamp(base_web._required_text(payload, "end")),
+            registry,
+            max_points,
+            reference_start,
+            reference_end,
+        )
     return base_web._with_data_usage(
         result,
         loaded,

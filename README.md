@@ -15,7 +15,7 @@ PCA 只用于状态偏离监控和贡献分析，不输出根因结论，不包�
 开发安装：
 
 ```powershell
-& "C:\Users\shaoy\AppData\Local\Programs\Python\Python311\python.exe" -m pip install -e ".[test]"
+python -m pip install -e ".[test]"
 ```
 
 ## Web 交互界面
@@ -73,11 +73,11 @@ XLSX配置工作表固定为 `Tags`，角色支持 `continuous_input`、`state_f
 pca-model-builder train-normal `
   --csv history.csv `
   --timestamp time `
-  --tags TI330001 PI330001 FI330001 `
+  --tags TAG_A TAG_B TAG_C `
   --normal-start "2026-01-01 00:00" `
   --normal-end "2026-03-01 00:00" `
-  --model-name D330_DPCA_Model_V1 `
-  --output D330_DPCA_Model_V1.pcamodel
+  --model-name example_dpca_model `
+  --output example_dpca_model.pcamodel
 ```
 
 默认参数为 10 分钟尾随平滑、最大 Lag 60 分钟、Lag 步长 5 分钟、累计解释率 95%。采样间隔默认 5 分钟，可通过命令行调整。Lag 和平滑均不跨物理时间缺口。
@@ -97,7 +97,7 @@ pca-model-builder train-normal `
 
 ```powershell
 pca-model-builder validate `
-  --model D330_DPCA_Model_V1.pcamodel `
+  --model example_dpca_model.pcamodel `
   --csv history.csv `
   --timestamp time `
   --validation-start "2026-04-01 00:00" `
@@ -124,11 +124,11 @@ pca-model-builder validate `
 
 ```powershell
 pca-model-builder review-validation `
-  --model D330_DPCA_Model_V1.pcamodel `
+  --model example_dpca_model.pcamodel `
   --validation-report validation_report.json `
   --decision passed `
   --comment "工程师确认" `
-  --output D330_DPCA_Model_V1_validated.pcamodel
+  --output example_dpca_model_validated.pcamodel
 ```
 
 `--output` 必填且不得与 `--model` 相同。“结论不足”或“不通过”只写入验证报告，不会创建已验证模型包。本阶段不包含模型版本注册、发布或在线部署。
@@ -136,5 +136,5 @@ pca-model-builder review-validation `
 ## 测试
 
 ```powershell
-& "C:\Users\shaoy\AppData\Local\Programs\Python\Python311\python.exe" -m pytest -q
+python -m pytest -q
 ```

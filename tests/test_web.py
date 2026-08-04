@@ -36,6 +36,18 @@ def _history_frame() -> pd.DataFrame:
     return frame
 
 
+def _post_response(handler_class, path: str, payload: dict) -> tuple[dict, int]:
+    captured = {}
+    handler = object.__new__(handler_class)
+    handler.path = path
+    handler._json_body = lambda: payload
+    handler._send_json = lambda value, status=200: captured.update(
+        value=value, status=status
+    )
+    handler.do_POST()
+    return captured["value"], captured["status"]
+
+
 def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     args = build_parser().parse_args(["serve", "--no-open"])
 
@@ -151,12 +163,121 @@ def test_repeated_final_web_trend_reuses_only_requested_columns(
     first = web_dataproject.trend_payload(common)
     second = web_dataproject.trend_payload({**common, "tags": ["B", "A"]})
 
-    assert len(calls) == 1
-    assert calls[0]["usecols"] == ["time", "A", "B"]
+    assert calls == []
     assert first["data_usage"]["loaded_column_count"] == 3
     assert first["data_usage"]["cache_hit"]
     assert second["data_usage"]["cache_hit"]
     assert second["tags"] == ["B", "A"]
+
+
+def test_web_error_responses_report_processing_stage_and_keep_general_errors(
+    tmp_path, monkeypatch
+) -> None:
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    loading_error, _ = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {"file_id": "0" * 32, "timestamp_column": "time"},
+    )
+    assert loading_error == {
+        "error": "上传文件不存在，请重新上传",
+        "stage": "loading",
+    }
+    invalid = web.save_upload("invalid.csv", b"time,A,B\ninvalid,1,2\n")
+    parsing_error, _ = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {"file_id": invalid["file_id"], "timestamp_column": "time"},
+    )
+    assert parsing_error == {
+        "error": "时间列包含无法解析的值",
+        "stage": "parsing",
+    }
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    training = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "model_name": "STAGE_TEST",
+    }
+    original_builder = web.build_training_matrix
+    original_fit = web.fit_dpca
+
+    def fail(message: str):
+        def failing(*args, **kwargs):
+            raise ValueError(message)
+
+        return failing
+
+    monkeypatch.setattr(
+        web, "build_training_matrix", fail("数据质量问题尚未处理：missing_value")
+    )
+    quality_error, status = _post_response(web._Handler, "/api/quality", training)
+    assert status == 400
+    assert quality_error == {
+        "error": "数据质量问题尚未处理：missing_value",
+        "stage": "quality_check",
+    }
+
+    monkeypatch.setattr(web, "build_training_matrix", fail("preprocess failed"))
+    preprocessing_error, _ = _post_response(web._Handler, "/api/train", training)
+    assert preprocessing_error == {
+        "error": "preprocess failed",
+        "stage": "preprocessing",
+    }
+
+    monkeypatch.setattr(web, "build_training_matrix", original_builder)
+    monkeypatch.setattr(web, "fit_dpca", fail("fit failed"))
+    fitting_error, _ = _post_response(web._Handler, "/api/train", training)
+    assert fitting_error == {"error": "fit failed", "stage": "fitting"}
+
+    monkeypatch.setattr(web, "fit_dpca", original_fit)
+    trained = web.train_payload(training)
+    monkeypatch.setattr(web, "validate_model_windows", fail("score failed"))
+    scoring_error, _ = _post_response(
+        web._Handler,
+        "/api/validate",
+        {
+            "run_id": trained["run_id"],
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "validation_start": history.time.iloc[120].isoformat(),
+            "validation_end": history.time.iloc[-1].isoformat(),
+        },
+    )
+    assert scoring_error == {"error": "score failed", "stage": "scoring"}
+
+    general_error, _ = _post_response(web._Handler, "/api/quality", {})
+    assert general_error == {
+        "error": "缺少参数：timestamp_column",
+        "stage": "failed",
+    }
+
+
+def test_final_web_handler_preserves_stage_error(monkeypatch) -> None:
+    def failing(payload):
+        raise web.WebStageError("fitting", ValueError("fit failed"))
+
+    monkeypatch.setattr(web_model_results, "train_payload", failing)
+    result, status = _post_response(
+        web_model_results.ModelResultsHandler, "/api/train", {}
+    )
+
+    assert status == 400
+    assert result == {"error": "fit failed", "stage": "fitting"}
 
 
 def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
@@ -220,12 +341,22 @@ def test_web_quality_tab_shows_selected_tag_and_trend_axis_uses_payload_limits()
 
 
 def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
+    from pca_model_builder import data_session
+
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
     history = _history_frame()
     csv_bytes = history.to_csv(index=False).encode("utf-8-sig")
 
     uploaded = web.save_upload("history.csv", csv_bytes)
+    original_read_csv = data_session.pd.read_csv
+    csv_reads = []
+
+    def recorded_read_csv(*args, **kwargs):
+        csv_reads.append(kwargs.copy())
+        return original_read_csv(*args, **kwargs)
+
+    monkeypatch.setattr(data_session.pd, "read_csv", recorded_read_csv)
     inspected = web.inspect_payload(
         {
             "file_id": uploaded["file_id"],
@@ -369,6 +500,7 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
         "t2_status",
         "spe_status",
     }.issubset(validated["scores"][0])
+    assert len(csv_reads) == 1
     run_dir = tmp_path / "runs" / trained["run_id"]
     saved_scores = pd.read_csv(run_dir / "validation_scores.csv", encoding="utf-8-sig")
     saved_report = json.loads(

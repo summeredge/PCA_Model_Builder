@@ -197,7 +197,7 @@ class ModelResultsHandler(_BASE_WEB._Handler):
             )
             self._send_json(result)
         except Exception as error:
-            self._send_json({"error": str(error)}, 400)
+            self._send_json(_BASE_WEB.error_payload(error), 400)
 
 
 def run_server(
