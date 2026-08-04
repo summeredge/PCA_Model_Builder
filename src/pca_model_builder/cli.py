@@ -14,7 +14,7 @@ from .compat import (
 )
 from .dpca import fit_dpca
 from .model_io import copy_validated_model_package, load_model_package, save_model_package
-from .preprocessing import PreprocessingConfig
+from .preprocessing import PreprocessingConfig, preprocessing_config_from_mapping
 from .quality import QualityReport, inspect_data_quality
 from .tag_config import engineering_ranges, normalize_tag_configs
 from .training import build_training_matrix
@@ -115,6 +115,15 @@ def _add_train_parser(
     train.add_argument("--smoothing-window", type=int, default=10)
     train.add_argument("--max-lag", type=int, default=60)
     train.add_argument("--lag-step", type=int, default=5)
+    train.add_argument(
+        "--resampling-method", choices=("none", "mean", "median", "last"), default="none"
+    )
+    train.add_argument(
+        "--filter-method",
+        choices=("none", "trailing_mean", "trailing_median"),
+        default="trailing_mean",
+    )
+    train.add_argument("--gap-threshold-minutes", type=float)
     train.add_argument("--variance-threshold", type=float, default=0.95)
     train.add_argument("--components", type=int)
     train.add_argument("--model-name", required=True)
@@ -146,6 +155,9 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         smoothing_window_minutes=args.smoothing_window,
         max_lag_minutes=args.max_lag,
         lag_step_minutes=args.lag_step,
+        resampling_method=args.resampling_method,
+        filter_method=args.filter_method,
+        gap_threshold_minutes=args.gap_threshold_minutes,
     )
     tag_configs = _read_tag_configs(args.tag_config, args.tags)
     training_windows = _training_windows_from_args(args)
@@ -168,13 +180,11 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         "model_name": args.model_name,
         "tags": list(args.tags),
         "timestamp_column": args.timestamp,
-        "sample_interval_minutes": config.sample_interval_minutes,
-        "smoothing_window_minutes": config.smoothing_window_minutes,
-        "max_lag_minutes": config.max_lag_minutes,
-        "lag_step_minutes": config.lag_step_minutes,
+        **config.to_dict(),
         "variance_threshold": args.variance_threshold,
         "tag_configs": tag_configs,
         "training_summary": training_result.window_summaries,
+        "preprocessing_summary": training_result.window_summaries,
         "training_quality_warnings": training_result.global_quality_warnings,
     }
     save_model_package(
@@ -224,12 +234,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     validation_windows = _validation_windows_from_args(args)
 
     raw = _read_csv(args.csv, args.timestamp, args.encoding)
-    config = PreprocessingConfig(
-        sample_interval_minutes=int(config_data["sample_interval_minutes"]),
-        smoothing_window_minutes=int(config_data["smoothing_window_minutes"]),
-        max_lag_minutes=int(config_data["max_lag_minutes"]),
-        lag_step_minutes=int(config_data["lag_step_minutes"]),
-    )
+    config = preprocessing_config_from_mapping(config_data)
     for window in validation_windows:
         if not window["enabled"]:
             continue
@@ -239,14 +244,16 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
             validation_context_start(pd.Timestamp(window["start"]), config).isoformat(),
             window["end"],
         )
-        _require_clean_data(
-            context,
-            args.timestamp,
-            tags,
-            expected_interval_minutes=config.sample_interval_minutes,
-            configured_engineering_ranges=engineering_ranges(tag_configs),
-        )
-    indexed = _to_indexed_frame(raw, args.timestamp, tags)
+        if config.resampling_method == "none":
+            _require_clean_data(
+                context,
+                args.timestamp,
+                tags,
+                expected_interval_minutes=config.sample_interval_minutes,
+                configured_engineering_ranges=engineering_ranges(tag_configs),
+            )
+    state_columns = [condition.column for condition in config.state_filters]
+    indexed = _to_indexed_frame(raw, args.timestamp, [*tags, *state_columns])
     validation_result = validate_model_windows(
         model,
         indexed,

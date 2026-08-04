@@ -34,6 +34,27 @@ def test_trend_smoothing_is_trailing_and_does_not_cross_gap():
     assert segments.tolist() == [0, 0, 0, 1, 1]
 
 
+def test_trend_preview_reuses_resampling_and_filtering_core():
+    index = pd.date_range("2026-01-01", periods=11, freq="1min")
+    frame = pd.DataFrame({"A": np.arange(11, dtype=float)}, index=index)
+    config = PreprocessingConfig(
+        5,
+        10,
+        0,
+        5,
+        resampling_method="mean",
+        filter_method="trailing_median",
+    )
+
+    resampled, filtered, _ = prepare_trend_frame(frame, ["A"], config)
+
+    assert resampled.index.tolist() == [index[0], index[5], index[10]]
+    assert resampled["A"].tolist() == [0.0, 3.0, 8.0]
+    assert pd.isna(filtered.iloc[0, 0])
+    assert filtered.iloc[1, 0] == 1.5
+    assert filtered.iloc[2, 0] == 5.5
+
+
 def test_trend_payload_returns_statistics_histogram_ranges_and_preserves_input():
     index = pd.date_range("2026-01-01", periods=20, freq="5min")
     frame = pd.DataFrame({"A": np.arange(20, dtype=float)}, index=index)

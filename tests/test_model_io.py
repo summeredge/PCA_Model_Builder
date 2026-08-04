@@ -51,6 +51,11 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
         }
     ]
     assert manifest["config"]["tags"] == ["A", "B", "C"]
+    assert manifest["config"]["resampling_method"] == "none"
+    assert manifest["config"]["filter_method"] == "trailing_mean"
+    assert manifest["config"]["gap_threshold_minutes"] is None
+    assert manifest["config"]["state_filters"] == []
+    assert manifest["config"]["resampling_origin"] == "epoch"
 
 
 def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
@@ -77,6 +82,16 @@ def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
             "constant_value": 50.0,
         }
     ]
+    config.update(
+        {
+            "resampling_method": "median",
+            "filter_method": "trailing_median",
+            "gap_threshold_minutes": 10.0,
+            "state_filters": [
+                {"column": "MODE", "minimum": 1.0, "maximum": None}
+            ],
+        }
+    )
     path = tmp_path / "metadata.pcamodel"
     save_model_package(
         path,
@@ -89,6 +104,9 @@ def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
 
     assert manifest["config"]["source_tag_configs"]["C"]["type"] == "continuous"
     assert manifest["config"]["excluded_tags"][0]["tag"] == "FIXED"
+    assert manifest["config"]["resampling_method"] == "median"
+    assert manifest["config"]["filter_method"] == "trailing_median"
+    assert manifest["config"]["state_filters"][0]["column"] == "MODE"
 
 
 def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):

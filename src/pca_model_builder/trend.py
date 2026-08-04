@@ -5,7 +5,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .preprocessing import PreprocessingConfig, infer_segment_ids
+from .preprocessing import PreprocessingConfig, preprocess_window
 from .tag_profile import profile_tag
 
 
@@ -49,15 +49,18 @@ def prepare_trend_frame(
     missing = [tag for tag in tags if tag not in frame.columns]
     if missing:
         raise ValueError(f"找不到趋势Tag：{', '.join(missing)}")
-    raw = frame.loc[:, tags].apply(pd.to_numeric, errors="coerce")
-    segments = infer_segment_ids(frame.index, config.sample_interval_minutes)
-    window_rows = config.smoothing_window_minutes // config.sample_interval_minutes
-    smoothed = raw.groupby(segments, sort=False).transform(
-        lambda group: group.rolling(
-            window_rows, min_periods=window_rows
-        ).mean()
+    result = preprocess_window(
+        frame,
+        tags,
+        config,
+        validate_quality=False,
+        include_intermediates=True,
     )
-    return raw, smoothed, segments
+    assert result.resampled is not None and result.filtered is not None
+    raw = result.resampled.loc[:, tags]
+    filtered = result.filtered.loc[:, tags]
+    segments = result.segment_ids.reindex(raw.index).astype(int)
+    return raw, filtered, segments
 
 
 def downsample_trend(

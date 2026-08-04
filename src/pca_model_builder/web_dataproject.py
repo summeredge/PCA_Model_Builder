@@ -565,7 +565,10 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
             if purpose == "scatter"
             else "趋势图一次最多选择4个Tag"
         )
-    loaded = base_web._load_required_upload(payload, tags, "找不到趋势Tag：")
+    state_columns = base_web._state_filter_columns(payload)
+    loaded = base_web._load_required_upload(
+        payload, [*tags, *state_columns], "找不到趋势Tag："
+    )
     parsed = loaded.frame
     all_tags = list(loaded.metadata.numeric_candidate_columns)
     registry = base_web.normalize_tag_registry(all_tags, payload.get("tag_configs"))

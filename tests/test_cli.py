@@ -91,6 +91,12 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
             "10",
             "--lag-step",
             "5",
+            "--resampling-method",
+            "none",
+            "--filter-method",
+            "trailing_mean",
+            "--gap-threshold-minutes",
+            "10",
             "--model-name",
             "UNIT_DPCA_V1",
             "--tag-config",
@@ -128,6 +134,9 @@ def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     assert model_path.exists()
     _, manifest = load_model_package(model_path)
     assert manifest["config"]["tag_configs"]["A"]["unit"] == "t/h"
+    assert manifest["config"]["resampling_method"] == "none"
+    assert manifest["config"]["filter_method"] == "trailing_mean"
+    assert manifest["config"]["gap_threshold_minutes"] == 10.0
     assert manifest["model_purpose"] == "normal_state"
     assert manifest["model_status"] == "candidate"
     assert scores_path.exists()

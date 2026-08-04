@@ -120,9 +120,79 @@ def test_final_web_entry_uses_cached_base_reading_paths() -> None:
     assert "_BASE_WEB.train_payload(payload)" in inspect.getsource(
         web_model_results.train_payload
     )
-    assert "base_web._load_required_upload(payload, tags" in inspect.getsource(
-        web_dataproject.trend_payload
+    source = inspect.getsource(web_dataproject.trend_payload)
+    assert "base_web._load_required_upload" in source
+    assert "base_web._state_filter_columns" in source
+
+
+def test_web_exposes_preprocessing_controls_and_preview_route():
+    html = web_model_results.INDEX_HTML
+    for element_id in (
+        'id="resamplingMethod"',
+        'id="filterMethod"',
+        'id="gapThreshold"',
+        'id="preprocessingPreviewButton"',
+    ):
+        assert element_id in html
+    assert "/api/preprocessing-preview" in html
+    for label in ("raw 原始", "resampled 重采样", "filtered 因果滤波"):
+        assert label in html
+
+
+def test_preprocessing_preview_uses_unified_core_and_preserves_empty_bins(
+    tmp_path, monkeypatch
+) -> None:
+    from pca_model_builder import data_session
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    timestamps = pd.to_datetime(
+        [*[f"2026-01-01 00:0{i}" for i in range(5)], "2026-01-01 00:11"]
     )
+    frame = pd.DataFrame(
+        {"time": timestamps, "A": np.arange(6, dtype=float), "B": np.arange(10, 16, dtype=float)}
+    )
+    uploaded = web.save_upload(
+        "preview.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+    web.inspect_payload(
+        {"file_id": uploaded["file_id"], "timestamp_column": "time"}
+    )
+    original = data_session.pd.read_csv
+    calls = []
+
+    def recorded(*args, **kwargs):
+        calls.append(kwargs.copy())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(data_session.pd, "read_csv", recorded)
+
+    result = web.preprocessing_preview_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": ["A", "B"],
+            "start": timestamps[0].isoformat(),
+            "end": timestamps[-1].isoformat(),
+            "sample_interval_minutes": 5,
+            "resampling_method": "last",
+            "filter_method": "none",
+            "smoothing_window_minutes": 10,
+            "gap_threshold_minutes": 10,
+            "max_lag_minutes": 0,
+            "lag_step_minutes": 5,
+        }
+    )
+
+    assert result["summary"]["source_row_count"] == 6
+    assert result["summary"]["resampled_row_count"] == 4
+    assert result["summary"]["empty_bin_count"] == 1
+    empty = next(row for row in result["resampled"] if row["timestamp"].endswith("00:10:00"))
+    assert empty["A"] is None and empty["B"] is None
+    assert result["data_usage"]["analysis_row_count"] == 6
+    assert result["data_usage"]["cache_hit"]
+    assert calls == []
 
 
 def test_repeated_final_web_trend_reuses_only_requested_columns(

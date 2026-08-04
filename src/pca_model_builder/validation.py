@@ -11,8 +11,9 @@ from .contribution import contribution_event_records, exceedance_contribution_ta
 from .dpca import DPCAModel
 from .preprocessing import (
     PreprocessingConfig,
-    build_dynamic_matrix,
-    infer_segment_ids,
+    PreprocessingResult,
+    PreprocessingQualityError,
+    preprocess_window,
 )
 
 
@@ -100,11 +101,15 @@ def validation_context_start(
     validation_start: pd.Timestamp,
     config: PreprocessingConfig,
 ) -> pd.Timestamp:
-    warmup_minutes = (
-        config.max_lag_minutes
-        + config.smoothing_window_minutes
-        - config.sample_interval_minutes
+    filter_context = (
+        0
+        if config.filter_method == "none"
+        else config.smoothing_window_minutes - config.sample_interval_minutes
     )
+    resampling_context = (
+        config.sample_interval_minutes if config.resampling_method != "none" else 0
+    )
+    warmup_minutes = config.max_lag_minutes + filter_context + resampling_context
     return validation_start - pd.Timedelta(minutes=warmup_minutes)
 
 
@@ -114,24 +119,48 @@ def build_validation_matrix(
     config: PreprocessingConfig,
     validation_start: pd.Timestamp,
     validation_end: pd.Timestamp,
+    engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
 ) -> pd.DataFrame:
     """Build validation features with pre-window history, then score from start."""
-    context_start = validation_context_start(validation_start, config)
-    context = indexed_frame.loc[context_start:validation_end]
-    dynamic = build_dynamic_matrix(
-        context,
+    scoring, _ = _preprocess_validation_window(
+        indexed_frame,
         tag_columns,
         config,
-        infer_segment_ids(context.index, config.sample_interval_minutes),
+        validation_start,
+        validation_end,
+        engineering_ranges,
     )
-    scoring = dynamic.loc[validation_start:validation_end]
+    return scoring
+
+
+def _preprocess_validation_window(
+    indexed_frame: pd.DataFrame,
+    tag_columns: Sequence[str],
+    config: PreprocessingConfig,
+    validation_start: pd.Timestamp,
+    validation_end: pd.Timestamp,
+    engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
+) -> tuple[pd.DataFrame, PreprocessingResult]:
+    context_start = validation_context_start(validation_start, config)
+    context = indexed_frame.loc[context_start:validation_end]
+    try:
+        processed = preprocess_window(
+            context, tag_columns, config, engineering_ranges
+        )
+    except PreprocessingQualityError as error:
+        details = "; ".join(
+            f"{issue.code}({issue.count})" for issue in error.report.issues
+            if issue.severity == "error"
+        )
+        raise ValueError(f"validation data quality review required: {details}") from error
+    scoring = processed.dynamic.loc[validation_start:validation_end]
     if scoring.empty or scoring.index[0] != validation_start:
         raise ValueError(
             "validation context is insufficient to score from the requested start"
         )
     if scoring.index[-1] != validation_end:
         raise ValueError("validation data do not cover the requested end")
-    return scoring
+    return scoring, processed
 
 
 def validate_model_windows(
@@ -153,12 +182,28 @@ def validate_model_windows(
     records: list[dict[str, Any]] = []
     score_parts: list[pd.DataFrame] = []
     contribution_records: list[dict[str, Any]] = []
+    configured_ranges = {
+        tag: (
+            float(tag_config["engineering_min"]),
+            float(tag_config["engineering_max"]),
+        )
+        for tag, tag_config in (tag_configs or {}).items()
+        if tag_config.get("engineering_min") is not None
+        and tag_config.get("engineering_max") is not None
+    }
     for window in windows:
         if not window["enabled"]:
             records.append({**window, "status": "disabled", "scored_rows": 0})
             continue
         start, end = pd.Timestamp(window["start"]), pd.Timestamp(window["end"])
-        dynamic = build_validation_matrix(indexed_frame, tag_columns, config, start, end)
+        dynamic, preprocessing = _preprocess_validation_window(
+            indexed_frame,
+            tag_columns,
+            config,
+            start,
+            end,
+            configured_ranges,
+        )
         scores = model.score(dynamic)
         events = contribution_event_records(
             exceedance_contribution_tables(
@@ -191,6 +236,11 @@ def validate_model_windows(
             "maximum_t2": float(scores["t2"].max()),
             "maximum_spe": float(scores["spe"].max()),
             "continuous_events": continuous_events,
+            "preprocessing_summary": {
+                **preprocessing.summary.to_dict(),
+                "scoring_row_count": len(dynamic),
+                "first_scored_timestamp": dynamic.index[0].isoformat(),
+            },
         }
         if window["type"] == "known_abnormal":
             record.update(

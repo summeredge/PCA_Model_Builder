@@ -32,7 +32,12 @@ from .data_session import (
 )
 from .dpca import fit_dpca
 from .model_io import copy_validated_model_package, load_model_package, save_model_package
-from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
+from .preprocessing import (
+    PreprocessingConfig,
+    PreprocessingQualityError,
+    preprocess_window,
+    preprocessing_config_from_mapping,
+)
 from .quality import QualityReport, inspect_data_quality
 from .screening import screen_performance_states
 from .tag_config import (
@@ -48,7 +53,7 @@ from .tag_config_io import (
 )
 from .tag_profile import model_quality_payload, profile_tag
 from .training import build_training_matrix
-from .trend import trend_payload_data
+from .trend import downsample_trend, trend_payload_data
 from .validation import (
     record_engineer_decision,
     validate_model_windows,
@@ -203,7 +208,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     loaded = _load_required_upload(
         payload,
-        list(dict.fromkeys([*tags, *excluded_tags])),
+        list(dict.fromkeys([*tags, *excluded_tags, *_state_filter_columns(payload)])),
         "找不到 Tag：",
     )
     parsed = loaded.frame
@@ -224,6 +229,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         config,
         training_windows,
         engineering_ranges(tag_configs),
+        reference_columns=excluded_tags,
     )
     with _web_stage("quality_check"):
         excluded_tag_records = _excluded_tag_records(
@@ -248,15 +254,13 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "model_name": model_name,
         "tags": tags,
         "timestamp_column": timestamp_column,
-        "sample_interval_minutes": config.sample_interval_minutes,
-        "smoothing_window_minutes": config.smoothing_window_minutes,
-        "max_lag_minutes": config.max_lag_minutes,
-        "lag_step_minutes": config.lag_step_minutes,
+        **config.to_dict(),
         "variance_threshold": variance_threshold,
         "tag_configs": tag_configs,
         "source_tag_configs": registry,
         "excluded_tags": excluded_tag_records,
         "training_summary": training_result.window_summaries,
+        "preprocessing_summary": training_result.window_summaries,
         "training_quality_warnings": training_result.global_quality_warnings,
     }
     save_model_package(
@@ -302,7 +306,9 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
     tags = _required_tags(payload)
-    loaded = _load_required_upload(payload, tags, "找不到 Tag：")
+    loaded = _load_required_upload(
+        payload, [*tags, *_state_filter_columns(payload)], "找不到 Tag："
+    )
     parsed = loaded.frame
     all_tags = list(loaded.metadata.numeric_candidate_columns)
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
@@ -415,7 +421,10 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("趋势Tag不能重复")
     if len(tags) > 8:
         raise ValueError("趋势浏览一次最多选择8个Tag")
-    loaded = _load_required_upload(payload, tags, "找不到趋势Tag：")
+    state_columns = _state_filter_columns(payload)
+    loaded = _load_required_upload(
+        payload, [*tags, *state_columns], "找不到趋势Tag："
+    )
     parsed = loaded.frame
     all_tags = list(loaded.metadata.numeric_candidate_columns)
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
@@ -443,6 +452,85 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     analysis_rows = int(result["statistics"][tags[0]]["current"]["sample_count"])
     return _with_data_usage(result, loaded, analysis_rows, len(result["rows"]))
+
+
+def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    raw_tags = payload.get("tags")
+    if not isinstance(raw_tags, list) or not raw_tags:
+        raise ValueError("预处理预览Tag必须是非空列表")
+    tags = [str(tag).strip() for tag in raw_tags if str(tag).strip()]
+    if len(tags) != len(set(tags)):
+        raise ValueError("预处理预览Tag不能重复")
+    if len(tags) > 8:
+        raise ValueError("预处理预览一次最多选择8个Tag")
+    config = _preprocessing_config(payload)
+    state_columns = [condition.column for condition in config.state_filters]
+    loaded = _load_required_upload(
+        payload, [*tags, *state_columns], "找不到预处理列："
+    )
+    selected = _select_window(
+        loaded.frame,
+        timestamp_column,
+        _required_text(payload, "start"),
+        _required_text(payload, "end"),
+    )
+    indexed = _indexed_tags(
+        selected, timestamp_column, [*tags, *state_columns]
+    )
+    with _web_stage("preprocessing"):
+        processed = preprocess_window(
+            indexed,
+            tags,
+            config,
+            validate_quality=False,
+            include_intermediates=True,
+        )
+    assert processed.raw is not None
+    assert processed.resampled is not None
+    assert processed.filtered is not None
+    result = {
+        "summary": processed.summary.to_dict(),
+        "raw": _preview_rows(
+            processed.raw.loc[:, tags], processed.raw_segment_ids
+        ),
+        "resampled": _preview_rows(
+            processed.resampled.loc[:, tags], processed.segment_ids
+        ),
+        "filtered": _preview_rows(
+            processed.filtered.loc[:, tags], processed.segment_ids
+        ),
+    }
+    display_rows = max(len(result["raw"]), len(result["resampled"]), len(result["filtered"]))
+    return _with_data_usage(result, loaded, len(selected), display_rows)
+
+
+def _preview_rows(
+    frame: pd.DataFrame, segment_ids: pd.Series
+) -> list[dict[str, Any]]:
+    gap_starts = segment_ids.ne(segment_ids.shift()).reindex(frame.index).fillna(True)
+    if len(frame) > MAX_CHART_POINTS:
+        positions = downsample_trend(
+            frame,
+            frame,
+            segment_ids.reindex(frame.index),
+            limit=MAX_CHART_POINTS,
+        )
+        frame = frame.iloc[positions]
+        gap_starts = gap_starts.iloc[positions]
+    return [
+        {
+            "timestamp": timestamp.isoformat(),
+            "gap_start": bool(gap_starts.loc[timestamp]),
+            **{
+                column: (
+                    float(value) if pd.notna(value) and np.isfinite(value) else None
+                )
+                for column, value in row.items()
+            },
+        }
+        for timestamp, row in frame.iterrows()
+    ]
 
 
 def tag_config_template_payload(payload: dict[str, Any]) -> bytes:
@@ -504,22 +592,18 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
         _required_text(payload, "analysis_start"),
         _required_text(payload, "analysis_end"),
     )
-    with _web_stage("quality_check"):
-        _require_clean_data(
+    with _web_stage("preprocessing"):
+        indexed = _indexed_tags(
             analysis,
             timestamp_column,
-            tags,
-            config.sample_interval_minutes,
-            engineering_ranges(tag_configs),
+            [*tags, *_state_filter_columns(payload)],
         )
-    with _web_stage("preprocessing"):
-        indexed = _indexed_tags(analysis, timestamp_column, tags)
-        dynamic = build_dynamic_matrix(
-            indexed,
-            tags,
-            config,
-            infer_segment_ids(indexed.index, config.sample_interval_minutes),
-        )
+        try:
+            dynamic = preprocess_window(
+                indexed, tags, config, engineering_ranges(tag_configs)
+            ).dynamic
+        except PreprocessingQualityError as error:
+            raise WebStageError("quality_check", error) from error
         if dynamic.empty:
             raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
     with _web_stage("fitting"):
@@ -548,13 +632,9 @@ def _cluster_exploratory_payload(
         raise ValueError("探索模型时间戳列与聚类请求不一致")
     tags = list(config_data["tags"])
     tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
-    config = PreprocessingConfig(
-        sample_interval_minutes=int(config_data["sample_interval_minutes"]),
-        smoothing_window_minutes=int(config_data["smoothing_window_minutes"]),
-        max_lag_minutes=int(config_data["max_lag_minutes"]),
-        lag_step_minutes=int(config_data["lag_step_minutes"]),
-    )
-    loaded = _load_required_upload(payload, tags, "找不到 Tag：")
+    config = preprocessing_config_from_mapping(config_data)
+    state_columns = [condition.column for condition in config.state_filters]
+    loaded = _load_required_upload(payload, [*tags, *state_columns], "找不到 Tag：")
     parsed = loaded.frame
     analysis = _select_window(
         parsed,
@@ -562,22 +642,14 @@ def _cluster_exploratory_payload(
         _required_text(payload, "analysis_start"),
         _required_text(payload, "analysis_end"),
     )
-    with _web_stage("quality_check"):
-        _require_clean_data(
-            analysis,
-            timestamp_column,
-            tags,
-            config.sample_interval_minutes,
-            engineering_ranges(tag_configs),
-        )
     with _web_stage("preprocessing"):
-        indexed = _indexed_tags(analysis, timestamp_column, tags)
-        dynamic = build_dynamic_matrix(
-            indexed,
-            tags,
-            config,
-            infer_segment_ids(indexed.index, config.sample_interval_minutes),
-        )
+        indexed = _indexed_tags(analysis, timestamp_column, [*tags, *state_columns])
+        try:
+            dynamic = preprocess_window(
+                indexed, tags, config, engineering_ranges(tag_configs)
+            ).dynamic
+        except PreprocessingQualityError as error:
+            raise WebStageError("quality_check", error) from error
         if dynamic.empty:
             raise ValueError("平滑和 Lag 扩展后没有足够的聚类样本")
     with _web_stage("fitting"):
@@ -670,9 +742,11 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if window["enabled"]
     ]
     label_column = str(payload.get("label_column", "")).strip()
-    requested_columns = list(
-        dict.fromkeys([*tags, *([label_column] if label_column else [])])
-    )
+    config = preprocessing_config_from_mapping(config_data)
+    state_columns = [condition.column for condition in config.state_filters]
+    requested_columns = list(dict.fromkeys([
+        *tags, *state_columns, *([label_column] if label_column else [])
+    ]))
     try:
         loaded = _load_upload(payload, requested_columns)
     except ValueError as error:
@@ -683,12 +757,6 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"找不到工程标签列：{label_column}") from error
         raise ValueError(f"找不到 Tag：{', '.join(missing)}") from error
     parsed = loaded.frame
-    config = PreprocessingConfig(
-        sample_interval_minutes=int(config_data["sample_interval_minutes"]),
-        smoothing_window_minutes=int(config_data["smoothing_window_minutes"]),
-        max_lag_minutes=int(config_data["max_lag_minutes"]),
-        lag_step_minutes=int(config_data["lag_step_minutes"]),
-    )
     for window in validation_windows:
         if not window["enabled"]:
             continue
@@ -698,16 +766,17 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
             validation_context_start(pd.Timestamp(window["start"]), config).isoformat(),
             window["end"],
         )
-        with _web_stage("quality_check"):
-            _require_clean_data(
-                context,
-                timestamp_column,
-                tags,
-                config.sample_interval_minutes,
-                engineering_ranges(tag_configs),
-            )
+        if config.resampling_method == "none":
+            with _web_stage("quality_check"):
+                _require_clean_data(
+                    context,
+                    timestamp_column,
+                    tags,
+                    config.sample_interval_minutes,
+                    engineering_ranges(tag_configs),
+                )
     with _web_stage("preprocessing"):
-        indexed = _indexed_tags(parsed, timestamp_column, tags)
+        indexed = _indexed_tags(parsed, timestamp_column, [*tags, *state_columns])
     with _web_stage("scoring"):
         validation_result = validate_model_windows(
             model,
@@ -952,12 +1021,22 @@ def _numeric_candidates(frame: pd.DataFrame, timestamp_column: str) -> list[str]
 
 
 def _preprocessing_config(payload: dict[str, Any]) -> PreprocessingConfig:
-    return PreprocessingConfig(
-        sample_interval_minutes=int(payload.get("sample_interval_minutes", 5)),
-        smoothing_window_minutes=int(payload.get("smoothing_window_minutes", 10)),
-        max_lag_minutes=int(payload.get("max_lag_minutes", 60)),
-        lag_step_minutes=int(payload.get("lag_step_minutes", 5)),
+    return preprocessing_config_from_mapping(
+        {
+            "sample_interval_minutes": payload.get("sample_interval_minutes", 5),
+            "smoothing_window_minutes": payload.get("smoothing_window_minutes", 10),
+            "max_lag_minutes": payload.get("max_lag_minutes", 60),
+            "lag_step_minutes": payload.get("lag_step_minutes", 5),
+            "resampling_method": payload.get("resampling_method", "none"),
+            "filter_method": payload.get("filter_method", "trailing_mean"),
+            "gap_threshold_minutes": payload.get("gap_threshold_minutes"),
+            "state_filters": payload.get("state_filters", []),
+        }
     )
+
+
+def _state_filter_columns(payload: dict[str, Any]) -> list[str]:
+    return [condition.column for condition in _preprocessing_config(payload).state_filters]
 
 
 def _required_tags(payload: dict[str, Any]) -> list[str]:
@@ -1361,6 +1440,9 @@ class _Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/trend":
                 self._send_json(trend_payload(payload))
                 return
+            if parsed.path == "/api/preprocessing-preview":
+                self._send_json(preprocessing_preview_payload(payload))
+                return
             if parsed.path == "/api/tag-config/export":
                 self._send_download_bytes(
                     tag_config_export_payload(payload),
@@ -1604,7 +1686,9 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入手工候选</button></div>
         <h3>正常候选时段</h3><div id="trainingWindows" class="table-wrap"><div class="empty">检查数据后可管理候选时段。</div></div>
         <div class="help">候选加入后默认不启用；只有工程师明确启用的时段会参与质量检查和训练。</div>
-        <div class="row"><label>采样间隔（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>尾随平滑（分钟）<input id="smoothingWindow" type="number" min="1" value="10"></label></div>
+        <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>
+        <div class="row"><label>滤波方法<select id="filterMethod"><option value="trailing_mean">尾随均值</option><option value="trailing_median">尾随中位数</option><option value="none">不滤波</option></select></label><label>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10"></label></div>
+        <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
@@ -1788,7 +1872,7 @@ function saveCurrentTagConfig() {
   invalidateQuality("Tag工程配置或角色已修改"); renderTagList();
 }
 function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent="尚未执行或结果已失效"; } el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
-function commonPayload() { return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
+function commonPayload() { const gap=el("gapThreshold").value; return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),resampling_method:el("resamplingMethod").value,filter_method:el("filterMethod").value,smoothing_window_minutes:numberValue("smoothingWindow"),gap_threshold_minutes:gap===""?null:Number(gap),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function trainingWindowsPayload() { return state.trainingWindows; }
 function updateQualityButtonAvailability() { el("qualityButton").disabled=!state.inspection||!state.trainingWindows.some(window=>window.enabled); }
@@ -1857,7 +1941,7 @@ el("uploadButton").addEventListener("click", async () => {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
     state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderTrainingWindows(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
-    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
+    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -1872,7 +1956,7 @@ el("inspectButton").addEventListener("click", async () => {
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
-    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
+    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("preprocessingPreviewButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
     el("templateDownload").href=`/download/tag-config-template?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
     if(data.numeric_columns.length) selectTag(data.numeric_columns[0]);
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count}) ${item.tag||""}`).join("、");
@@ -1887,7 +1971,8 @@ el("clearAllTags").addEventListener("click",()=>{ state.selectedModelTags.clear(
 el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.showProblems; el("showProblemTags").textContent=state.showProblems?"显示全部Tag":"只看问题Tag"; renderTagList(); });
 el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
 document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".inner-tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".inner-panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.inner)); }));
-["sampleInterval","smoothingWindow","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>invalidateQuality("预处理参数已修改")));
+["sampleInterval","resamplingMethod","filterMethod","smoothingWindow","gapThreshold","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>invalidateQuality("预处理参数已修改")));
+el("filterMethod").addEventListener("change",()=>{el("smoothingWindow").disabled=el("filterMethod").value==="none";});
 el("addManualCandidate").addEventListener("click",()=>addCandidateWindow("manual",el("candidateStart").value,el("candidateEnd").value,null,el("candidateComment").value.trim()));
 
 el("tagConfigFile").addEventListener("change",()=>{ el("importConfigButton").disabled=!el("tagConfigFile").files[0]||!state.fileId; });
@@ -1946,6 +2031,19 @@ el("trendButton").addEventListener("click",async()=>{
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
+el("preprocessingPreviewButton").addEventListener("click",async()=>{
+  const tags=[...el("trendTags").selectedOptions].map(option=>option.value); if(!tags.length||tags.length>8){setStatus("预处理预览请选择1至8个Tag。","warning");return;}
+  const button=el("preprocessingPreviewButton"); setBusy(button,true,"预览中…");
+  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value})}); renderPreprocessingPreview(data,tags); setStatus("预处理预览已更新；显示抽样不会进入训练。","success"); }
+  catch(error){setStatus(error.message,"error");} finally {setBusy(button,false);}
+});
+function renderPreprocessingPreview(data,tags){
+  const s=data.summary; const resampledLabel=s.resampling_method==="none"?"未重采样输入":"重采样后";
+  const summary=`源数据 ${s.source_row_count}；${resampledLabel} ${s.resampled_row_count}；物理段 ${s.raw_segment_count}；原始缺口 ${s.raw_gap_count}；空桶 ${s.empty_bin_count}；滤波损失 ${s.filter_warmup_loss}；状态过滤损失 ${s.state_filter_input_rows-s.state_filter_output_rows}；Lag损失 ${s.lag_warmup_loss}；最终动态样本 ${s.final_dynamic_row_count}；动态特征 ${s.dynamic_feature_count}`;
+  const labels={raw:"raw 原始",resampled:"resampled 重采样",filtered:"filtered 因果滤波"};
+  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage].slice(0,12); const head=`<tr><th>时间</th>${tags.map(tag=>`<th>${escapeHtml(tag)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(row.timestamp.slice(0,19))}${row.gap_start?"（新段）":""}</td>${tags.map(tag=>`<td>${row[tag]===null?"缺失":escapeHtml(String(row[tag]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}${body}</table></div>`;}).join("");
+  el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${tables}`;
+}
 el("trendZoom").addEventListener("input",()=>{ el("trendChart").querySelectorAll("svg").forEach(svg=>svg.style.width=`${760*Number(el("trendZoom").value)}px`); });
 el("trendToAnalysis").addEventListener("click",()=>{ el("analysisStart").value=el("trendStart").value; el("analysisEnd").value=el("trendEnd").value; setStatus("当前趋势窗口已设置为分析期。","success"); });
 el("trendToReference").addEventListener("click",()=>addCandidateWindow("trend",el("trendStart").value,el("trendEnd").value,"trend-current",""));
@@ -1968,7 +2066,7 @@ el("clusterButton").addEventListener("click", async () => {
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   const button=el("clusterButton"); setBusy(button,true,"聚类中…"); setStatus("正在构建动态状态空间并执行聚类。","info");
   try {
-    const payload=state.exploratoryRunId?{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,exploratory_run_id:state.exploratoryRunId,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,n_clusters:numberValue("clusterCount")}:{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),smoothing_window_minutes:numberValue("smoothingWindow"),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
+    const payload=state.exploratoryRunId?{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,exploratory_run_id:state.exploratoryRunId,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,n_clusters:numberValue("clusterCount")}:{...commonPayload(),tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
     const data=await api("/api/cluster",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     state.clustering=data; renderClustering(data); document.querySelector('[data-panel="statePanels"]').click();
     setStatus("聚类完成。请由工程师判断 Cluster，并选择代表性连续时段作为正常候选。","success");

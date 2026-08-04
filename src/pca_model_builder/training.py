@@ -6,8 +6,12 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
-from .preprocessing import PreprocessingConfig, build_dynamic_matrix, infer_segment_ids
-from .quality import inspect_data_quality
+from .preprocessing import (
+    PreprocessingConfig,
+    PreprocessingQualityError,
+    preprocess_window,
+    segment_raw_data,
+)
 from .windows import normalize_training_windows
 
 
@@ -27,6 +31,7 @@ def build_training_matrix(
     training_windows: object,
     engineering_ranges: dict[str, tuple[float, float]] | None = None,
     validate_dynamic: bool = True,
+    reference_columns: Sequence[str] = (),
 ) -> TrainingBuildResult:
     """Build each enabled window and physical segment independently."""
     windows = normalize_training_windows(training_windows)
@@ -44,19 +49,26 @@ def build_training_matrix(
         start = pd.Timestamp(window["start"])
         end = pd.Timestamp(window["end"])
         selected = frame.loc[frame[timestamp_column].between(start, end, inclusive="both")]
-        report = inspect_data_quality(
-            selected,
-            timestamp_column,
-            tag_columns,
-            engineering_ranges=engineering_ranges,
-            expected_interval_minutes=config.sample_interval_minutes,
-            include_variability=False,
-        )
-        if not report.can_train:
-            raise ValueError(_window_quality_error(window["id"], report))
-        reference_parts.append(selected)
+        selected_timestamps = pd.DatetimeIndex(selected[timestamp_column])
+        if not selected_timestamps.is_monotonic_increasing:
+            raise ValueError(
+                f"训练窗口 {window['id']} 数据质量问题尚未处理：unsorted_timestamp(1)"
+            )
+        if selected_timestamps.has_duplicates:
+            raise ValueError(
+                f"训练窗口 {window['id']} 数据质量问题尚未处理：duplicate_timestamp(1)"
+            )
+        state_columns = [condition.column for condition in config.state_filters]
         indexed = (
-            selected.loc[:, [timestamp_column, *tag_columns]]
+            selected.loc[
+                :,
+                [
+                    timestamp_column,
+                    *dict.fromkeys(
+                        [*tag_columns, *state_columns, *reference_columns]
+                    ),
+                ],
+            ]
             .sort_values(timestamp_column)
             .set_index(timestamp_column)
         )
@@ -66,13 +78,57 @@ def build_training_matrix(
             )
             continue
 
-        segment_ids = infer_segment_ids(indexed.index, config.sample_interval_minutes)
+        try:
+            segment_ids, source_interval, _ = segment_raw_data(
+                indexed.index, config
+            )
+        except ValueError as error:
+            code = (
+                "duplicate_timestamp"
+                if indexed.index.has_duplicates
+                else "irregular_sampling"
+            )
+            raise ValueError(
+                f"训练窗口 {window['id']} 数据质量问题尚未处理：{code}(1)"
+            ) from error
+        try:
+            processed = preprocess_window(
+                indexed,
+                tag_columns,
+                config,
+                engineering_ranges,
+                include_intermediates=True,
+                include_variability=False,
+                preserve_columns=reference_columns,
+            )
+        except PreprocessingQualityError as error:
+            raise ValueError(
+                _window_quality_error(window["id"], error.report)
+            ) from error
+        assert processed.resampled is not None
+        assert processed.filtered is not None
+        assert processed.state_filtered is not None
+        dynamic = processed.dynamic
+        resampled_segment_ids = processed.segment_ids
         segment_summaries: list[dict[str, Any]] = []
-        window_parts: list[pd.DataFrame] = []
         for position, segment_id in enumerate(segment_ids.unique(), start=1):
             segment = indexed.loc[segment_ids.eq(segment_id)]
-            dynamic = build_dynamic_matrix(segment, tag_columns, config)
-            effective_samples = len(dynamic)
+            resampled_mask = resampled_segment_ids.eq(segment_id)
+            resampled_segment = processed.resampled.loc[resampled_mask]
+            filtered_segment = processed.filtered.loc[resampled_mask]
+            state_segment = processed.state_filtered.loc[
+                processed.state_filtered.index.intersection(resampled_segment.index)
+            ]
+            dynamic_segment = dynamic.loc[
+                dynamic.index.intersection(resampled_segment.index)
+            ]
+            effective_samples = len(dynamic_segment)
+            filter_loss = int(
+                filtered_segment.loc[:, tag_columns].isna().any(axis=1).sum()
+            )
+            lag_input = int(
+                state_segment.loc[:, tag_columns].notna().all(axis=1).sum()
+            )
             status = "used" if effective_samples else "dropped"
             segment_summaries.append(
                 {
@@ -80,28 +136,52 @@ def build_training_matrix(
                     "start": segment.index[0].isoformat(),
                     "end": segment.index[-1].isoformat(),
                     "raw_samples": len(segment),
+                    "resampled_samples": len(resampled_segment),
+                    "empty_bins": int(
+                        resampled_segment.loc[:, tag_columns].isna().all(axis=1).sum()
+                    ),
+                    "filter_warmup_loss": filter_loss,
+                    "state_filter_input_rows": len(filtered_segment),
+                    "state_filter_output_rows": len(state_segment),
+                    "lag_warmup_loss": lag_input - effective_samples,
                     "effective_samples": effective_samples,
                     "smoothing_lag_loss": len(segment) - effective_samples,
                     "status": status,
                     "dropped_reason": None if effective_samples else "insufficient_after_smoothing_and_lag",
                 }
             )
-            if effective_samples:
-                window_parts.append(dynamic)
 
-        effective_samples = sum(len(part) for part in window_parts)
+        effective_samples = len(dynamic)
+        reference_parts.append(
+            processed.resampled.reset_index(names=timestamp_column)
+        )
+        preprocessing_summary = processed.summary
         summaries.append(
             {
                 **window,
                 "status": "used" if effective_samples else "dropped",
                 "raw_samples": len(indexed),
+                "source_interval_minutes": source_interval,
+                "target_interval_minutes": config.sample_interval_minutes,
+                "resampling_method": config.resampling_method,
+                "resampled_samples": preprocessing_summary.resampled_row_count,
+                "empty_bins": preprocessing_summary.empty_bin_count,
+                "raw_segment_count": preprocessing_summary.raw_segment_count,
+                "raw_gap_count": preprocessing_summary.raw_gap_count,
+                "raw_gap_ranges": list(preprocessing_summary.raw_gap_ranges),
+                "filter_method": config.filter_method,
+                "filter_warmup_loss": preprocessing_summary.filter_warmup_loss,
+                "state_filter_input_rows": preprocessing_summary.state_filter_input_rows,
+                "state_filter_output_rows": preprocessing_summary.state_filter_output_rows,
+                "lag_warmup_loss": preprocessing_summary.lag_warmup_loss,
                 "effective_samples": effective_samples,
                 "smoothing_lag_loss": len(indexed) - effective_samples,
                 "dropped_reason": None if effective_samples else "insufficient_after_smoothing_and_lag",
                 "segments": segment_summaries,
             }
         )
-        dynamic_parts.extend(window_parts)
+        if effective_samples:
+            dynamic_parts.append(dynamic)
 
     if not dynamic_parts:
         if validate_dynamic:

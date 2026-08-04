@@ -3,7 +3,7 @@ import pytest
 from types import SimpleNamespace
 import inspect
 
-from pca_model_builder.preprocessing import PreprocessingConfig
+from pca_model_builder.preprocessing import PreprocessingConfig, StateFilter
 from pca_model_builder.validation import (
     _combined_exceedance_events,
     build_validation_matrix,
@@ -48,6 +48,40 @@ def test_validation_rejects_missing_pre_window_context():
 
     with pytest.raises(ValueError, match="insufficient"):
         build_validation_matrix(frame, ["A", "B"], config, index[0], index[-1])
+
+
+def test_validation_uses_training_resampling_contract_and_excludes_context_rows():
+    index = pd.date_range("2026-01-01", periods=21, freq="1min")
+    frame = pd.DataFrame({"A": range(21), "B": range(100, 121)}, index=index)
+    config = PreprocessingConfig(
+        5, 0, 0, 5, resampling_method="mean", filter_method="none"
+    )
+
+    dynamic = build_validation_matrix(
+        frame, ["A", "B"], config, index[5], index[15]
+    )
+
+    assert dynamic.index.tolist() == [index[5], index[10], index[15]]
+    assert dynamic.index.min() >= index[5]
+
+
+def test_validation_lag_does_not_cross_state_filter_break():
+    index = pd.date_range("2026-01-01", periods=10, freq="5min")
+    frame = pd.DataFrame(
+        {"A": range(10), "B": range(100, 110), "LOAD": [1, 1, 1, 1, 0, 1, 1, 1, 1, 1]},
+        index=index,
+    )
+    config = PreprocessingConfig(
+        5,
+        0,
+        5,
+        5,
+        filter_method="none",
+        state_filters=(StateFilter("LOAD", minimum=1),),
+    )
+
+    with pytest.raises(ValueError, match="insufficient"):
+        build_validation_matrix(frame, ["A", "B"], config, index[5], index[8])
 
 
 def test_typed_validation_windows_reject_overlap_and_preserve_types():

@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .dpca import DPCAModel
-from .preprocessing import PreprocessingConfig
+from .preprocessing import PreprocessingConfig, preprocessing_config_from_mapping
 from .tag_config import normalize_tag_configs, normalize_tag_registry
 from .compat import (
     normalize_manifest_training_windows,
@@ -85,7 +85,7 @@ def save_model_package(
         "n_components": model.n_components,
         "t2_limits": {str(key): value for key, value in model.t2_limits.items()},
         "q_limits": {str(key): value for key, value in model.q_limits.items()},
-        "config": config,
+        "config": _normalize_preprocessing_config(config),
         "training_windows": normalize_training_windows_for_write(training_windows),
     }
     if validation_summary is not None:
@@ -199,6 +199,7 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
     manifest = {
         **manifest,
         **normalize_model_semantics(manifest),
+        "config": _normalize_preprocessing_config(manifest["config"]),
         "training_windows": normalize_manifest_training_windows(manifest),
     }
     _validate_loaded_model(model, manifest)
@@ -341,12 +342,7 @@ def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfi
     ):
         raise ValueError("model package variance threshold must be in (0, 1)")
     try:
-        preprocessing = PreprocessingConfig(
-            sample_interval_minutes=config["sample_interval_minutes"],
-            smoothing_window_minutes=config["smoothing_window_minutes"],
-            max_lag_minutes=config["max_lag_minutes"],
-            lag_step_minutes=config["lag_step_minutes"],
-        )
+        preprocessing = preprocessing_config_from_mapping(config)
         if "tag_configs" in config and not isinstance(config["tag_configs"], dict):
             raise ValueError("tag_configs must be an object")
         if "tag_configs" in config:
@@ -363,6 +359,16 @@ def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfi
                 raise ValueError(
                     "trained Tags must be continuous_input in source_tag_configs"
                 )
+            if any(
+                condition.column not in registry
+                or registry[condition.column]["role"] != "state_filter"
+                for condition in preprocessing.state_filters
+            ):
+                raise ValueError(
+                    "state filter columns must use state_filter role"
+                )
+        if {condition.column for condition in preprocessing.state_filters} & set(tags):
+            raise ValueError("state filter columns must not be trained Tags")
         if "excluded_tags" in config:
             excluded = _validate_excluded_tags(config["excluded_tags"])
             if excluded & set(tags):
@@ -372,6 +378,20 @@ def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfi
     except ValueError as error:
         raise ValueError(f"model package config is invalid: {error}") from error
     return config, preprocessing
+
+
+def _normalize_preprocessing_config(config: object) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        raise ValueError("model package config must be an object")
+    normalized = dict(config)
+    normalized.setdefault("resampling_method", "none")
+    normalized.setdefault("resampling_origin", "epoch")
+    normalized.setdefault("resampling_closed", "right")
+    normalized.setdefault("resampling_label", "right")
+    normalized.setdefault("filter_method", "trailing_mean")
+    normalized.setdefault("gap_threshold_minutes", None)
+    normalized.setdefault("state_filters", [])
+    return normalized
 
 
 def _validate_excluded_tags(value: object) -> set[str]:

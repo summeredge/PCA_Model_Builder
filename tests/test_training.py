@@ -3,7 +3,11 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.dpca import fit_dpca
-from pca_model_builder.preprocessing import PreprocessingConfig, build_dynamic_matrix
+from pca_model_builder.preprocessing import (
+    PreprocessingConfig,
+    StateFilter,
+    build_dynamic_matrix,
+)
 from pca_model_builder.training import build_training_matrix
 
 
@@ -236,3 +240,59 @@ def test_training_keeps_per_window_safety_checks(mutate, code):
             _two_windows(frame),
             {"A": (-100.0, 100.0)},
         )
+
+
+def test_training_resamples_each_window_and_records_preprocessing_summary():
+    periods = 61
+    values = np.arange(periods, dtype=float)
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=periods, freq="1min"),
+            "A": values,
+            "B": np.sin(values / 3),
+            "C": np.cos(values / 5),
+        }
+    )
+    config = PreprocessingConfig(
+        5, 0, 0, 5, resampling_method="mean", filter_method="none"
+    )
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        config,
+        _windows((frame.time.iloc[0], frame.time.iloc[-1], True)),
+    )
+
+    summary = result.window_summaries[0]
+    assert summary["raw_samples"] == 61
+    assert summary["resampled_samples"] == 13
+    assert summary["empty_bins"] == 0
+    assert summary["filter_warmup_loss"] == 0
+    assert summary["effective_samples"] == 13
+
+
+def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():
+    frame = _frame(20)
+    frame["LOAD"] = [1] * 8 + [0] * 4 + [1] * 8
+    config = PreprocessingConfig(
+        5,
+        0,
+        5,
+        5,
+        filter_method="none",
+        state_filters=(StateFilter("LOAD", minimum=1),),
+    )
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        config,
+        _windows((frame.time.iloc[0], frame.time.iloc[-1], True)),
+    )
+
+    assert not any("LOAD" in column for column in result.dynamic.columns)
+    assert frame.time.iloc[12] not in result.dynamic.index
+    assert result.window_summaries[0]["state_filter_output_rows"] == 16
