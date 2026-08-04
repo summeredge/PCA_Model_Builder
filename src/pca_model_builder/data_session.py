@@ -76,32 +76,43 @@ class DataSessionCache:
         self.max_column_entries = max_column_entries
         self.max_cache_bytes = max_cache_bytes
         self._metadata: dict[tuple[str, str, str], _CachedDatasetMetadata] = {}
+        self._metadata_bytes: dict[tuple[str, str, str], int] = {}
         self._columns: OrderedDict[_ColumnCacheKey, pd.DataFrame] = OrderedDict()
         self._column_bytes: dict[_ColumnCacheKey, int] = {}
-        self._cache_bytes = 0
+        self._metadata_cache_bytes = 0
+        self._column_cache_bytes = 0
         self._dataset_lru: OrderedDict[str, None] = OrderedDict()
         self._lock = threading.RLock()
 
     @property
+    def metadata_cache_bytes(self) -> int:
+        with self._lock:
+            return self._metadata_cache_bytes
+
+    @property
+    def column_cache_bytes(self) -> int:
+        with self._lock:
+            return self._column_cache_bytes
+
+    @property
     def cache_bytes(self) -> int:
         with self._lock:
-            return self._cache_bytes
+            return self._metadata_cache_bytes + self._column_cache_bytes
 
     def clear(self) -> None:
         with self._lock:
             self._metadata.clear()
+            self._metadata_bytes.clear()
             self._columns.clear()
             self._column_bytes.clear()
-            self._cache_bytes = 0
+            self._metadata_cache_bytes = 0
+            self._column_cache_bytes = 0
             self._dataset_lru.clear()
 
     def remove_dataset(self, dataset_id: str) -> None:
         with self._lock:
-            self._metadata = {
-                key: value
-                for key, value in self._metadata.items()
-                if key[0] != dataset_id
-            }
+            for key in [key for key in self._metadata if key[0] == dataset_id]:
+                self._remove_metadata(key)
             for key in [key for key in self._columns if key[0] == dataset_id]:
                 self._remove_column(key)
             self._dataset_lru.pop(dataset_id, None)
@@ -144,6 +155,7 @@ class DataSessionCache:
             metadata_key = (dataset_id, encoding, timestamp_column)
             cached_metadata = self._metadata.get(metadata_key)
             metadata_hit = cached_metadata is not None
+            metadata_cached = metadata_hit
             initial_frame: pd.DataFrame | None = None
             if cached_metadata is None:
                 initial_frame = self._read_csv(path, encoding=encoding)
@@ -155,7 +167,7 @@ class DataSessionCache:
                     timestamp_column,
                     initial_frame,
                 )
-                self._store_metadata(cached_metadata)
+                metadata_cached = self._store_metadata(cached_metadata)
 
             metadata = cached_metadata.public
             requested = self._requested_order(metadata, requested_columns)
@@ -193,16 +205,19 @@ class DataSessionCache:
                     fingerprint,
                     full_columns,
                 )
-                self._store_column(full_key, initial_frame)
+                if metadata_cached:
+                    self._store_column(full_key, initial_frame)
                 frame = initial_frame.loc[:, requested].copy(deep=True)
             else:
                 frame = self._read_csv(path, encoding=encoding, usecols=requested)
                 frame[timestamp_column] = (
                     cached_metadata.parsed_timestamp_series.to_numpy(copy=False)
                 )
-                self._store_column(cache_key, frame)
+                if metadata_cached:
+                    self._store_column(cache_key, frame)
                 frame = frame.loc[:, requested].copy(deep=True)
-            self._touch_dataset(dataset_id)
+            if metadata_cached:
+                self._touch_dataset(dataset_id)
             return DataLoadResult(
                 frame,
                 metadata,
@@ -242,11 +257,24 @@ class DataSessionCache:
         if changed:
             self.remove_dataset(dataset_id)
 
-    def _store_metadata(self, metadata: _CachedDatasetMetadata) -> None:
+    def _store_metadata(self, metadata: _CachedDatasetMetadata) -> bool:
         public = metadata.public
         key = (public.dataset_id, public.encoding, public.timestamp_column)
+        size = int(
+            metadata.parsed_timestamp_series.memory_usage(index=True, deep=True)
+        )
+        if size > self.max_cache_bytes:
+            return False
+        if key in self._metadata:
+            self._remove_metadata(key)
+        self._evict_for_bytes(size, public.dataset_id)
+        if self._total_cache_bytes() + size > self.max_cache_bytes:
+            return False
         self._metadata[key] = metadata
+        self._metadata_bytes[key] = size
+        self._metadata_cache_bytes += size
         self._touch_dataset(public.dataset_id)
+        return True
 
     def _find_column_cache(
         self, requested_key: _ColumnCacheKey
@@ -276,19 +304,37 @@ class DataSessionCache:
             return
         if key in self._columns:
             self._remove_column(key)
+        while len(self._columns) >= self.max_column_entries:
+            self._remove_column(next(iter(self._columns)))
+        self._evict_for_bytes(size, key[0])
+        if self._total_cache_bytes() + size > self.max_cache_bytes:
+            return
         self._columns[key] = frame
         self._column_bytes[key] = size
-        self._cache_bytes += size
+        self._column_cache_bytes += size
+
+    def _evict_for_bytes(self, incoming_size: int, current_dataset: str) -> None:
         while (
-            len(self._columns) > self.max_column_entries
-            or self._cache_bytes > self.max_cache_bytes
+            self._columns
+            and self._total_cache_bytes() + incoming_size > self.max_cache_bytes
         ):
-            oldest = next(iter(self._columns))
-            self._remove_column(oldest)
+            self._remove_column(next(iter(self._columns)))
+        for dataset_id in list(self._dataset_lru):
+            if self._total_cache_bytes() + incoming_size <= self.max_cache_bytes:
+                break
+            if dataset_id != current_dataset:
+                self.remove_dataset(dataset_id)
+
+    def _total_cache_bytes(self) -> int:
+        return self._metadata_cache_bytes + self._column_cache_bytes
+
+    def _remove_metadata(self, key: tuple[str, str, str]) -> None:
+        self._metadata.pop(key, None)
+        self._metadata_cache_bytes -= self._metadata_bytes.pop(key, 0)
 
     def _remove_column(self, key: _ColumnCacheKey) -> None:
         self._columns.pop(key, None)
-        self._cache_bytes -= self._column_bytes.pop(key, 0)
+        self._column_cache_bytes -= self._column_bytes.pop(key, 0)
 
     def _touch_dataset(self, dataset_id: str) -> None:
         self._dataset_lru.pop(dataset_id, None)
