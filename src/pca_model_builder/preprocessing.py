@@ -552,7 +552,7 @@ def preprocess_window(
         state_filtered, tag_columns, config, final_segments
     )
     lag_warmup_mask = _lag_warmup_mask(
-        state_filtered.index, final_segments, config, eligible_for_lag
+        state_filtered.index, final_segments, config, ~eligible_for_lag
     )
     feature_is_valid = pd.Series(
         np.isfinite(lag_features.to_numpy(dtype=float)).all(axis=1),
@@ -691,24 +691,22 @@ def _lag_warmup_mask(
     index: pd.DatetimeIndex,
     segment_ids: pd.Series,
     config: PreprocessingConfig,
-    eligible: pd.Series | None = None,
+    excluded: pd.Series | None = None,
 ) -> pd.Series:
     mask = pd.Series(False, index=index)
     rows = config.max_lag_minutes // config.sample_interval_minutes
     if rows <= 0:
         return mask
     aligned = segment_ids.reindex(index)
-    eligible_mask = (
-        pd.Series(True, index=index)
-        if eligible is None
-        else eligible.reindex(index, fill_value=False)
+    excluded_mask = (
+        pd.Series(False, index=index)
+        if excluded is None
+        else excluded.reindex(index, fill_value=False)
     )
     for segment_id in aligned.drop_duplicates():
-        positions = np.flatnonzero(
-            (aligned.eq(segment_id) & eligible_mask).to_numpy()
-        )
+        positions = np.flatnonzero(aligned.eq(segment_id).to_numpy())
         mask.iloc[positions[: min(rows, len(positions))]] = True
-    return mask
+    return mask & ~excluded_mask
 
 
 def _mask_union_count(*masks: pd.Series) -> int:

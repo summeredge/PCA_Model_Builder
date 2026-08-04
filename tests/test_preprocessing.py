@@ -406,9 +406,9 @@ def test_loss_masks_are_disjoint_for_filter_and_lag_warmup():
     ]
     assert pd.concat(masks, axis=1).sum(axis=1).eq(1).all()
     assert result.summary.filter_warmup_loss == 1
-    assert result.summary.lag_warmup_loss == 2
+    assert result.summary.lag_warmup_loss == 1
     assert result.summary.filter_context_invalid_loss == 0
-    assert result.summary.lag_context_invalid_loss == 0
+    assert result.summary.lag_context_invalid_loss == 1
     assert result.summary.final_dynamic_row_count == 2
 
 
@@ -425,6 +425,39 @@ def test_filter_context_invalid_is_not_lag_context_without_lag():
     assert result.summary.filter_context_invalid_loss == 1
     assert result.summary.lag_warmup_loss == 0
     assert result.summary.lag_context_invalid_loss == 0
+
+
+def test_invalid_lag_history_is_context_invalid_not_structural_warmup():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [np.nan, 2.0, 3.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 0, 5, 5, filter_method="none"),
+        validate_quality=False,
+    )
+
+    assert result.summary.input_invalid_loss == 1
+    assert result.summary.lag_warmup_loss == 0
+    assert result.summary.lag_context_invalid_loss == 1
+    assert result.summary.final_dynamic_row_count == 1
+    assert result.lag_context_invalid_mask.loc[index[1]]
+    assert not result.lag_warmup_mask.loc[index[1]]
+    assert result.dynamic_valid_mask.loc[index[2]]
+
+
+def test_filter_context_invalid_history_is_lag_context_not_warmup():
+    index = pd.date_range("2026-01-01", periods=4, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [np.nan, 2.0, 3.0, 4.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 10, 5, 5),
+        validate_quality=False,
+    )
+
+    assert result.filter_context_invalid_mask.loc[index[1]]
+    assert result.lag_context_invalid_mask.loc[index[2]]
+    assert not result.lag_warmup_mask.loc[index[2]]
+    assert result.dynamic_valid_mask.loc[index[3]]
 
 
 def test_resampling_reduction_excludes_partial_bucket_rows():
