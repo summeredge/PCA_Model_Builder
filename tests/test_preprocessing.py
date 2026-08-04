@@ -383,3 +383,59 @@ def test_resampling_row_reduction_is_not_reported_as_smoothing_or_lag_loss():
     assert result.summary.filter_warmup_loss == 0
     assert result.summary.lag_warmup_loss == 0
     assert result.summary.lag_context_invalid_loss == 0
+
+
+def test_loss_masks_are_disjoint_for_filter_and_lag_warmup():
+    index = pd.date_range("2026-01-01", periods=5, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": np.arange(5, dtype=float)}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 10, 10, 5),
+        validate_quality=False,
+        include_intermediates=True,
+    )
+
+    masks = [
+        result.empty_bin_mask.reindex(result.state_filtered.index, fill_value=False),
+        result.input_invalid_mask,
+        result.filter_warmup_mask,
+        result.filter_context_invalid_mask,
+        result.lag_warmup_mask,
+        result.lag_context_invalid_mask,
+        result.dynamic_valid_mask,
+    ]
+    assert pd.concat(masks, axis=1).sum(axis=1).eq(1).all()
+    assert result.summary.filter_warmup_loss == 1
+    assert result.summary.lag_warmup_loss == 2
+    assert result.summary.filter_context_invalid_loss == 0
+    assert result.summary.lag_context_invalid_loss == 0
+    assert result.summary.final_dynamic_row_count == 2
+
+
+def test_filter_context_invalid_is_not_lag_context_without_lag():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [np.nan, 2.0, 3.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 10, 0, 5),
+        validate_quality=False,
+    )
+
+    assert result.summary.input_invalid_loss == 1
+    assert result.summary.filter_context_invalid_loss == 1
+    assert result.summary.lag_warmup_loss == 0
+    assert result.summary.lag_context_invalid_loss == 0
+
+
+def test_resampling_reduction_excludes_partial_bucket_rows():
+    index = pd.date_range("2026-01-01", periods=61, freq="1min")
+    result = preprocess_window(
+        pd.DataFrame({"A": np.arange(61, dtype=float)}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 0, 0, 5, resampling_method="mean", filter_method="none"),
+        resampling_window=(index[0], index[-1]),
+    )
+
+    assert result.summary.resampling_row_reduction == 48
+    assert result.summary.partial_resampling_bin_loss == 1
+    assert result.summary.partial_resampling_row_loss == 1

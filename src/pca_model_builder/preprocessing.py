@@ -141,12 +141,14 @@ class PreprocessingSummary:
     resampling_row_reduction: int
     empty_bin_count: int
     partial_resampling_bin_loss: int
+    partial_resampling_row_loss: int
     raw_segment_count: int
     raw_gap_count: int
     raw_gap_ranges: tuple[dict[str, str], ...]
     filter_method: str
     filter_window_minutes: int
     filter_warmup_loss: int
+    filter_context_invalid_loss: int
     state_filter_input_rows: int
     state_filter_output_rows: int
     lag_max_minutes: int
@@ -171,11 +173,14 @@ class PreprocessingResult:
     summary: PreprocessingSummary
     empty_bin_mask: pd.Series
     filter_warmup_mask: pd.Series
+    filter_context_invalid_mask: pd.Series
     final_segment_ids: pd.Series
     lag_warmup_mask: pd.Series
     lag_context_invalid_mask: pd.Series
     input_invalid_mask: pd.Series
+    dynamic_valid_mask: pd.Series
     partial_resampling_bin_loss_by_segment: Mapping[int, int]
+    partial_resampling_row_loss_by_segment: Mapping[int, int]
     raw: pd.DataFrame | None = None
     resampled: pd.DataFrame | None = None
     filtered: pd.DataFrame | None = None
@@ -435,6 +440,9 @@ def preprocess_window(
     empty_bin_parts: list[pd.Series] = []
     empty_bins = 0
     partial_bin_loss_by_segment: dict[int, int] = {}
+    partial_row_loss_by_segment: dict[int, int] = {}
+    source_rows_in_complete_bins = 0
+    non_empty_resampled_bins = 0
     for segment_id in raw_segments.unique():
         segment = raw.loc[raw_segments.eq(segment_id)]
         resampled, counts = _resample_segment_data(
@@ -448,9 +456,17 @@ def preprocess_window(
                 resampled.index <= window_end
             )
             partial_loss = int((~complete).sum())
+            partial_row_loss_by_segment[int(segment_id)] = int(
+                counts.loc[~complete].sum()
+            )
             resampled = resampled.loc[complete]
             counts = counts.loc[complete]
+        else:
+            partial_row_loss_by_segment[int(segment_id)] = 0
         partial_bin_loss_by_segment[int(segment_id)] = partial_loss
+        if config.resampling_method != "none":
+            source_rows_in_complete_bins += int(counts.sum())
+            non_empty_resampled_bins += int(counts.gt(0).sum())
         resampled_parts.append(resampled)
         resampled_segment_parts.append(pd.Series(segment_id, index=resampled.index))
         empty_bin_parts.append(counts.eq(0))
@@ -500,8 +516,6 @@ def preprocess_window(
         ),
         index=numeric_resampled.index,
     )
-    warmup_mask = structural_filter_warmup & input_is_valid & ~empty_bin_mask
-    filter_warmup_loss = int(warmup_mask.sum())
     state_filter_input_rows = len(filtered)
     state_filtered = apply_state_filters(filtered, config.state_filters)
     state_filter_output_rows = len(state_filtered)
@@ -511,40 +525,57 @@ def preprocess_window(
     )
     final_segments = breaks.cumsum().astype(int).set_axis(state_filtered.index) - 1
 
+    final_empty_bins = empty_bin_mask.reindex(state_filtered.index, fill_value=False)
+    final_input_valid = input_is_valid.reindex(state_filtered.index, fill_value=False)
+    input_invalid_mask = ~final_empty_bins & ~final_input_valid
+    final_filter_structural = structural_filter_warmup.reindex(
+        state_filtered.index, fill_value=False
+    )
+    warmup_mask = final_filter_structural & final_input_valid & ~final_empty_bins
+    filtered_is_valid = pd.Series(
+        np.isfinite(filtered.loc[:, tag_columns].to_numpy(dtype=float)).all(axis=1),
+        index=filtered.index,
+    ).reindex(state_filtered.index, fill_value=False)
+    filter_context_invalid_mask = (
+        ~final_empty_bins
+        & ~input_invalid_mask
+        & ~warmup_mask
+        & ~filtered_is_valid
+    )
+    eligible_for_lag = ~(
+        final_empty_bins
+        | input_invalid_mask
+        | warmup_mask
+        | filter_context_invalid_mask
+    )
     lag_features = _lag_feature_frame(
         state_filtered, tag_columns, config, final_segments
     )
     lag_warmup_mask = _lag_warmup_mask(
-        state_filtered.index, final_segments, config
+        state_filtered.index, final_segments, config, eligible_for_lag
     )
     feature_is_valid = pd.Series(
         np.isfinite(lag_features.to_numpy(dtype=float)).all(axis=1),
         index=lag_features.index,
     )
-    final_filter_warmup = structural_filter_warmup.reindex(
-        state_filtered.index, fill_value=False
-    )
-    final_empty_bins = empty_bin_mask.reindex(state_filtered.index, fill_value=False)
-    # A current-row problem is reported separately.  Remaining invalid rows
-    # therefore identify missing/non-finite history introduced by the dynamic
-    # context, rather than the structural Lag prefix.
-    current_input_invalid = ~np.isfinite(
-        state_filtered.loc[:, tag_columns].to_numpy(dtype=float)
-    ).all(axis=1)
-    input_invalid_mask = (
-        pd.Series(current_input_invalid, index=state_filtered.index)
-        & ~lag_warmup_mask
-        & ~final_filter_warmup
-        & ~final_empty_bins
-    )
     lag_context_invalid_mask = (
         ~feature_is_valid
+        & eligible_for_lag
         & ~lag_warmup_mask
-        & ~final_filter_warmup
-        & ~final_empty_bins
-        & ~input_invalid_mask
+        & (config.max_lag_minutes > 0)
     )
-    dynamic = lag_features.loc[feature_is_valid]
+    dynamic_valid_mask = eligible_for_lag & feature_is_valid
+    if _mask_union_count(
+        final_empty_bins,
+        input_invalid_mask,
+        warmup_mask,
+        filter_context_invalid_mask,
+        lag_warmup_mask,
+        lag_context_invalid_mask,
+        dynamic_valid_mask,
+    ) != len(state_filtered):
+        raise ValueError("preprocessing loss masks do not classify every row")
+    dynamic = lag_features.loc[dynamic_valid_mask]
     lag_warmup_loss = int(lag_warmup_mask.sum())
     summary = PreprocessingSummary(
         source_row_count=len(raw),
@@ -552,15 +583,21 @@ def preprocess_window(
         target_interval_minutes=config.sample_interval_minutes,
         resampling_method=config.resampling_method,
         resampled_row_count=len(resampled),
-        resampling_row_reduction=len(raw) - len(resampled),
+        resampling_row_reduction=(
+            0
+            if config.resampling_method == "none"
+            else source_rows_in_complete_bins - non_empty_resampled_bins
+        ),
         empty_bin_count=empty_bins,
         partial_resampling_bin_loss=sum(partial_bin_loss_by_segment.values()),
+        partial_resampling_row_loss=sum(partial_row_loss_by_segment.values()),
         raw_segment_count=int(raw_segments.nunique()) if len(raw_segments) else 0,
         raw_gap_count=len(gap_ranges),
         raw_gap_ranges=gap_ranges,
         filter_method=config.filter_method,
         filter_window_minutes=config.smoothing_window_minutes,
-        filter_warmup_loss=filter_warmup_loss,
+        filter_warmup_loss=int(warmup_mask.sum()),
+        filter_context_invalid_loss=int(filter_context_invalid_mask.sum()),
         state_filter_input_rows=state_filter_input_rows,
         state_filter_output_rows=state_filter_output_rows,
         lag_max_minutes=config.max_lag_minutes,
@@ -578,11 +615,14 @@ def preprocess_window(
         summary=summary,
         empty_bin_mask=empty_bin_mask,
         filter_warmup_mask=warmup_mask,
+        filter_context_invalid_mask=filter_context_invalid_mask,
         final_segment_ids=final_segments,
         lag_warmup_mask=lag_warmup_mask,
         lag_context_invalid_mask=lag_context_invalid_mask,
         input_invalid_mask=input_invalid_mask,
+        dynamic_valid_mask=dynamic_valid_mask,
         partial_resampling_bin_loss_by_segment=partial_bin_loss_by_segment,
+        partial_resampling_row_loss_by_segment=partial_row_loss_by_segment,
         raw=raw if include_intermediates else None,
         resampled=numeric_resampled if include_intermediates else None,
         filtered=filtered if include_intermediates else None,
@@ -651,16 +691,34 @@ def _lag_warmup_mask(
     index: pd.DatetimeIndex,
     segment_ids: pd.Series,
     config: PreprocessingConfig,
+    eligible: pd.Series | None = None,
 ) -> pd.Series:
     mask = pd.Series(False, index=index)
     rows = config.max_lag_minutes // config.sample_interval_minutes
     if rows <= 0:
         return mask
     aligned = segment_ids.reindex(index)
+    eligible_mask = (
+        pd.Series(True, index=index)
+        if eligible is None
+        else eligible.reindex(index, fill_value=False)
+    )
     for segment_id in aligned.drop_duplicates():
-        positions = np.flatnonzero(aligned.eq(segment_id).to_numpy())
+        positions = np.flatnonzero(
+            (aligned.eq(segment_id) & eligible_mask).to_numpy()
+        )
         mask.iloc[positions[: min(rows, len(positions))]] = True
     return mask
+
+
+def _mask_union_count(*masks: pd.Series) -> int:
+    if not masks:
+        return 0
+    combined = pd.concat(masks, axis=1).astype(int)
+    counts = combined.sum(axis=1)
+    if not counts.eq(1).all():
+        raise ValueError("preprocessing loss masks overlap")
+    return len(counts)
 
 
 def _source_interval_minutes(index: pd.DatetimeIndex) -> float | None:

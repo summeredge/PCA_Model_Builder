@@ -96,8 +96,9 @@ def test_training_summary_separates_resampling_reduction_from_warmup():
     )
 
     summary = result.window_summaries[0]
-    assert summary["resampling_row_reduction"] == 49
+    assert summary["resampling_row_reduction"] == 48
     assert summary["partial_resampling_bin_loss"] == 1
+    assert summary["partial_resampling_row_loss"] == 1
     assert summary["filter_warmup_loss"] == 0
     assert summary["lag_warmup_loss"] == 0
     assert summary["lag_context_invalid_loss"] == 0

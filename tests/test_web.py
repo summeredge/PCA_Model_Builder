@@ -1088,6 +1088,8 @@ def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
     assert 'id="trainingWindowSummary"' in web.INDEX_HTML
     assert 'id="trainingQualityWarnings"' in web.INDEX_HTML
     assert "renderTrainingWindowSummary(data.training_window_summary||[])" in web.INDEX_HTML
+    assert "部分桶原始行删除" in web.INDEX_HTML
+    assert "滤波上下文无效" in web.INDEX_HTML
     _, manifest = load_model_package(
         tmp_path / "runs" / trained["run_id"] / "model.pcamodel"
     )

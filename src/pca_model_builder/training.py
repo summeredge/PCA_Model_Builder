@@ -139,7 +139,18 @@ def build_training_matrix(
                     "end": segment.index[-1].isoformat(),
                     "raw_samples": len(segment),
                     "resampled_samples": len(resampled_segment),
-                    "resampling_row_reduction": len(segment) - len(resampled_segment),
+                    "resampling_row_reduction": max(
+                        0,
+                        len(segment)
+                        - processed.partial_resampling_row_loss_by_segment.get(
+                            int(segment_id), 0
+                        )
+                        - int(
+                            (~processed.empty_bin_mask.reindex(
+                                resampled_segment.index
+                            ).fillna(False)).sum()
+                        ),
+                    ) if config.resampling_method != "none" else 0,
                     "empty_bins": int(
                         processed.empty_bin_mask.reindex(resampled_segment.index)
                         .fillna(False)
@@ -148,7 +159,15 @@ def build_training_matrix(
                     "partial_resampling_bin_loss": processed.partial_resampling_bin_loss_by_segment.get(
                         int(segment_id), 0
                     ),
+                    "partial_resampling_row_loss": processed.partial_resampling_row_loss_by_segment.get(
+                        int(segment_id), 0
+                    ),
                     "filter_warmup_loss": filter_loss,
+                    "filter_context_invalid_loss": int(
+                        processed.filter_context_invalid_mask.reindex(state_segment.index)
+                        .fillna(False)
+                        .sum()
+                    ),
                     "state_filter_input_rows": len(filtered_segment),
                     "state_filter_output_rows": len(state_segment),
                     "state_filter_loss": len(filtered_segment) - len(state_segment),
@@ -204,11 +223,13 @@ def build_training_matrix(
                 "resampling_row_reduction": preprocessing_summary.resampling_row_reduction,
                 "empty_bins": preprocessing_summary.empty_bin_count,
                 "partial_resampling_bin_loss": preprocessing_summary.partial_resampling_bin_loss,
+                "partial_resampling_row_loss": preprocessing_summary.partial_resampling_row_loss,
                 "raw_segment_count": preprocessing_summary.raw_segment_count,
                 "raw_gap_count": preprocessing_summary.raw_gap_count,
                 "raw_gap_ranges": list(preprocessing_summary.raw_gap_ranges),
                 "filter_method": config.filter_method,
                 "filter_warmup_loss": preprocessing_summary.filter_warmup_loss,
+                "filter_context_invalid_loss": preprocessing_summary.filter_context_invalid_loss,
                 "state_filter_input_rows": preprocessing_summary.state_filter_input_rows,
                 "state_filter_output_rows": preprocessing_summary.state_filter_output_rows,
                 "state_filter_loss": (
