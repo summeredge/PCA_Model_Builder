@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import pca_model_builder.trend as trend_module
 from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.trend import (
     downsample_trend,
@@ -167,6 +168,60 @@ def test_trend_payload_separates_raw_resampled_and_filtered_stages():
         "smoothed": "filtered",
         "resampling_applied": True,
     }
+
+
+def test_stage_rows_are_display_limited_without_changing_statistics(monkeypatch):
+    monkeypatch.setattr(trend_module, "MAX_TREND_POINTS", 12)
+    first = pd.date_range("2026-01-01", periods=20, freq="5min")
+    second = pd.date_range(first[-1] + pd.Timedelta(minutes=20), periods=20, freq="5min")
+    index = first.append(second)
+    values = np.zeros(len(index))
+    values[10] = 100.0
+    values[25] = -100.0
+    values[30] = np.nan
+    result = trend_payload_data(
+        pd.DataFrame({"A": values}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 5, 0, 5),
+        index[0],
+        index[-1],
+        "both",
+        {"A": {}},
+    )
+
+    for stage in ("raw", "resampled", "filtered"):
+        rows = result["stage_rows"][stage]
+        assert len(rows) <= 12
+        assert result["stage_counts"][stage]["analysis_rows"] == 40
+        assert result["stage_counts"][stage]["display_rows"] == len(rows)
+        assert rows[0]["timestamp"] == index[0].isoformat()
+        assert rows[-1]["timestamp"] == index[-1].isoformat()
+    raw_rows = result["stage_rows"]["raw"]
+    assert any(row["A"] == 100.0 for row in raw_rows)
+    assert any(row["A"] == -100.0 for row in raw_rows)
+    assert any(row["A"] is None for row in raw_rows)
+    assert any(row["physical_gap_start"] for row in raw_rows)
+    assert result["statistics"]["A"]["current"]["sample_count"] == 40
+
+
+def test_physical_gap_marker_does_not_mark_series_or_display_start():
+    first = pd.date_range("2026-01-01", periods=4, freq="5min")
+    second = pd.date_range(first[-1] + pd.Timedelta(minutes=20), periods=4, freq="5min")
+    index = first.append(second)
+    result = trend_payload_data(
+        pd.DataFrame({"A": np.arange(8, dtype=float)}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 10, 0, 5),
+        index[2],
+        index[-1],
+        "both",
+        {"A": {}},
+    )
+
+    assert result["rows"][0]["physical_gap_start"] is False
+    assert result["stage_rows"]["raw"][0]["physical_gap_start"] is False
+    assert any(row["physical_gap_start"] for row in result["rows"])
+    assert result["stage_rows"]["filtered"][0]["physical_gap_start"] is False
 
 
 @pytest.mark.parametrize(

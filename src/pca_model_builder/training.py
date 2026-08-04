@@ -131,9 +131,6 @@ def build_training_matrix(
                 .fillna(False)
                 .sum()
             )
-            lag_input = int(
-                state_segment.loc[:, tag_columns].notna().all(axis=1).sum()
-            )
             status = "used" if effective_samples else "dropped"
             segment_summaries.append(
                 {
@@ -142,6 +139,7 @@ def build_training_matrix(
                     "end": segment.index[-1].isoformat(),
                     "raw_samples": len(segment),
                     "resampled_samples": len(resampled_segment),
+                    "resampling_row_reduction": len(segment) - len(resampled_segment),
                     "empty_bins": int(
                         processed.empty_bin_mask.reindex(resampled_segment.index)
                         .fillna(False)
@@ -153,9 +151,28 @@ def build_training_matrix(
                     "filter_warmup_loss": filter_loss,
                     "state_filter_input_rows": len(filtered_segment),
                     "state_filter_output_rows": len(state_segment),
-                    "lag_warmup_loss": lag_input - effective_samples,
+                    "state_filter_loss": len(filtered_segment) - len(state_segment),
+                    "lag_warmup_loss": int(
+                        processed.lag_warmup_mask.reindex(state_segment.index)
+                        .fillna(False)
+                        .sum()
+                    ),
+                    "lag_context_invalid_loss": int(
+                        processed.lag_context_invalid_mask.reindex(state_segment.index)
+                        .fillna(False)
+                        .sum()
+                    ),
+                    "input_invalid_loss": int(
+                        processed.input_invalid_mask.reindex(state_segment.index)
+                        .fillna(False)
+                        .sum()
+                    ),
                     "effective_samples": effective_samples,
-                    "smoothing_lag_loss": len(segment) - effective_samples,
+                    "smoothing_lag_loss": filter_loss + int(
+                        processed.lag_warmup_mask.reindex(state_segment.index)
+                        .fillna(False)
+                        .sum()
+                    ),
                     "status": status,
                     "dropped_reason": (
                         None
@@ -184,6 +201,7 @@ def build_training_matrix(
                 "target_interval_minutes": config.sample_interval_minutes,
                 "resampling_method": config.resampling_method,
                 "resampled_samples": preprocessing_summary.resampled_row_count,
+                "resampling_row_reduction": preprocessing_summary.resampling_row_reduction,
                 "empty_bins": preprocessing_summary.empty_bin_count,
                 "partial_resampling_bin_loss": preprocessing_summary.partial_resampling_bin_loss,
                 "raw_segment_count": preprocessing_summary.raw_segment_count,
@@ -193,9 +211,18 @@ def build_training_matrix(
                 "filter_warmup_loss": preprocessing_summary.filter_warmup_loss,
                 "state_filter_input_rows": preprocessing_summary.state_filter_input_rows,
                 "state_filter_output_rows": preprocessing_summary.state_filter_output_rows,
+                "state_filter_loss": (
+                    preprocessing_summary.state_filter_input_rows
+                    - preprocessing_summary.state_filter_output_rows
+                ),
                 "lag_warmup_loss": preprocessing_summary.lag_warmup_loss,
+                "lag_context_invalid_loss": preprocessing_summary.lag_context_invalid_loss,
+                "input_invalid_loss": preprocessing_summary.input_invalid_loss,
                 "effective_samples": effective_samples,
-                "smoothing_lag_loss": len(indexed) - effective_samples,
+                "smoothing_lag_loss": (
+                    preprocessing_summary.filter_warmup_loss
+                    + preprocessing_summary.lag_warmup_loss
+                ),
                 "dropped_reason": (
                     None
                     if effective_samples

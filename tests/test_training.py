@@ -75,6 +75,35 @@ def test_training_builds_windows_independently_without_lag_or_smoothing_leakage(
     assert [summary["effective_samples"] for summary in result.window_summaries] == [17, 37]
 
 
+def test_training_summary_separates_resampling_reduction_from_warmup():
+    time = pd.date_range("2026-01-01", periods=61, freq="1min")
+    frame = pd.DataFrame(
+        {
+            "time": time,
+            "A": np.arange(61, dtype=float),
+            "B": np.sin(np.arange(61, dtype=float)),
+            "C": np.cos(np.arange(61, dtype=float)),
+        }
+    )
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(
+            5, 0, 0, 5, resampling_method="mean", filter_method="none"
+        ),
+        _windows((frame.time.iloc[0], frame.time.iloc[-1], True)),
+    )
+
+    summary = result.window_summaries[0]
+    assert summary["resampling_row_reduction"] == 49
+    assert summary["partial_resampling_bin_loss"] == 1
+    assert summary["filter_warmup_loss"] == 0
+    assert summary["lag_warmup_loss"] == 0
+    assert summary["lag_context_invalid_loss"] == 0
+    assert summary["smoothing_lag_loss"] == 0
+
+
 def test_training_restarts_preprocessing_at_physical_time_gap_and_records_segments():
     frame = _frame(40)
     frame.loc[:19, ["A", "B", "C"]] = 10_000.0

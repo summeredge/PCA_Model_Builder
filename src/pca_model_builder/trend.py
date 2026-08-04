@@ -142,10 +142,12 @@ def trend_payload_data(
     )
     current_raw = raw.reindex(display_index)
     current_smoothed = filtered.reindex(display_index)
-    raw_gap_starts = _gap_start_mask(raw_segments).reindex(
+    raw_gap_mask = _gap_start_mask(raw_segments)
+    filtered_gap_mask = _gap_start_mask(processed_segments)
+    raw_gap_starts = raw_gap_mask.reindex(
         display_index, fill_value=False
     )
-    filtered_gap_starts = _gap_start_mask(processed_segments).reindex(
+    filtered_gap_starts = filtered_gap_mask.reindex(
         display_index, fill_value=False
     )
     current_segments = (raw_gap_starts | filtered_gap_starts).cumsum().astype(int)
@@ -163,11 +165,15 @@ def trend_payload_data(
                 item[f"{tag}__smoothed"] = _json_number(
                     current_smoothed.iloc[position][tag]
                 )
-        item["raw_gap_start"] = bool(raw_gap_starts.loc[timestamp])
-        item["filtered_gap_start"] = bool(filtered_gap_starts.loc[timestamp])
-        item["gap_start"] = bool(
-            item["raw_gap_start"] or item["filtered_gap_start"]
+        item["raw_physical_gap_start"] = bool(raw_gap_starts.loc[timestamp])
+        item["filtered_physical_gap_start"] = bool(filtered_gap_starts.loc[timestamp])
+        item["physical_gap_start"] = bool(
+            item["raw_physical_gap_start"]
+            or item["filtered_physical_gap_start"]
         )
+        item["raw_gap_start"] = item["raw_physical_gap_start"]
+        item["filtered_gap_start"] = item["filtered_physical_gap_start"]
+        item["gap_start"] = item["physical_gap_start"]
         rows.append(item)
 
     statistics: dict[str, Any] = {}
@@ -217,6 +223,13 @@ def trend_payload_data(
         values.extend(ranges[tag].values())
         minimum, maximum = trend_axis_limits(values)
         axis_limits[tag] = {"minimum": minimum, "maximum": maximum}
+    stage_payloads = _stage_payloads(
+        raw.loc[raw_mask, tags],
+        resampled.loc[(resampled.index >= start) & (resampled.index <= end), tags],
+        filtered.loc[processed_mask, tags],
+        raw_segments,
+        processed_segments,
+    )
     return {
         "tags": list(tags),
         "display_mode": display_mode,
@@ -225,16 +238,8 @@ def trend_payload_data(
             "smoothed": "filtered",
             "resampling_applied": config.resampling_method != "none",
         },
-        "stage_rows": {
-            "raw": _stage_rows(raw.loc[raw_mask, tags], raw_segments),
-            "resampled": _stage_rows(
-                resampled.loc[(resampled.index >= start) & (resampled.index <= end), tags],
-                processed_segments,
-            ),
-            "filtered": _stage_rows(
-                filtered.loc[processed_mask, tags], processed_segments
-            ),
-        },
+        "stage_rows": stage_payloads["rows"],
+        "stage_counts": stage_payloads["counts"],
         "rows": rows,
         "statistics": statistics,
         "histogram": histogram,
@@ -244,12 +249,40 @@ def trend_payload_data(
     }
 
 
-def _stage_rows(frame: pd.DataFrame, segments: pd.Series) -> list[dict[str, Any]]:
-    aligned = segments.reindex(frame.index)
-    gap_starts = _gap_start_mask(aligned)
+def _stage_payloads(
+    raw: pd.DataFrame,
+    resampled: pd.DataFrame,
+    filtered: pd.DataFrame,
+    raw_segments: pd.Series,
+    processed_segments: pd.Series,
+) -> dict[str, Any]:
+    stages = {
+        "raw": (raw, raw_segments),
+        "resampled": (resampled, processed_segments),
+        "filtered": (filtered, processed_segments),
+    }
+    rows: dict[str, list[dict[str, Any]]] = {}
+    counts: dict[str, dict[str, int]] = {}
+    for name, (frame, segments) in stages.items():
+        positions = downsample_trend(
+            frame, frame, segments.reindex(frame.index), limit=MAX_TREND_POINTS
+        )
+        rows[name] = _stage_rows(
+            frame.iloc[positions], _gap_start_mask(segments).reindex(frame.index)
+        )
+        counts[name] = {
+            "analysis_rows": len(frame),
+            "display_rows": len(rows[name]),
+        }
+    return {"rows": rows, "counts": counts}
+
+
+def _stage_rows(frame: pd.DataFrame, physical_gap_mask: pd.Series) -> list[dict[str, Any]]:
+    gap_starts = physical_gap_mask.reindex(frame.index, fill_value=False)
     return [
         {
             "timestamp": timestamp.isoformat(),
+            "physical_gap_start": bool(gap_starts.loc[timestamp]),
             "gap_start": bool(gap_starts.loc[timestamp]),
             **{column: _json_number(value) for column, value in row.items()},
         }
@@ -261,7 +294,7 @@ def _gap_start_mask(segment_ids: pd.Series) -> pd.Series:
     if segment_ids.empty:
         return pd.Series(dtype=bool, index=segment_ids.index)
     result = segment_ids.ne(segment_ids.shift())
-    result.iloc[0] = True
+    result.iloc[0] = False
     return result.astype(bool)
 
 

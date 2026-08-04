@@ -268,7 +268,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       let current = [];
       item.points.forEach((point, index) => {
         const value = finiteNumber(point.y);
-        if (point.gap_start && current.length) { segments.push(current); current = []; }
+        if (point.physical_gap_start && current.length) { segments.push(current); current = []; }
         if (value === null) { if (current.length) segments.push(current); current = []; return; }
         current.push(`${x(index).toFixed(2)},${y(value, ranges[seriesIndex]).toFixed(2)}`);
       });
@@ -467,12 +467,14 @@ def _trend_payload_data(
     for position in positions:
         timestamp = current.index[position]
         full_position = int(raw.index.get_loc(timestamp))
+        physical_gap_start = bool(
+            full_position > 0
+            and segments.iloc[full_position] != segments.iloc[full_position - 1]
+        )
         record: dict[str, Any] = {
             "timestamp": timestamp.isoformat(),
-            "gap_start": bool(
-                full_position > 0
-                and segments.iloc[full_position] != segments.iloc[full_position - 1]
-            ),
+            "physical_gap_start": physical_gap_start,
+            "gap_start": physical_gap_start,
         }
         for tag in tags:
             value = current.iloc[position][tag]
@@ -524,6 +526,7 @@ def _trend_payload_data(
                 {
                     "x": row["timestamp"],
                     "y": row[f"{tag}__raw"],
+                    "physical_gap_start": row["physical_gap_start"],
                     "gap_start": row["gap_start"],
                 }
                 for row in rows

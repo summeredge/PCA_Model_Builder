@@ -322,3 +322,64 @@ def test_original_missing_value_is_not_counted_as_filter_warmup():
     )
 
     assert result.summary.filter_warmup_loss == 0
+
+
+def test_lag_summary_separates_structural_warmup_from_missing_context():
+    index = pd.date_range("2026-01-01", periods=5, freq="5min")
+    normal = preprocess_window(
+        pd.DataFrame({"A": range(5)}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 0, 10, 5, filter_method="none"),
+    )
+    no_lag = preprocess_window(
+        pd.DataFrame({"A": range(5)}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+    )
+
+    assert normal.summary.lag_warmup_loss == 2
+    assert normal.summary.lag_context_invalid_loss == 0
+    assert normal.summary.final_dynamic_row_count == 3
+    assert no_lag.summary.lag_warmup_loss == 0
+
+
+def test_lag_context_invalid_is_not_structural_warmup_after_empty_bin():
+    index = pd.date_range("2026-01-01 00:01", periods=5, freq="1min").append(
+        pd.date_range("2026-01-01 00:11", periods=5, freq="1min")
+    )
+    result = preprocess_window(
+        pd.DataFrame({"A": np.arange(10, dtype=float)}, index=index),
+        ["A"],
+        PreprocessingConfig(
+            5,
+            0,
+            5,
+            5,
+            resampling_method="mean",
+            filter_method="none",
+            gap_threshold_minutes=10,
+        ),
+        validate_quality=False,
+    )
+
+    assert result.summary.empty_bin_count == 1
+    assert result.summary.lag_warmup_loss == 1
+    assert result.summary.lag_context_invalid_loss == 1
+    assert result.lag_context_invalid_mask.loc["2026-01-01 00:15"]
+
+
+def test_resampling_row_reduction_is_not_reported_as_smoothing_or_lag_loss():
+    index = pd.date_range("2026-01-01", periods=61, freq="1min")
+    result = preprocess_window(
+        pd.DataFrame({"A": np.arange(61, dtype=float)}, index=index),
+        ["A"],
+        PreprocessingConfig(
+            5, 0, 0, 5, resampling_method="mean", filter_method="none"
+        ),
+    )
+
+    assert result.summary.resampling_row_reduction == 48
+    assert result.summary.partial_resampling_bin_loss == 0
+    assert result.summary.filter_warmup_loss == 0
+    assert result.summary.lag_warmup_loss == 0
+    assert result.summary.lag_context_invalid_loss == 0

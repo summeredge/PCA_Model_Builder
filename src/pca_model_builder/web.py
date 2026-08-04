@@ -508,7 +508,10 @@ def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _preview_rows(
     frame: pd.DataFrame, segment_ids: pd.Series
 ) -> list[dict[str, Any]]:
-    gap_starts = segment_ids.ne(segment_ids.shift()).reindex(frame.index).fillna(True)
+    full_gap_starts = segment_ids.ne(segment_ids.shift())
+    if len(full_gap_starts):
+        full_gap_starts.iloc[0] = False
+    gap_starts = full_gap_starts.reindex(frame.index, fill_value=False)
     if len(frame) > MAX_CHART_POINTS:
         positions = downsample_trend(
             frame,
@@ -521,6 +524,7 @@ def _preview_rows(
     return [
         {
             "timestamp": timestamp.isoformat(),
+            "physical_gap_start": bool(gap_starts.loc[timestamp]),
             "gap_start": bool(gap_starts.loc[timestamp]),
             **{
                 column: (
@@ -2062,9 +2066,9 @@ el("preprocessingPreviewButton").addEventListener("click",async()=>{
 });
 function renderPreprocessingPreview(data,tags){
   const s=data.summary; const resampledLabel=s.resampling_method==="none"?"未重采样输入":"重采样后";
-  const summary=`源数据 ${s.source_row_count}；${resampledLabel} ${s.resampled_row_count}；物理段 ${s.raw_segment_count}；原始缺口 ${s.raw_gap_count}；空桶 ${s.empty_bin_count}；滤波损失 ${s.filter_warmup_loss}；状态过滤损失 ${s.state_filter_input_rows-s.state_filter_output_rows}；Lag损失 ${s.lag_warmup_loss}；最终动态样本 ${s.final_dynamic_row_count}；动态特征 ${s.dynamic_feature_count}`;
+  const summary=`源数据 ${s.source_row_count}；${resampledLabel} ${s.resampled_row_count}；重采样行减少 ${s.resampling_row_reduction}；物理段 ${s.raw_segment_count}；原始缺口 ${s.raw_gap_count}；空桶 ${s.empty_bin_count}；滤波结构预热 ${s.filter_warmup_loss}；状态过滤损失 ${s.state_filter_input_rows-s.state_filter_output_rows}；Lag结构预热 ${s.lag_warmup_loss}；动态上下文无效 ${s.lag_context_invalid_loss}；最终动态样本 ${s.final_dynamic_row_count}；动态特征 ${s.dynamic_feature_count}`;
   const labels={raw:"raw 原始",resampled:"resampled 重采样",filtered:"filtered 因果滤波"};
-  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage].slice(0,12); const head=`<tr><th>时间</th>${tags.map(tag=>`<th>${escapeHtml(tag)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(row.timestamp.slice(0,19))}${row.gap_start?"（新段）":""}</td>${tags.map(tag=>`<td>${row[tag]===null?"缺失":escapeHtml(String(row[tag]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}${body}</table></div>`;}).join("");
+  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage].slice(0,12); const head=`<tr><th>时间</th>${tags.map(tag=>`<th>${escapeHtml(tag)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(row.timestamp.slice(0,19))}${row.physical_gap_start?"（物理缺口后）":""}</td>${tags.map(tag=>`<td>${row[tag]===null?"缺失":escapeHtml(String(row[tag]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}${body}</table></div>`;}).join("");
   el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${tables}`;
 }
 el("trendZoom").addEventListener("input",()=>{ el("trendChart").querySelectorAll("svg").forEach(svg=>svg.style.width=`${760*Number(el("trendZoom").value)}px`); });
@@ -2201,9 +2205,9 @@ function formatStat(key,value) { if(value===null||value===undefined) return "—
 function trendSvg(data,tag,colorIndex,zoom) {
   const rows=data.rows,width=760*zoom,height=230,pad={l:48,r:16,t:16,b:28}; const fields=[]; if(data.display_mode!=="smoothed") fields.push([`${tag}__raw`,"#176b87","原始"]); if(data.display_mode!=="raw") fields.push([`${tag}__smoothed`,"#d97706",data.series_stage?.resampling_applied?"重采样后因果滤波":"因果滤波"]);
   const ranges=data.ranges[tag]||{}; const limits=data.axis_limits[tag]; const minimum=limits.minimum,maximum=limits.maximum,span=maximum-minimum; const x=i=>pad.l+i/Math.max(1,rows.length-1)*(width-pad.l-pad.r),y=value=>height-pad.b-(Number(value)-minimum)/span*(height-pad.t-pad.b);
-  const polylines=fields.map(([field,color,label])=>{ const gapField=field.endsWith("__raw")?"raw_gap_start":"filtered_gap_start"; let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row[gapField]) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(row.timestamp)} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(row.timestamp)} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
+  const polylines=fields.map(([field,color,label])=>{ const gapField=field.endsWith("__raw")?"raw_physical_gap_start":"filtered_physical_gap_start"; let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row[gapField]) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(row.timestamp)} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(row.timestamp)} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
   const rangeLine=(key,color,label)=>ranges[key]===null||ranges[key]===undefined?"":`<line x1="${pad.l}" x2="${width-pad.r}" y1="${y(ranges[key])}" y2="${y(ranges[key])}" stroke="${color}" stroke-dasharray="5 4"><title>${label}: ${ranges[key]}</title></line>`;
-  const gaps=rows.map((row,i)=>row.gap_start?`<line x1="${x(i)}" x2="${x(i)}" y1="${pad.t}" y2="${height-pad.b}" stroke="#cf3f36" stroke-dasharray="3 3"><title>物理时间缺口</title></line>`:"").join("");
+  const gaps=rows.map((row,i)=>row.physical_gap_start?`<line x1="${x(i)}" x2="${x(i)}" y1="${pad.t}" y2="${height-pad.b}" stroke="#cf3f36" stroke-dasharray="3 3"><title>物理时间缺口</title></line>`:"").join("");
   return `<svg viewBox="0 0 ${width} ${height}" style="width:${width}px" aria-label="${escapeHtml(tag)}趋势">${gaps}${rangeLine("engineering_min","#64748b","工程下限")}${rangeLine("engineering_max","#64748b","工程上限")}${rangeLine("normal_min","#16845b","正常下限")}${rangeLine("normal_max","#16845b","正常上限")}${rangeLine("alarm_min","#cf3f36","报警下限")}${rangeLine("alarm_max","#cf3f36","报警上限")}${polylines}<text x="4" y="20" font-size="10">${maximum.toPrecision(4)}</text><text x="4" y="${height-pad.b}" font-size="10">${minimum.toPrecision(4)}</text></svg>`;
 }
 function renderHistogram(histogram) {
@@ -2247,12 +2251,12 @@ function renderTrainingWindowSummary(windows) {
   const container=el("trainingWindowSummary"); container.replaceChildren();
   if(!windows.length) { container.textContent="未提供训练窗口摘要。"; return; }
   const table=document.createElement("table"), head=document.createElement("thead"), body=document.createElement("tbody");
-  const header=document.createElement("tr"); ["范围","状态","原始样本","有效动态样本","平滑/Lag 损失","原因"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
+  const header=document.createElement("tr"); ["范围","状态","重采样减少","滤波预热","状态过滤","Lag预热","上下文无效","有效动态样本","原因"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
   windows.forEach(window=>{
     const row=document.createElement("tr");
-    [`窗口 ${window.id}: ${window.start.slice(0,16)} ～ ${window.end.slice(0,16)}`,window.status,window.raw_samples,window.effective_samples,window.smoothing_lag_loss??"—",window.dropped_reason??"—"].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; row.append(td); }); body.append(row);
+    [`窗口 ${window.id}: ${window.start.slice(0,16)} ～ ${window.end.slice(0,16)}`,window.status,window.resampling_row_reduction??"—",window.filter_warmup_loss??"—",window.state_filter_loss??"—",window.lag_warmup_loss??"—",window.lag_context_invalid_loss??"—",window.effective_samples,window.dropped_reason??"—"].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; row.append(td); }); body.append(row);
     (window.segments||[]).forEach(segment=>{ const segmentRow=document.createElement("tr");
-      [`连续段 ${segment.start.slice(0,16)} ～ ${segment.end.slice(0,16)}`,segment.status,segment.raw_samples,segment.effective_samples,segment.smoothing_lag_loss,segment.dropped_reason??"—"].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; segmentRow.append(td); }); body.append(segmentRow);
+      [`连续段 ${segment.start.slice(0,16)} ～ ${segment.end.slice(0,16)}`,segment.status,segment.resampling_row_reduction??"—",segment.filter_warmup_loss??"—",segment.state_filter_loss??"—",segment.lag_warmup_loss??"—",segment.lag_context_invalid_loss??"—",segment.effective_samples,segment.dropped_reason??"—"].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; segmentRow.append(td); }); body.append(segmentRow);
     });
   });
   table.append(head,body); container.append(table);
