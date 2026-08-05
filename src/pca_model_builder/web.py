@@ -2759,7 +2759,7 @@ function renderClustering(data) {
 function modelLifecycle(data) {
   const key=`${data.model_purpose}/${data.model_status}`;
   if(key==="exploratory/draft") return {purpose:"探索模型",status:"草稿",notice:"探索草稿模型，仅用于状态探索，不能执行独立验证或作为正常状态模型。"};
-  if(key==="normal_state/validated") return {purpose:"正常状态模型",status:"已验证",notice:"已验证模型，可用于已完成工程师确认的正常状态监测。"};
+  if(key==="normal_state/validated") return {purpose:"正常状态模型",status:"已验证",notice:"已验证模型，已完成独立验证和工程师确认；尚未执行工程冻结。"};
   return {purpose:"正常状态模型",status:"候选",notice:"正常状态候选模型，尚未完成独立验证和工程师确认。"};
 }
 function renderTraining(data) {

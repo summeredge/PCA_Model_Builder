@@ -181,7 +181,7 @@ def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None
     for text in (
         "探索草稿模型，仅用于状态探索，不能执行独立验证或作为正常状态模型。",
         "正常状态候选模型，尚未完成独立验证和工程师确认。",
-        "已验证模型，可用于已完成工程师确认的正常状态监测。",
+        "已验证模型，已完成独立验证和工程师确认；尚未执行工程冻结。",
         "只有正常状态候选模型可以执行独立验证。",
         "验证回放完成，待工程师确认",
         "已生成 normal_state/validated 模型副本",
@@ -192,6 +192,10 @@ def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None
         "当前保存的是草稿模型",
         "训练草稿模型后可执行独立验证",
         "模型状态（草稿）",
+        "已验证模型，可用于已完成工程师确认的正常状态监测。",
+        "可用于监测",
+        "可部署",
+        "可上线",
     ):
         assert text not in html
 
