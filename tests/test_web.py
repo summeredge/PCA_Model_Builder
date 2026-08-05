@@ -190,6 +190,7 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
         "解释率累计曲线",
         "原始Tag平方载荷能量",
         "Lag平方载荷能量",
+        "当前为探索草稿模型；仅 normal_state/candidate 模型显示候选模型结构诊断。",
     ):
         assert text in source
     assert "最佳模型" not in source
@@ -216,8 +217,11 @@ def test_final_web_model_comparison_routes_only_read_saved_candidates(
         "lag_step_minutes": 5,
         "model_name": "comparison-candidate",
     }
-    first = web.train_payload(base)
-    second = web.train_payload({**base, "smoothing_window_minutes": 5})
+    first = web_model_results.train_payload(base)
+    second = web_model_results.train_payload({**base, "smoothing_window_minutes": 5})
+    exploratory = web_model_results.train_payload(
+        {**base, "model_purpose": "exploratory"}
+    )
     first_path = tmp_path / "runs" / first["run_id"] / "model.pcamodel"
     before = first_path.read_bytes(), first_path.stat().st_mtime_ns
 
@@ -237,6 +241,12 @@ def test_final_web_model_comparison_routes_only_read_saved_candidates(
 
     assert diagnostic_status == 200
     assert diagnostic["run_id"] == first["run_id"]
+    assert first["model_diagnostic"]["run_id"] == first["run_id"]
+    assert "model_diagnostic" not in exploratory
+    with pytest.raises(ValueError, match="仅允许查看normal_state/candidate模型诊断"):
+        web_model_results.model_diagnostic_payload(
+            {"run_id": exploratory["run_id"]}
+        )
     assert candidates_status == 200
     assert {item["run_id"] for item in candidates["candidates"]} == {
         first["run_id"],

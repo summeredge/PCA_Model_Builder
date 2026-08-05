@@ -164,9 +164,13 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     model_path = _BASE_WEB.RUNS_DIR / str(result["run_id"]) / "model.pcamodel"
     model, manifest = _BASE_WEB.load_model_package(model_path)
     result["loading_plot"] = loading_plot_payload(model, manifest)
-    result["model_diagnostic"] = model_structure_diagnostic(
-        model, manifest, str(result["run_id"])
-    )
+    if (
+        result["model_purpose"] == "normal_state"
+        and result["model_status"] == "candidate"
+    ):
+        result["model_diagnostic"] = model_structure_diagnostic(
+            model, manifest, str(result["run_id"])
+        )
     return result
 
 

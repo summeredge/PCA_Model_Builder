@@ -13,16 +13,24 @@ from pca_model_builder.model_diagnostics import (
 from pca_model_builder.model_io import save_model_package
 
 
-def _windows(start: str = "2026-01-01T00:00:00") -> list[dict[str, object]]:
+def _windows(
+    start: str = "2026-01-01T00:00:00",
+    *,
+    window_id: str = "manual-001",
+    source: str = "manual",
+    source_ref: str | None = None,
+    enabled: bool = True,
+    comment: str = "",
+) -> list[dict[str, object]]:
     return [
         {
-            "id": "manual-001",
+            "id": window_id,
             "start": start,
             "end": "2026-01-02T12:00:00" if start.startswith("2026-01-02") else "2026-01-01T12:00:00",
-            "source": "manual",
-            "source_ref": None,
-            "enabled": True,
-            "comment": "",
+            "source": source,
+            "source_ref": source_ref,
+            "enabled": enabled,
+            "comment": comment,
         }
     ]
 
@@ -184,6 +192,7 @@ def test_candidate_comparison_reports_parameter_differences_and_source_limit(
     [
         ({"tags": ["B", "A", "C"]}, "原始Tag及顺序不一致"),
         ({"windows": _windows("2026-01-02T00:00:00")}, "标准化训练窗口范围或启用状态不一致"),
+        ({"windows": _windows(enabled=False)}, "标准化训练窗口范围或启用状态不一致"),
         (
             {
                 "sample_interval_minutes": 10,
@@ -232,25 +241,49 @@ def test_candidate_comparison_rejects_invalid_duplicate_missing_and_corrupt_pack
         compare_candidate_runs(["a" * 32, "c" * 32], runs)
 
 
-def test_candidate_comparison_requires_matching_frozen_source_identity(
+def test_candidate_comparison_ignores_unvalidated_source_identity(
     tmp_path: Path,
 ) -> None:
     runs = tmp_path / "runs"
     _save_candidate(runs, "a" * 32, source_identity={"dataset": "history-a"})
     _save_candidate(runs, "b" * 32, source_identity={"dataset": "history-a"})
 
-    strict = compare_candidate_runs(["a" * 32, "b" * 32], runs)
+    comparison = compare_candidate_runs(["a" * 32, "b" * 32], runs)
 
-    assert strict["comparability"] == {
+    assert comparison["comparability"] == {
         "comparable": True,
-        "status": "strict_comparable",
-        "reasons": [],
+        "status": "structural_comparison_only",
+        "reasons": ["训练源身份未固化，仅作结构比较"],
     }
 
     _save_candidate(runs, "c" * 32, source_identity={"dataset": "history-b"})
-    different_source = compare_candidate_runs(["a" * 32, "c" * 32], runs)
+    different_extension = compare_candidate_runs(["a" * 32, "c" * 32], runs)
 
-    assert different_source["comparability"]["comparable"] is False
-    assert different_source["comparability"]["reasons"] == [
-        "训练源身份不一致，不能作为同数据A/B对照"
-    ]
+    assert different_extension["comparability"] == comparison["comparability"]
+
+
+def test_candidate_comparison_ignores_window_tracking_metadata(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    _save_candidate(runs, "a" * 32)
+    _save_candidate(
+        runs,
+        "b" * 32,
+        windows=_windows(
+            window_id="cluster-window-008",
+            source="cluster",
+            source_ref="cluster_003-candidate-002",
+            comment="同一时间范围，不同追踪信息",
+        ),
+    )
+
+    comparison = compare_candidate_runs(["a" * 32, "b" * 32], runs)
+
+    assert comparison["comparability"] == {
+        "comparable": True,
+        "status": "structural_comparison_only",
+        "reasons": ["训练源身份未固化，仅作结构比较"],
+    }
+    differences = comparison["parameter_differences"][0]["differences"]
+    assert differences["training_windows"]["baseline"] != differences[
+        "training_windows"
+    ]["value"]

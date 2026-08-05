@@ -131,7 +131,11 @@
 
   function renderSingleModelDiagnostic(diagnostic) {
     const target = document.getElementById("singleModelDiagnostic");
-    if (!diagnostic) return;
+    if (!diagnostic) {
+      target.className = "help";
+      target.textContent = "当前为探索草稿模型；仅 normal_state/candidate 模型显示候选模型结构诊断。";
+      return;
+    }
     target.className = "";
     target.replaceChildren(
       diagnosticSummary(diagnostic),

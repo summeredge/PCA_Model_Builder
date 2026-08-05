@@ -104,7 +104,11 @@ def compare_candidate_runs(
             "differences": {
                 key: {"baseline": baseline_value, "value": value}
                 for key, value in values.items()
-                if key != "run_id" and value != parameters[0][key]
+                if (
+                    key != "run_id"
+                    and not key.startswith("_")
+                    and value != parameters[0][key]
+                )
                 for baseline_value in [parameters[0][key]]
             },
         }
@@ -122,11 +126,7 @@ def compare_candidate_runs(
         "comparability": {
             "comparable": comparable,
             "status": (
-                "not_comparable"
-                if not comparable
-                else "strict_comparable"
-                if _source_identity_state(parameters) == "same"
-                else "structural_comparison_only"
+                "structural_comparison_only" if comparable else "not_comparable"
             ),
             "reasons": reasons,
         },
@@ -234,6 +234,14 @@ def _comparison_parameters(run_id: str, manifest: Mapping[str, Any]) -> dict[str
         "run_id": run_id,
         "original_tags": list(config["tags"]),
         "training_windows": list(manifest["training_windows"]),
+        "_training_windows_for_comparison": [
+            {
+                "start": window["start"],
+                "end": window["end"],
+                "enabled": window["enabled"],
+            }
+            for window in manifest["training_windows"]
+        ],
         "timestamp_column": config["timestamp_column"],
         "state_filters": list(config["state_filters"]),
         "sample_interval_minutes": config["sample_interval_minutes"],
@@ -244,7 +252,6 @@ def _comparison_parameters(run_id: str, manifest: Mapping[str, Any]) -> dict[str
         "lag_step_minutes": config["lag_step_minutes"],
         "variance_threshold": config["variance_threshold"],
         "retained_component_count": manifest["n_components"],
-        "source_identity": config.get("source_identity"),
     }
 
 
@@ -255,7 +262,7 @@ def _parameter_table(parameters: Sequence[Mapping[str, Any]]) -> list[dict[str, 
             "values": {item["run_id"]: item[key] for item in parameters},
         }
         for key in parameters[0]
-        if key != "run_id"
+        if key != "run_id" and not key.startswith("_")
     ]
 
 
@@ -264,7 +271,7 @@ def _comparability(
 ) -> tuple[bool, list[str]]:
     labels = {
         "original_tags": "原始Tag及顺序不一致",
-        "training_windows": "标准化训练窗口范围或启用状态不一致",
+        "_training_windows_for_comparison": "标准化训练窗口范围或启用状态不一致",
         "timestamp_column": "时间列不一致",
         "state_filters": "状态过滤条件不一致",
         "sample_interval_minutes": "采样间隔不一致",
@@ -278,16 +285,4 @@ def _comparability(
     ]
     if reasons:
         return False, reasons
-    source_state = _source_identity_state(parameters)
-    if source_state == "different":
-        return False, ["训练源身份不一致，不能作为同数据A/B对照"]
-    if source_state == "missing":
-        return True, ["训练源身份未固化，仅作结构比较"]
-    return True, []
-
-
-def _source_identity_state(parameters: Sequence[Mapping[str, Any]]) -> str:
-    identities = [item["source_identity"] for item in parameters]
-    if any(identity in (None, "") for identity in identities):
-        return "missing"
-    return "same" if len({repr(identity) for identity in identities}) == 1 else "different"
+    return True, ["训练源身份未固化，仅作结构比较"]
