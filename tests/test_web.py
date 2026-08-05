@@ -48,6 +48,17 @@ def _post_response(handler_class, path: str, payload: dict) -> tuple[dict, int]:
     return captured["value"], captured["status"]
 
 
+def _get_response(handler_class, path: str) -> tuple[dict, int]:
+    captured = {}
+    handler = object.__new__(handler_class)
+    handler.path = path
+    handler._send_json = lambda value, status=200: captured.update(
+        value=value, status=status
+    )
+    handler.do_GET()
+    return captured["value"], captured["status"]
+
+
 def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     args = build_parser().parse_args(["serve", "--no-open"])
 
@@ -112,6 +123,35 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
         assert element_id in html
     for label in ("正常样本验证", "已知异常验证", "通过", "结论不足", "不通过"):
         assert label in html
+
+
+def test_final_web_page_exposes_state_exploration_workbench():
+    html = web_model_results.INDEX_HTML
+    for element_id in (
+        'id="stateExplorationPanel"',
+        'id="stateExplorationButton"',
+        'id="explorationClusterCount"',
+        'id="explorationRandomState"',
+        'id="explorationPerformanceTag"',
+        'id="explorationPerformanceDirection"',
+        'id="explorationPcChart"',
+        'id="explorationTimeline"',
+        'id="explorationClusterTable"',
+        'id="explorationClusterCandidates"',
+        'id="explorationPerformanceCandidates"',
+    ):
+        assert element_id in html
+    for label in (
+        "状态探索工作台",
+        "运行状态探索",
+        "Cluster PC1 / PC2 与中心",
+        "Cluster 时间轴",
+        "Cluster 候选表",
+        "性能候选表",
+    ):
+        assert label in html
+    assert "自动正常 Cluster" not in html
+    assert "自动正常窗口" not in html
 
 
 def test_final_web_entry_uses_cached_base_reading_paths() -> None:
@@ -721,6 +761,122 @@ def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
     assert clustered["exploratory_run_id"] == exploratory["run_id"]
     np.testing.assert_allclose(points["pc1"], expected_scores["pc1"])
     np.testing.assert_allclose(points["pc2"], expected_scores["pc2"])
+
+
+def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkeypatch):
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    web.clear_state_exploration_cache()
+    history = _history_frame()
+    history["PERF"] = np.r_[np.full(90, 5.0), np.full(90, 1.0)]
+    uploaded = web.save_upload(
+        "exploration.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "exploration_start": history.time.iloc[0].isoformat(),
+        "exploration_end": history.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 0,
+        "filter_method": "none",
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "exploration_config": {
+            "cluster_count": 2,
+            "random_state": 7,
+            "minimum_candidate_duration_minutes": 10,
+            "candidate_count_per_cluster": 1,
+            "maximum_plot_points": 12,
+        },
+        "performance_config": {
+            "performance_tag": "PERF",
+            "direction": "higher_is_better",
+            "minimum_duration_minutes": 10,
+            "candidate_count": 1,
+        },
+    }
+
+    result = web.state_exploration_payload(payload)
+    run_id = result["exploration_run_id"]
+    assert result["full_point_count"] >= len(result["cluster_series"])
+    assert result["returned_point_count"] <= 12
+    assert result["data_usage"]["loaded_column_count"] == 5
+    assert result["performance_candidates"]
+    assert result["preprocessing_summary"]["dynamic_feature_count"] == 3
+    assert "cluster_series" not in _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}"
+    )[0]
+
+    summary, summary_status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}"
+    )
+    series, series_status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}/series?max_points=5"
+    )
+    invalid, invalid_status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}/series?max_points=1"
+    )
+    missing, missing_status = _get_response(
+        web._Handler, f"/api/state-exploration/{'f' * 32}"
+    )
+    malformed, malformed_status = _get_response(
+        web._Handler, "/api/state-exploration/not-a-run"
+    )
+
+    assert summary_status == 200
+    assert summary["exploration_run_id"] == run_id
+    assert summary["data_usage"]["loaded_column_count"] == 5
+    assert series_status == 200
+    assert series["full_point_count"] == result["full_point_count"]
+    assert series["returned_point_count"] <= 5
+    assert all("segment_id" in row and "break_before" in row for row in series["cluster_series"])
+    assert invalid_status == 400 and "traceback" not in invalid["error"].lower()
+    assert missing_status == 404
+    assert malformed_status == 400
+
+    invalid_config, invalid_config_status = _post_response(
+        web._Handler,
+        "/api/state-exploration/run",
+        {
+            **payload,
+            "performance_config": {
+                "performance_tag": "PERF",
+                "direction": "target_range",
+            },
+        },
+    )
+    missing_tag, missing_tag_status = _post_response(
+        web._Handler,
+        "/api/state-exploration/run",
+        {
+            **payload,
+            "performance_config": {
+                "performance_tag": "MISSING_PERF",
+                "direction": "higher_is_better",
+            },
+        },
+    )
+    assert invalid_config_status == 400
+    assert "traceback" not in invalid_config["error"].lower()
+    assert missing_tag_status == 400
+    assert "MISSING_PERF" in missing_tag["error"]
+
+
+def test_state_exploration_cache_evicts_oldest_full_result(monkeypatch):
+    web.clear_state_exploration_cache()
+    monkeypatch.setattr(web, "MAX_STATE_EXPLORATION_RUNS", 1)
+    first = {"cluster_series": pd.DataFrame(), "cluster_series_display": pd.DataFrame()}
+    second = {"cluster_series": pd.DataFrame(), "cluster_series_display": pd.DataFrame()}
+
+    web._store_state_exploration_run("a" * 32, first)
+    web._store_state_exploration_run("b" * 32, second)
+
+    assert list(web.STATE_EXPLORATION_RUNS) == ["b" * 32]
+    assert first == {}
 
 
 def test_training_windows_api_normalizes_operations_and_reports_summary():

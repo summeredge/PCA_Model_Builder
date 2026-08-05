@@ -17,6 +17,8 @@ class OperatingStateClusters:
     summaries: tuple[dict[str, object], ...]
     n_components: int
     cumulative_explained_variance: float
+    centers: dict[int, np.ndarray]
+    pc_columns: tuple[str, ...]
 
 
 def cluster_operating_states(
@@ -56,9 +58,10 @@ def cluster_operating_states(
         + 1
     )
     selected = min(max(2, selected), pca.components_.shape[0])
+    pc_columns = tuple(f"pc{index}" for index in range(1, selected + 1))
     scores = pca.transform(standardized)[:, :selected]
     return _cluster_scores(
-        pd.DataFrame(scores, index=dynamic.index),
+        pd.DataFrame(scores, index=dynamic.index, columns=pc_columns),
         n_clusters=n_clusters,
         sample_interval_minutes=sample_interval_minutes,
         cumulative_explained_variance=float(
@@ -78,9 +81,9 @@ def cluster_model_scores(
     if tuple(dynamic.columns) != model.feature_names:
         raise ValueError("dynamic features do not match exploratory model")
     scores = model.score(dynamic)
-    pc_columns = [f"pc{index}" for index in range(1, model.n_components + 1)]
+    pc_columns = tuple(f"pc{index}" for index in range(1, model.n_components + 1))
     return _cluster_scores(
-        scores[pc_columns],
+        scores.loc[:, list(pc_columns)],
         n_clusters=n_clusters,
         sample_interval_minutes=sample_interval_minutes,
         cumulative_explained_variance=float(
@@ -105,6 +108,8 @@ def _cluster_scores(
         raise ValueError("cluster analysis needs more samples than clusters")
     if sample_interval_minutes <= 0:
         raise ValueError("sample interval must be positive")
+    if scores.shape[1] < 2:
+        raise ValueError("cluster analysis needs at least two principal components")
     values = scores.to_numpy(dtype=float)
     if not np.isfinite(values).all():
         raise ValueError("cluster inputs contain non-finite values")
@@ -119,10 +124,9 @@ def _cluster_scores(
         remap[int(label)]: fitted.cluster_centers_[label]
         for label in range(n_clusters)
     }
-    points = pd.DataFrame(
-        {"pc1": values[:, 0], "pc2": values[:, 1], "cluster": labels},
-        index=scores.index,
-    )
+    pc_columns = tuple(f"pc{index}" for index in range(1, values.shape[1] + 1))
+    points = pd.DataFrame(values, columns=pc_columns, index=scores.index)
+    points["cluster"] = labels
     summaries = tuple(
         {
             "cluster": cluster,
@@ -130,6 +134,7 @@ def _cluster_scores(
             "share": float((labels == cluster).mean()),
             "pc1_center": float(centers[cluster][0]),
             "pc2_center": float(centers[cluster][1]),
+            "centroid_pc_scores": [float(value) for value in centers[cluster]],
             "representative_windows": _representative_windows(
                 points.index, labels, cluster, sample_interval_minutes
             ),
@@ -141,6 +146,8 @@ def _cluster_scores(
         summaries=summaries,
         n_components=values.shape[1],
         cumulative_explained_variance=cumulative_explained_variance,
+        centers={cluster: center.copy() for cluster, center in centers.items()},
+        pc_columns=pc_columns,
     )
 
 

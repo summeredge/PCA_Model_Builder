@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict
 from email.parser import BytesParser
@@ -79,6 +79,7 @@ RUNS_DIR = WEB_DATA_DIR / "runs"
 MAX_REQUEST_BODY_BYTES = 200 * 1024 * 1024
 MAX_CHART_POINTS = 1200
 MAX_XLSX_BODY_BYTES = MAX_TAG_CONFIG_BYTES
+MAX_STATE_EXPLORATION_RUNS = 8
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _VALIDATION_ARTIFACTS = {
     "scores": ("validation_scores.csv", "text/csv; charset=utf-8"),
@@ -89,13 +90,18 @@ _VALIDATION_ARTIFACTS = {
     ),
 }
 DATA_SESSIONS = DataSessionCache()
-STATE_EXPLORATION_RUNS: dict[str, dict[str, Any]] = {}
+STATE_EXPLORATION_RUNS: OrderedDict[str, dict[str, Any]] = OrderedDict()
+_STATE_EXPLORATION_LOCK = threading.RLock()
 
 
 class WebStageError(ValueError):
     def __init__(self, stage: str, error: Exception) -> None:
         super().__init__(str(error))
         self.stage = stage
+
+
+class StateExplorationNotFoundError(ValueError):
+    pass
 
 
 @contextmanager
@@ -574,26 +580,188 @@ def tag_config_import_payload(
     )
 
 
+def _performance_config_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    value = payload.get("performance_config")
+    if value in (None, ""):
+        if not str(payload.get("performance_tag", "")).strip():
+            return None
+        value = {
+            "performance_tag": payload.get("performance_tag"),
+            "direction": payload.get("performance_direction"),
+            "target_min": payload.get("performance_target_min"),
+            "target_max": payload.get("performance_target_max"),
+            "minimum_duration_minutes": payload.get(
+                "performance_minimum_duration_minutes", 30
+            ),
+            "candidate_count": payload.get("performance_candidate_count", 3),
+        }
+    if not isinstance(value, dict):
+        raise ValueError("performance_config must be an object")
+    return dict(value)
+
+
 def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
     tags = _required_tags(payload)
     config = _preprocessing_config(payload)
-    state_columns = [condition.column for condition in config.state_filters]
-    loaded = _load_required_upload(payload, list(dict.fromkeys([*tags, *state_columns])), "找不到 Tag：")
-    selected = _select_window(loaded.frame, timestamp_column, _required_text(payload, "exploration_start"), _required_text(payload, "exploration_end"))
-    exploration = run_state_exploration(
-        _indexed_tags(selected, timestamp_column, [*tags, *state_columns]), tags, config,
-        ExplorationConfig(**dict(payload.get("exploration_config") or {})),
+    performance_config = _performance_config_payload(payload)
+    performance_tag = (
+        str(performance_config.get("performance_tag", "")).strip()
+        if performance_config is not None
+        else ""
     )
+    state_columns = [condition.column for condition in config.state_filters]
+    requested_columns = list(
+        dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else [])])
+    )
+    loaded = _load_required_upload(payload, requested_columns, "找不到 Tag：")
+    all_tags = list(loaded.metadata.numeric_candidate_columns)
+    registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
+    _require_continuous_roles(tags, registry)
+    _require_state_filter_roles(state_columns, registry)
+    selected = _select_window(
+        loaded.frame,
+        timestamp_column,
+        _required_text(payload, "exploration_start"),
+        _required_text(payload, "exploration_end"),
+    )
+    exploration_config = ExplorationConfig(
+        **dict(payload.get("exploration_config") or {})
+    )
+    with _web_stage("preprocessing"):
+        exploration = run_state_exploration(
+            _indexed_tags(
+                selected,
+                timestamp_column,
+                list(dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else [])])),
+            ),
+            tags,
+            config,
+            exploration_config,
+            performance_config=performance_config,
+        )
     run_id = str(exploration["exploration_run_id"])
-    STATE_EXPLORATION_RUNS[run_id] = exploration
     response = {key: value for key, value in exploration.items() if key not in {"cluster_series", "cluster_series_display"}}
-    response["cluster_series"] = _exploration_series(exploration["cluster_series_display"])
-    return _with_data_usage(response, loaded, len(selected), len(response["cluster_series"]))
+    response["cluster_series"] = _exploration_series(
+        exploration["cluster_series_display"],
+        exploration["cluster_series"],
+        config.sample_interval_minutes,
+    )
+    response = _with_data_usage(
+        response, loaded, len(selected), len(response["cluster_series"])
+    )
+    exploration["data_usage"] = response["data_usage"]
+    _store_state_exploration_run(run_id, exploration)
+    return response
 
 
-def _exploration_series(series: pd.DataFrame) -> list[dict[str, Any]]:
-    return [{"timestamp": timestamp.isoformat(), "cluster_id": row.cluster_id, "pc1": float(row.pc1), "pc2": float(row.pc2), "segment_id": int(row.segment_id)} for timestamp, row in series.iterrows()]
+def _store_state_exploration_run(
+    run_id: str, exploration: dict[str, Any]
+) -> None:
+    with _STATE_EXPLORATION_LOCK:
+        STATE_EXPLORATION_RUNS[run_id] = exploration
+        STATE_EXPLORATION_RUNS.move_to_end(run_id)
+        while len(STATE_EXPLORATION_RUNS) > MAX_STATE_EXPLORATION_RUNS:
+            _, evicted = STATE_EXPLORATION_RUNS.popitem(last=False)
+            evicted.clear()
+
+
+def clear_state_exploration_cache() -> None:
+    with _STATE_EXPLORATION_LOCK:
+        for exploration in STATE_EXPLORATION_RUNS.values():
+            exploration.clear()
+        STATE_EXPLORATION_RUNS.clear()
+
+
+def _state_exploration_run(run_id: str) -> dict[str, Any]:
+    with _STATE_EXPLORATION_LOCK:
+        try:
+            exploration = STATE_EXPLORATION_RUNS[run_id]
+        except KeyError as error:
+            raise StateExplorationNotFoundError("状态探索运行记录不存在") from error
+        STATE_EXPLORATION_RUNS.move_to_end(run_id)
+        # Keep the cached dict mutable for eviction while the current request
+        # retains references to the DataFrames it is reading.
+        return dict(exploration)
+
+
+def _exploration_summary_payload(run_id: str) -> dict[str, Any]:
+    exploration = _state_exploration_run(run_id)
+    return {
+        key: value
+        for key, value in exploration.items()
+        if key not in {"cluster_series", "cluster_series_display"}
+    }
+
+
+def _exploration_max_points(query: dict[str, list[str]], default: int) -> int:
+    raw = query.get("max_points", [str(default)])[0]
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError("max_points must be a positive integer of at least 2") from error
+    if value < 2:
+        raise ValueError("max_points must be a positive integer of at least 2")
+    return value
+
+
+def _exploration_series_payload(
+    run_id: str, query: dict[str, list[str]]
+) -> dict[str, Any]:
+    exploration = _state_exploration_run(run_id)
+    config = dict(exploration.get("exploration_config") or {})
+    limit = _exploration_max_points(
+        query, int(config.get("maximum_plot_points", MAX_CHART_POINTS))
+    )
+    full = exploration["cluster_series"]
+    display = exploration["cluster_series_display"]
+    if limit < len(full):
+        from .state_exploration import _display_points
+
+        display = _display_points(
+            full,
+            limit,
+            int(exploration["preprocessing_summary"]["target_interval_minutes"]),
+        )
+    return {
+        "exploration_run_id": run_id,
+        "full_point_count": int(len(full)),
+        "returned_point_count": int(len(display)),
+        "cluster_series": _exploration_series(
+            display,
+            full,
+            int(exploration["preprocessing_summary"]["target_interval_minutes"]),
+        ),
+    }
+
+
+def _exploration_series(
+    series: pd.DataFrame,
+    full_series: pd.DataFrame | None = None,
+    interval: int = 5,
+) -> list[dict[str, Any]]:
+    full = series if full_series is None else full_series
+    positions = full.index.get_indexer(series.index)
+    expected = pd.Timedelta(minutes=interval)
+    result = []
+    for position, (timestamp, row) in zip(positions, series.iterrows(), strict=True):
+        break_before = False
+        if position > 0:
+            break_before = bool(
+                full.index[position] - full.index[position - 1] != expected
+                or full.segment_id.iloc[position] != full.segment_id.iloc[position - 1]
+            )
+        result.append(
+            {
+                "timestamp": timestamp.isoformat(),
+                "cluster_id": str(row.cluster_id),
+                "pc1": float(row.pc1),
+                "pc2": float(row.pc2),
+                "segment_id": int(row.segment_id),
+                "break_before": break_before,
+            }
+        )
+    return result
 
 
 def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -645,7 +813,7 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
             variance_threshold=float(payload.get("variance_threshold", 0.95)),
             sample_interval_minutes=config.sample_interval_minutes,
         )
-    response = _cluster_result_payload(result)
+    response = _cluster_result_payload(result, config.sample_interval_minutes)
     return _with_data_usage(response, loaded, len(analysis), len(response["points"]))
 
 
@@ -697,24 +865,30 @@ def _cluster_exploratory_payload(
             sample_interval_minutes=config.sample_interval_minutes,
         )
     response = {
-        **_cluster_result_payload(result),
+        **_cluster_result_payload(result, config.sample_interval_minutes),
         "exploratory_run_id": exploratory_run_id,
     }
     return _with_data_usage(response, loaded, len(analysis), len(response["points"]))
 
 
-def _cluster_result_payload(result: Any) -> dict[str, Any]:
+def _cluster_result_payload(result: Any, interval: int = 5) -> dict[str, Any]:
     points = result.points
     if len(points) > MAX_CHART_POINTS:
-        positions = np.unique(
-            np.linspace(0, len(points) - 1, MAX_CHART_POINTS, dtype=int)
-        )
-        points = points.iloc[positions]
+        from .state_exploration import _display_points
+
+        points = _display_points(points, MAX_CHART_POINTS, interval)
     return {
         "sample_count": len(result.points),
+        "full_point_count": len(result.points),
+        "returned_point_count": len(points),
         "n_components": result.n_components,
         "cumulative_explained_variance": result.cumulative_explained_variance,
         "clusters": list(result.summaries),
+        "pc_columns": list(result.pc_columns),
+        "cluster_centers": {
+            str(cluster): [float(value) for value in center]
+            for cluster, center in result.centers.items()
+        },
         "points": [
             {
                 "timestamp": timestamp.isoformat(),
@@ -1396,6 +1570,25 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/state-exploration/"):
+            suffix = parsed.path[len("/api/state-exploration/") :]
+            is_series = suffix.endswith("/series")
+            raw_run_id = suffix[: -len("/series")].rstrip("/") if is_series else suffix
+            try:
+                run_id = _validated_id(raw_run_id, "run_id")
+                result = (
+                    _exploration_series_payload(
+                        run_id, parse_qs(parsed.query, keep_blank_values=True)
+                    )
+                    if is_series
+                    else _exploration_summary_payload(run_id)
+                )
+                self._send_json(result)
+            except StateExplorationNotFoundError as error:
+                self._send_json(error_payload(error), 404)
+            except Exception as error:
+                self._send_json(error_payload(error), 400)
+            return
         if parsed.path in {"/", "/index.html"}:
             self._send_text(INDEX_HTML, "text/html; charset=utf-8")
             return
@@ -1705,10 +1898,13 @@ INDEX_HTML = r"""<!doctype html>
     th { position:sticky; top:0; background:#eef2f6; }
     td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
     .download { color:#fff; background:var(--green); padding:8px 11px; border-radius:6px; text-decoration:none; font-size:13px; }
-    .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
-    .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
-    @media (max-width:1050px) { main { grid-template-columns:1fr; } }
-    @media (max-width:760px) { .chart-grid,.validation-box,.trend-controls { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
+     .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
+     .exploration-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
+     .exploration-timeline { max-height:300px; overflow:auto; border:1px solid var(--line); border-radius:7px; }
+     .exploration-timeline table { min-width:520px; }
+     .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
+     @media (max-width:1050px) { main { grid-template-columns:1fr; } }
+     @media (max-width:760px) { .chart-grid,.validation-box,.exploration-controls,.trend-controls { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -1758,8 +1954,9 @@ INDEX_HTML = r"""<!doctype html>
     </section>
     <section class="results">
       <div class="tabs" role="tablist">
-        <button class="tab active" data-panel="configPanel">Tag配置</button>
-        <button class="tab" data-panel="trendPanel">趋势浏览</button>
+         <button class="tab active" data-panel="configPanel">Tag配置</button>
+         <button class="tab" data-panel="stateExplorationPanel">状态探索</button>
+         <button class="tab" data-panel="trendPanel">趋势浏览</button>
         <button class="tab" data-panel="statePanels">状态辅助</button>
         <button class="tab" data-panel="modelPanel">模型训练</button>
         <button class="tab" data-panel="validationPanel">验证结果</button>
@@ -1792,6 +1989,49 @@ INDEX_HTML = r"""<!doctype html>
         <div id="batchPanel" class="inner-panel">
           <div class="actions"><a id="templateDownload" class="download" href="#">下载XLSX模板</a><label class="secondary">导入XLSX配置<input id="tagConfigFile" type="file" accept=".xlsx"></label><button id="importConfigButton" class="secondary" disabled>预览导入</button><button id="applyConfigButton" disabled>确认应用非空字段</button><button id="exportConfigButton" class="secondary" disabled>导出当前配置</button></div>
           <div id="importSummary" class="status info">XLSX是可选工程元数据，导入不会跳过质量检查，也不会立即覆盖当前配置。</div>
+        </div>
+      </div>
+      <div id="stateExplorationPanel" class="panel">
+        <div class="group">
+          <div class="group-title">状态探索工作台</div>
+          <div class="help">建模 Tag 复用左侧当前勾选的 continuous_input；预处理参数复用左侧表单。探索结果仅用于运行状态浏览和候选窗口比较。</div>
+          <div class="exploration-controls">
+            <label>探索开始时间<input id="explorationStart" type="datetime-local"></label>
+            <label>探索结束时间<input id="explorationEnd" type="datetime-local"></label>
+            <label>Cluster 数量<input id="explorationClusterCount" type="number" min="2" max="10" value="4"></label>
+            <label>随机种子<input id="explorationRandomState" type="number" step="1" value="0"></label>
+            <label>每个 Cluster 候选数量<input id="explorationCandidateCount" type="number" min="1" value="3"></label>
+            <label>候选最小时长（分钟）<input id="explorationMinimumDuration" type="number" min="1" value="30"></label>
+            <label>最大显示点数<input id="explorationMaximumPlotPoints" type="number" min="2" value="1200"></label>
+            <button id="stateExplorationButton" type="button" disabled>运行状态探索</button>
+          </div>
+          <div class="sub-title">可选性能候选</div>
+          <div class="exploration-controls">
+            <label>性能 Tag<select id="explorationPerformanceTag"><option value="">不配置</option></select></label>
+            <label>性能方向<select id="explorationPerformanceDirection"><option value="higher_is_better">higher_is_better</option><option value="lower_is_better">lower_is_better</option><option value="target_range">target_range</option></select></label>
+            <label>目标下限<input id="explorationTargetMin" type="number" step="any"></label>
+            <label>目标上限<input id="explorationTargetMax" type="number" step="any"></label>
+            <label>性能候选最小时长（分钟）<input id="explorationPerformanceMinimumDuration" type="number" min="1" value="30"></label>
+            <label>性能候选数量<input id="explorationPerformanceCandidateCount" type="number" min="1" value="3"></label>
+          </div>
+        </div>
+        <div id="explorationEmpty" class="empty">运行状态探索后显示摘要、告警、PC1/PC2、Cluster 时间轴和候选窗口。</div>
+        <div id="explorationContent" hidden>
+          <h3>结果概览</h3>
+          <div id="explorationOverview" class="metrics"></div>
+          <div id="explorationWarnings" class="compact-list"><span class="help">暂无结构化告警。</span></div>
+          <h3>预处理损失摘要</h3>
+          <div id="explorationLossSummary" class="table-wrap"></div>
+          <div class="chart-grid">
+            <div class="chart-card"><h3>Cluster PC1 / PC2 与中心</h3><div id="explorationPcChart" class="chart"></div></div>
+            <div class="chart-card"><h3>Cluster 时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
+          </div>
+          <h3>Cluster 摘要表</h3>
+          <div class="table-wrap"><table><thead><tr><th>Cluster ID</th><th>样本数</th><th>覆盖率</th><th>连续段数</th><th>覆盖时长</th><th>中心距离中位数</th><th>主元离散度</th><th>候选数量</th></tr></thead><tbody id="explorationClusterTable"></tbody></table></div>
+          <h3>Cluster 候选表</h3>
+          <div id="explorationClusterCandidates" class="table-wrap"></div>
+          <h3>性能候选表</h3>
+          <div id="explorationPerformanceCandidates" class="table-wrap"></div>
         </div>
       </div>
       <div id="trendPanel" class="panel">
@@ -1885,7 +2125,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -1987,6 +2227,51 @@ function performanceConditionPayload() {
   return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
 }
 function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>state.selectedModelTags.delete(tag)); invalidateQuality("性能筛选列已从建模Tag取消"); renderTagList(); }
+function stateExplorationPayload() {
+  const tags=selectedTags(); if(tags.length<2) throw new Error("至少选择两个连续 Tag。");
+  const payload={...commonPayload(),tags,exploration_start:el("explorationStart").value,exploration_end:el("explorationEnd").value,exploration_config:{cluster_count:numberValue("explorationClusterCount"),random_state:numberValue("explorationRandomState"),candidate_count_per_cluster:numberValue("explorationCandidateCount"),minimum_candidate_duration_minutes:numberValue("explorationMinimumDuration"),maximum_plot_points:numberValue("explorationMaximumPlotPoints")}};
+  const performanceTag=el("explorationPerformanceTag").value.trim();
+  if(performanceTag) payload.performance_config={performance_tag:performanceTag,direction:el("explorationPerformanceDirection").value,target_min:optionalNumber("explorationTargetMin"),target_max:optionalNumber("explorationTargetMax"),minimum_duration_minutes:numberValue("explorationPerformanceMinimumDuration"),candidate_count:numberValue("explorationPerformanceCandidateCount")};
+  return payload;
+}
+function explorationClusterNumber(clusterId) { const match=String(clusterId).match(/(\d+)$/); return match?Number(match[1]):1; }
+function explorationNumber(value,digits=2) { return value===null||value===undefined||!Number.isFinite(Number(value))?"—":Number(value).toFixed(digits); }
+function renderStateExploration(data) {
+  el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
+  const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
+  el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("显示点数",`${data.returned_point_count}/${data.full_point_count}`);
+  const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
+  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationTimeline(data.cluster_series||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[]);
+}
+function renderExplorationLossSummary(losses) {
+  const fields=[["empty_bin_count","空桶"],["input_invalid_loss","输入无效"],["filter_warmup_loss","滤波预热"],["filter_context_invalid_loss","滤波上下文无效"],["lag_warmup_loss","Lag预热"],["lag_context_invalid_loss","Lag上下文无效"],["state_filter_loss","状态过滤损失"]];
+  el("explorationLossSummary").innerHTML=`<table><thead><tr>${fields.map(([,label])=>`<th>${label}</th>`).join("")}</tr></thead><tbody><tr>${fields.map(([key])=>`<td class="numeric">${losses[key]??0}</td>`).join("")}</tr></tbody></table>`;
+}
+function renderExplorationPcChart(data) {
+  const rows=data.cluster_series||[]; const container=el("explorationPcChart"); if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
+  const palette=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
+  const width=760,height=260,pad=34; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad),y=value=>height/2-value/maxY*(height/2-pad);
+  const points=rows.map(row=>{const number=explorationClusterNumber(row.cluster_id);return `<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="3" fill="${palette[(number-1)%palette.length]}" fill-opacity=".75"><title>${escapeHtml(row.timestamp)} · ${escapeHtml(row.cluster_id)}</title></circle>`;}).join("");
+  const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>{const number=explorationClusterNumber(cluster);const cx=x(Number(center[0])),cy=y(Number(center[1])),color=palette[(number-1)%palette.length];return `<g stroke="${color}" stroke-width="2"><line x1="${cx-7}" x2="${cx+7}" y1="${cy}" y2="${cy}"/><line x1="${cx}" x2="${cx}" y1="${cy-7}" y2="${cy+7}"/><title>${escapeHtml(cluster)} 中心</title></g>`;}).join("");
+  const legend=[...new Set(rows.map(row=>row.cluster_id))].map(cluster=>{const number=explorationClusterNumber(cluster);return `<text x="${pad+(number-1)*88}" y="16" fill="${palette[(number-1)%palette.length]}" font-size="10">● ${escapeHtml(cluster)}</text>`;}).join("");
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
+}
+function renderExplorationTimeline(rows) {
+  const container=el("explorationTimeline"); if(!rows.length){container.innerHTML='<div class="empty">暂无显示序列。</div>';return;}
+  const body=rows.map(row=>`<tr class="${row.break_before?"exploration-break":""}"><td>${escapeHtml(row.timestamp.slice(0,19))}${row.break_before?" · 断点":""}</td><td>${escapeHtml(row.cluster_id)}</td><td>${row.segment_id}</td></tr>`).join("");
+  container.innerHTML=`<table><thead><tr><th>timestamp</th><th>cluster_id</th><th>segment_id</th></tr></thead><tbody>${body}</tbody></table>`;
+}
+function renderExplorationClusterTable(summaries) {
+  const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); [item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.candidate_count].forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
+}
+function renderExplorationCandidateTables(clusterCandidates,performanceCandidates) {
+  const clusterHead="<table><thead><tr><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const clusterBody=clusterCandidates.map(item=>`<tr><td>${escapeHtml(item.cluster_id)}</td><td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
+  el("explorationClusterCandidates").innerHTML=clusterHead+(clusterBody||'<tr><td colspan="8">暂无满足条件的 Cluster 候选。</td></tr>')+"</tbody></table>";
+  const performanceHead="<table><thead><tr><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr><td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
+  el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="7">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
+}
 
 el("uploadButton").addEventListener("click", async () => {
   const file=el("fileInput").files[0]; if (!file) { setStatus("请选择 CSV 文件。","warning"); return; }
@@ -1994,8 +2279,8 @@ el("uploadButton").addEventListener("click", async () => {
   try {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderTrainingWindows(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); el("encoding").value=data.encoding;
-    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderTrainingWindows(); invalidateQuality(); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); el("encoding").value=data.encoding;
+    el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`已上传 ${data.filename}，共 ${data.columns.length} 列。请选择时间列并检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -2005,12 +2290,12 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.validation=null; el("validatedModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
-    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
+    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
-    el("clusterButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("preprocessingPreviewButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
+    el("clusterButton").disabled=false; el("stateExplorationButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("preprocessingPreviewButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
     el("templateDownload").href=`/download/tag-config-template?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
     if(data.numeric_columns.length) selectTag(data.numeric_columns[0]);
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count}) ${item.tag||""}`).join("、");
@@ -2113,6 +2398,15 @@ el("performanceButton").addEventListener("click", async () => {
     state.performance=data; excludePerformanceColumns(data.conditions); renderPerformance(data); document.querySelector('[data-panel="statePanels"]').click();
     setStatus("性能条件筛选完成；相关性能列已取消建模勾选。请选择候选时段并由工程师确认工况。","success");
   } catch (error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+
+el("stateExplorationButton").addEventListener("click", async () => {
+  const button=el("stateExplorationButton"); setBusy(button,true,"探索中…"); setStatus("正在使用统一预处理构建完整状态空间并执行探索聚类。","info");
+  try {
+    const data=await api("/api/state-exploration/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(stateExplorationPayload())});
+    state.exploration=data; renderStateExploration(data); document.querySelector('[data-panel="stateExplorationPanel"]').click(); setStatus(`状态探索完成：${data.full_point_count} 个完整样本，返回 ${data.returned_point_count} 个显示点。候选仅供工程师比较。`,"success");
+  } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
 

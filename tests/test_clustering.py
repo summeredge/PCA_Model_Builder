@@ -93,3 +93,16 @@ def test_cluster_model_scores_rejects_different_dynamic_feature_order():
 
     with pytest.raises(ValueError, match="do not match exploratory model"):
         cluster_model_scores(model, dynamic.iloc[:, ::-1], n_clusters=2)
+
+
+def test_cluster_model_scores_keeps_all_principal_components_and_centers():
+    dynamic = _two_state_dynamic_matrix()
+    model = fit_dpca(dynamic, n_components=3)
+
+    result = cluster_model_scores(model, dynamic, n_clusters=2)
+
+    assert result.pc_columns == ("pc1", "pc2", "pc3")
+    assert set(result.pc_columns).issubset(result.points.columns)
+    assert set(result.centers) == {1, 2}
+    assert all(center.shape == (3,) for center in result.centers.values())
+    assert all(len(summary["centroid_pc_scores"]) == 3 for summary in result.summaries)
