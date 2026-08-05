@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from .clustering import cluster_model_scores, cluster_operating_states
+from .state_exploration import ExplorationConfig, run_state_exploration
 from .compat import (
     MODEL_PURPOSES,
     training_windows_from_payload,
@@ -88,6 +89,7 @@ _VALIDATION_ARTIFACTS = {
     ),
 }
 DATA_SESSIONS = DataSessionCache()
+STATE_EXPLORATION_RUNS: dict[str, dict[str, Any]] = {}
 
 
 class WebStageError(ValueError):
@@ -570,6 +572,28 @@ def tag_config_import_payload(
     return parse_tag_config_workbook(
         content, list(metadata.numeric_candidate_columns)
     )
+
+
+def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    tags = _required_tags(payload)
+    config = _preprocessing_config(payload)
+    state_columns = [condition.column for condition in config.state_filters]
+    loaded = _load_required_upload(payload, list(dict.fromkeys([*tags, *state_columns])), "找不到 Tag：")
+    selected = _select_window(loaded.frame, timestamp_column, _required_text(payload, "exploration_start"), _required_text(payload, "exploration_end"))
+    exploration = run_state_exploration(
+        _indexed_tags(selected, timestamp_column, [*tags, *state_columns]), tags, config,
+        ExplorationConfig(**dict(payload.get("exploration_config") or {})),
+    )
+    run_id = str(exploration["exploration_run_id"])
+    STATE_EXPLORATION_RUNS[run_id] = exploration
+    response = {key: value for key, value in exploration.items() if key not in {"cluster_series", "cluster_series_display"}}
+    response["cluster_series"] = _exploration_series(exploration["cluster_series_display"])
+    return _with_data_usage(response, loaded, len(selected), len(response["cluster_series"]))
+
+
+def _exploration_series(series: pd.DataFrame) -> list[dict[str, Any]]:
+    return [{"timestamp": timestamp.isoformat(), "cluster_id": row.cluster_id, "pc1": float(row.pc1), "pc2": float(row.pc2), "segment_id": int(row.segment_id)} for timestamp, row in series.iterrows()]
 
 
 def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1479,6 +1503,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/cluster":
                 self._send_json(cluster_payload(payload))
+                return
+            if parsed.path == "/api/state-exploration/run":
+                self._send_json(state_exploration_payload(payload))
                 return
             if parsed.path == "/api/performance-screen":
                 self._send_json(performance_screen_payload(payload))

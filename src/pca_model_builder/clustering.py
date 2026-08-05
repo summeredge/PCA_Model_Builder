@@ -72,6 +72,7 @@ def cluster_model_scores(
     dynamic: pd.DataFrame,
     n_clusters: int,
     sample_interval_minutes: int = 5,
+    random_state: int = 0,
 ) -> OperatingStateClusters:
     """Cluster scores from a saved exploratory DPCA model without refitting PCA."""
     if tuple(dynamic.columns) != model.feature_names:
@@ -85,6 +86,7 @@ def cluster_model_scores(
         cumulative_explained_variance=float(
             model.explained_variance_ratio[: model.n_components].sum()
         ),
+        random_state=random_state,
     )
 
 
@@ -93,6 +95,7 @@ def _cluster_scores(
     n_clusters: int,
     sample_interval_minutes: int,
     cumulative_explained_variance: float,
+    random_state: int = 0,
 ) -> OperatingStateClusters:
     if not isinstance(scores.index, pd.DatetimeIndex):
         raise TypeError("cluster scores index must be a DatetimeIndex")
@@ -108,8 +111,8 @@ def _cluster_scores(
     if len(np.unique(values, axis=0)) < n_clusters:
         raise ValueError("cluster count exceeds the number of distinct states")
 
-    fitted = KMeans(n_clusters=n_clusters, random_state=0, n_init=10).fit(values)
-    order = np.argsort(fitted.cluster_centers_[:, 0])
+    fitted = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10).fit(values)
+    order = np.lexsort(tuple(fitted.cluster_centers_[:, position] for position in range(fitted.cluster_centers_.shape[1] - 1, -1, -1)))
     remap = {int(label): position + 1 for position, label in enumerate(order)}
     labels = np.array([remap[int(label)] for label in fitted.labels_], dtype=int)
     centers = {
