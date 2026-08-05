@@ -269,10 +269,8 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "source_tag_configs": registry,
         "excluded_tags": excluded_tag_records,
         "training_summary": training_result.window_summaries,
-        "preprocessing_summary": {
-            "windows": training_result.window_summaries,
-            **training_result.training_window_totals,
-        },
+        "preprocessing_summary": training_result.window_summaries,
+        "training_window_totals": training_result.training_window_totals,
         "training_quality_warnings": training_result.global_quality_warnings,
     }
     save_model_package(

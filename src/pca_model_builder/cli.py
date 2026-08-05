@@ -185,6 +185,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         "tag_configs": tag_configs,
         "training_summary": training_result.window_summaries,
         "preprocessing_summary": training_result.window_summaries,
+        "training_window_totals": training_result.training_window_totals,
         "training_quality_warnings": training_result.global_quality_warnings,
     }
     save_model_package(

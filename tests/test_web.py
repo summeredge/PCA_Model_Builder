@@ -1498,10 +1498,12 @@ def test_explicitly_enabled_candidate_can_complete_quality_and_training(
         "dropped_window_count": 0,
         "training_rows": trained["training_rows"],
     }
-    assert manifest["config"]["preprocessing_summary"] == {
-        "windows": trained["training_window_summary"],
-        **trained["training_window_totals"],
-    }
+    assert manifest["config"]["preprocessing_summary"] == trained[
+        "training_window_summary"
+    ]
+    assert manifest["config"]["training_window_totals"] == trained[
+        "training_window_totals"
+    ]
 
 
 def test_web_training_creates_isolated_candidate_runs(tmp_path, monkeypatch):

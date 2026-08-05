@@ -58,6 +58,12 @@ _CONFIG_FIELDS = {
     "lag_step_minutes",
     "variance_threshold",
 }
+_TRAINING_WINDOW_TOTAL_FIELDS = {
+    "enabled_window_count",
+    "used_window_count",
+    "dropped_window_count",
+    "training_rows",
+}
 _FEATURE_PATTERN = re.compile(r"^(?P<tag>.+)__lag_(?P<lag>\d+)min$")
 
 
@@ -245,6 +251,10 @@ def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
     normalize_training_windows(manifest["training_windows"])
     _validate_dynamic_features(feature_names, config["tags"], preprocessing)
 
+    totals = config.get("training_window_totals")
+    if totals is not None and totals["training_rows"] != model.n_samples:
+        raise ValueError("model package training_window_totals row count is inconsistent")
+
     feature_count = len(feature_names)
     component_count = model.n_components
     if manifest.get("n_components") != component_count:
@@ -375,9 +385,25 @@ def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfi
                 raise ValueError("excluded_tags must not contain trained Tags")
             if "source_tag_configs" in config and not excluded <= set(registry):
                 raise ValueError("excluded_tags must exist in source_tag_configs")
+        if "training_window_totals" in config:
+            _validate_training_window_totals(config["training_window_totals"])
     except ValueError as error:
         raise ValueError(f"model package config is invalid: {error}") from error
     return config, preprocessing
+
+
+def _validate_training_window_totals(value: object) -> None:
+    if not isinstance(value, dict) or set(value) != _TRAINING_WINDOW_TOTAL_FIELDS:
+        raise ValueError("training_window_totals fields are invalid")
+    if any(
+        not isinstance(count, int) or isinstance(count, bool) or count < 0
+        for count in value.values()
+    ):
+        raise ValueError("training_window_totals values are invalid")
+    if value["used_window_count"] + value["dropped_window_count"] != value[
+        "enabled_window_count"
+    ]:
+        raise ValueError("training_window_totals window counts are inconsistent")
 
 
 def _normalize_preprocessing_config(config: object) -> dict[str, Any]:

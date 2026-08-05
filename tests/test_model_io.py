@@ -58,6 +58,44 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
     assert manifest["config"]["resampling_origin"] == "epoch"
 
 
+@pytest.mark.parametrize("include_totals", [False, True])
+def test_schema_v3_training_window_totals_are_optional_and_round_trip(
+    tmp_path, include_totals
+):
+    frame = pd.DataFrame(
+        np.random.default_rng(14).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    config = _valid_config()
+    summaries = [{"id": "window-001", "status": "used", "effective_samples": 100}]
+    config["training_summary"] = summaries
+    config["preprocessing_summary"] = summaries
+    if include_totals:
+        config["training_window_totals"] = {
+            "enabled_window_count": 1,
+            "used_window_count": 1,
+            "dropped_window_count": 0,
+            "training_rows": len(frame),
+        }
+    path = tmp_path / f"totals-{include_totals}.pcamodel"
+
+    save_model_package(
+        path,
+        fit_dpca(frame, n_components=2),
+        config,
+        [["2026-01-01", "2026-01-02"]],
+    )
+    model, manifest = load_model_package(path)
+
+    assert manifest["schema_version"] == 3
+    assert manifest["config"]["preprocessing_summary"] == summaries
+    assert manifest["config"].get("training_window_totals") == (
+        config.get("training_window_totals")
+    )
+    if include_totals:
+        assert manifest["config"]["training_window_totals"]["training_rows"] == model.n_samples
+
+
 def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
     tmp_path,
 ):

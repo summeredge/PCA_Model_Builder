@@ -329,9 +329,18 @@ def test_cli_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "build_training_matrix", recorded)
     assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--max-lag", "0", "--components", "2", "--model-name", "shared", "--output", str(model_path)]) == 0
     assert [window["id"] for window in calls[0]] == ["window-001", "window-002"]
-    _, manifest = load_model_package(model_path)
+    model, manifest = load_model_package(model_path)
     assert manifest["config"]["training_summary"][1]["status"] == "dropped"
     assert manifest["config"]["training_summary"][1]["dropped_reason"] == "insufficient_after_smoothing_and_lag"
+    assert manifest["config"]["preprocessing_summary"] == manifest["config"][
+        "training_summary"
+    ]
+    assert manifest["config"]["training_window_totals"] == {
+        "enabled_window_count": 2,
+        "used_window_count": 1,
+        "dropped_window_count": 1,
+        "training_rows": model.n_samples,
+    }
 
 
 def test_cli_multistate_windows_allow_local_constants_and_use_global_statistics(tmp_path):
