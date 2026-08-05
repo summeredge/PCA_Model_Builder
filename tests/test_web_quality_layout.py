@@ -161,6 +161,20 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     assert "normalEnd" not in html
 
 
+def test_final_web_keeps_candidate_decisions_manual_and_non_training() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for element_id in (
+        'id="saveExplorationCandidateDecisions"',
+        'id="convertExplorationCandidates"',
+    ):
+        assert element_id in html
+    assert "exploration-candidate-decision" in html
+    assert "exploration-candidate-comment" in html
+    assert "接受仅表示进入正常状态候选池，不会自动参与训练" in html
+    assert "默认未启用且不会自动参与训练" in html
+
+
 def test_candidate_actions_do_not_replace_the_training_window() -> None:
     html = web_model_results.INDEX_HTML
     cluster_source = html.split("function renderClustering", 1)[1].split(

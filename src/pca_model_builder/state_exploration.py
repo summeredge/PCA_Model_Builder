@@ -25,6 +25,7 @@ PERFORMANCE_DIRECTIONS = frozenset(
     {"higher_is_better", "lower_is_better", "target_range"}
 )
 DURATION_SEMANTICS = "coverage"
+CANDIDATE_DECISION_PENDING = "pending"
 
 
 def _positive_integer(value: object, name: str) -> None:
@@ -227,9 +228,26 @@ def run_state_exploration(
         "cluster_summaries": summaries,
         "cluster_candidates": candidates,
         "performance_candidates": performance_candidates,
+        "candidate_decisions": _candidate_decisions(
+            [*candidates, *performance_candidates]
+        ),
         "warnings": warnings,
         "duration_semantics": DURATION_SEMANTICS,
     }
+
+
+def _candidate_decisions(
+    candidates: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "candidate_id": str(candidate["candidate_id"]),
+            "decision": CANDIDATE_DECISION_PENDING,
+            "comment": "",
+            "decided_at": None,
+        }
+        for candidate in candidates
+    ]
 
 
 def _normalize_performance_config(

@@ -81,6 +81,7 @@ MAX_CHART_POINTS = 1200
 MAX_XLSX_BODY_BYTES = MAX_TAG_CONFIG_BYTES
 MAX_STATE_EXPLORATION_RUNS = 8
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_CANDIDATE_DECISIONS = frozenset({"pending", "accepted", "rejected"})
 _VALIDATION_ARTIFACTS = {
     "scores": ("validation_scores.csv", "text/csv; charset=utf-8"),
     "report": ("validation_report.json", "application/json; charset=utf-8"),
@@ -703,6 +704,133 @@ def _exploration_summary_payload(run_id: str) -> dict[str, Any]:
         key: value
         for key, value in exploration.items()
         if key not in {"cluster_series", "cluster_series_display"}
+    }
+
+
+def _state_exploration_candidates(exploration: dict[str, Any]) -> dict[str, dict[str, object]]:
+    return {
+        str(candidate["candidate_id"]): candidate
+        for candidate in [
+            *exploration["cluster_candidates"],
+            *exploration["performance_candidates"],
+        ]
+    }
+
+
+def _decision_requests(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    value = payload.get("decisions")
+    if value is None:
+        value = [payload]
+    if not isinstance(value, list) or not value:
+        raise ValueError("decisions必须是非空列表")
+    decisions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("候选决策必须是对象")
+        candidate_id = item.get("candidate_id")
+        decision = item.get("decision")
+        comment = item.get("comment")
+        if not isinstance(candidate_id, str) or not candidate_id.strip():
+            raise ValueError("candidate_id无效")
+        if candidate_id in seen:
+            raise ValueError("同一请求中的candidate_id不能重复")
+        if decision not in _CANDIDATE_DECISIONS:
+            raise ValueError("候选决策无效")
+        if not isinstance(comment, str):
+            raise ValueError("候选决策备注必须是字符串")
+        decisions.append(
+            {
+                "candidate_id": candidate_id,
+                "decision": decision,
+                "comment": comment,
+            }
+        )
+        seen.add(candidate_id)
+    return decisions
+
+
+def state_exploration_decisions_payload(
+    run_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    decisions = _decision_requests(payload)
+    with _STATE_EXPLORATION_LOCK:
+        try:
+            exploration = STATE_EXPLORATION_RUNS[run_id]
+        except KeyError as error:
+            raise StateExplorationNotFoundError("状态探索运行记录不存在") from error
+        candidates = _state_exploration_candidates(exploration)
+        missing = [item["candidate_id"] for item in decisions if item["candidate_id"] not in candidates]
+        if missing:
+            raise ValueError("候选不属于当前状态探索运行：" + ", ".join(missing))
+        records = {
+            str(item["candidate_id"]): dict(item)
+            for item in exploration["candidate_decisions"]
+        }
+        decided_at = pd.Timestamp.now(tz="UTC").isoformat()
+        for item in decisions:
+            records[item["candidate_id"]] = {
+                **item,
+                "decided_at": decided_at,
+            }
+        exploration["candidate_decisions"] = [
+            records[candidate_id] for candidate_id in candidates
+        ]
+        STATE_EXPLORATION_RUNS.move_to_end(run_id)
+        return {
+            "exploration_run_id": run_id,
+            "candidate_decisions": exploration["candidate_decisions"],
+        }
+
+
+def state_exploration_training_windows_payload(
+    run_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    candidate_ids = payload.get("candidate_ids")
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        raise ValueError("candidate_ids必须是非空列表")
+    if any(not isinstance(value, str) or not value.strip() for value in candidate_ids):
+        raise ValueError("candidate_ids无效")
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError("candidate_ids不能重复")
+    windows = normalize_training_windows(payload.get("training_windows"), allow_empty=True)
+    with _STATE_EXPLORATION_LOCK:
+        try:
+            exploration = STATE_EXPLORATION_RUNS[run_id]
+        except KeyError as error:
+            raise StateExplorationNotFoundError("状态探索运行记录不存在") from error
+        candidates = _state_exploration_candidates(exploration)
+        decisions = {
+            str(item["candidate_id"]): item
+            for item in exploration["candidate_decisions"]
+        }
+        additions: list[dict[str, object]] = []
+        for candidate_id in candidate_ids:
+            try:
+                candidate = candidates[candidate_id]
+            except KeyError as error:
+                raise ValueError("候选不属于当前状态探索运行：" + candidate_id) from error
+            if decisions[candidate_id]["decision"] != "accepted":
+                raise ValueError("只有已接受候选可以加入正常状态候选池：" + candidate_id)
+            if any(window["source_ref"] == candidate_id for window in windows):
+                continue
+            additions.append(
+                {
+                    "id": f"state-exploration-{candidate_id}",
+                    "start": candidate["start"],
+                    "end": candidate["end"],
+                    "source": str(candidate["source"]),
+                    "source_ref": candidate_id,
+                    "enabled": False,
+                    "comment": str(decisions[candidate_id]["comment"]),
+                }
+            )
+        updated = normalize_training_windows([*windows, *additions], allow_empty=True)
+        STATE_EXPLORATION_RUNS.move_to_end(run_id)
+    return {
+        "training_windows": updated,
+        "summary": summarize_training_windows(updated),
+        "converted_candidate_ids": candidate_ids,
     }
 
 
@@ -1683,6 +1811,25 @@ class _Handler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            state_action = re.fullmatch(
+                r"/api/state-exploration/([^/]+)/(decisions|training-windows)",
+                parsed.path,
+            )
+            if state_action is not None:
+                try:
+                    run_id = _validated_id(state_action.group(1), "run_id")
+                    payload = self._json_body()
+                    result = (
+                        state_exploration_decisions_payload(run_id, payload)
+                        if state_action.group(2) == "decisions"
+                        else state_exploration_training_windows_payload(run_id, payload)
+                    )
+                    self._send_json(result)
+                except StateExplorationNotFoundError as error:
+                    self._send_json(error_payload(error), 404)
+                except Exception as error:
+                    self._send_json(error_payload(error), 400)
+                return
             payload = self._json_body()
             if parsed.path == "/api/inspect":
                 self._send_json(inspect_payload(payload))
@@ -2044,6 +2191,8 @@ INDEX_HTML = r"""<!doctype html>
           <div id="explorationClusterCandidates" class="table-wrap"></div>
           <h3>性能候选表</h3>
           <div id="explorationPerformanceCandidates" class="table-wrap"></div>
+          <div class="actions"><button id="saveExplorationCandidateDecisions" class="secondary" type="button">保存所选候选决策</button><button id="convertExplorationCandidates" type="button">将已接受候选加入正常候选时段</button></div>
+          <div class="notice">接受仅表示进入正常状态候选池，不会自动参与训练；转换后的候选仍需工程师单独启用。</div>
         </div>
       </div>
       <div id="trendPanel" class="panel">
@@ -2253,7 +2402,7 @@ function renderStateExploration(data) {
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
   el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("显示点数",`${data.returned_point_count}/${data.full_point_count}`);
   const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
-  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationTimeline(data.cluster_series||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[]);
+  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationTimeline(data.cluster_series||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[]);
 }
 function renderExplorationLossSummary(losses) {
   const fields=[["empty_bin_count","空桶"],["input_invalid_loss","输入无效"],["filter_warmup_loss","滤波预热"],["filter_context_invalid_loss","滤波上下文无效"],["lag_warmup_loss","Lag预热"],["lag_context_invalid_loss","Lag上下文无效"],["state_filter_loss","状态过滤损失"]];
@@ -2276,13 +2425,15 @@ function renderExplorationTimeline(rows) {
 function renderExplorationClusterTable(summaries) {
   const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); [item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.candidate_count].forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
 }
-function renderExplorationCandidateTables(clusterCandidates,performanceCandidates) {
-  const clusterHead="<table><thead><tr><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
-  const clusterBody=clusterCandidates.map(item=>`<tr><td>${escapeHtml(item.cluster_id)}</td><td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
-  el("explorationClusterCandidates").innerHTML=clusterHead+(clusterBody||'<tr><td colspan="8">暂无满足条件的 Cluster 候选。</td></tr>')+"</tbody></table>";
-  const performanceHead="<table><thead><tr><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
-  const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr><td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
-  el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="7">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
+function renderExplorationCandidateTables(clusterCandidates,performanceCandidates,decisions) {
+  const decisionById=Object.fromEntries(decisions.map(item=>[item.candidate_id,item]));
+  const controls=item=>{const decision=decisionById[item.candidate_id]||{decision:"pending",comment:""};return `<td><input class="exploration-candidate-select" type="checkbox" data-candidate-id="${escapeHtml(item.candidate_id)}" aria-label="选择候选"></td><td><select class="exploration-candidate-decision" data-candidate-id="${escapeHtml(item.candidate_id)}"><option value="pending" ${decision.decision==="pending"?"selected":""}>pending</option><option value="accepted" ${decision.decision==="accepted"?"selected":""}>accepted</option><option value="rejected" ${decision.decision==="rejected"?"selected":""}>rejected</option></select></td><td><input class="exploration-candidate-comment" data-candidate-id="${escapeHtml(item.candidate_id)}" value="${escapeHtml(decision.comment||"")}" aria-label="候选备注"></td>`;};
+  const clusterHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const clusterBody=clusterCandidates.map(item=>`<tr>${controls(item)}<td>${escapeHtml(item.cluster_id)}</td><td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
+  el("explorationClusterCandidates").innerHTML=clusterHead+(clusterBody||'<tr><td colspan="11">暂无满足条件的 Cluster 候选。</td></tr>')+"</tbody></table>";
+  const performanceHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
+  el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="10">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
 }
 
 el("uploadButton").addEventListener("click", async () => {
@@ -2418,6 +2569,36 @@ el("stateExplorationButton").addEventListener("click", async () => {
   try {
     const data=await api("/api/state-exploration/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(stateExplorationPayload())});
     state.exploration=data; renderStateExploration(data); document.querySelector('[data-panel="stateExplorationPanel"]').click(); setStatus(`状态探索完成：${data.full_point_count} 个完整样本，返回 ${data.returned_point_count} 个显示点。候选仅供工程师比较。`,"success");
+  } catch(error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+
+function selectedExplorationCandidateRows() {
+  return [...document.querySelectorAll(".exploration-candidate-select:checked")];
+}
+
+el("saveExplorationCandidateDecisions").addEventListener("click", async () => {
+  const runId=state.exploration?.exploration_run_id, rows=selectedExplorationCandidateRows();
+  if(!runId||!rows.length) { setStatus("请先勾选至少一个状态探索候选。","warning"); return; }
+  const button=el("saveExplorationCandidateDecisions"); setBusy(button,true,"保存中…");
+  try {
+    const decisions=rows.map(input=>{const row=input.closest("tr");return {candidate_id:input.dataset.candidateId,decision:row.querySelector(".exploration-candidate-decision").value,comment:row.querySelector(".exploration-candidate-comment").value};});
+    const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/decisions`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decisions})});
+    state.exploration={...state.exploration,candidate_decisions:data.candidate_decisions}; renderStateExploration(state.exploration); setStatus("候选人工决策已保存；接受不会自动参与训练。","success");
+  } catch(error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+
+el("convertExplorationCandidates").addEventListener("click", async () => {
+  const runId=state.exploration?.exploration_run_id, rows=selectedExplorationCandidateRows();
+  if(!runId||!rows.length) { setStatus("请勾选已接受的状态探索候选。","warning"); return; }
+  const decisions=new Map((state.exploration.candidate_decisions||[]).map(item=>[item.candidate_id,item.decision]));
+  const candidateIds=rows.map(input=>input.dataset.candidateId);
+  if(candidateIds.some(candidateId=>decisions.get(candidateId)!=="accepted")) { setStatus("只有已接受候选可以加入正常状态候选池。","warning"); return; }
+  const button=el("convertExplorationCandidates"); setBusy(button,true,"转换中…");
+  try {
+    const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/training-windows`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({candidate_ids:candidateIds,training_windows:state.trainingWindows})});
+    state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); updateQualityButtonAvailability(); setStatus("已加入正常状态候选时段，默认未启用且不会自动参与训练。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });

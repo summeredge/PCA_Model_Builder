@@ -139,6 +139,8 @@ def test_final_web_page_exposes_state_exploration_workbench():
         'id="explorationClusterTable"',
         'id="explorationClusterCandidates"',
         'id="explorationPerformanceCandidates"',
+        'id="saveExplorationCandidateDecisions"',
+        'id="convertExplorationCandidates"',
     ):
         assert element_id in html
     for label in (
@@ -152,6 +154,9 @@ def test_final_web_page_exposes_state_exploration_workbench():
         assert label in html
     assert "自动正常 Cluster" not in html
     assert "自动正常窗口" not in html
+    assert "接受仅表示进入正常状态候选池，不会自动参与训练" in html
+    assert "exploration-candidate-select" in html
+    assert "selectedExplorationCandidateRows" in html
 
 
 def test_final_web_entry_uses_cached_base_reading_paths() -> None:
@@ -988,6 +993,163 @@ def test_state_exploration_cache_evicts_oldest_full_result(monkeypatch):
 
     assert list(web.STATE_EXPLORATION_RUNS) == ["b" * 32]
     assert first == {}
+
+
+def test_state_exploration_candidate_decisions_and_window_conversion():
+    web.clear_state_exploration_cache()
+    run_id = "a" * 32
+    cluster_id = "cluster_001-candidate-001"
+    performance_id = "performance-candidate-001"
+    web._store_state_exploration_run(
+        run_id,
+        {
+            "cluster_candidates": [
+                {
+                    "candidate_id": cluster_id,
+                    "source": "cluster",
+                    "start": "2026-01-01T00:00:00",
+                    "end": "2026-01-01T00:10:00",
+                }
+            ],
+            "performance_candidates": [
+                {
+                    "candidate_id": performance_id,
+                    "source": "performance",
+                    "start": "2026-01-01T00:20:00",
+                    "end": "2026-01-01T00:30:00",
+                }
+            ],
+            "candidate_decisions": [
+                {
+                    "candidate_id": cluster_id,
+                    "decision": "pending",
+                    "comment": "",
+                    "decided_at": None,
+                },
+                {
+                    "candidate_id": performance_id,
+                    "decision": "pending",
+                    "comment": "",
+                    "decided_at": None,
+                },
+            ],
+            "cluster_series": pd.DataFrame(),
+            "cluster_series_display": pd.DataFrame(),
+        },
+    )
+
+    decisions, status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/decisions",
+        {
+            "decisions": [
+                {
+                    "candidate_id": cluster_id,
+                    "decision": "accepted",
+                    "comment": "Cluster稳定",
+                },
+                {
+                    "candidate_id": performance_id,
+                    "decision": "rejected",
+                    "comment": "性能不足",
+                },
+            ]
+        },
+    )
+
+    assert status == 200
+    assert {item["decision"] for item in decisions["candidate_decisions"]} == {
+        "accepted",
+        "rejected",
+    }
+    assert all(item["decided_at"] for item in decisions["candidate_decisions"])
+    summary, summary_status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}"
+    )
+    assert summary_status == 200
+    assert summary["candidate_decisions"] == decisions["candidate_decisions"]
+
+    rejected, rejected_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/training-windows",
+        {"candidate_ids": [performance_id], "training_windows": []},
+    )
+    assert rejected_status == 400
+    assert "只有已接受候选" in rejected["error"]
+
+    converted, converted_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/training-windows",
+        {"candidate_ids": [cluster_id], "training_windows": []},
+    )
+    window = converted["training_windows"][0]
+    assert converted_status == 200
+    assert converted["converted_candidate_ids"] == [cluster_id]
+    assert window == {
+        "id": f"state-exploration-{cluster_id}",
+        "start": "2026-01-01T00:00:00",
+        "end": "2026-01-01T00:10:00",
+        "source": "cluster",
+        "source_ref": cluster_id,
+        "enabled": False,
+        "comment": "Cluster稳定",
+    }
+    repeated, repeated_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/training-windows",
+        {"candidate_ids": [cluster_id], "training_windows": converted["training_windows"]},
+    )
+    assert repeated_status == 200
+    assert repeated["training_windows"] == converted["training_windows"]
+
+    accepted_performance, accepted_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/decisions",
+        {
+            "candidate_id": performance_id,
+            "decision": "accepted",
+            "comment": "性能优秀",
+        },
+    )
+    assert accepted_status == 200
+    converted_performance, converted_performance_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/training-windows",
+        {
+            "candidate_ids": [performance_id],
+            "training_windows": converted["training_windows"],
+        },
+    )
+    assert converted_performance_status == 200
+    assert converted_performance["training_windows"][1]["source"] == "performance"
+    assert converted_performance["training_windows"][1]["source_ref"] == performance_id
+    assert converted_performance["training_windows"][1]["enabled"] is False
+    assert converted_performance["training_windows"][1]["comment"] == "性能优秀"
+    assert accepted_performance["candidate_decisions"][1]["decision"] == "accepted"
+
+    for payload in (
+        {
+            "decisions": [
+                {"candidate_id": cluster_id, "decision": "pending", "comment": ""},
+                {"candidate_id": cluster_id, "decision": "accepted", "comment": ""},
+            ]
+        },
+        {"candidate_id": "unknown", "decision": "accepted", "comment": ""},
+        {"candidate_id": cluster_id, "decision": "invalid", "comment": ""},
+        {"candidate_id": cluster_id, "decision": "accepted", "comment": None},
+    ):
+        error, error_status = _post_response(
+            web._Handler, f"/api/state-exploration/{run_id}/decisions", payload
+        )
+        assert error_status == 400
+        assert "traceback" not in error["error"].lower()
+    missing, missing_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{'f' * 32}/decisions",
+        {"candidate_id": cluster_id, "decision": "accepted", "comment": ""},
+    )
+    assert missing_status == 404
+    assert "traceback" not in missing["error"].lower()
 
 
 def test_training_windows_api_normalizes_operations_and_reports_summary():

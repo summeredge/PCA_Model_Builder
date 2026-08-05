@@ -30,6 +30,17 @@ def test_state_exploration_is_draft_and_deterministic_with_display_limit():
     assert first["cluster_series"].index.is_unique
     assert sum(item["sample_count"] for item in first["cluster_summaries"]) == len(first["cluster_series"])
     assert all(item["source"] == "cluster" and item["comment"] == "" for item in first["cluster_candidates"])
+    candidate_ids = {
+        item["candidate_id"]
+        for item in [*first["cluster_candidates"], *first["performance_candidates"]]
+    }
+    assert {item["candidate_id"] for item in first["candidate_decisions"]} == candidate_ids
+    assert all(
+        item["decision"] == "pending"
+        and item["comment"] == ""
+        and item["decided_at"] is None
+        for item in first["candidate_decisions"]
+    )
 
 
 def test_cluster_metrics_use_the_complete_principal_component_space():
