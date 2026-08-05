@@ -805,6 +805,7 @@ def state_exploration_training_windows_payload(
             for item in exploration["candidate_decisions"]
         }
         additions: list[dict[str, object]] = []
+        existing_window_ids = {window["id"] for window in windows}
         for candidate_id in candidate_ids:
             try:
                 candidate = candidates[candidate_id]
@@ -812,11 +813,12 @@ def state_exploration_training_windows_payload(
                 raise ValueError("候选不属于当前状态探索运行：" + candidate_id) from error
             if decisions[candidate_id]["decision"] != "accepted":
                 raise ValueError("只有已接受候选可以加入正常状态候选池：" + candidate_id)
-            if any(window["source_ref"] == candidate_id for window in windows):
+            window_id = f"state-exploration-{run_id}-{candidate_id}"
+            if window_id in existing_window_ids:
                 continue
             additions.append(
                 {
-                    "id": f"state-exploration-{candidate_id}",
+                    "id": window_id,
                     "start": candidate["start"],
                     "end": candidate["end"],
                     "source": str(candidate["source"]),
@@ -830,7 +832,7 @@ def state_exploration_training_windows_payload(
     return {
         "training_windows": updated,
         "summary": summarize_training_windows(updated),
-        "converted_candidate_ids": candidate_ids,
+        "converted_candidate_ids": [window["source_ref"] for window in additions],
     }
 
 
@@ -2598,7 +2600,9 @@ el("convertExplorationCandidates").addEventListener("click", async () => {
   const button=el("convertExplorationCandidates"); setBusy(button,true,"转换中…");
   try {
     const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/training-windows`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({candidate_ids:candidateIds,training_windows:state.trainingWindows})});
-    state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); updateQualityButtonAvailability(); setStatus("已加入正常状态候选时段，默认未启用且不会自动参与训练。","success");
+    state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); updateQualityButtonAvailability();
+    if(data.converted_candidate_ids.length) setStatus("已加入正常状态候选时段，默认未启用且不会自动参与训练。","success");
+    else setStatus("所选候选已存在，未新增正常状态候选时段。","warning");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });

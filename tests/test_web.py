@@ -1086,7 +1086,7 @@ def test_state_exploration_candidate_decisions_and_window_conversion():
     assert converted_status == 200
     assert converted["converted_candidate_ids"] == [cluster_id]
     assert window == {
-        "id": f"state-exploration-{cluster_id}",
+        "id": f"state-exploration-{run_id}-{cluster_id}",
         "start": "2026-01-01T00:00:00",
         "end": "2026-01-01T00:10:00",
         "source": "cluster",
@@ -1101,6 +1101,7 @@ def test_state_exploration_candidate_decisions_and_window_conversion():
     )
     assert repeated_status == 200
     assert repeated["training_windows"] == converted["training_windows"]
+    assert repeated["converted_candidate_ids"] == []
 
     accepted_performance, accepted_status = _post_response(
         web._Handler,
@@ -1116,11 +1117,12 @@ def test_state_exploration_candidate_decisions_and_window_conversion():
         web._Handler,
         f"/api/state-exploration/{run_id}/training-windows",
         {
-            "candidate_ids": [performance_id],
+            "candidate_ids": [cluster_id, performance_id],
             "training_windows": converted["training_windows"],
         },
     )
     assert converted_performance_status == 200
+    assert converted_performance["converted_candidate_ids"] == [performance_id]
     assert converted_performance["training_windows"][1]["source"] == "performance"
     assert converted_performance["training_windows"][1]["source_ref"] == performance_id
     assert converted_performance["training_windows"][1]["enabled"] is False
@@ -1150,6 +1152,73 @@ def test_state_exploration_candidate_decisions_and_window_conversion():
     )
     assert missing_status == 404
     assert "traceback" not in missing["error"].lower()
+
+
+def test_state_exploration_conversion_keeps_same_candidate_from_separate_runs():
+    web.clear_state_exploration_cache()
+    candidate_id = "cluster_001-candidate-001"
+    first_run_id = "a" * 32
+    second_run_id = "b" * 32
+    for run_id, start, end, comment in (
+        (first_run_id, "2026-01-01T00:00:00", "2026-01-01T00:10:00", "第一轮"),
+        (second_run_id, "2026-01-02T00:00:00", "2026-01-02T00:20:00", "第二轮"),
+    ):
+        web._store_state_exploration_run(
+            run_id,
+            {
+                "cluster_candidates": [
+                    {
+                        "candidate_id": candidate_id,
+                        "source": "cluster",
+                        "start": start,
+                        "end": end,
+                    }
+                ],
+                "performance_candidates": [],
+                "candidate_decisions": [
+                    {
+                        "candidate_id": candidate_id,
+                        "decision": "accepted",
+                        "comment": comment,
+                        "decided_at": None,
+                    }
+                ],
+                "cluster_series": pd.DataFrame(),
+                "cluster_series_display": pd.DataFrame(),
+            },
+        )
+
+    first = web.state_exploration_training_windows_payload(
+        first_run_id, {"candidate_ids": [candidate_id], "training_windows": []}
+    )
+    second = web.state_exploration_training_windows_payload(
+        second_run_id,
+        {"candidate_ids": [candidate_id], "training_windows": first["training_windows"]},
+    )
+    repeated = web.state_exploration_training_windows_payload(
+        first_run_id,
+        {"candidate_ids": [candidate_id], "training_windows": second["training_windows"]},
+    )
+
+    assert [window["id"] for window in second["training_windows"]] == [
+        f"state-exploration-{first_run_id}-{candidate_id}",
+        f"state-exploration-{second_run_id}-{candidate_id}",
+    ]
+    assert [window["source_ref"] for window in second["training_windows"]] == [candidate_id] * 2
+    assert [(window["start"], window["end"], window["comment"]) for window in second["training_windows"]] == [
+        ("2026-01-01T00:00:00", "2026-01-01T00:10:00", "第一轮"),
+        ("2026-01-02T00:00:00", "2026-01-02T00:20:00", "第二轮"),
+    ]
+    assert all(window["enabled"] is False for window in second["training_windows"])
+    assert first["converted_candidate_ids"] == [candidate_id]
+    assert second["converted_candidate_ids"] == [candidate_id]
+    assert repeated["training_windows"] == second["training_windows"]
+    assert repeated["converted_candidate_ids"] == []
+
+
+def test_state_exploration_conversion_reports_existing_candidates_in_web():
+    assert "if(data.converted_candidate_ids.length)" in web.INDEX_HTML
+    assert "所选候选已存在，未新增正常状态候选时段。" in web.INDEX_HTML
 
 
 def test_training_windows_api_normalizes_operations_and_reports_summary():
