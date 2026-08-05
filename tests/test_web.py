@@ -1492,6 +1492,55 @@ def test_explicitly_enabled_candidate_can_complete_quality_and_training(
         "disabled",
         "used",
     ]
+    assert trained["training_window_totals"] == {
+        "enabled_window_count": 1,
+        "used_window_count": 1,
+        "dropped_window_count": 0,
+        "training_rows": trained["training_rows"],
+    }
+    assert manifest["config"]["preprocessing_summary"] == {
+        "windows": trained["training_window_summary"],
+        **trained["training_window_totals"],
+    }
+
+
+def test_web_training_creates_isolated_candidate_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "n_components": 2,
+        "model_name": "ISOLATED_CANDIDATE",
+    }
+
+    first = web.train_payload(payload)
+    first_path = tmp_path / "runs" / first["run_id"] / "model.pcamodel"
+    first_bytes = first_path.read_bytes()
+    second = web.train_payload(payload)
+
+    assert first["run_id"] != second["run_id"]
+    assert first_path.read_bytes() == first_bytes
+    assert (tmp_path / "runs" / second["run_id"] / "model.pcamodel").is_file()
+    assert (first["model_purpose"], first["model_status"]) == (
+        "normal_state",
+        "candidate",
+    )
+    assert (second["model_purpose"], second["model_status"]) == (
+        "normal_state",
+        "candidate",
+    )
 
 
 def test_training_window_edits_and_removals_preserve_other_enablement():
@@ -1586,6 +1635,7 @@ def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
     assert 'id="trainingWindowSummary"' in web.INDEX_HTML
     assert 'id="trainingQualityWarnings"' in web.INDEX_HTML
     assert "renderTrainingWindowSummary(data.training_window_summary||[])" in web.INDEX_HTML
+    assert "启用 / 使用 / 丢弃窗口" in web.INDEX_HTML
     assert "部分桶原始行删除" in web.INDEX_HTML
     assert "滤波上下文无效" in web.INDEX_HTML
     _, manifest = load_model_package(

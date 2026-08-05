@@ -269,7 +269,10 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "source_tag_configs": registry,
         "excluded_tags": excluded_tag_records,
         "training_summary": training_result.window_summaries,
-        "preprocessing_summary": training_result.window_summaries,
+        "preprocessing_summary": {
+            "windows": training_result.window_summaries,
+            **training_result.training_window_totals,
+        },
         "training_quality_warnings": training_result.global_quality_warnings,
     }
     save_model_package(
@@ -289,6 +292,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "model_status": model_status,
         "training_rows": len(dynamic),
         "training_window_summary": training_result.window_summaries,
+        "training_window_totals": training_result.training_window_totals,
         "training_quality_warnings": training_result.global_quality_warnings,
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
@@ -2757,7 +2761,8 @@ function renderClustering(data) {
 function renderTraining(data) {
   el("modelEmpty").hidden=true; el("modelContent").hidden=false;
   const purpose=data.model_purpose==="exploratory"?"探索模型":"正常状态模型"; const status=data.model_status==="draft"?"草稿":"候选";
-  el("modelMetrics").innerHTML=metric("模型用途",purpose)+metric("模型状态",status)+metric("训练动态样本",data.training_rows)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
+  const totals=data.training_window_totals||{}; const windowCounts=`${totals.enabled_window_count??"—"} / ${totals.used_window_count??"—"} / ${totals.dropped_window_count??"—"}`;
+  el("modelMetrics").innerHTML=metric("模型用途",purpose)+metric("模型状态",status)+metric("训练动态样本",data.training_rows)+metric("启用 / 使用 / 丢弃窗口",windowCounts)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
   renderTrainingWindowSummary(data.training_window_summary||[]);
   const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);

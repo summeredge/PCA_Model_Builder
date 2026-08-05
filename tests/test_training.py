@@ -143,6 +143,12 @@ def test_training_single_window_matches_existing_dynamic_matrix_and_disabled_win
     pd.testing.assert_frame_equal(single.dynamic, expected)
     pd.testing.assert_frame_equal(result.dynamic, expected)
     assert result.window_summaries[1]["status"] == "disabled"
+    assert result.training_window_totals == {
+        "enabled_window_count": 1,
+        "used_window_count": 1,
+        "dropped_window_count": 0,
+        "training_rows": len(expected),
+    }
     np.testing.assert_allclose(result.dynamic.mean().to_numpy(), expected.mean().to_numpy())
 
 

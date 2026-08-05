@@ -19,6 +19,7 @@ from .windows import normalize_training_windows
 class TrainingBuildResult:
     dynamic: pd.DataFrame
     window_summaries: list[dict[str, Any]]
+    training_window_totals: dict[str, int]
     reference: pd.DataFrame
     global_quality_warnings: list[dict[str, Any]]
 
@@ -283,9 +284,18 @@ def build_training_matrix(
         )
     if sum(item.get("effective_samples", 0) for item in summaries) != len(dynamic):
         raise ValueError("training window summaries do not match merged dynamic rows")
+    training_window_totals = {
+        "enabled_window_count": sum(window["enabled"] for window in windows),
+        "used_window_count": sum(item["status"] == "used" for item in summaries),
+        "dropped_window_count": sum(
+            item["status"] == "dropped" for item in summaries
+        ),
+        "training_rows": len(dynamic),
+    }
     return TrainingBuildResult(
         dynamic=dynamic,
         window_summaries=summaries,
+        training_window_totals=training_window_totals,
         reference=reference,
         global_quality_warnings=_validate_dynamic_matrix(dynamic) if validate_dynamic else [],
     )
