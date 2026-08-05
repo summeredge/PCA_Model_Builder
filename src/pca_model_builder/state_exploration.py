@@ -111,6 +111,8 @@ def run_state_exploration(
     exploration_config: ExplorationConfig = ExplorationConfig(),
     performance_config: PerformanceConfig | Mapping[str, Any] | None = None,
     performance_series: pd.Series | None = None,
+    engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
+    resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> dict[str, object]:
     """Explore historical operating states; never labels a state as normal."""
     normalized_performance = _normalize_performance_config(performance_config)
@@ -125,8 +127,10 @@ def run_state_exploration(
         indexed,
         tag_columns,
         preprocessing_config,
+        engineering_ranges,
         preserve_columns=preserve_columns,
         include_intermediates=True,
+        resampling_window=resampling_window,
     )
     dynamic = processed.dynamic
     if len(dynamic) <= exploration_config.cluster_count:
@@ -335,11 +339,11 @@ def _performance_candidates(
     usable = points.loc[finite].copy()
     usable_values = aligned_values.loc[usable.index]
     runs = _contiguous_runs(usable, interval, split_cluster=False)
+    window_rows = int(np.ceil(config.minimum_duration_minutes / interval))
     eligible = [
-        run
+        run.iloc[start : start + window_rows].copy()
         for run in runs
-        if _coverage_duration_minutes(run, interval)
-        >= config.minimum_duration_minutes
+        for start in range(max(0, len(run) - window_rows + 1))
     ]
 
     def ranking_key(run: pd.DataFrame) -> tuple[object, ...]:
@@ -359,7 +363,11 @@ def _performance_candidates(
 
     ranked = sorted(eligible, key=ranking_key)
     result: list[dict[str, object]] = []
-    for rank, run in enumerate(ranked[: config.candidate_count], 1):
+    selected_timestamps: set[pd.Timestamp] = set()
+    for run in ranked:
+        if selected_timestamps.intersection(run.index):
+            continue
+        rank = len(result) + 1
         run_values = usable_values.loc[run.index]
         summary = _performance_summary(run_values, config)
         associated = sorted({str(value) for value in run["cluster_id"]})
@@ -380,6 +388,9 @@ def _performance_candidates(
                 "comment": "",
             }
         )
+        selected_timestamps.update(run.index)
+        if len(result) >= config.candidate_count:
+            break
     return result
 
 

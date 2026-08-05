@@ -619,27 +619,39 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
     _require_state_filter_roles(state_columns, registry)
+    tag_configs = normalize_tag_configs(
+        tags, {tag: registry[tag] for tag in tags}
+    )
+    exploration_start = pd.Timestamp(_required_text(payload, "exploration_start"))
+    exploration_end = pd.Timestamp(_required_text(payload, "exploration_end"))
     selected = _select_window(
         loaded.frame,
         timestamp_column,
-        _required_text(payload, "exploration_start"),
-        _required_text(payload, "exploration_end"),
+        exploration_start.isoformat(),
+        exploration_end.isoformat(),
     )
     exploration_config = ExplorationConfig(
         **dict(payload.get("exploration_config") or {})
     )
     with _web_stage("preprocessing"):
-        exploration = run_state_exploration(
-            _indexed_tags(
-                selected,
-                timestamp_column,
-                list(dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else [])])),
-            ),
-            tags,
-            config,
-            exploration_config,
-            performance_config=performance_config,
-        )
+        try:
+            exploration = run_state_exploration(
+                _indexed_tags(
+                    selected,
+                    timestamp_column,
+                    list(dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else [])])),
+                ),
+                tags,
+                config,
+                exploration_config,
+                performance_config=performance_config,
+                engineering_ranges=engineering_ranges(tag_configs),
+                resampling_window=(exploration_start, exploration_end),
+            )
+        except PreprocessingQualityError as error:
+            raise WebStageError(
+                "quality_check", ValueError(_format_quality_errors(error.report))
+            ) from error
     run_id = str(exploration["exploration_run_id"])
     response = {key: value for key, value in exploration.items() if key not in {"cluster_series", "cluster_series_display"}}
     response["cluster_series"] = _exploration_series(

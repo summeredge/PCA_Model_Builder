@@ -146,12 +146,63 @@ def test_performance_candidates_support_all_directions_and_do_not_cross_segments
         columns,
     )
 
-    assert higher[0]["start"] == index[0].isoformat()
+    assert higher[0]["start"] == index[2].isoformat()
     assert lower[0]["start"] == index[6].isoformat()
-    assert target[0]["start"] == index[6].isoformat()
+    assert target[0]["start"] == index[7].isoformat()
     assert higher[0]["source"] == "performance"
     assert higher[0]["comment"] == ""
     assert higher[0]["associated_cluster_ids"] == ["cluster_001"]
+
+
+@pytest.mark.parametrize(
+    ("direction", "values", "kwargs"),
+    [
+        ("higher_is_better", [1] * 6 + [9] * 6 + [1] * 6, {}),
+        ("lower_is_better", [9] * 6 + [1] * 6 + [9] * 6, {}),
+        (
+            "target_range",
+            [0] * 6 + [3] * 6 + [0] * 6,
+            {"target_min": 2, "target_max": 4},
+        ),
+    ],
+)
+def test_performance_candidates_rank_local_windows_within_one_continuous_segment(
+    direction, values, kwargs
+):
+    index = pd.date_range("2026-01-01", periods=18, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": np.zeros(18),
+            "pc2": np.zeros(18),
+            "cluster_id": ["cluster_001"] * 18,
+            "segment_id": [0] * 18,
+        },
+        index=index,
+    )
+    config = PerformanceConfig(
+        "PERF",
+        direction,
+        minimum_duration_minutes=20,
+        candidate_count=2,
+        **kwargs,
+    )
+    centers = {"cluster_001": np.zeros(2)}
+
+    first = _performance_candidates(
+        points, pd.Series(values, index=index), config, 5, centers, ("pc1", "pc2")
+    )
+    second = _performance_candidates(
+        points, pd.Series(values, index=index), config, 5, centers, ("pc1", "pc2")
+    )
+
+    assert first == second
+    assert first[0]["start"] == index[6].isoformat()
+    assert first[0]["end"] == index[9].isoformat()
+    selected = [
+        set(pd.date_range(item["start"], item["end"], freq="5min"))
+        for item in first
+    ]
+    assert not selected[0].intersection(selected[1])
 
 
 def test_performance_config_rejects_incomplete_or_irrelevant_bounds():

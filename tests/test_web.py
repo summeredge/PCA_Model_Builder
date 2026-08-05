@@ -866,6 +866,117 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
     assert "MISSING_PERF" in missing_tag["error"]
 
 
+def test_state_exploration_uses_model_tag_engineering_ranges_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    history = _history_frame()
+    history["PERF"] = np.linspace(0.0, 1.0, len(history))
+    history["LOAD"] = 1.0
+    uploaded = web.save_upload(
+        "exploration.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "exploration_start": history.time.iloc[0].isoformat(),
+        "exploration_end": history.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 0,
+        "filter_method": "none",
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "state_filters": [{"column": "LOAD", "minimum": 1}],
+        "performance_config": {
+            "performance_tag": "PERF",
+            "direction": "higher_is_better",
+            "minimum_duration_minutes": 10,
+            "candidate_count": 1,
+        },
+        "exploration_config": {"cluster_count": 2},
+        "tag_configs": {
+            "A": {"engineering_min": -0.1, "engineering_max": 0.1},
+            "LOAD": {"role": "state_filter"},
+        },
+    }
+
+    with pytest.raises(ValueError, match=r"engineering_range\(\d+\)"):
+        web.state_exploration_payload(payload)
+    with pytest.raises(ValueError, match=r"engineering_range\(\d+\)"):
+        web.train_payload(
+            {
+                **payload,
+                "normal_start": payload["exploration_start"],
+                "normal_end": payload["exploration_end"],
+                "model_name": "range-check",
+            }
+        )
+
+    result = web.state_exploration_payload(
+        {
+            **payload,
+            "tag_configs": {"LOAD": {"role": "state_filter"}},
+        }
+    )
+
+    assert result["preprocessing_summary"]["dynamic_feature_count"] == 3
+
+
+def test_state_exploration_drops_partial_resampling_boundaries_like_training(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    time = pd.date_range("2026-01-01", periods=65, freq="1min")
+    values = np.linspace(0.0, 1.0, len(time))
+    frame = pd.DataFrame(
+        {"time": time, "A": values, "B": values**2, "C": np.sin(values)}
+    )
+    uploaded = web.save_upload("resampled.csv", frame.to_csv(index=False).encode("utf-8-sig"))
+    start, end = time[2], time[58]
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "exploration_start": start.isoformat(),
+        "exploration_end": end.isoformat(),
+        "sample_interval_minutes": 5,
+        "resampling_method": "mean",
+        "smoothing_window_minutes": 0,
+        "filter_method": "none",
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "exploration_config": {"cluster_count": 2},
+    }
+
+    explored = web.state_exploration_payload(payload)
+    cached = web._state_exploration_run(explored["exploration_run_id"])
+    training = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(
+            5, 0, 0, 5, resampling_method="mean", filter_method="none"
+        ),
+        [
+            {
+                "id": "window-001",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "source": "manual",
+                "source_ref": None,
+                "enabled": True,
+                "comment": "",
+            }
+        ],
+    )
+
+    assert explored["preprocessing_summary"]["partial_resampling_bin_loss"] == 2
+    assert explored["preprocessing_summary"]["final_dynamic_row_count"] == len(
+        cached["cluster_series"]
+    )
+    assert cached["cluster_series"].index.tolist() == training.dynamic.index.tolist()
+
+
 def test_state_exploration_cache_evicts_oldest_full_result(monkeypatch):
     web.clear_state_exploration_cache()
     monkeypatch.setattr(web, "MAX_STATE_EXPLORATION_RUNS", 1)
