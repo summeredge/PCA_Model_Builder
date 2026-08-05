@@ -1,6 +1,7 @@
 import json
 import inspect
 from io import BytesIO
+from pathlib import Path
 import zipfile
 
 import numpy as np
@@ -17,6 +18,9 @@ from pca_model_builder.preprocessing import (
     infer_segment_ids,
 )
 from pca_model_builder.training import build_training_matrix
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _history_frame() -> pd.DataFrame:
@@ -168,6 +172,81 @@ def test_final_web_entry_uses_cached_base_reading_paths() -> None:
     source = inspect.getsource(web_dataproject.trend_payload)
     assert "base_web._load_required_upload" in source
     assert "base_web._state_filter_columns" in source
+
+
+def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
+    html = web_model_results.INDEX_HTML
+    source = (PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'src="/assets/model-results.js"' in html
+    for text in (
+        "模型结构与参数比较",
+        "不能替代独立验证",
+        "不会自动评分、推荐、验证或改变模型状态",
+        'id="modelComparisonRuns"',
+        "/api/model-comparison",
+        "解释率累计曲线",
+        "原始Tag平方载荷能量",
+        "Lag平方载荷能量",
+    ):
+        assert text in source
+    assert "最佳模型" not in source
+
+
+def test_final_web_model_comparison_routes_only_read_saved_candidates(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    base = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5,
+        "lag_step_minutes": 5,
+        "model_name": "comparison-candidate",
+    }
+    first = web.train_payload(base)
+    second = web.train_payload({**base, "smoothing_window_minutes": 5})
+    first_path = tmp_path / "runs" / first["run_id"] / "model.pcamodel"
+    before = first_path.read_bytes(), first_path.stat().st_mtime_ns
+
+    diagnostic, diagnostic_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/model-diagnostics",
+        {"run_id": first["run_id"]},
+    )
+    candidates, candidates_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/model-candidates"
+    )
+    compared, compared_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/model-comparison",
+        {"run_ids": [first["run_id"], second["run_id"]]},
+    )
+
+    assert diagnostic_status == 200
+    assert diagnostic["run_id"] == first["run_id"]
+    assert candidates_status == 200
+    assert {item["run_id"] for item in candidates["candidates"]} == {
+        first["run_id"],
+        second["run_id"],
+    }
+    assert compared_status == 200
+    assert compared["comparability"]["comparable"] is True
+    assert "smoothing_window_minutes" in compared["parameter_differences"][0]["differences"]
+    assert first_path.read_bytes() == before[0]
+    assert first_path.stat().st_mtime_ns == before[1]
 
 
 def test_web_exposes_preprocessing_controls_and_preview_route():

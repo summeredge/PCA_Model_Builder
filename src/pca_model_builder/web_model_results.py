@@ -11,6 +11,7 @@ import webbrowser
 
 from . import web_quality_layout as quality_app
 from .loading_plot import loading_plot_payload
+from .model_diagnostics import compare_candidate_runs, model_structure_diagnostic
 
 
 _BASE_WEB = quality_app.app.base_web
@@ -163,7 +164,55 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     model_path = _BASE_WEB.RUNS_DIR / str(result["run_id"]) / "model.pcamodel"
     model, manifest = _BASE_WEB.load_model_package(model_path)
     result["loading_plot"] = loading_plot_payload(model, manifest)
+    result["model_diagnostic"] = model_structure_diagnostic(
+        model, manifest, str(result["run_id"])
+    )
     return result
+
+
+def model_diagnostic_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _BASE_WEB._validated_id(str(payload.get("run_id", "")), "run_id")
+    model_path = _BASE_WEB.RUNS_DIR / run_id / "model.pcamodel"
+    if not model_path.is_file():
+        raise ValueError("候选模型运行记录不存在")
+    try:
+        model, manifest = _BASE_WEB.load_model_package(model_path)
+    except ValueError as error:
+        raise ValueError("候选模型包损坏") from error
+    if (
+        manifest["model_purpose"] != "normal_state"
+        or manifest["model_status"] != "candidate"
+    ):
+        raise ValueError("仅允许查看normal_state/candidate模型诊断")
+    return model_structure_diagnostic(model, manifest, run_id)
+
+
+def candidate_models_payload() -> dict[str, Any]:
+    candidates: list[dict[str, Any]] = []
+    if not _BASE_WEB.RUNS_DIR.is_dir():
+        return {"candidates": candidates}
+    for run_dir in sorted(_BASE_WEB.RUNS_DIR.iterdir()):
+        if not run_dir.is_dir():
+            continue
+        model_path = run_dir / "model.pcamodel"
+        if not model_path.is_file():
+            continue
+        try:
+            model, manifest = _BASE_WEB.load_model_package(model_path)
+        except ValueError:
+            continue
+        if (
+            manifest["model_purpose"] == "normal_state"
+            and manifest["model_status"] == "candidate"
+        ):
+            candidates.append(
+                {
+                    "run_id": run_dir.name,
+                    "model_name": str(manifest["config"]["model_name"]),
+                    "training_dynamic_samples": int(model.n_samples),
+                }
+            )
+    return {"candidates": candidates}
 
 
 INDEX_HTML = apply_model_results_ui(quality_app.INDEX_HTML)
@@ -172,6 +221,9 @@ INDEX_HTML = apply_model_results_ui(quality_app.INDEX_HTML)
 class ModelResultsHandler(_BASE_WEB._Handler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/model-candidates":
+            self._send_json(candidate_models_payload())
+            return
         if path in {"/", "/index.html"}:
             self._send_text(INDEX_HTML, "text/html; charset=utf-8")
             return
@@ -185,7 +237,12 @@ class ModelResultsHandler(_BASE_WEB._Handler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path not in {"/api/train", "/api/trend"}:
+        if path not in {
+            "/api/train",
+            "/api/trend",
+            "/api/model-diagnostics",
+            "/api/model-comparison",
+        }:
             super().do_POST()
             return
         try:
@@ -194,6 +251,10 @@ class ModelResultsHandler(_BASE_WEB._Handler):
                 train_payload(payload)
                 if path == "/api/train"
                 else _TREND_APP.trend_payload(payload)
+                if path == "/api/trend"
+                else model_diagnostic_payload(payload)
+                if path == "/api/model-diagnostics"
+                else compare_candidate_runs(payload.get("run_ids"), _BASE_WEB.RUNS_DIR)
             )
             self._send_json(result)
         except Exception as error:

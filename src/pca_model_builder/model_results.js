@@ -67,11 +67,182 @@
   scoreCard.parentNode.insertBefore(projectionGrid, scoreCard);
   projectionGrid.append(scoreCard, section);
 
+  const diagnosticCard = document.createElement("section");
+  diagnosticCard.className = "chart-card";
+  diagnosticCard.id = "modelStructureComparison";
+  diagnosticCard.innerHTML = `
+    <h3>模型结构与参数比较</h3>
+    <div class="help">诊断用于辅助工程师选择模型结构，不能替代独立验证；不会自动评分、推荐、验证或改变模型状态。</div>
+    <div id="singleModelDiagnostic" class="help">完成正常状态候选模型训练后显示结构诊断。</div>
+    <label class="secondary">选择 2—4 个已训练候选模型
+      <select id="modelComparisonRuns" multiple size="5" aria-label="候选模型比较"></select>
+    </label>
+    <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button></div>
+    <div id="modelComparisonResult" class="help">比较只读取已保存的 normal_state/candidate 模型包。</div>`;
+  projectionGrid.insertAdjacentElement("afterend", diagnosticCard);
+
   const originalRenderTraining = window.renderTraining;
   window.renderTraining = function renderTrainingWithLoadings(data) {
     originalRenderTraining(data);
     drawLoadingPlot(data.loading_plot);
+    renderSingleModelDiagnostic(data.model_diagnostic);
+    refreshCandidateOptions(data.run_id);
   };
+
+  document.getElementById("compareModelsButton").addEventListener("click", async () => {
+    const select = document.getElementById("modelComparisonRuns");
+    const runIds = [...select.selectedOptions].map(option => option.value);
+    const target = document.getElementById("modelComparisonResult");
+    try {
+      const response = await fetch("/api/model-comparison", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({run_ids: runIds}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "模型比较失败");
+      renderComparison(data);
+    } catch (error) {
+      target.className = "error";
+      target.textContent = error.message;
+    }
+  });
+
+  refreshCandidateOptions();
+
+  async function refreshCandidateOptions(currentRunId) {
+    const select = document.getElementById("modelComparisonRuns");
+    try {
+      const response = await fetch("/api/model-candidates");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "无法读取候选模型");
+      select.replaceChildren();
+      (data.candidates || []).forEach(candidate => {
+        const option = document.createElement("option");
+        option.value = candidate.run_id;
+        option.textContent = `${candidate.model_name} · ${candidate.run_id.slice(0, 8)} · ${candidate.training_dynamic_samples} 样本`;
+        option.selected = candidate.run_id === currentRunId;
+        select.append(option);
+      });
+    } catch (error) {
+      select.replaceChildren();
+    }
+  }
+
+  function renderSingleModelDiagnostic(diagnostic) {
+    const target = document.getElementById("singleModelDiagnostic");
+    if (!diagnostic) return;
+    target.className = "";
+    target.replaceChildren(
+      diagnosticSummary(diagnostic),
+      explainedVarianceChart([diagnostic]),
+      energyTable("原始Tag平方载荷能量（全部保留主元）", diagnostic.tag_loading_energy.retained_components, "tag"),
+      lagEnergyTable(diagnostic),
+    );
+  }
+
+  function renderComparison(data) {
+    const target = document.getElementById("modelComparisonResult");
+    target.className = "";
+    const comparability = document.createElement("div");
+    const reasons = data.comparability.reasons.length ? `：${data.comparability.reasons.join("；")}` : "";
+    comparability.className = data.comparability.comparable ? "help" : "error";
+    comparability.textContent = `可比性：${data.comparability.status}${reasons}`;
+    target.replaceChildren(
+      comparability,
+      parameterTable(data.parameter_table),
+      explainedVarianceChart(data.diagnostics),
+      ...data.diagnostics.flatMap(diagnostic => [
+        diagnosticSummary(diagnostic),
+        energyTable(`${diagnostic.model_name}：原始Tag平方载荷能量`, diagnostic.tag_loading_energy.retained_components, "tag"),
+        lagEnergyTable(diagnostic),
+      ]),
+    );
+  }
+
+  function diagnosticSummary(diagnostic) {
+    const block = document.createElement("div");
+    block.className = "help";
+    const limits = diagnostic.control_limits;
+    block.textContent = `${diagnostic.model_name}（${diagnostic.run_id.slice(0, 8)}）：${diagnostic.training_dynamic_samples} 个训练动态样本，${diagnostic.raw_tag_count} 个原始Tag，${diagnostic.dynamic_feature_count} 个动态特征，保留 ${diagnostic.retained_component_count} 个主元；T² 95/99%=${limits.t2["95"].toFixed(3)}/${limits.t2["99"].toFixed(3)}，SPE 95/99%=${limits.spe["95"].toFixed(3)}/${limits.spe["99"].toFixed(3)}。`;
+    return block;
+  }
+
+  function parameterTable(rows) {
+    const table = document.createElement("table");
+    const runIds = Object.keys(rows[0]?.values || {});
+    table.innerHTML = `<thead><tr><th>参数</th>${runIds.map(id => `<th>${id.slice(0, 8)}</th>`).join("")}</tr></thead>`;
+    const body = document.createElement("tbody");
+    rows.forEach(row => {
+      const tr = document.createElement("tr");
+      tr.append(cell(row.parameter));
+      runIds.forEach(id => tr.append(cell(formatValue(row.values[id]))));
+      body.append(tr);
+    });
+    table.append(body);
+    return table;
+  }
+
+  function energyTable(title, rows, key) {
+    const container = document.createElement("div");
+    const heading = document.createElement("h4");
+    heading.textContent = title;
+    const table = document.createElement("table");
+    table.innerHTML = `<thead><tr><th>${key === "tag" ? "Tag" : "Lag（分钟）"}</th><th>能量占比</th></tr></thead>`;
+    const body = document.createElement("tbody");
+    rows.forEach(row => {
+      const tr = document.createElement("tr");
+      tr.append(cell(row[key]), cell(`${(row.energy * 100).toFixed(2)}%`));
+      body.append(tr);
+    });
+    table.append(body);
+    container.append(heading, table);
+    return container;
+  }
+
+  function lagEnergyTable(diagnostic) {
+    const lag = diagnostic.lag_loading_energy;
+    const container = energyTable(`${diagnostic.model_name}：Lag平方载荷能量（全部保留主元）`, lag.retained_components, "lag_minutes");
+    const note = document.createElement("div");
+    note.className = "help";
+    note.textContent = `零Lag ${(lag.zero_lag_energy * 100).toFixed(2)}%，非零Lag ${(lag.nonzero_lag_energy * 100).toFixed(2)}%，主导Lag ${lag.dominant_lag_minutes} 分钟。`;
+    container.append(note);
+    return container;
+  }
+
+  function explainedVarianceChart(diagnostics) {
+    const container = document.createElement("div");
+    const heading = document.createElement("h4");
+    heading.textContent = "解释率累计曲线";
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 620 190");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "主元累计解释率曲线");
+    const maxPoints = Math.max(...diagnostics.map(item => item.cumulative_explained_variance_ratio.length), 1);
+    [0.8, 0.9, 0.95].forEach(level => addLine(svg, 45, 165 - level * 135, 590, 165 - level * 135, "#cbd5e1", 1));
+    diagnostics.forEach((diagnostic, index) => {
+      const color = ["#9f3f3f", "#2563eb", "#059669", "#7c3aed"][index];
+      const points = diagnostic.cumulative_explained_variance_ratio.map((value, point) => `${45 + point / Math.max(maxPoints - 1, 1) * 545},${165 - value * 135}`).join(" ");
+      const line = document.createElementNS(SVG_NS, "polyline");
+      line.setAttribute("points", points);
+      line.setAttribute("fill", "none");
+      line.setAttribute("stroke", color);
+      line.setAttribute("stroke-width", "2");
+      svg.append(line);
+    });
+    container.append(heading, svg);
+    return container;
+  }
+
+  function cell(value) {
+    const td = document.createElement("td");
+    td.textContent = value;
+    return td;
+  }
+
+  function formatValue(value) {
+    return typeof value === "object" ? JSON.stringify(value) : String(value ?? "—");
+  }
 
   function drawLoadingPlot(plot) {
     chart.replaceChildren();
