@@ -2224,7 +2224,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="chart-card"><h3>主元得分 PC1 / PC2</h3><div id="scoreChart" class="chart"></div></div>
           <div class="legend"><span><i class="swatch" style="background:var(--accent)"></i>统计量</span><span><i class="swatch" style="background:var(--attention)"></i>95% 边界</span><span><i class="swatch" style="background:var(--abnormal)"></i>99% 边界</span></div>
           <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a></div>
-          <div class="notice">当前保存的是草稿模型。只有独立历史窗口回放并由工程师确认后，才能认为模型验证通过。</div>
+          <div id="modelLifecycleNotice" class="notice"></div>
         </div>
       </div>
       <div id="clusterPanel" class="panel">
@@ -2271,7 +2271,7 @@ INDEX_HTML = r"""<!doctype html>
           <button id="validateButton" disabled>回放独立验证期</button>
         </div>
         <div class="table-wrap"><table><thead><tr><th>类型</th><th>开始</th><th>结束</th><th>备注</th><th>操作</th></tr></thead><tbody id="validationWindowTable"></tbody></table></div>
-        <div id="validationEmpty" class="empty">训练草稿模型后可执行独立验证。</div>
+        <div id="validationEmpty" class="empty">只有正常状态候选模型可以执行独立验证。</div>
         <div id="validationContent" hidden>
           <div id="validationMetrics" class="metrics"></div>
           <div class="chart-grid">
@@ -2669,8 +2669,8 @@ el("recordValidationDecision").addEventListener("click",async()=>{
   const button=el("recordValidationDecision"); setBusy(button,true,"保存中…");
   try {
     const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
-    if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; }
-    setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已创建新的已验证模型包。":"工程师结论已保存；候选模型保持不变。","success");
+    if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; state.validation={...state.validation,model_purpose:"normal_state",model_status:data.model_status}; renderValidation(state.validation); }
+    setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已生成 normal_state/validated 模型副本；原候选模型未被原地修改。":"工程师结论已保存；候选模型保持不变。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -2756,11 +2756,18 @@ function renderClustering(data) {
   });
 }
 
+function modelLifecycle(data) {
+  const key=`${data.model_purpose}/${data.model_status}`;
+  if(key==="exploratory/draft") return {purpose:"探索模型",status:"草稿",notice:"探索草稿模型，仅用于状态探索，不能执行独立验证或作为正常状态模型。"};
+  if(key==="normal_state/validated") return {purpose:"正常状态模型",status:"已验证",notice:"已验证模型，可用于已完成工程师确认的正常状态监测。"};
+  return {purpose:"正常状态模型",status:"候选",notice:"正常状态候选模型，尚未完成独立验证和工程师确认。"};
+}
 function renderTraining(data) {
   el("modelEmpty").hidden=true; el("modelContent").hidden=false;
-  const purpose=data.model_purpose==="exploratory"?"探索模型":"正常状态模型"; const status=data.model_status==="draft"?"草稿":"候选";
+  const lifecycle=modelLifecycle(data);
   const totals=data.training_window_totals||{}; const windowCounts=`${totals.enabled_window_count??"—"} / ${totals.used_window_count??"—"} / ${totals.dropped_window_count??"—"}`;
-  el("modelMetrics").innerHTML=metric("模型用途",purpose)+metric("模型状态",status)+metric("训练动态样本",data.training_rows)+metric("启用 / 使用 / 丢弃窗口",windowCounts)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
+  el("modelMetrics").innerHTML=metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("训练动态样本",data.training_rows)+metric("启用 / 使用 / 丢弃窗口",windowCounts)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
+  el("modelLifecycleNotice").textContent=lifecycle.notice;
   renderTrainingWindowSummary(data.training_window_summary||[]);
   const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
@@ -2785,7 +2792,8 @@ function renderTrainingWindowSummary(windows) {
 
 function renderValidation(data) {
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
-  el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型状态（草稿）","待工程确认");
+  const lifecycle=modelLifecycle(data); const validationStatus=data.model_status==="validated"?"已生成 normal_state/validated 模型副本":"验证回放完成，待工程师确认";
+  el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("验证状态",validationStatus);
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
   el("contributionHint").textContent=data.contributions.length ? "按每个连续越过95%控制限的事件保存峰值贡献；事件不会跨物理时间缺口合并。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";

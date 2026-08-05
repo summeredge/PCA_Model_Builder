@@ -175,6 +175,46 @@ def test_final_web_keeps_candidate_decisions_manual_and_non_training() -> None:
     assert "默认未启用且不会自动参与训练" in html
 
 
+def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for text in (
+        "探索草稿模型，仅用于状态探索，不能执行独立验证或作为正常状态模型。",
+        "正常状态候选模型，尚未完成独立验证和工程师确认。",
+        "已验证模型，可用于已完成工程师确认的正常状态监测。",
+        "只有正常状态候选模型可以执行独立验证。",
+        "验证回放完成，待工程师确认",
+        "已生成 normal_state/validated 模型副本",
+        "原候选模型未被原地修改。",
+    ):
+        assert text in html
+    for text in (
+        "当前保存的是草稿模型",
+        "训练草稿模型后可执行独立验证",
+        "模型状态（草稿）",
+    ):
+        assert text not in html
+
+    training_source = html.split("function renderTraining(data)", 1)[1].split(
+        "function renderTrainingWindowSummary", 1
+    )[0]
+    validation_source = html.split("function renderValidation(data)", 1)[1].split(
+        "function renderValidationWindows", 1
+    )[0]
+    decision_source = html.split('el("recordValidationDecision")', 1)[1].split(
+        "function renderClustering", 1
+    )[0]
+
+    assert 'key==="exploratory/draft"' in html
+    assert 'key==="normal_state/validated"' in html
+    assert "const lifecycle=modelLifecycle(data);" in training_source
+    assert 'el("modelLifecycleNotice").textContent=lifecycle.notice;' in training_source
+    assert "const lifecycle=modelLifecycle(data);" in validation_source
+    assert 'data.model_status==="validated"' in validation_source
+    assert 'model_status:data.model_status' in decision_source
+    assert "renderValidation(state.validation);" in decision_source
+
+
 def test_candidate_actions_do_not_replace_the_training_window() -> None:
     html = web_model_results.INDEX_HTML
     cluster_source = html.split("function renderClustering", 1)[1].split(
