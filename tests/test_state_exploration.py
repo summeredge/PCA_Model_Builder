@@ -205,6 +205,75 @@ def test_performance_candidates_rank_local_windows_within_one_continuous_segment
     assert not selected[0].intersection(selected[1])
 
 
+def test_performance_candidates_scale_to_long_continuous_history_without_copies(
+    monkeypatch,
+):
+    count = 100_000
+    window_rows = 12
+    index = pd.date_range("2025-01-01", periods=count, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": np.sin(np.arange(count) / 25.0),
+            "pc2": np.cos(np.arange(count) / 31.0),
+            "pc3": np.sin(np.arange(count) / 43.0),
+            "pc4": np.cos(np.arange(count) / 47.0),
+            "cluster_id": np.where(
+                np.arange(count) < count // 2, "cluster_001", "cluster_002"
+            ),
+            "segment_id": np.zeros(count, dtype=int),
+        },
+        index=index,
+    )
+    values = pd.Series(np.arange(count, dtype=float), index=index)
+    centers = {"cluster_001": np.zeros(4), "cluster_002": np.zeros(4)}
+
+    def fail_copy(*args, **kwargs):
+        raise AssertionError("sliding performance windows must not copy DataFrames")
+
+    monkeypatch.setattr(pd.DataFrame, "copy", fail_copy)
+    first = _performance_candidates(
+        points,
+        values,
+        PerformanceConfig(
+            "PERF",
+            "higher_is_better",
+            minimum_duration_minutes=window_rows * 5,
+            candidate_count=3,
+        ),
+        5,
+        centers,
+        ("pc1", "pc2", "pc3", "pc4"),
+    )
+    second = _performance_candidates(
+        points,
+        values,
+        PerformanceConfig(
+            "PERF",
+            "higher_is_better",
+            minimum_duration_minutes=window_rows * 5,
+            candidate_count=3,
+        ),
+        5,
+        centers,
+        ("pc1", "pc2", "pc3", "pc4"),
+    )
+
+    assert first == second
+    assert [item["start"] for item in first] == [
+        index[count - window_rows * rank].isoformat() for rank in range(1, 4)
+    ]
+    assert all(
+        item["associated_cluster_ids"] == ["cluster_002"]
+        and np.isfinite(item["stability_score"])
+        for item in first
+    )
+    selected = [
+        set(pd.date_range(item["start"], item["end"], freq="5min"))
+        for item in first
+    ]
+    assert all(not left.intersection(right) for left, right in zip(selected, selected[1:]))
+
+
 def test_performance_config_rejects_incomplete_or_irrelevant_bounds():
     with pytest.raises(ValueError, match="requires target_min"):
         PerformanceConfig("PERF", "target_range")

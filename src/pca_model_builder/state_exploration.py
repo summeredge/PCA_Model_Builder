@@ -334,42 +334,100 @@ def _performance_candidates(
     centers: Mapping[str, np.ndarray],
     pc_columns: Sequence[str],
 ) -> list[dict[str, object]]:
+    if not points.index.is_monotonic_increasing:
+        points = points.sort_index()
     aligned_values = values.reindex(points.index)
     finite = np.isfinite(aligned_values.to_numpy(dtype=float))
-    usable = points.loc[finite].copy()
-    usable_values = aligned_values.loc[usable.index]
-    runs = _contiguous_runs(usable, interval, split_cluster=False)
     window_rows = int(np.ceil(config.minimum_duration_minutes / interval))
-    eligible = [
-        run.iloc[start : start + window_rows].copy()
-        for run in runs
-        for start in range(max(0, len(run) - window_rows + 1))
-    ]
-
-    def ranking_key(run: pd.DataFrame) -> tuple[object, ...]:
-        summary = _performance_summary(usable_values.loc[run.index], config)
-        # Rank by the configured direction first, then deterministic quality tie-breakers.
-        if config.direction == "higher_is_better":
-            direction_key = (-float(summary["mean"]), -float(summary["median"]))
-        elif config.direction == "lower_is_better":
-            direction_key = (float(summary["mean"]), float(summary["median"]))
-        else:
-            direction_key = (
-                -float(summary["target_ratio"]),
-                float(summary["mean_target_deviation"]),
-                float(summary["mean"]),
+    numeric_values = aligned_values.to_numpy(dtype=float)
+    expected = pd.Timedelta(minutes=interval)
+    segment_ids = (
+        points["segment_id"].to_numpy()
+        if "segment_id" in points.columns
+        else None
+    )
+    ranked: list[tuple[tuple[object, ...], int, int]] = []
+    position = 0
+    while position < len(points):
+        if not finite[position]:
+            position += 1
+            continue
+        run_start = position
+        position += 1
+        while (
+            position < len(points)
+            and finite[position]
+            and points.index[position] - points.index[position - 1] == expected
+            and (
+                segment_ids is None
+                or segment_ids[position] == segment_ids[position - 1]
             )
-        return (*direction_key, -_coverage_duration_minutes(run, interval), run.index[0])
+        ):
+            position += 1
+        run_end = position
+        candidate_count = run_end - run_start - window_rows + 1
+        if candidate_count <= 0:
+            continue
+        run_values = numeric_values[run_start:run_end]
+        cumulative = np.concatenate(([0.0], np.cumsum(run_values)))
+        means = (cumulative[window_rows:] - cumulative[:-window_rows]) / window_rows
+        starts = np.arange(run_start, run_start + candidate_count)
+        if config.direction == "higher_is_better":
+            medians = (
+                pd.Series(run_values)
+                .rolling(window_rows)
+                .median()
+                .to_numpy()[window_rows - 1 :]
+            )
+            keys = zip(-means, -medians, starts, strict=True)
+        elif config.direction == "lower_is_better":
+            medians = (
+                pd.Series(run_values)
+                .rolling(window_rows)
+                .median()
+                .to_numpy()[window_rows - 1 :]
+            )
+            keys = zip(means, medians, starts, strict=True)
+        else:
+            within = (run_values >= config.target_min) & (
+                run_values <= config.target_max
+            )
+            deviation = np.where(
+                run_values < config.target_min,
+                config.target_min - run_values,
+                np.where(
+                    run_values > config.target_max,
+                    run_values - config.target_max,
+                    0.0,
+                ),
+            )
+            within_cumulative = np.concatenate(([0], np.cumsum(within)))
+            deviation_cumulative = np.concatenate(([0.0], np.cumsum(deviation)))
+            target_ratios = (
+                within_cumulative[window_rows:] - within_cumulative[:-window_rows]
+            ) / window_rows
+            mean_deviations = (
+                deviation_cumulative[window_rows:]
+                - deviation_cumulative[:-window_rows]
+            ) / window_rows
+            keys = zip(-target_ratios, mean_deviations, means, starts, strict=True)
+        ranked.extend(
+            (tuple(key), int(key[-1]), int(key[-1] + window_rows))
+            for key in keys
+        )
 
-    ranked = sorted(eligible, key=ranking_key)
+    ranked.sort(key=lambda item: item[0])
     result: list[dict[str, object]] = []
-    selected_timestamps: set[pd.Timestamp] = set()
-    for run in ranked:
-        if selected_timestamps.intersection(run.index):
+    selected_ranges: list[tuple[int, int]] = []
+    for _, start, end in ranked:
+        if any(
+            start < selected_end and end > selected_start
+            for selected_start, selected_end in selected_ranges
+        ):
             continue
         rank = len(result) + 1
-        run_values = usable_values.loc[run.index]
-        summary = _performance_summary(run_values, config)
+        run = points.iloc[start:end]
+        summary = _performance_summary(aligned_values.iloc[start:end], config)
         associated = sorted({str(value) for value in run["cluster_id"]})
         result.append(
             {
@@ -388,7 +446,7 @@ def _performance_candidates(
                 "comment": "",
             }
         )
-        selected_timestamps.update(run.index)
+        selected_ranges.append((start, end))
         if len(result) >= config.candidate_count:
             break
     return result
