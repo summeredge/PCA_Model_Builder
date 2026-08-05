@@ -6,6 +6,8 @@ import inspect
 from pca_model_builder.preprocessing import PreprocessingConfig, StateFilter
 from pca_model_builder.validation import (
     _combined_exceedance_events,
+    _contribution_stability,
+    _validation_metrics,
     build_validation_matrix,
     ensure_disjoint_windows,
     normalize_validation_windows,
@@ -140,3 +142,63 @@ def test_continuous_event_combines_t2_and_spe_exceedances_on_physical_time_axis(
 
 def test_validation_service_does_not_fit_or_change_model_parameters():
     assert "fit_dpca(" not in inspect.getsource(validate_model_windows)
+
+
+def test_validation_metrics_separate_statistics_and_weight_normal_windows_by_rows():
+    index = pd.date_range("2026-02-01", periods=6, freq="5min")
+    limits = SimpleNamespace(t2_limits={0.95: 1.0, 0.99: 3.0}, q_limits={0.95: 1.0, 0.99: 3.0})
+    normal_one = pd.DataFrame({"t2": [2.0, 0.0], "spe": [0.0, 0.0]}, index=index[:2])
+    normal_two = pd.DataFrame({"t2": [0.0] * 4, "spe": [4.0, 0.0, 0.0, 0.0]}, index=index[2:])
+    abnormal_one = pd.DataFrame({"t2": [0.0, 2.0], "spe": [0.0, 0.0]}, index=index[:2])
+    abnormal_two = pd.DataFrame({"t2": [0.0, 0.0, 0.0], "spe": [0.0, 0.0, 4.0]}, index=index[3:])
+    metrics = _validation_metrics(
+        [
+            {"id": "n1", "type": "normal_validation", "start": index[0], "scores": normal_one, "continuous_events": [{"event_start": index[0].isoformat(), "event_end": index[0].isoformat()}]},
+            {"id": "n2", "type": "normal_validation", "start": index[2], "scores": normal_two, "continuous_events": [{"event_start": index[2].isoformat(), "event_end": index[2].isoformat()}]},
+            {"id": "a1", "type": "known_abnormal", "start": index[0], "scores": abnormal_one, "continuous_events": []},
+            {"id": "a2", "type": "known_abnormal", "start": index[3], "scores": abnormal_two, "continuous_events": []},
+        ],
+        limits,
+        5,
+    )
+
+    normal = metrics["normal_validation"]
+    assert normal["scoring_row_count"] == 6
+    assert normal["t2"]["exceedance_rate_95"] == pytest.approx(1 / 6)
+    assert normal["spe"]["exceedance_rate_95"] == pytest.approx(1 / 6)
+    assert normal["overall"]["exceedance_rate_95"] == pytest.approx(2 / 6)
+    assert normal["t2"]["exceedance_rate_99"] == 0
+    assert normal["spe"]["exceedance_rate_99"] == pytest.approx(1 / 6)
+    assert normal["continuous_false_alarm_event_count_95"] == 2
+
+    abnormal = metrics["known_abnormal"]
+    assert abnormal["detection_rate_95"] == 1
+    assert abnormal["detection_rate_99"] == pytest.approx(1 / 2)
+    assert abnormal["t2_detected_window_count_95"] == 1
+    assert abnormal["spe_detected_window_count_95"] == 1
+    assert abnormal["windows"][0]["first_detection_delay_minutes_95"] == 5
+    assert abnormal["windows"][1]["first_detection_delay_minutes_99"] == 10
+    assert abnormal["first_detection_delay_minutes_95_median"] == 7.5
+    assert abnormal["first_detection_delay_minutes_95_max"] == 10
+
+
+def test_contribution_stability_is_separate_deterministic_and_handles_boundaries():
+    features = ["A__lag_000min", "B__lag_000min", "C__lag_000min", "D__lag_000min"]
+    first = {"validation_type": "normal_validation", "statistic": "t2", "tags": [{"tag": "C", "contribution_pct": 10.0}, {"tag": "A", "contribution_pct": 60.0}, {"tag": "B", "contribution_pct": 30.0}]}
+    same = {"validation_type": "normal_validation", "statistic": "t2", "tags": [{"tag": "B", "contribution_pct": 30.0}, {"tag": "A", "contribution_pct": 60.0}, {"tag": "C", "contribution_pct": 10.0}]}
+    changed = {"validation_type": "normal_validation", "statistic": "t2", "tags": [{"tag": "D", "contribution_pct": 30.0}, {"tag": "B", "contribution_pct": 60.0}, {"tag": "C", "contribution_pct": 10.0}]}
+
+    identical = _contribution_stability([first, same], features)["normal_validation"]["t2"]
+    assert identical["top1_consistency_rate"] == 1
+    assert identical["average_top_k_jaccard_similarity"] == 1
+    assert identical["average_contribution_cosine_similarity"] == pytest.approx(1)
+    assert identical == _contribution_stability([same, first], features)["normal_validation"]["t2"]
+
+    unstable = _contribution_stability([first, changed], features)["normal_validation"]["t2"]
+    assert unstable["top1_consistency_rate"] == pytest.approx(0.5)
+    assert unstable["average_top_k_jaccard_similarity"] == pytest.approx(0.5)
+    assert unstable["average_contribution_cosine_similarity"] < 1
+    assert _contribution_stability([first], features)["known_abnormal"]["t2"]["event_count"] == 0
+    single = _contribution_stability([first], features)["normal_validation"]["t2"]
+    assert single["average_top_k_jaccard_similarity"] is None
+    assert single["average_contribution_cosine_similarity"] is None

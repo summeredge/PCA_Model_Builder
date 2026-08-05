@@ -123,8 +123,11 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
         'id="validationWindowTable"',
         'id="recordValidationDecision"',
         'id="validatedModelDownload"',
+        'id="validationMetricDetails"',
+        'id="contributionStability"',
     ):
         assert element_id in html
+    assert "不能替代工程师确认" in html
     for label in ("正常样本验证", "已知异常验证", "通过", "结论不足", "不通过"):
         assert label in html
 
@@ -1838,6 +1841,11 @@ def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
     assert validated_manifest["model_status"] == "validated"
     assert validated_manifest["source_candidate_package"]["identifier"] == trained["run_id"]
     assert validated_model.feature_names == tuple(candidate_manifest["feature_names"])
+    saved_report = json.loads((run_dir / "validation_report.json").read_text(encoding="utf-8"))
+    assert saved_report["validation_metrics"] == result["validation_metrics"]
+    assert saved_report["contribution_stability"] == result["contribution_stability"]
+    assert validated_manifest["validation_summary"]["validation_metrics"] == saved_report["validation_metrics"]
+    assert validated_manifest["validation_summary"]["contribution_stability"] == saved_report["contribution_stability"]
 
 
 def test_validation_download_artifact_uses_fixed_whitelist():

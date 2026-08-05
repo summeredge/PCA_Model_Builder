@@ -1157,6 +1157,8 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "validation_window_summaries": validation_result["window_summaries"],
         "normal_validation_complete": validation_result["normal_validation_complete"],
         "known_abnormal_complete": validation_result["known_abnormal_complete"],
+        "validation_metrics": validation_result["validation_metrics"],
+        "contribution_stability": validation_result["contribution_stability"],
         "scored_rows": len(scores),
         "status_counts": _status_counts(scores),
         "maximum_t2": float(scores["t2"].max()),
@@ -2274,6 +2276,8 @@ INDEX_HTML = r"""<!doctype html>
         <div id="validationEmpty" class="empty">只有正常状态候选模型可以执行独立验证。</div>
         <div id="validationContent" hidden>
           <div id="validationMetrics" class="metrics"></div>
+          <h3>验证指标</h3>
+          <div id="validationMetricDetails" class="table-wrap"></div>
           <div class="chart-grid">
             <div class="chart-card"><h3>验证期 T²</h3><div id="validationT2Chart" class="chart"></div></div>
             <div class="chart-card"><h3>验证期 SPE/Q</h3><div id="validationSpeChart" class="chart"></div></div>
@@ -2281,10 +2285,12 @@ INDEX_HTML = r"""<!doctype html>
           <h3>主要贡献 Tag</h3>
           <div class="help" id="contributionHint"></div>
           <div class="table-wrap"><table><thead><tr><th>事件 / 峰值</th><th>统计量</th><th>Tag</th><th>描述</th><th>单位</th><th>贡献</th><th>主要影响时间</th></tr></thead><tbody id="contributionTable"></tbody></table></div>
+          <h3>贡献稳定性</h3>
+          <div id="contributionStability" class="table-wrap"></div>
           <div class="actions"><a id="scoresDownload" class="download" href="#">下载完整评分 CSV</a><a id="reportDownload" class="download" href="#">下载验证摘要</a><a id="contributionsDownload" class="download" href="#">下载贡献记录</a></div>
           <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
           <div class="help">每次回放会更新当前模型最近一次验证的下载文件；候选模型不会被验证结果原地修改。</div>
-          <div class="notice">贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
+          <div class="notice">验证指标和贡献稳定性只提供工程证据，不能替代工程师确认。贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
         </div>
       </div>
     </section>
@@ -2794,11 +2800,24 @@ function renderValidation(data) {
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
   const lifecycle=modelLifecycle(data); const validationStatus=data.model_status==="validated"?"已生成 normal_state/validated 模型副本":"验证回放完成，待工程师确认";
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("验证状态",validationStatus);
+  renderValidationMetricDetails(data.validation_metrics||{}); renderContributionStability(data.contribution_stability||{});
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
   el("contributionHint").textContent=data.contributions.length ? "按每个连续越过95%控制限的事件保存峰值贡献；事件不会跨物理时间缺口合并。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
   data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${group.event_start.slice(0,16)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td title="点击在趋势页查看">${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; tr.children[2].style.cursor="pointer"; tr.children[2].addEventListener("click",()=>{ [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); el("trendStart").value=localTime(group.event_start); el("trendEnd").value=localTime(group.event_end); document.querySelector('[data-panel="trendPanel"]').click(); }); body.append(tr); }));
   el("scoresDownload").href=data.validation_downloads.scores; el("reportDownload").href=data.validation_downloads.report; el("contributionsDownload").href=data.validation_downloads.contributions;
+}
+
+function percent(value) { return value===null||value===undefined?"—":`${(Number(value)*100).toFixed(1)}%`; }
+function renderValidationMetricDetails(metrics) {
+  const normal=metrics.normal_validation||{}, abnormal=metrics.known_abnormal||{};
+  const row=(label,values)=>`<tr><th>${label}</th>${values.map(value=>`<td class="numeric">${value}</td>`).join("")}</tr>`;
+  el("validationMetricDetails").innerHTML=`<table><thead><tr><th>验证类型</th><th>有效窗口</th><th>评分行 / 检测率</th><th>T² 95% / 99%</th><th>SPE 95% / 99%</th><th>总体 95% / 99%</th><th>连续误报 / 首次95%延迟</th></tr></thead><tbody>${row("正常样本",[normal.valid_window_count??0,normal.scoring_row_count??0,`${percent(normal.t2?.exceedance_rate_95)} / ${percent(normal.t2?.exceedance_rate_99)}`,`${percent(normal.spe?.exceedance_rate_95)} / ${percent(normal.spe?.exceedance_rate_99)}`,`${percent(normal.overall?.exceedance_rate_95)} / ${percent(normal.overall?.exceedance_rate_99)}`,`${normal.continuous_false_alarm_event_count_95??0} / ${normal.longest_continuous_false_alarm_minutes??0} 分钟`])}${row("已知异常",[abnormal.valid_window_count??0,`${abnormal.detected_window_count_95??0} / ${percent(abnormal.detection_rate_95)}；99% ${abnormal.detected_window_count_99??0} / ${percent(abnormal.detection_rate_99)}`,`${abnormal.t2_detected_window_count_95??0} / ${abnormal.t2_detected_window_count_99??0}`,`${abnormal.spe_detected_window_count_95??0} / ${abnormal.spe_detected_window_count_99??0}`,"—",`${abnormal.first_detection_delay_minutes_95_median??"—"} / ${abnormal.first_detection_delay_minutes_95_max??"—"} 分钟`])}</tbody></table>`;
+}
+function renderContributionStability(stability) {
+  const rows=[];
+  [["normal_validation","正常样本"],["known_abnormal","已知异常"]].forEach(([type,label])=>["t2","spe"].forEach(statistic=>{const group=stability[type]?.[statistic]||{}; rows.push(`<tr><td>${label}</td><td>${statistic.toUpperCase()}</td><td class="numeric">${group.event_count??0}</td><td class="numeric">${group.top_k??0}</td><td class="numeric">${percent(group.top1_consistency_rate)}</td><td class="numeric">${percent(group.average_top_k_jaccard_similarity)}</td><td class="numeric">${percent(group.average_contribution_cosine_similarity)}</td><td>${(group.tags||[]).map(tag=>`${escapeHtml(tag.tag)}: Top1 ${tag.top1_count}, Top-K ${tag.top_k_count}, 复现 ${percent(tag.top_k_recurrence_rate)}`).join("<br>")||"—"}</td></tr>`);}));
+  el("contributionStability").innerHTML=`<table><thead><tr><th>验证类型</th><th>统计量</th><th>事件数</th><th>Top-K</th><th>Top1一致率</th><th>Top-K Jaccard</th><th>贡献向量余弦</th><th>Tag复现统计</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
 }
 
 function lineChart(container, rows, field, limits, label) {

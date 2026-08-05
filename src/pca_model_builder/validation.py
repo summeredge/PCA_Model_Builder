@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .contribution import contribution_event_records, exceedance_contribution_tables
@@ -184,6 +185,7 @@ def validate_model_windows(
     records: list[dict[str, Any]] = []
     score_parts: list[pd.DataFrame] = []
     contribution_records: list[dict[str, Any]] = []
+    scored_windows: list[dict[str, Any]] = []
     configured_ranges = {
         tag: (
             float(tag_config["engineering_min"]),
@@ -255,6 +257,15 @@ def validate_model_windows(
         scored.insert(0, "validation_type", window["type"])
         scored.insert(0, "validation_window_id", window["id"])
         score_parts.append(scored)
+        scored_windows.append(
+            {
+                "id": window["id"],
+                "type": window["type"],
+                "start": start,
+                "scores": scores,
+                "continuous_events": continuous_events,
+            }
+        )
         contribution_records.extend(
             [{**event, "validation_window_id": window["id"], "validation_type": window["type"]} for event in events]
         )
@@ -265,6 +276,12 @@ def validate_model_windows(
         "window_summaries": records,
         "scores": combined,
         "contributions": contribution_records,
+        "validation_metrics": _validation_metrics(
+            scored_windows, model, config.sample_interval_minutes
+        ),
+        "contribution_stability": _contribution_stability(
+            contribution_records, model.feature_names
+        ),
         "normal_validation_complete": any(
             item["enabled"] and item["type"] == "normal_validation" and item["status"] == "scored"
             for item in records
@@ -392,3 +409,212 @@ def _known_abnormal_summary(
         and continuous_events[0]["point_count"] == 1,
         "first_event_tags": [tag for event in first_events for tag in event["tags"]],
     }
+
+
+def _validation_metrics(
+    scored_windows: Sequence[Mapping[str, Any]],
+    model: DPCAModel,
+    sample_interval_minutes: int,
+) -> dict[str, Any]:
+    normal_windows = [
+        window for window in scored_windows if window["type"] == "normal_validation"
+    ]
+    abnormal_windows = [
+        window for window in scored_windows if window["type"] == "known_abnormal"
+    ]
+    return {
+        "normal_validation": _normal_validation_metrics(
+            normal_windows, model, sample_interval_minutes
+        ),
+        "known_abnormal": _known_abnormal_metrics(abnormal_windows, model),
+    }
+
+
+def _normal_validation_metrics(
+    windows: Sequence[Mapping[str, Any]],
+    model: DPCAModel,
+    sample_interval_minutes: int,
+) -> dict[str, Any]:
+    score_frames = [window["scores"] for window in windows]
+    scoring_row_count = sum(len(scores) for scores in score_frames)
+
+    def rate(statistic: str | None, confidence: float) -> float | None:
+        if not scoring_row_count:
+            return None
+        if statistic == "t2":
+            exceeded = sum(
+                int((scores["t2"] >= model.t2_limits[confidence]).sum())
+                for scores in score_frames
+            )
+        elif statistic == "spe":
+            exceeded = sum(
+                int((scores["spe"] >= model.q_limits[confidence]).sum())
+                for scores in score_frames
+            )
+        else:
+            exceeded = sum(
+                int(
+                    (
+                        (scores["t2"] >= model.t2_limits[confidence])
+                        | (scores["spe"] >= model.q_limits[confidence])
+                    ).sum()
+                )
+                for scores in score_frames
+            )
+        return exceeded / scoring_row_count
+
+    events = [
+        event
+        for window in windows
+        for event in window["continuous_events"]
+    ]
+    return {
+        "valid_window_count": len(windows),
+        "scoring_row_count": scoring_row_count,
+        "t2": {"exceedance_rate_95": rate("t2", 0.95), "exceedance_rate_99": rate("t2", 0.99)},
+        "spe": {"exceedance_rate_95": rate("spe", 0.95), "exceedance_rate_99": rate("spe", 0.99)},
+        "overall": {"exceedance_rate_95": rate(None, 0.95), "exceedance_rate_99": rate(None, 0.99)},
+        "continuous_false_alarm_event_count_95": len(events),
+        "longest_continuous_false_alarm_minutes": _longest_event_minutes(
+            events, sample_interval_minutes
+        ),
+    }
+
+
+def _known_abnormal_metrics(
+    windows: Sequence[Mapping[str, Any]], model: DPCAModel
+) -> dict[str, Any]:
+    window_metrics: list[dict[str, Any]] = []
+    detected_counts = {"overall": {}, "t2": {}, "spe": {}}
+    for confidence in (0.95, 0.99):
+        for statistic in detected_counts:
+            detected_counts[statistic][confidence] = 0
+    for window in windows:
+        scores = window["scores"]
+        item: dict[str, Any] = {"validation_window_id": window["id"]}
+        for confidence in (0.95, 0.99):
+            masks = {
+                "t2": scores["t2"] >= model.t2_limits[confidence],
+                "spe": scores["spe"] >= model.q_limits[confidence],
+            }
+            masks["overall"] = masks["t2"] | masks["spe"]
+            for statistic, mask in masks.items():
+                if mask.any():
+                    detected_counts[statistic][confidence] += 1
+            overall = masks["overall"]
+            key = str(int(confidence * 100))
+            if overall.any():
+                timestamp = pd.Timestamp(scores.index[int(np.argmax(overall.to_numpy()))])
+                item[f"first_detection_{key}"] = timestamp.isoformat()
+                item[f"first_detection_delay_minutes_{key}"] = int(
+                    (timestamp - window["start"]).total_seconds() // 60
+                )
+            else:
+                item[f"first_detection_{key}"] = None
+                item[f"first_detection_delay_minutes_{key}"] = None
+        window_metrics.append(item)
+
+    valid_window_count = len(windows)
+    delays = [
+        item["first_detection_delay_minutes_95"]
+        for item in window_metrics
+        if item["first_detection_delay_minutes_95"] is not None
+    ]
+    rate = lambda count: None if not valid_window_count else count / valid_window_count
+    return {
+        "valid_window_count": valid_window_count,
+        "detected_window_count_95": detected_counts["overall"][0.95],
+        "detection_rate_95": rate(detected_counts["overall"][0.95]),
+        "detected_window_count_99": detected_counts["overall"][0.99],
+        "detection_rate_99": rate(detected_counts["overall"][0.99]),
+        "t2_detected_window_count_95": detected_counts["t2"][0.95],
+        "t2_detected_window_count_99": detected_counts["t2"][0.99],
+        "spe_detected_window_count_95": detected_counts["spe"][0.95],
+        "spe_detected_window_count_99": detected_counts["spe"][0.99],
+        "windows": window_metrics,
+        "first_detection_delay_minutes_95_median": (
+            float(np.median(delays)) if delays else None
+        ),
+        "first_detection_delay_minutes_95_max": max(delays) if delays else None,
+    }
+
+
+def _contribution_stability(
+    events: Sequence[Mapping[str, Any]], feature_names: Sequence[str]
+) -> dict[str, dict[str, dict[str, Any]]]:
+    tag_order = list(dict.fromkeys(name.rsplit("__lag_", 1)[0] for name in feature_names))
+    return {
+        validation_type: {
+            statistic: _contribution_stability_group(
+                [
+                    event
+                    for event in events
+                    if event.get("validation_type") == validation_type
+                    and event.get("statistic") == statistic
+                ],
+                tag_order,
+            )
+            for statistic in ("t2", "spe")
+        }
+        for validation_type in ("normal_validation", "known_abnormal")
+    }
+
+
+def _contribution_stability_group(
+    events: Sequence[Mapping[str, Any]], tag_order: Sequence[str]
+) -> dict[str, Any]:
+    event_count = len(events)
+    top_k = min(3, len(tag_order))
+    if not event_count:
+        return {
+            "event_count": 0,
+            "top_k": top_k,
+            "top1_consistency_rate": None,
+            "average_top_k_jaccard_similarity": None,
+            "average_contribution_cosine_similarity": None,
+            "tags": [],
+        }
+
+    vectors: list[np.ndarray] = []
+    rankings: list[list[str]] = []
+    for event in events:
+        values = {str(item["tag"]): float(item["contribution_pct"]) for item in event["tags"]}
+        vectors.append(np.array([values.get(tag, 0.0) for tag in tag_order], dtype=float))
+        rankings.append(sorted(tag_order, key=lambda tag: (-values.get(tag, 0.0), tag)))
+    top1 = [ranking[0] for ranking in rankings] if top_k else []
+    pairs = [
+        (left, right)
+        for left in range(event_count)
+        for right in range(left + 1, event_count)
+    ]
+    jaccards = [
+        len(set(rankings[left][:top_k]) & set(rankings[right][:top_k]))
+        / len(set(rankings[left][:top_k]) | set(rankings[right][:top_k]))
+        for left, right in pairs
+    ] if top_k else []
+    cosines = [
+        _cosine_similarity(vectors[left], vectors[right]) for left, right in pairs
+    ]
+    return {
+        "event_count": event_count,
+        "top_k": top_k,
+        "top1_consistency_rate": max(Counter(top1).values()) / event_count if top1 else None,
+        "average_top_k_jaccard_similarity": float(np.mean(jaccards)) if jaccards else None,
+        "average_contribution_cosine_similarity": float(np.mean(cosines)) if cosines else None,
+        "tags": [
+            {
+                "tag": tag,
+                "top1_count": top1.count(tag),
+                "top_k_count": sum(tag in ranking[:top_k] for ranking in rankings),
+                "top_k_recurrence_rate": sum(tag in ranking[:top_k] for ranking in rankings) / event_count,
+                "average_contribution_pct": float(np.mean([vector[index] for vector in vectors])),
+                "median_contribution_pct": float(np.median([vector[index] for vector in vectors])),
+            }
+            for index, tag in enumerate(tag_order)
+        ],
+    }
+
+
+def _cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
+    denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+    return 0.0 if denominator == 0 else float(np.dot(left, right) / denominator)
