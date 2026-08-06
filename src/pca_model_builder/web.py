@@ -7,6 +7,7 @@ from dataclasses import asdict
 from email.parser import BytesParser
 from email.policy import default as email_policy
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
@@ -32,7 +33,14 @@ from .data_session import (
     DataSessionStageError,
 )
 from .dpca import fit_dpca
-from .model_io import copy_validated_model_package, load_model_package, save_model_package
+from .model_io import (
+    copy_validated_model_package,
+    export_deployment_package,
+    freeze_validated_model_package,
+    load_deployment_package,
+    load_model_package,
+    save_model_package,
+)
 from .preprocessing import (
     PreprocessingConfig,
     PreprocessingQualityError,
@@ -1352,6 +1360,50 @@ def _with_data_usage(
     return result
 
 
+def freeze_deployment_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    run_dir = RUNS_DIR / run_id
+    validated_path = run_dir / "validated_model.pcamodel"
+    frozen_path = run_dir / "frozen_model.pcamodel"
+    deployment_path = run_dir / "deployment_model.pcadeploy"
+    if not validated_path.is_file():
+        raise ValueError("当前运行尚未生成已验证模型")
+    if frozen_path.exists() or deployment_path.exists():
+        raise ValueError("冻结或部署模型包已存在，拒绝覆盖")
+
+    temporary_frozen = run_dir / f".frozen-{uuid.uuid4().hex}.pcamodel"
+    temporary_deployment = run_dir / f".deployment-{uuid.uuid4().hex}.pcadeploy"
+    try:
+        freeze_validated_model_package(
+            validated_path,
+            temporary_frozen,
+            model_id=_required_text(payload, "model_id"),
+            model_version=payload.get("model_version"),
+            frozen_by=_required_text(payload, "frozen_by"),
+            comment=str(payload.get("comment", "")),
+        )
+        load_model_package(temporary_frozen)
+        export_deployment_package(
+            temporary_frozen,
+            temporary_deployment,
+            source_filename=frozen_path.name,
+        )
+        load_deployment_package(temporary_deployment)
+        if frozen_path.exists() or deployment_path.exists():
+            raise ValueError("冻结或部署模型包已存在，拒绝覆盖")
+        os.replace(temporary_frozen, frozen_path)
+        os.replace(temporary_deployment, deployment_path)
+    finally:
+        temporary_frozen.unlink(missing_ok=True)
+        temporary_deployment.unlink(missing_ok=True)
+    return {
+        "run_id": run_id,
+        "model_status": "frozen",
+        "frozen_model_download": f"/download/frozen-model?run_id={run_id}",
+        "deployment_model_download": f"/download/deployment-model?run_id={run_id}",
+    }
+
+
 def _parse_timestamp_column(frame: pd.DataFrame, timestamp_column: str) -> pd.DataFrame:
     if timestamp_column not in frame.columns:
         raise ValueError(f"找不到时间列：{timestamp_column}")
@@ -1781,6 +1833,32 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_json(error_payload(error), 400)
             return
+        if parsed.path == "/download/frozen-model":
+            try:
+                run_id = _validated_id(
+                    parse_qs(parsed.query).get("run_id", [""])[0], "run_id"
+                )
+                self._send_download(
+                    RUNS_DIR / run_id / "frozen_model.pcamodel",
+                    "application/zip",
+                    "frozen_model.pcamodel",
+                )
+            except Exception as error:
+                self._send_json(error_payload(error), 400)
+            return
+        if parsed.path == "/download/deployment-model":
+            try:
+                run_id = _validated_id(
+                    parse_qs(parsed.query).get("run_id", [""])[0], "run_id"
+                )
+                self._send_download(
+                    RUNS_DIR / run_id / "deployment_model.pcadeploy",
+                    "application/zip",
+                    "deployment_model.pcadeploy",
+                )
+            except Exception as error:
+                self._send_json(error_payload(error), 400)
+            return
         if parsed.path == "/download/validation":
             try:
                 query = parse_qs(parsed.query)
@@ -1876,6 +1954,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/validation-decision":
                 self._send_json(validation_decision_payload(payload))
+                return
+            if parsed.path == "/api/freeze-deployment":
+                self._send_json(freeze_deployment_payload(payload))
                 return
             self._send_json({"error": "Not found"}, 404)
         except Exception as error:
@@ -2289,8 +2370,9 @@ INDEX_HTML = r"""<!doctype html>
           <div id="contributionStability" class="table-wrap"></div>
           <div class="actions"><a id="scoresDownload" class="download" href="#">下载完整评分 CSV</a><a id="reportDownload" class="download" href="#">下载验证摘要</a><a id="contributionsDownload" class="download" href="#">下载贡献记录</a></div>
           <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
+          <div class="validation-box"><label>模型标识<input id="frozenModelId" type="text"></label><label>模型版本<input id="frozenModelVersion" type="number" min="1" step="1" value="1"></label><label>冻结人<input id="frozenBy" type="text"></label><label>冻结备注<input id="freezeComment" type="text"></label><button id="freezeDeployment" type="button">冻结并导出部署包</button><a id="frozenModelDownload" class="download" href="#" hidden>下载冻结模型包</a><a id="deploymentModelDownload" class="download" href="#" hidden>下载部署模型包</a></div>
           <div class="help">每次回放会更新当前模型最近一次验证的下载文件；候选模型不会被验证结果原地修改。</div>
-          <div class="notice">验证指标和贡献稳定性只提供工程证据，不能替代工程师确认。贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。</div>
+          <div class="notice">验证指标和贡献稳定性只提供工程证据，不能替代工程师确认。贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。frozen表示工程冻结，不表示已部署或已进入模型治理平台。</div>
         </div>
       </div>
     </section>
@@ -2463,7 +2545,7 @@ el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   try {
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value})});
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.trainingWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",enabled:false,comment:"系统建议的初始正常候选时段"}]; state.trainingWindowSummary=[]; renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
@@ -2635,7 +2717,7 @@ async function trainModel(modelPurpose) {
     const components=el("components").value.trim();
     const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
+    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -2677,6 +2759,16 @@ el("recordValidationDecision").addEventListener("click",async()=>{
     const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
     if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; state.validation={...state.validation,model_purpose:"normal_state",model_status:data.model_status}; renderValidation(state.validation); }
     setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已生成 normal_state/validated 模型副本；原候选模型未被原地修改。":"工程师结论已保存；候选模型保持不变。","success");
+  } catch(error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
+
+el("freezeDeployment").addEventListener("click",async()=>{
+  const button=el("freezeDeployment"); setBusy(button,true,"冻结中…");
+  try {
+    const data=await api("/api/freeze-deployment",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,model_id:el("frozenModelId").value.trim(),model_version:Number(el("frozenModelVersion").value),frozen_by:el("frozenBy").value.trim(),comment:el("freezeComment").value})});
+    el("frozenModelDownload").href=data.frozen_model_download; el("frozenModelDownload").hidden=false; el("deploymentModelDownload").href=data.deployment_model_download; el("deploymentModelDownload").hidden=false;
+    state.validation={...state.validation,model_purpose:"normal_state",model_status:data.model_status}; renderValidation(state.validation); setStatus("模型已工程冻结，并已导出部署模型包。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -2766,6 +2858,7 @@ function modelLifecycle(data) {
   const key=`${data.model_purpose}/${data.model_status}`;
   if(key==="exploratory/draft") return {purpose:"探索模型",status:"草稿",notice:"探索草稿模型，仅用于状态探索，不能执行独立验证或作为正常状态模型。"};
   if(key==="normal_state/validated") return {purpose:"正常状态模型",status:"已验证",notice:"已验证模型，已完成独立验证和工程师确认；尚未执行工程冻结。"};
+  if(key==="normal_state/frozen") return {purpose:"正常状态模型",status:"已冻结",notice:"已完成工程冻结；不表示已部署或已进入模型治理平台。"};
   return {purpose:"正常状态模型",status:"候选",notice:"正常状态候选模型，尚未完成独立验证和工程师确认。"};
 }
 function renderTraining(data) {
@@ -2798,7 +2891,7 @@ function renderTrainingWindowSummary(windows) {
 
 function renderValidation(data) {
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
-  const lifecycle=modelLifecycle(data); const validationStatus=data.model_status==="validated"?"已生成 normal_state/validated 模型副本":"验证回放完成，待工程师确认";
+  const lifecycle=modelLifecycle(data); const validationStatus=data.model_status==="frozen"?"已生成冻结和部署模型包":data.model_status==="validated"?"已生成 normal_state/validated 模型副本":"验证回放完成，待工程师确认";
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("验证状态",validationStatus);
   renderValidationMetricDetails(data.validation_metrics||{}); renderContributionStability(data.contribution_stability||{});
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");

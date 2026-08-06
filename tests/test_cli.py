@@ -7,7 +7,8 @@ import pytest
 
 from pca_model_builder.cli import main
 from pca_model_builder import cli
-from pca_model_builder.model_io import load_model_package
+from pca_model_builder.model_io import load_model_package, save_model_package
+from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.training import build_training_matrix
 
@@ -26,6 +27,14 @@ def _rewrite_as_legacy_window_package(path, schema_version):
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
         package.writestr("manifest.json", json.dumps(manifest))
         package.writestr("arrays.npz", arrays)
+
+
+def test_cli_freeze_and_export_reject_candidate_then_export_frozen(tmp_path):
+    frame = pd.DataFrame(np.random.default_rng(701).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    candidate, frozen, deployment = tmp_path / "candidate.pcamodel", tmp_path / "frozen.pcamodel", tmp_path / "unit.pcadeploy"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), {"model_name":"unit","tags":["A","B","C"],"timestamp_column":"time","sample_interval_minutes":5,"smoothing_window_minutes":5,"max_lag_minutes":0,"lag_step_minutes":5,"variance_threshold":0.95}, [["2026-01-01","2026-01-02"]])
+    assert main(["freeze-model", "--model", str(candidate), "--model-id", "unit", "--model-version", "1", "--frozen-by", "engineer", "--output", str(frozen)]) == 2
+    assert not frozen.exists()
 
 
 def test_cli_trains_and_replays_independent_validation_window(tmp_path):

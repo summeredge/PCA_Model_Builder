@@ -15,10 +15,20 @@ _WRITABLE_MODEL_SEMANTICS = {
     ("normal_state", "candidate"),
     ("normal_state", "validated"),
 }
+_READABLE_MODEL_SEMANTICS = _WRITABLE_MODEL_SEMANTICS | {
+    ("normal_state", "frozen"),
+}
 
 
 def validate_new_model_semantics(model_purpose: object, model_status: object) -> None:
     if (model_purpose, model_status) not in _WRITABLE_MODEL_SEMANTICS:
+        raise ValueError("model purpose and status combination is invalid")
+
+
+def validate_model_semantics_for_load(
+    model_purpose: object, model_status: object
+) -> None:
+    if (model_purpose, model_status) not in _READABLE_MODEL_SEMANTICS:
         raise ValueError("model purpose and status combination is invalid")
 
 
@@ -33,7 +43,7 @@ def normalize_model_semantics(manifest: dict[str, Any]) -> dict[str, str]:
             "model_status": "draft",
             "legacy_validation_status": legacy_status,
         }
-    validate_new_model_semantics(
+    validate_model_semantics_for_load(
         manifest.get("model_purpose"), manifest.get("model_status")
     )
     return {

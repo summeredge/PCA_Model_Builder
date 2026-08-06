@@ -2244,6 +2244,21 @@ def test_score_payload_buckets_when_critical_points_exceed_limit():
     assert sum(row["status"] == "abnormal" for row in payload) > 100
 
 
+def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    trained = web.train_payload({"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "normal_start": "2026-01-01T00:00:00", "normal_end": "2026-01-01T07:55:00", "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 0, "lag_step_minutes": 5, "model_name": "candidate"})
+    windows = [{"id":"normal", "type":"normal_validation", "start":"2026-01-01T08:00:00", "end":"2026-01-01T09:55:00", "enabled":True, "comment":""}, {"id":"abnormal", "type":"known_abnormal", "start":"2026-01-01T10:50:00", "end":"2026-01-01T14:55:00", "enabled":True, "comment":""}]
+    web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
+    web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved"})
+    result = web.freeze_deployment_payload({"run_id": trained["run_id"], "model_id": "web.unit", "model_version": 1, "frozen_by": "engineer", "comment": "freeze"})
+    assert result["model_status"] == "frozen"
+    assert (tmp_path / "runs" / trained["run_id"] / "frozen_model.pcamodel").is_file()
+    assert (tmp_path / "runs" / trained["run_id"] / "deployment_model.pcadeploy").is_file()
+
+
 def _chart_scores(count: int) -> pd.DataFrame:
     return pd.DataFrame(
         {

@@ -13,7 +13,13 @@ from .compat import (
     training_windows_from_payload,
 )
 from .dpca import fit_dpca
-from .model_io import copy_validated_model_package, load_model_package, save_model_package
+from .model_io import (
+    copy_validated_model_package,
+    export_deployment_package,
+    freeze_validated_model_package,
+    load_model_package,
+    save_model_package,
+)
 from .preprocessing import PreprocessingConfig, preprocessing_config_from_mapping
 from .quality import QualityReport, inspect_data_quality
 from .tag_config import engineering_ranges, normalize_tag_configs
@@ -84,6 +90,24 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--output", type=Path, required=True)
     review.add_argument("--source-id")
     review.set_defaults(handler=_review_validation)
+
+    freeze = subparsers.add_parser(
+        "freeze-model", help="Freeze an approved normal-state validated model"
+    )
+    freeze.add_argument("--model", type=Path, required=True)
+    freeze.add_argument("--model-id", required=True)
+    freeze.add_argument("--model-version", type=int, required=True)
+    freeze.add_argument("--frozen-by", required=True)
+    freeze.add_argument("--comment", default="")
+    freeze.add_argument("--output", type=Path, required=True)
+    freeze.set_defaults(handler=_freeze_model)
+
+    deployment = subparsers.add_parser(
+        "export-deployment", help="Export a fixed deployment package from a frozen model"
+    )
+    deployment.add_argument("--model", type=Path, required=True)
+    deployment.add_argument("--output", type=Path, required=True)
+    deployment.set_defaults(handler=_export_deployment)
 
     serve = subparsers.add_parser("serve", help="Run the local web interface")
     serve.add_argument("--host", default="127.0.0.1")
@@ -320,6 +344,28 @@ def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
         source_identifier=args.source_id or args.model.name,
     )
     return {"engineer_decision": decision, "validated_model": str(args.output)}
+
+
+def _freeze_model(args: argparse.Namespace) -> dict[str, Any]:
+    freeze_validated_model_package(
+        args.model,
+        args.output,
+        model_id=args.model_id,
+        model_version=args.model_version,
+        frozen_by=args.frozen_by,
+        comment=args.comment,
+    )
+    return {
+        "frozen_model": str(args.output),
+        "model_id": args.model_id,
+        "model_version": args.model_version,
+        "model_status": "frozen",
+    }
+
+
+def _export_deployment(args: argparse.Namespace) -> dict[str, Any]:
+    export_deployment_package(args.model, args.output)
+    return {"deployment_model": str(args.output), "model_status": "frozen"}
 
 
 def _read_csv(path: Path, timestamp_column: str, encoding: str) -> pd.DataFrame:

@@ -1,5 +1,6 @@
 from io import BytesIO
 import json
+import hashlib
 import zipfile
 
 import numpy as np
@@ -9,9 +10,60 @@ import pytest
 from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.model_io import (
     copy_validated_model_package,
+    export_deployment_package,
+    freeze_validated_model_package,
+    load_deployment_package,
     load_model_package,
     save_model_package,
 )
+from pca_model_builder.scoring_core import score_dynamic_feature_matrix
+
+
+def _complete_validation_summary():
+    stability = {
+        validation_type: {
+            statistic: {
+                "event_count": 0,
+                "top_k": 3,
+                "top1_consistency_rate": None,
+                "average_top_k_jaccard_similarity": None,
+                "average_contribution_cosine_similarity": None,
+                "tags": [],
+            }
+            for statistic in ("t2", "spe")
+        }
+        for validation_type in ("normal_validation", "known_abnormal")
+    }
+    return {
+        "normal_validation_complete": True,
+        "known_abnormal_complete": True,
+        "validation_metrics": {
+            "normal_validation": {
+                "valid_window_count": 1, "scoring_row_count": 3,
+                "t2": {"exceedance_rate_95": 0.0, "exceedance_rate_99": 0.0},
+                "spe": {"exceedance_rate_95": 0.0, "exceedance_rate_99": 0.0},
+                "overall": {"exceedance_rate_95": 0.0, "exceedance_rate_99": 0.0},
+                "continuous_false_alarm_event_count_95": 0, "longest_continuous_false_alarm_minutes": 0,
+            },
+            "known_abnormal": {
+                "valid_window_count": 1, "detected_window_count_95": 0, "detected_window_count_99": 0,
+                "t2_detected_window_count_95": 0, "t2_detected_window_count_99": 0,
+                "spe_detected_window_count_95": 0, "spe_detected_window_count_99": 0,
+                "detection_rate_95": 0.0, "detection_rate_99": 0.0,
+                "windows": [{"validation_window_id": "abnormal", "first_detection_95": None, "first_detection_delay_minutes_95": None, "first_detection_99": None, "first_detection_delay_minutes_99": None}],
+                "first_detection_delay_minutes_95_median": None, "first_detection_delay_minutes_95_max": None,
+            },
+        },
+        "contribution_stability": stability,
+    }
+
+
+def _validated_package(path, frame):
+    save_model_package(
+        path, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]],
+        model_status="validated", validation_summary=_complete_validation_summary(),
+        engineer_decision={"decision": "passed", "comment": "approved", "reviewed_at": "2026-01-03T00:00:00+00:00"},
+    )
 
 
 def test_model_package_round_trip_uses_json_and_npz(tmp_path):
@@ -35,7 +87,7 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
         assert set(package.namelist()) == {"manifest.json", "arrays.npz"}
         assert "validation_status" not in json.loads(package.read("manifest.json"))
     pd.testing.assert_frame_equal(model.score(frame), loaded.score(frame))
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["model_purpose"] == "normal_state"
     assert manifest["model_status"] == "candidate"
     assert "validation_status" not in manifest
@@ -87,7 +139,7 @@ def test_schema_v3_training_window_totals_are_optional_and_round_trip(
     )
     model, manifest = load_model_package(path)
 
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["config"]["preprocessing_summary"] == summaries
     assert manifest["config"].get("training_window_totals") == (
         config.get("training_window_totals")
@@ -195,6 +247,49 @@ def test_validated_copy_rejects_candidate_output_path(tmp_path):
             engineer_decision={},
             source_identifier="run-001",
         )
+
+
+def test_freeze_and_deployment_preserve_fixed_scoring_contract(tmp_path):
+    frame = pd.DataFrame(np.random.default_rng(44).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    validated, frozen, deployment = tmp_path / "validated.pcamodel", tmp_path / "frozen.pcamodel", tmp_path / "unit.pcadeploy"
+    _validated_package(validated, frame)
+    source_before = validated.read_bytes()
+    freeze_validated_model_package(validated, frozen, model_id="unit.model-1", model_version=2, frozen_by="engineer", comment="frozen")
+    frozen_model, frozen_manifest = load_model_package(frozen)
+    assert validated.read_bytes() == source_before
+    assert frozen_manifest["model_status"] == "frozen"
+    assert frozen_manifest["source_validated_package"] == {"filename": "validated.pcamodel", "sha256": hashlib.sha256(source_before).hexdigest()}
+    export_deployment_package(frozen, deployment)
+    deployed, deployment_manifest = load_deployment_package(deployment)
+    with zipfile.ZipFile(deployment) as package:
+        assert set(package.namelist()) == {"deployment_manifest.json", "arrays.npz"}
+    assert deployment_manifest["input_tags"] == frozen_manifest["config"]["tags"]
+    assert deployment_manifest["dynamic_feature_names"] == frozen_manifest["feature_names"]
+    expected = score_dynamic_feature_matrix(frame.to_numpy(), feature_names=frozen_model.feature_names, mean=frozen_model.mean, scale=frozen_model.scale, components=frozen_model.components, eigenvalues=frozen_model.eigenvalues, t2_limits=frozen_model.t2_limits, q_limits=frozen_model.q_limits)
+    actual = deployed.score_dynamic_features(frame.to_numpy())
+    np.testing.assert_allclose(actual.pc_scores, expected.pc_scores)
+    np.testing.assert_allclose(actual.t2, expected.t2)
+    np.testing.assert_allclose(actual.spe, expected.spe)
+    assert actual.overall_status == expected.overall_status
+
+
+@pytest.mark.parametrize("status", ["candidate", "draft"])
+def test_freeze_rejects_nonvalidated_or_incomplete_packages(tmp_path, status):
+    frame = pd.DataFrame(np.random.default_rng(45).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    source = tmp_path / f"{status}.pcamodel"
+    save_model_package(source, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]], model_purpose="exploratory" if status == "draft" else "normal_state", model_status=status)
+    with pytest.raises(ValueError, match="only normal_state/validated"):
+        freeze_validated_model_package(source, tmp_path / "frozen.pcamodel", model_id="unit", model_version=1, frozen_by="engineer")
+
+
+def test_freeze_rejects_incomplete_evidence_and_generic_save_cannot_forge_frozen(tmp_path):
+    frame = pd.DataFrame(np.random.default_rng(46).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    source = tmp_path / "validated.pcamodel"
+    save_model_package(source, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]], model_status="validated", validation_summary={}, engineer_decision={"decision": "passed"})
+    with pytest.raises(ValueError, match="incomplete"):
+        freeze_validated_model_package(source, tmp_path / "frozen.pcamodel", model_id="unit", model_version=1, frozen_by="engineer")
+    with pytest.raises(ValueError, match="purpose and status"):
+        save_model_package(tmp_path / "forged.pcamodel", fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]], model_status="frozen")
 
 
 @pytest.mark.parametrize(

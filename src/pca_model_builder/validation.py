@@ -627,7 +627,7 @@ def _cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
     return 0.0 if denominator == 0 else float(np.dot(left, right) / denominator)
 
 
-def _has_pr6_validation_evidence(validation_summary: Mapping[str, Any]) -> bool:
+def has_complete_validation_evidence(validation_summary: Mapping[str, Any]) -> bool:
     metrics = validation_summary.get("validation_metrics")
     stability = validation_summary.get("contribution_stability")
     if not isinstance(metrics, Mapping) or not isinstance(stability, Mapping):
@@ -645,6 +645,11 @@ def _has_pr6_validation_evidence(validation_summary: Mapping[str, Any]) -> bool:
             for statistic in ("t2", "spe")
         )
     )
+
+
+def _has_pr6_validation_evidence(validation_summary: Mapping[str, Any]) -> bool:
+    """Backward-compatible internal name for the PR-6 evidence check."""
+    return has_complete_validation_evidence(validation_summary)
 
 
 def _has_normal_validation_metrics(value: object) -> bool:
