@@ -617,7 +617,7 @@ def _commit_validation_artifacts(
     try:
         scores.to_csv(scores_temp, index_label=timestamp_column)
         contributions_temp.write_text(json.dumps(contributions, ensure_ascii=False, indent=2), encoding="utf-8")
-        evidence = build_validation_evidence(candidate_path, model, scores_temp, contributions_temp, timestamp_column=timestamp_column)
+        evidence = build_validation_evidence(candidate_path, model, scores_temp, contributions_temp, timestamp_column=timestamp_column, scores_row_count=len(scores))
         evidence["scores"]["filename"] = scores_path.name
         evidence["contributions"]["filename"] = contributions_path.name
         report["validation_evidence"] = evidence

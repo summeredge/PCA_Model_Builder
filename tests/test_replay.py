@@ -53,6 +53,10 @@ def _validation_summary():
             },
         },
         "contribution_stability": stability,
+        "validation_evidence": {
+            "verification_status": "verified",
+            "candidate_model": {"sha256": "a" * 64},
+        },
     }
 
 
@@ -82,6 +86,7 @@ def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailin
         model_status="validated",
         validation_summary=_validation_summary(),
         engineer_decision={"decision": "passed", "comment": "ok", "reviewed_at": "2026-01-03T00:00:00+00:00"},
+        source_candidate_package={"identifier": "unit", "filename": "candidate.pcamodel", "sha256": "a" * 64},
     )
     freeze_validated_model_package(validated, frozen, model_id="unit", model_version=1, frozen_by="engineer")
     return frozen

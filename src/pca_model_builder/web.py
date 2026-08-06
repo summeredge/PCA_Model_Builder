@@ -1443,7 +1443,7 @@ def _commit_web_validation_artifacts(run_dir: Path, candidate_path: Path, model:
     try:
         scores.to_csv(scores_temp, index_label=timestamp_column, encoding="utf-8-sig")
         contributions_temp.write_text(json.dumps(contributions, ensure_ascii=False, indent=2), encoding="utf-8")
-        evidence = build_validation_evidence(candidate_path, model, scores_temp, contributions_temp, timestamp_column=timestamp_column)
+        evidence = build_validation_evidence(candidate_path, model, scores_temp, contributions_temp, timestamp_column=timestamp_column, scores_row_count=len(scores))
         evidence["scores"]["filename"] = scores_path.name
         evidence["contributions"]["filename"] = contributions_path.name
         report["validation_evidence"] = evidence
@@ -1452,7 +1452,6 @@ def _commit_web_validation_artifacts(run_dir: Path, candidate_path: Path, model:
     finally:
         scores_temp.unlink(missing_ok=True)
         contributions_temp.unlink(missing_ok=True)
-    return result
 
 
 def freeze_deployment_payload(payload: dict[str, Any]) -> dict[str, Any]:

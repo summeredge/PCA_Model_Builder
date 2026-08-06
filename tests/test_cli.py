@@ -471,20 +471,21 @@ def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, c
         for validation_type in ("normal_validation", "known_abnormal")
     }
     report.write_text(json.dumps(validation_report), encoding="utf-8")
-    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--comment", "old report", "--output", str(validated), "--source-id", "candidate-run"]) == 2
+    review_files = ["--scores", str(tmp_path / "scores.csv"), "--contributions", str(tmp_path / "contributions.json")]
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), *review_files, "--decision", "passed", "--comment", "old report", "--output", str(validated), "--source-id", "candidate-run"]) == 2
     assert not validated.exists()
     assert "重新执行独立验证" in capsys.readouterr().err
     assert main(["validate", "--model", str(candidate), "--csv", str(csv_path), "--timestamp", "time", "--validation-windows", str(windows_path), "--scores-output", str(tmp_path / "scores.csv"), "--report-output", str(report), "--contributions-output", str(tmp_path / "contributions.json")]) == 0
     validation_report = json.loads(report.read_text(encoding="utf-8"))
     validation_report["validation_metrics"]["normal_validation"]["t2"]["exceedance_rate_95"] = "invalid"
     report.write_text(json.dumps(validation_report), encoding="utf-8")
-    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--comment", "invalid field", "--output", str(validated), "--source-id", "candidate-run"]) == 2
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), *review_files, "--decision", "passed", "--comment", "invalid field", "--output", str(validated), "--source-id", "candidate-run"]) == 2
     assert not validated.exists()
     assert main(["validate", "--model", str(candidate), "--csv", str(csv_path), "--timestamp", "time", "--validation-windows", str(windows_path), "--scores-output", str(tmp_path / "scores.csv"), "--report-output", str(report), "--contributions-output", str(tmp_path / "contributions.json")]) == 0
 
-    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "insufficient", "--output", str(failed_output)]) == 0
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), *review_files, "--decision", "insufficient", "--output", str(failed_output)]) == 0
     assert not failed_output.exists()
-    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "passed", "--comment", "approved", "--output", str(validated), "--source-id", "candidate-run"]) == 0
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), *review_files, "--decision", "passed", "--comment", "approved", "--output", str(validated), "--source-id", "candidate-run"]) == 0
     candidate_model, candidate_manifest = load_model_package(candidate)
     validated_model, validated_manifest = load_model_package(validated)
     assert candidate_manifest["model_status"] == "candidate"
@@ -493,7 +494,7 @@ def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, c
     np.testing.assert_allclose(candidate_model.scale, validated_model.scale)
     np.testing.assert_allclose(candidate_model.components, validated_model.components)
 
-    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "failed", "--output", str(candidate)]) == 2
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), *review_files, "--decision", "failed", "--output", str(candidate)]) == 2
     assert "must differ" in capsys.readouterr().err
 
 

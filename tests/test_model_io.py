@@ -55,6 +55,10 @@ def _complete_validation_summary():
             },
         },
         "contribution_stability": stability,
+        "validation_evidence": {
+            "verification_status": "verified",
+            "candidate_model": {"sha256": "a" * 64},
+        },
     }
 
 
@@ -63,6 +67,7 @@ def _validated_package(path, frame):
         path, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]],
         model_status="validated", validation_summary=_complete_validation_summary(),
         engineer_decision={"decision": "passed", "comment": "approved", "reviewed_at": "2026-01-03T00:00:00+00:00"},
+        source_candidate_package={"identifier": "unit", "filename": "candidate.pcamodel", "sha256": "a" * 64},
     )
 
 
@@ -209,10 +214,11 @@ def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
     original = fit_dpca(frame, n_components=2)
     save_model_package(candidate, original, _valid_config(), [["2026-01-01", "2026-01-02"]])
 
+    validation_summary = {"normal_validation_complete": True, "known_abnormal_complete": True, "validation_evidence": {"verification_status": "verified", "candidate_model": {"sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "feature_names": list(original.feature_names)}}}
     copy_validated_model_package(
         candidate,
         validated,
-        validation_summary={"normal_validation_complete": True, "known_abnormal_complete": True},
+        validation_summary=validation_summary,
         engineer_decision={"decision": "passed", "comment": "reviewed", "reviewed_at": "2026-01-03T00:00:00+00:00"},
         source_identifier="run-001",
     )
@@ -224,10 +230,9 @@ def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
     assert validated_manifest["model_status"] == "validated"
     assert validated_manifest["validation_summary"]["known_abnormal_complete"] is True
     assert validated_manifest["engineer_decision"]["decision"] == "passed"
-    assert validated_manifest["source_candidate_package"] == {
-        "identifier": "run-001",
-        "filename": "candidate.pcamodel",
-    }
+    assert validated_manifest["source_candidate_package"]["identifier"] == "run-001"
+    assert validated_manifest["source_candidate_package"]["filename"] == "candidate.pcamodel"
+    assert len(validated_manifest["source_candidate_package"]["sha256"]) == 64
     pd.testing.assert_frame_equal(candidate_model.score(frame), validated_model.score(frame))
 
 

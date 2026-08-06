@@ -231,6 +231,15 @@ def copy_validated_model_package(
         or manifest["model_status"] != "candidate"
     ):
         raise ValueError("only normal_state/candidate models can become validated")
+    evidence = validation_summary.get("validation_evidence")
+    source_sha256 = _sha256(source.read_bytes())
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("verification_status") != "verified"
+        or evidence.get("candidate_model", {}).get("sha256") != source_sha256
+        or evidence.get("candidate_model", {}).get("feature_names") != list(model.feature_names)
+    ):
+        raise ValueError("validated model requires verified candidate and artifact evidence")
     save_model_package(
         destination,
         model,
@@ -243,7 +252,7 @@ def copy_validated_model_package(
         source_candidate_package={
             "identifier": source_identifier,
             "filename": source.name,
-            "sha256": _sha256(source.read_bytes()),
+            "sha256": source_sha256,
         },
     )
 

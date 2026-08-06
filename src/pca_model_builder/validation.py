@@ -424,6 +424,7 @@ def build_validation_evidence(
     contributions_path: str | Path,
     *,
     timestamp_column: str,
+    scores_row_count: int | None = None,
 ) -> dict[str, Any]:
     """Bind a report to the exact candidate and independently written artifacts."""
     candidate = Path(candidate_path)
@@ -441,7 +442,7 @@ def build_validation_evidence(
             "filename": scores.name,
             "sha256": _file_sha256(scores),
             "bytes": scores.stat().st_size,
-            "row_count": int(len(pd.read_csv(scores))),
+            "row_count": int(len(pd.read_csv(scores)) if scores_row_count is None else scores_row_count),
             "timestamp_column": timestamp_column,
         },
         "contributions": {
@@ -489,7 +490,7 @@ def verify_validation_evidence(
     _verify_score_metrics(report, scores, model, sample_interval_minutes)
     _verify_contributions(contributions, scores, model)
     if report.get("contribution_stability") != _contribution_stability(contributions, model.feature_names):
-        raise ValueError("验证贡献稳定性与工件不一致")
+        raise ValueError("通过前必须重新执行独立验证：验证贡献稳定性与工件不一致")
 
 
 def _file_sha256(path: Path) -> str:
@@ -538,10 +539,10 @@ def _verify_score_metrics(report: Mapping[str, Any], scores: pd.DataFrame, model
         part = scores.loc[scores["validation_window_id"].eq(window.get("id"))]
         if part.empty or set(part["validation_type"]) != {window.get("type")}:
             raise ValueError("验证评分窗口与报告不一致")
-        scored_windows.append({"type": window["type"], "scores": part, "continuous_events": _combined_exceedance_events(part, model, sample_interval_minutes)})
+        scored_windows.append({"id": window["id"], "type": window["type"], "start": pd.Timestamp(window["start"]), "scores": part, "continuous_events": _combined_exceedance_events(part, model, sample_interval_minutes)})
     metrics = _validation_metrics(scored_windows, model, sample_interval_minutes)
     if report.get("validation_metrics") != metrics:
-        raise ValueError("验证指标与评分工件不一致")
+        raise ValueError("通过前必须重新执行独立验证：验证指标与评分工件不一致")
 
 
 def _verify_contributions(records: Sequence[Mapping[str, Any]], scores: pd.DataFrame, model: DPCAModel) -> None:
