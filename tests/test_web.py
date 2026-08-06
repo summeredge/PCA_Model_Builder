@@ -128,8 +128,18 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
     ):
         assert element_id in html
     assert "不能替代工程师确认" in html
-    for label in ("正常样本验证", "已知异常验证", "通过", "结论不足", "不通过"):
+    for label in (
+        "正常样本验证",
+        "已知异常验证",
+        "通过",
+        "结论不足",
+        "不通过",
+        "平均贡献率",
+        "中位贡献率",
+    ):
         assert label in html
+    for field in ("average_contribution_pct", "median_contribution_pct"):
+        assert field in html
 
 
 def test_final_web_page_exposes_state_exploration_workbench():
@@ -1832,6 +1842,17 @@ def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
     candidate = run_dir / "model.pcamodel"
     assert web.validation_decision_payload({"run_id": trained["run_id"], "decision": "insufficient", "comment": "need more data"})["validated_model_download"] is None
     assert not (run_dir / "validated_model.pcamodel").exists()
+    report_path = run_dir / "validation_report.json"
+    old_report = json.loads(report_path.read_text(encoding="utf-8"))
+    old_report.pop("validation_metrics")
+    old_report.pop("contribution_stability")
+    report_path.write_text(json.dumps(old_report), encoding="utf-8")
+    sentinel = run_dir / "validated_model.pcamodel"
+    sentinel.write_bytes(b"do-not-overwrite")
+    with pytest.raises(ValueError, match="重新执行独立验证"):
+        web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "old report"})
+    assert sentinel.read_bytes() == b"do-not-overwrite"
+    result = web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
     decision = web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved"})
     assert decision["model_status"] == "validated"
     assert (run_dir / "validated_model.pcamodel").exists()

@@ -279,6 +279,8 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         "validation_window_summaries": validation_result["window_summaries"],
         "normal_validation_complete": validation_result["normal_validation_complete"],
         "known_abnormal_complete": validation_result["known_abnormal_complete"],
+        "validation_metrics": validation_result["validation_metrics"],
+        "contribution_stability": validation_result["contribution_stability"],
         "scored_rows": len(scores),
         "status_counts": dict(Counter(scores["status"])),
         "maximum_t2": float(scores["t2"].max()),

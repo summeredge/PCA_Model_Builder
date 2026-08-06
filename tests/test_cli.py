@@ -423,6 +423,8 @@ def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, c
     validation_report = json.loads(report.read_text(encoding="utf-8"))
     assert validation_report["normal_validation_complete"] is True
     assert validation_report["known_abnormal_complete"] is True
+    assert {"normal_validation", "known_abnormal"} == set(validation_report["validation_metrics"])
+    assert {"normal_validation", "known_abnormal"} == set(validation_report["contribution_stability"])
     assert {item["type"] for item in validation_report["validation_window_summaries"]} == {"normal_validation", "known_abnormal"}
 
     assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--decision", "insufficient", "--output", str(failed_output)]) == 0

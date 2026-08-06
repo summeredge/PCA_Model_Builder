@@ -7,6 +7,7 @@ from pca_model_builder.preprocessing import PreprocessingConfig, StateFilter
 from pca_model_builder.validation import (
     _combined_exceedance_events,
     _contribution_stability,
+    _contribution_stability_group,
     _validation_metrics,
     build_validation_matrix,
     ensure_disjoint_windows,
@@ -14,6 +15,19 @@ from pca_model_builder.validation import (
     record_engineer_decision,
     validate_model_windows,
 )
+
+
+def _pr6_evidence():
+    return {
+        "validation_metrics": {
+            "normal_validation": {},
+            "known_abnormal": {},
+        },
+        "contribution_stability": {
+            validation_type: {statistic: {} for statistic in ("t2", "spe")}
+            for validation_type in ("normal_validation", "known_abnormal")
+        },
+    }
 
 
 def test_validation_windows_must_not_overlap_training_windows():
@@ -111,9 +125,34 @@ def test_engineer_pass_requires_both_validation_types_and_keeps_candidate_semant
             "",
         )
 
+    with pytest.raises(ValueError, match="重新执行独立验证"):
+        record_engineer_decision(
+            manifest,
+            {"normal_validation_complete": True, "known_abnormal_complete": True},
+            "passed",
+            "",
+        )
+    malformed = _pr6_evidence()
+    malformed["contribution_stability"]["known_abnormal"]["spe"] = []
+    with pytest.raises(ValueError, match="重新执行独立验证"):
+        record_engineer_decision(
+            manifest,
+            {
+                "normal_validation_complete": True,
+                "known_abnormal_complete": True,
+                **malformed,
+            },
+            "passed",
+            "",
+        )
+
     decision = record_engineer_decision(
         manifest,
-        {"normal_validation_complete": True, "known_abnormal_complete": True},
+        {
+            "normal_validation_complete": True,
+            "known_abnormal_complete": True,
+            **_pr6_evidence(),
+        },
         "passed",
         "approved",
     )
@@ -202,3 +241,41 @@ def test_contribution_stability_is_separate_deterministic_and_handles_boundaries
     single = _contribution_stability([first], features)["normal_validation"]["t2"]
     assert single["average_top_k_jaccard_similarity"] is None
     assert single["average_contribution_cosine_similarity"] is None
+
+
+def test_contribution_stability_streams_pairs_with_exact_results():
+    tags = ["A", "B", "C", "D"]
+    events = [
+        {"tags": [{"tag": "A", "contribution_pct": 60.0}, {"tag": "B", "contribution_pct": 30.0}, {"tag": "C", "contribution_pct": 10.0}]},
+        {"tags": [{"tag": "B", "contribution_pct": 60.0}, {"tag": "A", "contribution_pct": 30.0}, {"tag": "D", "contribution_pct": 10.0}]},
+        {"tags": [{"tag": "C", "contribution_pct": 60.0}, {"tag": "B", "contribution_pct": 30.0}, {"tag": "D", "contribution_pct": 10.0}]},
+    ]
+    direct_jaccards = []
+    direct_cosines = []
+    for left in range(len(events)):
+        left_values = {item["tag"]: item["contribution_pct"] for item in events[left]["tags"]}
+        left_top = set(sorted(tags, key=lambda tag: (-left_values.get(tag, 0.0), tag))[:3])
+        left_vector = [left_values.get(tag, 0.0) for tag in tags]
+        for right in range(left + 1, len(events)):
+            right_values = {item["tag"]: item["contribution_pct"] for item in events[right]["tags"]}
+            right_top = set(sorted(tags, key=lambda tag: (-right_values.get(tag, 0.0), tag))[:3])
+            right_vector = [right_values.get(tag, 0.0) for tag in tags]
+            direct_jaccards.append(len(left_top & right_top) / len(left_top | right_top))
+            direct_cosines.append(
+                sum(a * b for a, b in zip(left_vector, right_vector, strict=True))
+                / (sum(a * a for a in left_vector) * sum(b * b for b in right_vector)) ** 0.5
+            )
+
+    result = _contribution_stability_group(events, tags)
+    assert result["average_top_k_jaccard_similarity"] == pytest.approx(
+        sum(direct_jaccards) / len(direct_jaccards)
+    )
+    assert result["average_contribution_cosine_similarity"] == pytest.approx(
+        sum(direct_cosines) / len(direct_cosines)
+    )
+    large = [events[index % len(events)] for index in range(128)]
+    assert _contribution_stability_group(large, tags)["event_count"] == len(large)
+    source = inspect.getsource(_contribution_stability_group)
+    assert "pairs =" not in source
+    assert "jaccards =" not in source
+    assert "cosines =" not in source

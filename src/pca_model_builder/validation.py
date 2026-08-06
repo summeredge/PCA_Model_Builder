@@ -313,6 +313,8 @@ def record_engineer_decision(
         and validation_summary.get("known_abnormal_complete")
     ):
         raise ValueError("通过前必须完成正常验证和已知异常验证")
+    if decision == "passed" and not _has_pr6_validation_evidence(validation_summary):
+        raise ValueError("通过前必须重新执行独立验证以生成完整PR-6验证证据")
     return {
         "decision": decision,
         "comment": comment,
@@ -582,25 +584,29 @@ def _contribution_stability_group(
         vectors.append(np.array([values.get(tag, 0.0) for tag in tag_order], dtype=float))
         rankings.append(sorted(tag_order, key=lambda tag: (-values.get(tag, 0.0), tag)))
     top1 = [ranking[0] for ranking in rankings] if top_k else []
-    pairs = [
-        (left, right)
-        for left in range(event_count)
-        for right in range(left + 1, event_count)
-    ]
-    jaccards = [
-        len(set(rankings[left][:top_k]) & set(rankings[right][:top_k]))
-        / len(set(rankings[left][:top_k]) | set(rankings[right][:top_k]))
-        for left, right in pairs
-    ] if top_k else []
-    cosines = [
-        _cosine_similarity(vectors[left], vectors[right]) for left, right in pairs
-    ]
+    pair_count = 0
+    jaccard_total = 0.0
+    cosine_total = 0.0
+    for left in range(event_count):
+        left_top_k = set(rankings[left][:top_k])
+        for right in range(left + 1, event_count):
+            right_top_k = set(rankings[right][:top_k])
+            pair_count += 1
+            if top_k:
+                jaccard_total += len(left_top_k & right_top_k) / len(
+                    left_top_k | right_top_k
+                )
+            cosine_total += _cosine_similarity(vectors[left], vectors[right])
     return {
         "event_count": event_count,
         "top_k": top_k,
         "top1_consistency_rate": max(Counter(top1).values()) / event_count if top1 else None,
-        "average_top_k_jaccard_similarity": float(np.mean(jaccards)) if jaccards else None,
-        "average_contribution_cosine_similarity": float(np.mean(cosines)) if cosines else None,
+        "average_top_k_jaccard_similarity": (
+            jaccard_total / pair_count if pair_count and top_k else None
+        ),
+        "average_contribution_cosine_similarity": (
+            cosine_total / pair_count if pair_count else None
+        ),
         "tags": [
             {
                 "tag": tag,
@@ -618,3 +624,21 @@ def _contribution_stability_group(
 def _cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
     denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
     return 0.0 if denominator == 0 else float(np.dot(left, right) / denominator)
+
+
+def _has_pr6_validation_evidence(validation_summary: Mapping[str, Any]) -> bool:
+    metrics = validation_summary.get("validation_metrics")
+    stability = validation_summary.get("contribution_stability")
+    if not isinstance(metrics, Mapping) or not isinstance(stability, Mapping):
+        return False
+    if not all(
+        isinstance(metrics.get(validation_type), Mapping)
+        for validation_type in ("normal_validation", "known_abnormal")
+    ):
+        return False
+    return all(
+        isinstance(stability.get(validation_type), Mapping)
+        and isinstance(stability[validation_type].get(statistic), Mapping)
+        for validation_type in ("normal_validation", "known_abnormal")
+        for statistic in ("t2", "spe")
+    )
