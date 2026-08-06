@@ -18,13 +18,48 @@ from pca_model_builder.validation import (
 
 
 def _pr6_evidence():
+    stability_group = {
+        "event_count": 0,
+        "top_k": 3,
+        "top1_consistency_rate": None,
+        "average_top_k_jaccard_similarity": None,
+        "average_contribution_cosine_similarity": None,
+        "tags": [],
+    }
     return {
         "validation_metrics": {
-            "normal_validation": {},
-            "known_abnormal": {},
+            "normal_validation": {
+                "valid_window_count": 1,
+                "scoring_row_count": 1,
+                "t2": {"exceedance_rate_95": 0.0, "exceedance_rate_99": 0.0},
+                "spe": {"exceedance_rate_95": 0.0, "exceedance_rate_99": 0.0},
+                "overall": {"exceedance_rate_95": 0.0, "exceedance_rate_99": 0.0},
+                "continuous_false_alarm_event_count_95": 0,
+                "longest_continuous_false_alarm_minutes": 0,
+            },
+            "known_abnormal": {
+                "valid_window_count": 1,
+                "detected_window_count_95": 0,
+                "detection_rate_95": 0.0,
+                "detected_window_count_99": 0,
+                "detection_rate_99": 0.0,
+                "t2_detected_window_count_95": 0,
+                "t2_detected_window_count_99": 0,
+                "spe_detected_window_count_95": 0,
+                "spe_detected_window_count_99": 0,
+                "windows": [{
+                    "validation_window_id": "known-001",
+                    "first_detection_95": None,
+                    "first_detection_delay_minutes_95": None,
+                    "first_detection_99": None,
+                    "first_detection_delay_minutes_99": None,
+                }],
+                "first_detection_delay_minutes_95_median": None,
+                "first_detection_delay_minutes_95_max": None,
+            },
         },
         "contribution_stability": {
-            validation_type: {statistic: {} for statistic in ("t2", "spe")}
+            validation_type: {statistic: dict(stability_group) for statistic in ("t2", "spe")}
             for validation_type in ("normal_validation", "known_abnormal")
         },
     }
@@ -133,7 +168,54 @@ def test_engineer_pass_requires_both_validation_types_and_keeps_candidate_semant
             "",
         )
     malformed = _pr6_evidence()
-    malformed["contribution_stability"]["known_abnormal"]["spe"] = []
+    malformed["validation_metrics"]["normal_validation"] = {}
+    with pytest.raises(ValueError, match="重新执行独立验证"):
+        record_engineer_decision(
+            manifest,
+            {
+                "normal_validation_complete": True,
+                "known_abnormal_complete": True,
+                **malformed,
+            },
+            "passed",
+            "",
+        )
+    malformed = _pr6_evidence()
+    malformed["contribution_stability"]["known_abnormal"]["spe"] = {
+        "event_count": 0,
+        "top_k": 3,
+        "top1_consistency_rate": float("nan"),
+        "average_top_k_jaccard_similarity": None,
+        "average_contribution_cosine_similarity": None,
+        "tags": [],
+    }
+    with pytest.raises(ValueError, match="重新执行独立验证"):
+        record_engineer_decision(
+            manifest,
+            {
+                "normal_validation_complete": True,
+                "known_abnormal_complete": True,
+                **malformed,
+            },
+            "passed",
+            "",
+        )
+    malformed = _pr6_evidence()
+    malformed["contribution_stability"]["normal_validation"]["t2"] = {
+        "event_count": 1,
+        "top_k": 1,
+        "top1_consistency_rate": 1.0,
+        "average_top_k_jaccard_similarity": None,
+        "average_contribution_cosine_similarity": None,
+        "tags": [{
+            "tag": "A",
+            "top1_count": 1,
+            "top_k_count": 1,
+            "top_k_recurrence_rate": 1.0,
+            "average_contribution_pct": float("inf"),
+            "median_contribution_pct": 60.0,
+        }],
+    }
     with pytest.raises(ValueError, match="重新执行独立验证"):
         record_engineer_decision(
             manifest,

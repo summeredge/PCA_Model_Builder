@@ -140,6 +140,15 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
         assert label in html
     for field in ("average_contribution_pct", "median_contribution_pct"):
         assert field in html
+    assert "function contributionPercent(value)" in html
+    assert "Number(value).toFixed(1)}%" in html
+    assert "contributionPercent(tag.average_contribution_pct)" in html
+    assert "contributionPercent(tag.median_contribution_pct)" in html
+    assert "percent(tag.average_contribution_pct)" not in html
+    assert "percent(tag.median_contribution_pct)" not in html
+    formatter = html.split("function contributionPercent(value)", 1)[1].split("\n", 1)[0]
+    assert "Number(value).toFixed(1)" in formatter
+    assert "*100" not in formatter
 
 
 def test_final_web_page_exposes_state_exploration_workbench():
@@ -1844,13 +1853,27 @@ def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
     assert not (run_dir / "validated_model.pcamodel").exists()
     report_path = run_dir / "validation_report.json"
     old_report = json.loads(report_path.read_text(encoding="utf-8"))
-    old_report.pop("validation_metrics")
-    old_report.pop("contribution_stability")
+    old_report["validation_metrics"] = {
+        "normal_validation": {},
+        "known_abnormal": {},
+    }
+    old_report["contribution_stability"] = {
+        validation_type: {statistic: {} for statistic in ("t2", "spe")}
+        for validation_type in ("normal_validation", "known_abnormal")
+    }
     report_path.write_text(json.dumps(old_report), encoding="utf-8")
     sentinel = run_dir / "validated_model.pcamodel"
     sentinel.write_bytes(b"do-not-overwrite")
     with pytest.raises(ValueError, match="重新执行独立验证"):
         web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "old report"})
+    assert sentinel.read_bytes() == b"do-not-overwrite"
+    old_report = json.loads(report_path.read_text(encoding="utf-8"))
+    old_report["validation_metrics"] = result["validation_metrics"]
+    old_report["contribution_stability"] = result["contribution_stability"]
+    old_report["validation_metrics"]["normal_validation"]["t2"]["exceedance_rate_95"] = "invalid"
+    report_path.write_text(json.dumps(old_report), encoding="utf-8")
+    with pytest.raises(ValueError, match="重新执行独立验证"):
+        web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "invalid field"})
     assert sentinel.read_bytes() == b"do-not-overwrite"
     result = web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
     decision = web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved"})

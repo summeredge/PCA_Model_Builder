@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 import numpy as np
@@ -631,14 +632,207 @@ def _has_pr6_validation_evidence(validation_summary: Mapping[str, Any]) -> bool:
     stability = validation_summary.get("contribution_stability")
     if not isinstance(metrics, Mapping) or not isinstance(stability, Mapping):
         return False
-    if not all(
-        isinstance(metrics.get(validation_type), Mapping)
-        for validation_type in ("normal_validation", "known_abnormal")
+    return (
+        _has_normal_validation_metrics(metrics.get("normal_validation"))
+        and _has_known_abnormal_metrics(metrics.get("known_abnormal"))
+        and all(
+            _has_contribution_stability_group(
+                stability.get(validation_type, {}).get(statistic)
+                if isinstance(stability.get(validation_type), Mapping)
+                else None
+            )
+            for validation_type in ("normal_validation", "known_abnormal")
+            for statistic in ("t2", "spe")
+        )
+    )
+
+
+def _has_normal_validation_metrics(value: object) -> bool:
+    fields = (
+        "valid_window_count",
+        "scoring_row_count",
+        "t2",
+        "spe",
+        "overall",
+        "continuous_false_alarm_event_count_95",
+        "longest_continuous_false_alarm_minutes",
+    )
+    if not _has_fields(value, fields):
+        return False
+    return (
+        _is_positive_integer(value.get("valid_window_count"))
+        and _is_positive_integer(value.get("scoring_row_count"))
+        and all(
+            isinstance(value.get(statistic), Mapping)
+            and _has_fields(
+                value[statistic], ("exceedance_rate_95", "exceedance_rate_99")
+            )
+            and all(
+                _is_ratio(value[statistic].get(f"exceedance_rate_{confidence}"))
+                for confidence in (95, 99)
+            )
+            for statistic in ("t2", "spe", "overall")
+        )
+        and _is_nonnegative_integer(value.get("continuous_false_alarm_event_count_95"))
+        and _is_nonnegative_integer(value.get("longest_continuous_false_alarm_minutes"))
+    )
+
+
+def _has_known_abnormal_metrics(value: object) -> bool:
+    count_fields = (
+        "detected_window_count_95",
+        "detected_window_count_99",
+        "t2_detected_window_count_95",
+        "t2_detected_window_count_99",
+        "spe_detected_window_count_95",
+        "spe_detected_window_count_99",
+    )
+    fields = (
+        "valid_window_count",
+        *count_fields,
+        "detection_rate_95",
+        "detection_rate_99",
+        "windows",
+        "first_detection_delay_minutes_95_median",
+        "first_detection_delay_minutes_95_max",
+    )
+    if not _has_fields(value, fields) or not _is_positive_integer(
+        value["valid_window_count"]
     ):
         return False
+    valid_window_count = value["valid_window_count"]
+    windows = value.get("windows")
+    return (
+        all(
+            _is_nonnegative_integer(value.get(field))
+            and value[field] <= valid_window_count
+            for field in count_fields
+        )
+        and all(_is_ratio(value.get(field)) for field in ("detection_rate_95", "detection_rate_99"))
+        and isinstance(windows, list)
+        and len(windows) == valid_window_count
+        and all(_has_detection_window(window) for window in windows)
+        and all(
+            _is_nonnegative_number_or_none(value.get(field))
+            for field in (
+                "first_detection_delay_minutes_95_median",
+                "first_detection_delay_minutes_95_max",
+            )
+        )
+    )
+
+
+def _has_detection_window(value: object) -> bool:
+    fields = (
+        "validation_window_id",
+        "first_detection_95",
+        "first_detection_delay_minutes_95",
+        "first_detection_99",
+        "first_detection_delay_minutes_99",
+    )
+    if not _has_fields(value, fields) or not isinstance(
+        value.get("validation_window_id"), str
+    ) or not value["validation_window_id"]:
+        return False
     return all(
-        isinstance(stability.get(validation_type), Mapping)
-        and isinstance(stability[validation_type].get(statistic), Mapping)
-        for validation_type in ("normal_validation", "known_abnormal")
-        for statistic in ("t2", "spe")
+        value.get(f"first_detection_{confidence}") is None
+        or isinstance(value.get(f"first_detection_{confidence}"), str)
+        for confidence in (95, 99)
+    ) and all(
+        _is_nonnegative_number_or_none(
+            value.get(f"first_detection_delay_minutes_{confidence}")
+        )
+        for confidence in (95, 99)
+    )
+
+
+def _has_contribution_stability_group(value: object) -> bool:
+    fields = (
+        "event_count",
+        "top_k",
+        "top1_consistency_rate",
+        "average_top_k_jaccard_similarity",
+        "average_contribution_cosine_similarity",
+        "tags",
+    )
+    if not _has_fields(value, fields):
+        return False
+    event_count = value.get("event_count")
+    tags = value.get("tags")
+    return (
+        _is_nonnegative_integer(event_count)
+        and _is_nonnegative_integer(value.get("top_k"))
+        and all(
+            _is_ratio(value.get(field))
+            for field in (
+                "top1_consistency_rate",
+                "average_top_k_jaccard_similarity",
+                "average_contribution_cosine_similarity",
+            )
+        )
+        and isinstance(tags, list)
+        and (event_count == 0 or bool(tags))
+        and all(_has_tag_stability(value) for value in tags)
+    )
+
+
+def _has_tag_stability(value: object) -> bool:
+    return (
+        _has_fields(
+            value,
+            (
+                "tag",
+                "top1_count",
+                "top_k_count",
+                "top_k_recurrence_rate",
+                "average_contribution_pct",
+                "median_contribution_pct",
+            ),
+        )
+        and isinstance(value.get("tag"), str)
+        and bool(value["tag"])
+        and _is_nonnegative_integer(value.get("top1_count"))
+        and _is_nonnegative_integer(value.get("top_k_count"))
+        and _is_ratio(value.get("top_k_recurrence_rate"))
+        and _is_contribution_rate(value.get("average_contribution_pct"))
+        and _is_contribution_rate(value.get("median_contribution_pct"))
+    )
+
+
+def _is_positive_integer(value: object) -> bool:
+    return _is_nonnegative_integer(value) and value > 0
+
+
+def _is_nonnegative_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _has_fields(value: object, fields: Sequence[str]) -> bool:
+    return isinstance(value, Mapping) and all(field in value for field in fields)
+
+
+def _is_ratio(value: object) -> bool:
+    if value is None or not _is_finite_number(value, minimum=0.0):
+        return value is None
+    return float(value) <= 1.0 or math.isclose(
+        float(value), 1.0, rel_tol=0.0, abs_tol=1e-12
+    )
+
+
+def _is_contribution_rate(value: object) -> bool:
+    return _is_finite_number(value, minimum=0.0, maximum=100.0)
+
+
+def _is_nonnegative_number_or_none(value: object) -> bool:
+    return value is None or _is_finite_number(value, minimum=0.0)
+
+
+def _is_finite_number(
+    value: object, minimum: float, maximum: float | None = None
+) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    numeric = float(value)
+    return math.isfinite(numeric) and numeric >= minimum and (
+        maximum is None or numeric <= maximum
     )
