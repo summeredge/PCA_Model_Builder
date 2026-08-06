@@ -80,6 +80,17 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     )
 
 
+def test_final_web_uses_the_ibm_carbon_visual_tokens() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert 'id="ibmDesignStyle"' in html
+    assert "--accent:#0f62fe;" in html
+    assert "font-family:\"IBM Plex Sans\"" in html
+    assert "border-radius:0 !important;" in html
+    assert "background:#f4f4f4;" in html
+    assert "font-size:32px; font-weight:300;" in html
+
+
 def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:
     source = (
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"

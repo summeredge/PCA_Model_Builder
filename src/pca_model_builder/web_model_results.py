@@ -129,6 +129,131 @@ _FORM_ALIGNMENT_STYLE = r"""
 """
 
 
+_IBM_DESIGN_STYLE = r"""
+<style id="ibmDesignStyle">
+  :root {
+    --bg:#ffffff;
+    --panel:#ffffff;
+    --line:#e0e0e0;
+    --line-soft:#e0e0e0;
+    --text:#161616;
+    --muted:#525252;
+    --accent:#0f62fe;
+    --accent-soft:#edf5ff;
+    --green:#24a148;
+    --warn:#f1c21b;
+    --danger:#da1e28;
+    --normal:#24a148;
+    --attention:#f1c21b;
+    --abnormal:#da1e28;
+  }
+
+  *, *::before, *::after { border-radius:0 !important; box-shadow:none !important; }
+  body {
+    background:var(--bg);
+    color:var(--text);
+    font-family:"IBM Plex Sans","Microsoft YaHei","Segoe UI",Arial,sans-serif;
+    font-size:16px;
+    font-weight:400;
+    letter-spacing:.16px;
+    line-height:1.5;
+  }
+  header { padding:24px 32px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
+  h1 { margin:0 0 8px; font-size:32px; font-weight:300; line-height:1.25; }
+  h2 { font-size:24px; font-weight:400; line-height:1.33; }
+  h3 { font-size:20px; font-weight:400; line-height:1.4; }
+  h4 { font-size:16px; font-weight:600; line-height:1.29; }
+  .subtitle, .help, label, .legend, .dp-legend { color:var(--muted); }
+  .subtitle { font-size:14px; line-height:1.29; }
+  .help, label, .legend, .dp-legend { font-size:14px; line-height:1.29; }
+  main { max-width:1584px; margin:0 auto; gap:16px; padding:16px; }
+  section { border:1px solid var(--line); padding:16px; background:var(--panel); }
+  .controls { gap:16px; }
+  .group, .metric, .validation-box, .exploration-controls, .dp-inline-help {
+    background:#f4f4f4;
+    border:1px solid var(--line);
+  }
+  .group { gap:12px; padding:16px; }
+  .group-title, .sub-title { font-size:14px; font-weight:600; line-height:1.29; }
+  .sub-title { border-top-color:var(--line); }
+  input, select, textarea {
+    background:#f4f4f4;
+    border:0;
+    border-bottom:1px solid #8c8c8c;
+    color:var(--text);
+    font:inherit;
+    padding:11px 16px;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline:2px solid var(--accent);
+    outline-offset:-2px;
+    border-bottom:2px solid var(--accent);
+  }
+  button, .download {
+    min-height:42px;
+    border:1px solid var(--accent);
+    background:var(--accent);
+    color:#ffffff;
+    font:400 14px/1.29 "IBM Plex Sans","Microsoft YaHei","Segoe UI",Arial,sans-serif;
+    letter-spacing:.16px;
+    padding:12px 16px;
+    text-decoration:none;
+  }
+  button:hover, .download:hover { background:#0050e6; border-color:#0050e6; }
+  button:active, .download:active { background:#002d9c; border-color:#002d9c; }
+  button.secondary, .inner-tab, .tab {
+    background:#161616;
+    border-color:#161616;
+    color:#ffffff;
+  }
+  button.secondary:hover, .inner-tab:hover, .tab:hover { background:#262626; border-color:#262626; }
+  .tabs, .inner-tabs { gap:0; border-bottom:1px solid var(--line); padding-bottom:0; }
+  .tab, .inner-tab { border:0; border-bottom:2px solid transparent; }
+  .tab.active, .inner-tab.active {
+    background:#ffffff;
+    border-bottom-color:var(--accent);
+    color:var(--text);
+    font-weight:600;
+  }
+  .status, .notice, .issue-card, .tag-options, .compact-list, .table-wrap,
+  .trend-chart, .chart, .dp-chart, .empty, .variance, .exploration-timeline,
+  .dp-trend-stat-card, .dp-scatter-chart {
+    border-color:var(--line);
+    background:#ffffff;
+  }
+  .status { min-height:42px; padding:12px 16px; }
+  .status.info { background:#edf5ff; color:#0043ce; border-color:#0f62fe; }
+  .status.success { background:#e8f5e9; color:#0e6027; border-color:#24a148; }
+  .status.warning, .notice { background:#fff8e1; color:#6f4e00; border-color:#f1c21b; }
+  .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
+  .issue-card, .notice { border-left-width:4px; }
+  .tag-row.selected { background:#edf5ff; }
+  .metric { padding:16px; }
+  .metric strong { font-size:32px; font-weight:300; line-height:1.25; }
+  .chart-card { gap:12px; }
+  .chart-card h3 { margin:0; }
+  .chart, .dp-chart, .trend-chart { background:#ffffff; }
+  .empty { border-style:dashed; color:var(--muted); }
+  .variance-bar { background:var(--accent); }
+  .variance-bar.selected { background:var(--green); }
+  .table-wrap, .exploration-timeline { border:1px solid var(--line); }
+  th, td { border-bottom-color:var(--line); padding:12px 16px; }
+  th { background:#f4f4f4; color:var(--text); font-weight:600; }
+  a:not(.download) { color:var(--accent); }
+  button:focus-visible, .download:focus-visible, a:focus-visible {
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+  }
+  @media (max-width:672px) {
+    header { padding:16px; }
+    h1 { font-size:32px; }
+    main { padding:8px; }
+    button, .download, input, select { min-height:48px; }
+  }
+</style>
+"""
+
+
 def apply_model_results_ui(html: str) -> str:
     """Remove XY scatter UI/code and load the final Web assets."""
     if 'src="/assets/model-results.js"' in html:
@@ -150,7 +275,7 @@ def apply_model_results_ui(html: str) -> str:
     if "</head>" not in result or "</body>" not in result:
         raise ValueError("Web HTML缺少head或body结束标签")
     result = result.replace(
-        "</head>", f"{_FORM_ALIGNMENT_STYLE}\n</head>", 1
+        "</head>", f"{_FORM_ALIGNMENT_STYLE}\n{_IBM_DESIGN_STYLE}\n</head>", 1
     )
     return result.replace(
         "</body>",
