@@ -96,37 +96,51 @@ def score_dynamic_feature_matrix(
 
     valid_rows = np.isfinite(values).all(axis=1)
     if valid_rows.any():
-        standardized = (values[valid_rows] - mean_values) / scale_values
-        valid_pc_scores = standardized @ component_values.T
-        residual = standardized - valid_pc_scores @ component_values
-        valid_t2 = np.sum(
-            valid_pc_scores**2 / eigenvalue_values[:component_count], axis=1
-        )
-        valid_spe = np.sum(residual**2, axis=1)
-        with np.errstate(divide="ignore", invalid="ignore"):
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            standardized = (values[valid_rows] - mean_values) / scale_values
+            valid_pc_scores = standardized @ component_values.T
+            residual = standardized - valid_pc_scores @ component_values
+            valid_t2 = np.sum(
+                valid_pc_scores**2 / eigenvalue_values[:component_count], axis=1
+            )
+            valid_spe = np.sum(residual**2, axis=1)
             valid_t2_ratio = valid_t2 / float(t2_limits[0.95])
             valid_spe_ratio = valid_spe / float(q_limits[0.95])
-        valid_t2_status = _statistic_status(
-            valid_t2, float(t2_limits[0.95]), float(t2_limits[0.99])
+        calculation_valid = (
+            np.isfinite(standardized).all(axis=1)
+            & np.isfinite(valid_pc_scores).all(axis=1)
+            & np.isfinite(residual).all(axis=1)
+            & np.isfinite(valid_t2)
+            & np.isfinite(valid_spe)
+            & np.isfinite(valid_t2_ratio)
+            & np.isfinite(valid_spe_ratio)
         )
-        valid_spe_status = _statistic_status(
-            valid_spe, float(q_limits[0.95]), float(q_limits[0.99])
-        )
-        valid_overall_status = tuple(
-            left if _SEVERITY[left] >= _SEVERITY[right] else right
-            for left, right in zip(valid_t2_status, valid_spe_status, strict=True)
-        )
-
-        pc_scores[valid_rows] = valid_pc_scores
-        t2[valid_rows] = valid_t2
-        spe[valid_rows] = valid_spe
-        t2_ratio[valid_rows] = valid_t2_ratio
-        spe_ratio[valid_rows] = valid_spe_ratio
-        t2_status[valid_rows] = valid_t2_status
-        spe_status[valid_rows] = valid_spe_status
-        overall_status[valid_rows] = valid_overall_status
-        score_valid[valid_rows] = True
-        for position in np.flatnonzero(valid_rows):
+        valid_positions = np.flatnonzero(valid_rows)[calculation_valid]
+        if len(valid_positions):
+            valid_t2_status = _statistic_status(
+                valid_t2[calculation_valid],
+                float(t2_limits[0.95]),
+                float(t2_limits[0.99]),
+            )
+            valid_spe_status = _statistic_status(
+                valid_spe[calculation_valid],
+                float(q_limits[0.95]),
+                float(q_limits[0.99]),
+            )
+            valid_overall_status = tuple(
+                left if _SEVERITY[left] >= _SEVERITY[right] else right
+                for left, right in zip(valid_t2_status, valid_spe_status, strict=True)
+            )
+            pc_scores[valid_positions] = valid_pc_scores[calculation_valid]
+            t2[valid_positions] = valid_t2[calculation_valid]
+            spe[valid_positions] = valid_spe[calculation_valid]
+            t2_ratio[valid_positions] = valid_t2_ratio[calculation_valid]
+            spe_ratio[valid_positions] = valid_spe_ratio[calculation_valid]
+            t2_status[valid_positions] = valid_t2_status
+            spe_status[valid_positions] = valid_spe_status
+            overall_status[valid_positions] = valid_overall_status
+            score_valid[valid_positions] = True
+        for position in valid_positions:
             invalid_reason[int(position)] = None
 
     return BatchScoreResult(
@@ -212,6 +226,57 @@ def spe_feature_contributions(
     principal_scores = standardized @ component_values.T
     residual = standardized - principal_scores @ component_values
     return _immutable_array(residual**2)
+
+
+def anomaly_tag_contributions(
+    dynamic_feature: np.ndarray,
+    score: SingleScoreResult,
+    statistic: str,
+    *,
+    feature_names: Sequence[str],
+    mean: np.ndarray,
+    scale: np.ndarray,
+    components: np.ndarray,
+    eigenvalues: np.ndarray,
+    limit_95: float,
+) -> tuple[TagContribution, ...]:
+    """Return one statistic's Tag contributions only for a valid 95% exceedance."""
+    if statistic not in {"t2", "spe"}:
+        raise ValueError("statistic must be 't2' or 'spe'")
+    if not _is_finite_number(limit_95):
+        raise ValueError("95% control limit must be finite")
+    if (statistic == "t2" and limit_95 <= 0) or (
+        statistic == "spe" and limit_95 < 0
+    ):
+        raise ValueError("95% control limit is invalid")
+    value = score.t2 if statistic == "t2" else score.spe
+    if not score.score_valid or value is None or not _is_finite_number(value):
+        return ()
+    if float(value) < float(limit_95):
+        return ()
+    contributions = (
+        t2_feature_contributions(
+            dynamic_feature,
+            feature_names=feature_names,
+            mean=mean,
+            scale=scale,
+            components=components,
+            eigenvalues=eigenvalues,
+        )
+        if statistic == "t2"
+        else spe_feature_contributions(
+            dynamic_feature,
+            feature_names=feature_names,
+            mean=mean,
+            scale=scale,
+            components=components,
+            eigenvalues=eigenvalues,
+        )
+    )
+    total = float(contributions.sum())
+    if not np.isfinite(total) or total <= 0:
+        return ()
+    return aggregate_tag_contributions(feature_names, contributions)
 
 
 def aggregate_tag_contributions(
@@ -334,10 +399,34 @@ def _validate_model_parameters(
     if (t2_limits is None) != (q_limits is None):
         raise ValueError("both model control limit mappings must be provided")
     if t2_limits is not None:
-        for limits in (t2_limits, q_limits):
-            if 0.95 not in limits or 0.99 not in limits:
-                raise ValueError("model control limits must include 95% and 99% values")
+        _validate_control_limits(t2_limits, statistic="t2")
+        _validate_control_limits(q_limits, statistic="spe")
     return mean_values, scale_values, component_values, eigenvalue_values
+
+
+def _validate_control_limits(
+    limits: Mapping[float, float], *, statistic: str
+) -> None:
+    if not isinstance(limits, Mapping) or set(limits) != {0.95, 0.99}:
+        raise ValueError("model control limits must contain only 95% and 99% values")
+    limit_95 = limits[0.95]
+    limit_99 = limits[0.99]
+    if not _is_finite_number(limit_95) or not _is_finite_number(limit_99):
+        raise ValueError("model control limits must be finite numeric values")
+    if statistic == "t2":
+        valid = 0 < float(limit_95) <= float(limit_99)
+    else:
+        valid = 0 <= float(limit_95) <= float(limit_99)
+    if not valid:
+        raise ValueError(f"model {statistic.upper()} control limits are invalid")
+
+
+def _is_finite_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float, np.number))
+        and not isinstance(value, (bool, np.bool_))
+        and bool(np.isfinite(value))
+    )
 
 
 def _statistic_status(values: np.ndarray, limit_95: float, limit_99: float) -> tuple[str, ...]:

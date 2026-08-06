@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -9,6 +11,7 @@ from pca_model_builder.contribution import (
 from pca_model_builder.dpca import DPCAModel
 from pca_model_builder.scoring_core import (
     aggregate_tag_contributions,
+    anomaly_tag_contributions,
     score_dynamic_feature_matrix,
     score_dynamic_feature_vector,
     spe_feature_contributions,
@@ -118,6 +121,65 @@ def test_invalid_batch_row_does_not_block_valid_rows_or_mutate_inputs():
 
 
 @pytest.mark.parametrize(
+    ("field", "limits"),
+    (
+        ("t2_limits", {0.95: 10.0, 0.99: 5.0}),
+        ("q_limits", {0.95: 5.0, 0.99: -1.0}),
+        ("t2_limits", {0.95: 0.0, 0.99: 10.0}),
+        ("q_limits", {0.95: -1.0, 0.99: 10.0}),
+        ("t2_limits", {0.95: np.nan, 0.99: 10.0}),
+        ("q_limits", {0.95: 5.0, 0.99: np.inf}),
+        ("t2_limits", {0.95: True, 0.99: 10.0}),
+        ("q_limits", {0.95: 5.0, 0.99: 10.0, 0.9: 4.0}),
+    ),
+)
+def test_score_rejects_invalid_control_limits(field, limits):
+    model = _model()
+    parameters = _parameters(model)
+    parameters[field] = limits
+
+    with pytest.raises(ValueError, match="control limits"):
+        score_dynamic_feature_matrix(
+            np.array([[1.0, -1.0, 0.5, 2.0]]), **parameters
+        )
+
+
+def test_non_finite_calculations_do_not_make_a_valid_score():
+    model = _model()
+    parameters = _parameters(model)
+    parameters["scale"] = np.array([2.0, 4.0, np.finfo(float).tiny, 2.0])
+    values = np.array(
+        [
+            [1.0, -1.0, 0.5, 2.0],
+            [1.0, -1.0, np.finfo(float).max, 2.0],
+        ]
+    )
+
+    result = score_dynamic_feature_matrix(values, **parameters)
+
+    assert result.score_valid == (True, False)
+    assert result.invalid_reason == (None, "non_finite_input")
+    assert result.t2_status[1] == "not_scored"
+    assert result.spe_status[1] == "not_scored"
+    assert result.overall_status[1] == "not_scored"
+    assert np.isnan(result.t2[1]) and np.isnan(result.spe_limit_ratio[1])
+
+
+def test_zero_spe_limit_never_produces_an_undefined_valid_score():
+    model = _model()
+    parameters = _parameters(model)
+    parameters["q_limits"] = {0.95: 0.0, 0.99: 0.0}
+
+    result = score_dynamic_feature_matrix(
+        np.array([[1.0, -1.0, 0.5, 2.0]]), **parameters
+    )
+
+    assert result.score_valid == (False,)
+    assert result.invalid_reason == ("non_finite_input",)
+    assert result.overall_status == ("not_scored",)
+
+
+@pytest.mark.parametrize(
     "reason",
     (
         "warming_up",
@@ -182,6 +244,63 @@ def test_pure_contributions_match_existing_formula_and_tag_aggregation():
     tied = aggregate_tag_contributions(model.feature_names, np.array([1.0, 0.0, 1.0, 0.0]))
     assert [item.tag for item in tied] == ["A", "B"]
     assert sum(item.contribution_pct for item in tied) == pytest.approx(100.0)
+
+
+def test_single_point_contributions_require_the_matching_statistic_threshold():
+    model = _model()
+    parameters = _parameters(model)
+    contribution_parameters = {
+        key: value
+        for key, value in parameters.items()
+        if key not in {"t2_limits", "q_limits"}
+    }
+
+    def contributions(values, score, statistic):
+        return anomaly_tag_contributions(
+            values,
+            score,
+            statistic,
+            **contribution_parameters,
+            limit_95=(
+                model.t2_limits[0.95]
+                if statistic == "t2"
+                else model.q_limits[0.95]
+            ),
+        )
+
+    t2_only = np.array([1.0 + 2.0 * np.sqrt(20.0), -1.0, 0.5, 2.0])
+    t2_score = score_dynamic_feature_vector(t2_only, **parameters)
+    assert contributions(t2_only, t2_score, "t2")
+    assert contributions(t2_only, t2_score, "spe") == ()
+
+    spe_only = np.array([1.0, -1.0, 0.5, 2.0 + 2.0 * np.sqrt(10.0)])
+    spe_score = score_dynamic_feature_vector(spe_only, **parameters)
+    assert contributions(spe_only, spe_score, "t2") == ()
+    assert contributions(spe_only, spe_score, "spe")
+
+    mean_point = np.array([1.0, -1.0, 0.5, 2.0])
+    mean_score = score_dynamic_feature_vector(mean_point, **parameters)
+    assert contributions(mean_point, mean_score, "t2") == ()
+    assert contributions(mean_point, mean_score, "spe") == ()
+    assert contributions(
+        mean_point, replace(mean_score, t2=model.t2_limits[0.95]), "t2"
+    ) == ()
+
+    invalid_score = score_dynamic_feature_vector(
+        np.array([np.nan, -1.0, 0.5, 2.0]), **parameters
+    )
+    assert contributions(mean_point, invalid_score, "t2") == ()
+
+    tied = np.array(
+        [1.0 + 2.0 * np.sqrt(20.0), -1.0, 0.5 + 0.5 * np.sqrt(30.0), 2.0]
+    )
+    tied_contributions = contributions(
+        tied, score_dynamic_feature_vector(tied, **parameters), "t2"
+    )
+    assert [item.tag for item in tied_contributions] == ["A", "B"]
+    assert sum(item.contribution_pct for item in tied_contributions) == pytest.approx(
+        100.0
+    )
 
 
 def test_exceedance_contributions_require_the_corresponding_95_percent_limit():
