@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 import numpy as np
 import pandas as pd
@@ -9,7 +10,7 @@ from pca_model_builder.model_io import freeze_validated_model_package, save_mode
 from pca_model_builder.replay import replay_frozen_model
 
 
-def _validation_summary():
+def _validation_summary(candidate_path, feature_names):
     stability = {
         kind: {
             statistic: {
@@ -24,7 +25,7 @@ def _validation_summary():
         }
         for kind in ("normal_validation", "known_abnormal")
     }
-    return {
+    summary = {
         "normal_validation_complete": True,
         "known_abnormal_complete": True,
         "validation_metrics": {
@@ -53,11 +54,16 @@ def _validation_summary():
             },
         },
         "contribution_stability": stability,
-        "validation_evidence": {
-            "verification_status": "verified",
-            "candidate_model": {"sha256": "a" * 64},
-        },
     }
+    evidence = {
+        "verification_status": "verified", "verifier": "validation_artifact_verifier_v1",
+        "candidate_model": {"filename": candidate_path.name, "sha256": hashlib.sha256(candidate_path.read_bytes()).hexdigest(), "feature_names": list(feature_names)},
+        "scores": {"filename": "scores.csv", "sha256": "a" * 64, "bytes": 0, "row_count": 0, "timestamp_column": "time"},
+        "contributions": {"filename": "contributions.json", "sha256": "b" * 64, "bytes": 0, "record_count": 0},
+    }
+    evidence["verification_digest"] = hashlib.sha256(json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    summary["validation_evidence"] = evidence
+    return summary
 
 
 def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailing_mean"):
@@ -76,17 +82,20 @@ def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailin
     }
     training = history.loc[:, ["A", "B", "C"]].iloc[:80].copy()
     training.columns = [f"{tag}__lag_000min" for tag in training.columns]
+    model = fit_dpca(training, n_components=2)
+    candidate = tmp_path / "candidate.pcamodel"
+    save_model_package(candidate, model, config, [["2026-01-01", "2026-01-02"]])
     validated = tmp_path / "validated.pcamodel"
     frozen = tmp_path / "frozen.pcamodel"
     save_model_package(
         validated,
-        fit_dpca(training, n_components=2),
+        model,
         config,
         [["2026-01-01", "2026-01-02"]],
         model_status="validated",
-        validation_summary=_validation_summary(),
+        validation_summary=_validation_summary(candidate, model.feature_names),
         engineer_decision={"decision": "passed", "comment": "ok", "reviewed_at": "2026-01-03T00:00:00+00:00"},
-        source_candidate_package={"identifier": "unit", "filename": "candidate.pcamodel", "sha256": "a" * 64},
+        source_candidate_package={"identifier": "unit", "filename": candidate.name, "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()},
     )
     freeze_validated_model_package(validated, frozen, model_id="unit", model_version=1, frozen_by="engineer")
     return frozen

@@ -5,6 +5,7 @@ import inspect
 
 from pca_model_builder.preprocessing import PreprocessingConfig, StateFilter
 from pca_model_builder.validation import (
+    _read_validation_scores,
     _combined_exceedance_events,
     _contribution_stability,
     _contribution_stability_group,
@@ -15,6 +16,32 @@ from pca_model_builder.validation import (
     record_engineer_decision,
     validate_model_windows,
 )
+
+
+def test_validation_scores_reject_status_tampering_and_extra_pc_columns(tmp_path):
+    path = tmp_path / "scores.csv"
+    base = {
+        "time": ["2026-01-01T00:00:00"],
+        "validation_window_id": ["normal"], "validation_type": ["normal_validation"],
+        "pc1": [0.0], "pc2": [0.0], "t2": [2.0], "spe": [0.0],
+        "t2_status": ["attention"], "spe_status": ["normal"],
+        "overall_status": ["attention"], "status": ["attention"],
+        "score_valid": [True], "invalid_reason": [None],
+    }
+    model = SimpleNamespace(n_components=2, t2_limits={0.95: 1.0, 0.99: 3.0}, q_limits={0.95: 1.0, 0.99: 3.0})
+    pd.DataFrame(base).to_csv(path, index=False)
+    assert len(_read_validation_scores(path, "time", model)) == 1
+
+    base["status"] = ["normal"]
+    pd.DataFrame(base).to_csv(path, index=False)
+    with pytest.raises(ValueError, match="状态语义"):
+        _read_validation_scores(path, "time", model)
+
+    base["status"] = ["attention"]
+    base["pc3"] = [0.0]
+    pd.DataFrame(base).to_csv(path, index=False)
+    with pytest.raises(ValueError, match="主元列"):
+        _read_validation_scores(path, "time", model)
 
 
 def _pr6_evidence():

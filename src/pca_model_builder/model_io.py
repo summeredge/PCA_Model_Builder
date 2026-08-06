@@ -25,7 +25,7 @@ from .compat import (
     validate_new_model_semantics,
 )
 from .scoring_core import BatchScoreResult, score_dynamic_feature_matrix
-from .validation import has_complete_validation_evidence
+from .validation import has_complete_validation_evidence, has_verified_validation_evidence
 from .windows import normalize_training_windows
 
 
@@ -234,10 +234,11 @@ def copy_validated_model_package(
     evidence = validation_summary.get("validation_evidence")
     source_sha256 = _sha256(source.read_bytes())
     if (
-        not isinstance(evidence, dict)
-        or evidence.get("verification_status") != "verified"
-        or evidence.get("candidate_model", {}).get("sha256") != source_sha256
-        or evidence.get("candidate_model", {}).get("feature_names") != list(model.feature_names)
+        not has_verified_validation_evidence(validation_summary)
+        or not isinstance(evidence, dict)
+        or evidence["candidate_model"]["sha256"] != source_sha256
+        or evidence["candidate_model"]["filename"] != source.name
+        or evidence["candidate_model"]["feature_names"] != list(model.feature_names)
     ):
         raise ValueError("validated model requires verified candidate and artifact evidence")
     save_model_package(
@@ -303,10 +304,10 @@ def freeze_validated_model_package(
     evidence = manifest.get("validation_summary", {}).get("validation_evidence")
     source_candidate = manifest.get("source_candidate_package")
     if (
-        not isinstance(evidence, dict)
-        or evidence.get("verification_status") != "verified"
+        not has_verified_validation_evidence(manifest.get("validation_summary", {}))
+        or not isinstance(evidence, dict)
         or not isinstance(source_candidate, dict)
-        or source_candidate.get("sha256") != evidence.get("candidate_model", {}).get("sha256")
+        or source_candidate.get("sha256") != evidence["candidate_model"]["sha256"]
     ):
         raise ValueError("validated model lacks bound candidate and artifact evidence")
 

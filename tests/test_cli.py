@@ -26,6 +26,23 @@ def test_cli_exposes_frozen_replay_without_model_or_preprocessing_overrides():
     assert not {"--sample-interval", "--max-lag", "--components", "--tag-config"} & options
 
 
+def test_cli_rejects_validation_and_review_path_conflicts_before_writing(tmp_path, capsys):
+    source = tmp_path / "source.csv"
+    candidate = tmp_path / "candidate.pcamodel"
+    windows = tmp_path / "windows.json"
+    report = tmp_path / "report.json"
+    contributions = tmp_path / "contributions.json"
+    for path in (source, candidate, windows, report, contributions):
+        path.write_bytes(b"unchanged")
+    before = {path: path.read_bytes() for path in (source, candidate, windows, report, contributions)}
+
+    assert main(["validate", "--csv", str(source), "--timestamp", "time", "--model", str(candidate), "--validation-windows", str(windows), "--scores-output", str(candidate), "--report-output", str(report), "--contributions-output", str(contributions)]) == 2
+    assert main(["validate", "--csv", str(source), "--timestamp", "time", "--model", str(candidate), "--validation-windows", str(windows), "--scores-output", str(tmp_path / "scores.csv"), "--report-output", str(contributions), "--contributions-output", str(contributions)]) == 2
+    assert main(["review-validation", "--model", str(candidate), "--validation-report", str(report), "--scores", str(tmp_path / "scores.csv"), "--contributions", str(contributions), "--decision", "passed", "--output", str(tmp_path / "scores.csv")]) == 2
+    assert {path: path.read_bytes() for path in before} == before
+    assert "路径冲突" in capsys.readouterr().err
+
+
 def _rewrite_as_legacy_window_package(path, schema_version):
     with zipfile.ZipFile(path) as package:
         manifest = json.loads(package.read("manifest.json"))

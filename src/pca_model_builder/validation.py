@@ -426,13 +426,13 @@ def build_validation_evidence(
     timestamp_column: str,
     scores_row_count: int | None = None,
 ) -> dict[str, Any]:
-    """Bind a report to the exact candidate and independently written artifacts."""
+    """Bind pending validation artifacts; only the verifier can mark them verified."""
     candidate = Path(candidate_path)
     scores = Path(scores_path)
     contributions = Path(contributions_path)
     contribution_records = _read_contribution_records(contributions)
     return {
-        "verification_status": "verified",
+        "verification_status": "pending",
         "candidate_model": {
             "filename": candidate.name,
             "sha256": _file_sha256(candidate),
@@ -462,26 +462,35 @@ def verify_validation_evidence(
     contributions_path: str | Path,
     *,
     sample_interval_minutes: int,
-) -> None:
+    artifact_filenames: tuple[str, str] | None = None,
+    scores_frame: pd.DataFrame | None = None,
+) -> dict[str, Any]:
     """Fail closed unless report, candidate, scores and contributions agree."""
     evidence = report.get("validation_evidence")
-    if not isinstance(evidence, Mapping) or evidence.get("verification_status") != "verified":
-        raise ValueError("验证报告缺少已校验证据绑定")
+    if not isinstance(evidence, Mapping) or evidence.get("verification_status") not in {"pending", "verified"}:
+        raise ValueError("验证报告缺少待校验证据绑定")
     candidate = Path(candidate_path)
     scores_file, contributions_file = Path(scores_path), Path(contributions_path)
     candidate_evidence = evidence.get("candidate_model")
     if not isinstance(candidate_evidence, Mapping) or candidate_evidence.get("filename") != candidate.name or candidate_evidence.get("sha256") != _file_sha256(candidate) or candidate_evidence.get("feature_names") != list(model.feature_names):
         raise ValueError("验证报告候选模型证据不匹配")
-    for name, path, count_key in (
-        ("scores", scores_file, "row_count"),
-        ("contributions", contributions_file, "record_count"),
+    expected_names = artifact_filenames or (scores_file.name, contributions_file.name)
+    for name, path, count_key, expected_name in (
+        ("scores", scores_file, "row_count", expected_names[0]),
+        ("contributions", contributions_file, "record_count", expected_names[1]),
     ):
         item = evidence.get(name)
-        if not isinstance(item, Mapping) or item.get("filename") != path.name or item.get("sha256") != _file_sha256(path) or item.get("bytes") != path.stat().st_size:
+        if not isinstance(item, Mapping) or item.get("filename") != expected_name or item.get("sha256") != _file_sha256(path) or item.get("bytes") != path.stat().st_size:
             raise ValueError(f"验证报告{name}工件证据不匹配")
         if not isinstance(item.get(count_key), int) or isinstance(item.get(count_key), bool):
             raise ValueError(f"验证报告{name}工件计数无效")
-    scores = _read_validation_scores(scores_file, evidence["scores"].get("timestamp_column"), model)
+    scores = (
+        scores_frame.copy()
+        if scores_frame is not None
+        else _read_validation_scores(scores_file, evidence["scores"].get("timestamp_column"), model)
+    )
+    if scores_frame is not None:
+        _validate_validation_score_frame(scores, model)
     contributions = _read_contribution_records(contributions_file)
     if evidence["scores"]["row_count"] != len(scores) or report.get("scored_rows") != len(scores):
         raise ValueError("验证评分行数与报告不一致")
@@ -491,6 +500,62 @@ def verify_validation_evidence(
     _verify_contributions(contributions, scores, model)
     if report.get("contribution_stability") != _contribution_stability(contributions, model.feature_names):
         raise ValueError("通过前必须重新执行独立验证：验证贡献稳定性与工件不一致")
+    verified = {
+        **dict(evidence),
+        "verification_status": "verified",
+        "verifier": "validation_artifact_verifier_v1",
+    }
+    verified.pop("verification_digest", None)
+    verified["verification_digest"] = _validation_evidence_digest(verified)
+    if evidence.get("verification_status") == "verified" and dict(evidence) != verified:
+        raise ValueError("验证报告证据未由独立验证器生成")
+    return verified
+
+
+def has_verified_validation_evidence(validation_summary: Mapping[str, Any]) -> bool:
+    """Return whether a package contains the complete verifier-produced binding."""
+    evidence = validation_summary.get("validation_evidence")
+    if not isinstance(evidence, Mapping) or evidence.get("verification_status") != "verified":
+        return False
+    candidate = evidence.get("candidate_model")
+    scores = evidence.get("scores")
+    contributions = evidence.get("contributions")
+    if (
+        evidence.get("verifier") != "validation_artifact_verifier_v1"
+        or not isinstance(evidence.get("verification_digest"), str)
+        or not isinstance(candidate, Mapping)
+        or not isinstance(scores, Mapping)
+        or not isinstance(contributions, Mapping)
+        or not isinstance(candidate.get("filename"), str)
+        or not _is_sha256(candidate.get("sha256"))
+        or not isinstance(candidate.get("feature_names"), list)
+        or not candidate["feature_names"]
+        or not all(isinstance(name, str) and name for name in candidate["feature_names"])
+        or not isinstance(scores.get("filename"), str)
+        or not _is_sha256(scores.get("sha256"))
+        or not _is_nonnegative_integer(scores.get("bytes"))
+        or not _is_nonnegative_integer(scores.get("row_count"))
+        or not isinstance(scores.get("timestamp_column"), str)
+        or not scores["timestamp_column"]
+        or not isinstance(contributions.get("filename"), str)
+        or not _is_sha256(contributions.get("sha256"))
+        or not _is_nonnegative_integer(contributions.get("bytes"))
+        or not _is_nonnegative_integer(contributions.get("record_count"))
+    ):
+        return False
+    unsigned = dict(evidence)
+    digest = unsigned.pop("verification_digest")
+    return digest == _validation_evidence_digest(unsigned)
+
+
+def _validation_evidence_digest(evidence: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 def _file_sha256(path: Path) -> str:
@@ -516,47 +581,168 @@ def _read_validation_scores(path: Path, timestamp_column: object, model: DPCAMod
         scores = pd.read_csv(path)
     except (OSError, ValueError) as error:
         raise ValueError("验证评分工件无法读取") from error
-    required = {timestamp_column, "validation_window_id", "validation_type", "t2", "spe", "status", "overall_status", "t2_status", "spe_status", "score_valid", "invalid_reason", *(f"pc{index + 1}" for index in range(model.n_components))}
+    pc_columns = [f"pc{index + 1}" for index in range(model.n_components)]
+    required = {timestamp_column, "validation_window_id", "validation_type", "t2", "spe", "status", "overall_status", "t2_status", "spe_status", "score_valid", "invalid_reason", *pc_columns}
     if not required <= set(scores.columns):
         raise ValueError("验证评分工件字段不完整")
+    if [column for column in scores.columns if column.startswith("pc")] != pc_columns:
+        raise ValueError("验证评分主元列必须与模型顺序完全一致")
     timestamps = pd.to_datetime(scores.pop(timestamp_column), errors="coerce")
     if timestamps.isna().any() or timestamps.duplicated().any():
         raise ValueError("验证评分时间戳无效或重复")
     scores.index = pd.DatetimeIndex(timestamps)
-    if not scores.index.is_monotonic_increasing or not scores["validation_type"].isin(_VALIDATION_TYPES).all() or not (scores["status"] == scores["overall_status"]).all():
-        raise ValueError("验证评分状态字段无效")
+    _validate_validation_score_frame(scores, model)
     return scores
+
+
+def _validate_validation_score_frame(scores: pd.DataFrame, model: DPCAModel) -> None:
+    pc_columns = [f"pc{index + 1}" for index in range(model.n_components)]
+    if (
+        not scores.index.is_monotonic_increasing
+        or not scores["validation_type"].isin(_VALIDATION_TYPES).all()
+        or not scores["score_valid"].eq(True).all()
+        or not (scores["invalid_reason"].isna() | scores["invalid_reason"].eq("")).all()
+        or not np.isfinite(scores[["t2", "spe", *pc_columns]].to_numpy(dtype=float)).all()
+    ):
+        raise ValueError("验证评分状态字段无效")
+    t2_status = _score_statuses(scores["t2"], model.t2_limits[0.95], model.t2_limits[0.99])
+    spe_status = _score_statuses(scores["spe"], model.q_limits[0.95], model.q_limits[0.99])
+    overall_status = [
+        left if {"normal": 0, "attention": 1, "abnormal": 2}[left] >= {"normal": 0, "attention": 1, "abnormal": 2}[right] else right
+        for left, right in zip(t2_status, spe_status, strict=True)
+    ]
+    if (
+        scores["t2_status"].tolist() != t2_status
+        or scores["spe_status"].tolist() != spe_status
+        or scores["overall_status"].tolist() != overall_status
+        or scores["status"].tolist() != overall_status
+    ):
+        raise ValueError("验证评分状态语义与控制限不一致")
+
+
+def _score_statuses(values: pd.Series, limit_95: float, limit_99: float) -> list[str]:
+    return [
+        "abnormal" if value >= limit_99 else "attention" if value >= limit_95 else "normal"
+        for value in values.to_numpy(dtype=float)
+    ]
 
 
 def _verify_score_metrics(report: Mapping[str, Any], scores: pd.DataFrame, model: DPCAModel, sample_interval_minutes: int) -> None:
     windows = report.get("validation_windows")
     if not isinstance(windows, list):
         raise ValueError("验证报告窗口无效")
+    enabled = [window for window in windows if isinstance(window, Mapping) and window.get("enabled")]
+    expected_ids = {window.get("id") for window in enabled}
+    actual_ids = set(scores["validation_window_id"])
+    if expected_ids != actual_ids or len(enabled) != len(expected_ids):
+        raise ValueError("验证评分窗口集合与报告不一致")
+    summaries = report.get("validation_window_summaries")
+    if not isinstance(summaries, list) or {summary.get("id") for summary in summaries if isinstance(summary, Mapping)} != {window.get("id") for window in windows if isinstance(window, Mapping)}:
+        raise ValueError("验证窗口摘要与报告不一致")
+    summary_by_id = {summary["id"]: summary for summary in summaries}
     scored_windows = []
-    for window in windows:
-        if not isinstance(window, Mapping) or not window.get("enabled"):
-            continue
+    for window in enabled:
         part = scores.loc[scores["validation_window_id"].eq(window.get("id"))]
         if part.empty or set(part["validation_type"]) != {window.get("type")}:
             raise ValueError("验证评分窗口与报告不一致")
-        scored_windows.append({"id": window["id"], "type": window["type"], "start": pd.Timestamp(window["start"]), "scores": part, "continuous_events": _combined_exceedance_events(part, model, sample_interval_minutes)})
+        start, end = pd.Timestamp(window["start"]), pd.Timestamp(window["end"])
+        expected_index = pd.date_range(start, end, freq=pd.Timedelta(minutes=sample_interval_minutes))
+        if not part.index.equals(expected_index):
+            raise ValueError("验证评分窗口时间戳与报告不一致")
+        events = _combined_exceedance_events(part, model, sample_interval_minutes)
+        expected_summary = {
+            "status": "scored",
+            "scored_rows": len(part),
+            "expected_rows": len(expected_index),
+            "coverage": len(part) / len(expected_index),
+            "status_counts": dict(Counter(part["status"])),
+            "t2_exceedance_95": float((part["t2"] >= model.t2_limits[0.95]).mean()),
+            "t2_exceedance_99": float((part["t2"] >= model.t2_limits[0.99]).mean()),
+            "spe_exceedance_95": float((part["spe"] >= model.q_limits[0.95]).mean()),
+            "spe_exceedance_99": float((part["spe"] >= model.q_limits[0.99]).mean()),
+            "event_count": len(events),
+            "longest_event_minutes": _longest_event_minutes(events, sample_interval_minutes),
+            "continuous_events": events,
+            "maximum_t2": float(part["t2"].max()),
+            "maximum_spe": float(part["spe"].max()),
+        }
+        summary = summary_by_id[window["id"]]
+        if any(not _evidence_values_match(summary.get(key), value) for key, value in expected_summary.items()):
+            raise ValueError("验证窗口摘要与评分工件不一致")
+        scored_windows.append({"id": window["id"], "type": window["type"], "start": start, "scores": part, "continuous_events": events})
+    if (
+        report.get("scored_rows") != len(scores)
+        or report.get("status_counts") != dict(Counter(scores["status"]))
+        or not _evidence_values_match(report.get("maximum_t2"), float(scores["t2"].max()))
+        or not _evidence_values_match(report.get("maximum_spe"), float(scores["spe"].max()))
+    ):
+        raise ValueError("验证报告顶层评分摘要与工件不一致")
     metrics = _validation_metrics(scored_windows, model, sample_interval_minutes)
     if report.get("validation_metrics") != metrics:
         raise ValueError("通过前必须重新执行独立验证：验证指标与评分工件不一致")
 
 
 def _verify_contributions(records: Sequence[Mapping[str, Any]], scores: pd.DataFrame, model: DPCAModel) -> None:
+    expected = _expected_contribution_events(scores, model)
+    if len(records) != len(expected):
+        raise ValueError("验证贡献事件集合不完整")
+    actual_by_key: dict[tuple[object, ...], Mapping[str, Any]] = {}
     for record in records:
-        if record.get("statistic") not in {"t2", "spe"} or not isinstance(record.get("peak_timestamp"), str):
+        if not isinstance(record, Mapping) or not isinstance(record.get("tags"), list):
             raise ValueError("验证贡献记录无效")
-        timestamp = pd.Timestamp(record["peak_timestamp"])
-        if timestamp not in scores.index:
-            raise ValueError("验证贡献时间戳不在评分工件中")
-        row = scores.loc[timestamp]
-        statistic = str(record["statistic"])
-        limit = model.t2_limits[0.95] if statistic == "t2" else model.q_limits[0.95]
-        if not isinstance(row, pd.Series) or float(row[statistic]) < limit:
-            raise ValueError("验证贡献未对应95%超限评分")
+        key = tuple(record.get(field) for field in (
+            "validation_window_id", "validation_type", "statistic", "event_start", "event_end", "peak_timestamp"
+        ))
+        if key in actual_by_key:
+            raise ValueError("验证贡献事件重复")
+        actual_by_key[key] = record
+    for event in expected:
+        key = tuple(event[field] for field in (
+            "validation_window_id", "validation_type", "statistic", "event_start", "event_end", "peak_timestamp"
+        ))
+        record = actual_by_key.get(key)
+        if record is None:
+            raise ValueError("验证贡献事件与95%超限评分不一致")
+        if not _evidence_values_match(record.get("statistic_value"), event["statistic_value"]) or not _evidence_values_match(record.get("limit_95"), event["limit_95"]):
+            raise ValueError("验证贡献统计量与95%超限评分不一致")
+
+
+def _expected_contribution_events(scores: pd.DataFrame, model: DPCAModel) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    for window_id, part in scores.groupby("validation_window_id", sort=False):
+        window_type = part["validation_type"].iloc[0]
+        for statistic, limit in (("t2", model.t2_limits[0.95]), ("spe", model.q_limits[0.95])):
+            exceeded = part[statistic].to_numpy(dtype=float) >= limit
+            start: int | None = None
+            for position in range(len(part) + 1):
+                contiguous = position < len(part) and exceeded[position] and (
+                    start is None or part.index[position] - part.index[position - 1] == (part.index[1] - part.index[0] if len(part) > 1 else pd.Timedelta(0))
+                )
+                if contiguous:
+                    start = position if start is None else start
+                    continue
+                if start is not None:
+                    values = part.iloc[start:position][statistic].to_numpy(dtype=float)
+                    peak_offset = int(np.argmax(values / limit))
+                    peak = start + peak_offset
+                    events.append({
+                        "validation_window_id": window_id,
+                        "validation_type": window_type,
+                        "statistic": statistic,
+                        "event_start": pd.Timestamp(part.index[start]).isoformat(),
+                        "event_end": pd.Timestamp(part.index[position - 1]).isoformat(),
+                        "peak_timestamp": pd.Timestamp(part.index[peak]).isoformat(),
+                        "statistic_value": float(part.iloc[peak][statistic]),
+                        "limit_95": float(limit),
+                    })
+                    start = None
+    return events
+
+
+def _evidence_values_match(actual: object, expected: object) -> bool:
+    if isinstance(actual, (int, float)) and not isinstance(actual, bool) and isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        return math.isclose(float(actual), float(expected), rel_tol=1e-12, abs_tol=1e-12)
+    return actual == expected
 
 
 def _validation_metrics(

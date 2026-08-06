@@ -19,7 +19,7 @@ from pca_model_builder.model_io import (
 from pca_model_builder.scoring_core import score_dynamic_feature_matrix
 
 
-def _complete_validation_summary():
+def _complete_validation_summary(candidate_path=None, feature_names=None):
     stability = {
         validation_type: {
             statistic: {
@@ -34,7 +34,7 @@ def _complete_validation_summary():
         }
         for validation_type in ("normal_validation", "known_abnormal")
     }
-    return {
+    summary = {
         "normal_validation_complete": True,
         "known_abnormal_complete": True,
         "validation_metrics": {
@@ -55,19 +55,35 @@ def _complete_validation_summary():
             },
         },
         "contribution_stability": stability,
-        "validation_evidence": {
-            "verification_status": "verified",
-            "candidate_model": {"sha256": "a" * 64},
-        },
     }
+    if candidate_path is not None and feature_names is not None:
+        evidence = {
+            "verification_status": "verified",
+            "verifier": "validation_artifact_verifier_v1",
+            "candidate_model": {
+                "filename": candidate_path.name,
+                "sha256": hashlib.sha256(candidate_path.read_bytes()).hexdigest(),
+                "feature_names": list(feature_names),
+            },
+            "scores": {"filename": "scores.csv", "sha256": "a" * 64, "bytes": 0, "row_count": 0, "timestamp_column": "time"},
+            "contributions": {"filename": "contributions.json", "sha256": "b" * 64, "bytes": 0, "record_count": 0},
+        }
+        evidence["verification_digest"] = hashlib.sha256(
+            json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        summary["validation_evidence"] = evidence
+    return summary
 
 
 def _validated_package(path, frame):
+    model = fit_dpca(frame, n_components=2)
+    candidate = path.with_name("candidate.pcamodel")
+    save_model_package(candidate, model, _valid_config(), [["2026-01-01", "2026-01-02"]])
     save_model_package(
-        path, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]],
-        model_status="validated", validation_summary=_complete_validation_summary(),
+        path, model, _valid_config(), [["2026-01-01", "2026-01-02"]],
+        model_status="validated", validation_summary=_complete_validation_summary(candidate, model.feature_names),
         engineer_decision={"decision": "passed", "comment": "approved", "reviewed_at": "2026-01-03T00:00:00+00:00"},
-        source_candidate_package={"identifier": "unit", "filename": "candidate.pcamodel", "sha256": "a" * 64},
+        source_candidate_package={"identifier": "unit", "filename": candidate.name, "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()},
     )
 
 
@@ -214,7 +230,7 @@ def test_validated_copy_preserves_candidate_package_and_model_arrays(tmp_path):
     original = fit_dpca(frame, n_components=2)
     save_model_package(candidate, original, _valid_config(), [["2026-01-01", "2026-01-02"]])
 
-    validation_summary = {"normal_validation_complete": True, "known_abnormal_complete": True, "validation_evidence": {"verification_status": "verified", "candidate_model": {"sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(), "feature_names": list(original.feature_names)}}}
+    validation_summary = _complete_validation_summary(candidate, original.feature_names)
     copy_validated_model_package(
         candidate,
         validated,
@@ -252,6 +268,27 @@ def test_validated_copy_rejects_candidate_output_path(tmp_path):
             engineer_decision={},
             source_identifier="run-001",
         )
+
+
+def test_validated_copy_rejects_manual_verified_marker(tmp_path):
+    frame = pd.DataFrame(np.random.default_rng(22).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    candidate = tmp_path / "candidate.pcamodel"
+    save_model_package(candidate, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]])
+    forged = {"validation_evidence": {"verification_status": "verified", "candidate_model": {"sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()}}}
+    with pytest.raises(ValueError, match="artifact evidence"):
+        copy_validated_model_package(candidate, tmp_path / "validated.pcamodel", forged, {"decision": "passed"}, "run")
+
+    forged_validated = tmp_path / "forged-validated.pcamodel"
+    summary = _complete_validation_summary()
+    summary["validation_evidence"] = forged["validation_evidence"]
+    save_model_package(
+        forged_validated, fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]],
+        model_status="validated", validation_summary=summary,
+        engineer_decision={"decision": "passed"},
+        source_candidate_package={"identifier": "run", "filename": candidate.name, "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()},
+    )
+    with pytest.raises(ValueError, match="bound candidate"):
+        freeze_validated_model_package(forged_validated, tmp_path / "frozen.pcamodel", model_id="unit", model_version=1, frozen_by="engineer")
 
 
 def test_freeze_and_deployment_preserve_fixed_scoring_contract(tmp_path):

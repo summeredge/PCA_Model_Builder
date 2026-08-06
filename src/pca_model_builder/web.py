@@ -1221,7 +1221,7 @@ def _validate_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in result.items()
         if key not in {"scores", "contributions"}
     }
-    _commit_web_validation_artifacts(run_dir, model_path, model, scores, contributions, report, timestamp_column)
+    _commit_web_validation_artifacts(run_dir, model_path, model, scores, contributions, report, timestamp_column, config.sample_interval_minutes)
     result["validation_downloads"] = {
         artifact: f"/download/validation?run_id={run_id}&artifact={artifact}"
         for artifact in _VALIDATION_ARTIFACTS
@@ -1435,7 +1435,7 @@ def _commit_web_paths(entries: Sequence[tuple[Path, Path]]) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _commit_web_validation_artifacts(run_dir: Path, candidate_path: Path, model: Any, scores: pd.DataFrame, contributions: list[dict[str, Any]], report: dict[str, Any], timestamp_column: str) -> None:
+def _commit_web_validation_artifacts(run_dir: Path, candidate_path: Path, model: Any, scores: pd.DataFrame, contributions: list[dict[str, Any]], report: dict[str, Any], timestamp_column: str, sample_interval_minutes: int) -> None:
     scores_path = run_dir / "validation_scores.csv"
     contributions_path = run_dir / "validation_contributions.json"
     report_path = run_dir / "validation_report.json"
@@ -1447,6 +1447,16 @@ def _commit_web_validation_artifacts(run_dir: Path, candidate_path: Path, model:
         evidence["scores"]["filename"] = scores_path.name
         evidence["contributions"]["filename"] = contributions_path.name
         report["validation_evidence"] = evidence
+        report["validation_evidence"] = verify_validation_evidence(
+            candidate_path,
+            model,
+            report,
+            scores_temp,
+            contributions_temp,
+            sample_interval_minutes=sample_interval_minutes,
+            artifact_filenames=(scores_path.name, contributions_path.name),
+            scores_frame=scores,
+        )
         report_temp = _write_web_json_temp(report_path, report)
         _commit_web_paths(((scores_temp, scores_path), (contributions_temp, contributions_path), (report_temp, report_path)))
     finally:

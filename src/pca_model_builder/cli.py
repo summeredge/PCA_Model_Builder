@@ -272,6 +272,16 @@ def _serve(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _validate(args: argparse.Namespace) -> dict[str, Any]:
+    path_entries = [
+        ("输入CSV", args.csv),
+        ("候选模型", args.model),
+        ("评分输出", args.scores_output),
+        ("贡献输出", args.contributions_output),
+        ("报告输出", args.report_output),
+    ]
+    if args.validation_windows is not None:
+        path_entries.append(("验证窗口", args.validation_windows))
+    _require_distinct_paths(*path_entries)
     model, manifest = load_model_package(args.model)
     if manifest["model_purpose"] != "normal_state":
         raise ValueError("探索模型不能执行独立验证")
@@ -350,13 +360,19 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     _commit_validation_artifacts(
         args.scores_output, args.contributions_output, args.report_output,
         scores, contribution_records, report, args.model, model, args.timestamp,
+        config.sample_interval_minutes,
     )
     return report
 
 
 def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
-    if args.model.resolve() == args.output.resolve():
-        raise ValueError("validated model output must differ from the candidate package")
+    _require_distinct_paths(
+        ("候选模型", args.model),
+        ("验证报告", args.validation_report),
+        ("评分工件", args.scores),
+        ("贡献工件", args.contributions),
+        ("已验证模型输出", args.output),
+    )
     _, manifest = load_model_package(args.model)
     report = json.loads(args.validation_report.read_text(encoding="utf-8"))
     config = preprocessing_config_from_mapping(manifest["config"])
@@ -610,6 +626,7 @@ def _commit_validation_artifacts(
     scores_path: Path, contributions_path: Path, report_path: Path,
     scores: pd.DataFrame, contributions: list[dict[str, Any]], report: dict[str, Any],
     candidate_path: Path, model: Any, timestamp_column: str,
+    sample_interval_minutes: int,
 ) -> None:
     if len({path.resolve() for path in (scores_path, contributions_path, report_path)}) != 3:
         raise ValueError("validation output paths must be distinct")
@@ -621,11 +638,32 @@ def _commit_validation_artifacts(
         evidence["scores"]["filename"] = scores_path.name
         evidence["contributions"]["filename"] = contributions_path.name
         report["validation_evidence"] = evidence
+        report["validation_evidence"] = verify_validation_evidence(
+            candidate_path,
+            model,
+            report,
+            scores_temp,
+            contributions_temp,
+            sample_interval_minutes=sample_interval_minutes,
+            artifact_filenames=(scores_path.name, contributions_path.name),
+            scores_frame=scores,
+        )
         report_temp = _write_json_temp(report_path, report)
         _commit_paths(((scores_temp, scores_path), (contributions_temp, contributions_path), (report_temp, report_path)))
     finally:
         scores_temp.unlink(missing_ok=True)
         contributions_temp.unlink(missing_ok=True)
+
+
+def _require_distinct_paths(*entries: tuple[str, Path]) -> None:
+    resolved: dict[Path, str] = {}
+    for label, path in entries:
+        target = path.resolve()
+        if target in resolved:
+            if {label, resolved[target]} == {"已验证模型输出", "候选模型"}:
+                raise ValueError("validated model output must differ from the candidate package")
+            raise ValueError(f"路径冲突：{label}与{resolved[target]}不能使用同一文件")
+        resolved[target] = label
 
 
 def _read_tag_configs(
