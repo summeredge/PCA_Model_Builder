@@ -1,0 +1,4 @@
+golden_vectors/v1/*.csv text eol=lf
+golden_vectors/v1/*.json text eol=lf
+golden_vectors/v1/*.pcamodel binary
+golden_vectors/v1/*.pcadeploy binary

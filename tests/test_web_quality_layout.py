@@ -89,6 +89,8 @@ def test_final_web_uses_the_apple_visual_tokens() -> None:
     assert "border-radius:9999px;" in html
     assert "--bg:#f5f5f7;" in html
     assert "transform:scale(.95);" in html
+    assert ".tab, .inner-tab" in html
+    assert "background:transparent;" in html
 
 
 def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:

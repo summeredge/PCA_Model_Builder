@@ -243,6 +243,7 @@ def copy_validated_model_package(
         source_candidate_package={
             "identifier": source_identifier,
             "filename": source.name,
+            "sha256": _sha256(source.read_bytes()),
         },
     )
 
@@ -290,6 +291,15 @@ def freeze_validated_model_package(
         raise ValueError("only engineer-passed models can be frozen")
     if not has_complete_validation_evidence(manifest.get("validation_summary", {})):
         raise ValueError("validated model has incomplete PR-6 validation evidence")
+    evidence = manifest.get("validation_summary", {}).get("validation_evidence")
+    source_candidate = manifest.get("source_candidate_package")
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("verification_status") != "verified"
+        or not isinstance(source_candidate, dict)
+        or source_candidate.get("sha256") != evidence.get("candidate_model", {}).get("sha256")
+    ):
+        raise ValueError("validated model lacks bound candidate and artifact evidence")
 
     source_bytes = source.read_bytes()
     destination.parent.mkdir(parents=True, exist_ok=True)

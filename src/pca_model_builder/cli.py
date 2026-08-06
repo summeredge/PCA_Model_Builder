@@ -29,8 +29,10 @@ from .replay import replay_frozen_model
 from .tag_config import engineering_ranges, normalize_tag_configs
 from .training import build_training_matrix
 from .validation import (
+    build_validation_evidence,
     record_engineer_decision,
     validate_model_windows,
+    verify_validation_evidence,
     validation_context_start,
     validation_windows_from_payload,
 )
@@ -89,6 +91,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review.add_argument("--model", type=Path, required=True)
     review.add_argument("--validation-report", type=Path, required=True)
+    review.add_argument("--scores", type=Path, required=True)
+    review.add_argument("--contributions", type=Path, required=True)
     review.add_argument("--decision", choices=("passed", "insufficient", "failed"), required=True)
     review.add_argument("--comment", default="")
     review.add_argument("--output", type=Path, required=True)
@@ -314,11 +318,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         tag_configs,
     )
     scores = validation_result["scores"]
-    args.scores_output.parent.mkdir(parents=True, exist_ok=True)
-    scores.to_csv(args.scores_output, index_label=args.timestamp)
-
     contribution_records = validation_result["contributions"]
-    _write_json(args.contributions_output, contribution_records)
 
     report: dict[str, Any] = {
         "model": str(args.model),
@@ -347,7 +347,10 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
             str(label): dict(Counter(scores.loc[labels == label, "status"]))
             for label in labels.dropna().unique()
         }
-    _write_json(args.report_output, report)
+    _commit_validation_artifacts(
+        args.scores_output, args.contributions_output, args.report_output,
+        scores, contribution_records, report, args.model, model, args.timestamp,
+    )
     return report
 
 
@@ -356,18 +359,25 @@ def _review_validation(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("validated model output must differ from the candidate package")
     _, manifest = load_model_package(args.model)
     report = json.loads(args.validation_report.read_text(encoding="utf-8"))
+    config = preprocessing_config_from_mapping(manifest["config"])
+    model, _ = load_model_package(args.model)
+    verify_validation_evidence(
+        args.model, model, report, args.scores, args.contributions,
+        sample_interval_minutes=config.sample_interval_minutes,
+    )
     decision = record_engineer_decision(manifest, report, args.decision, args.comment)
     report["engineer_decision"] = decision
-    _write_json(args.validation_report, report)
     if args.decision != "passed":
+        _write_json_atomic(args.validation_report, report)
         return {"engineer_decision": decision, "validated_model": None}
+    temporary = _temporary_path(args.output)
     copy_validated_model_package(
-        args.model,
-        args.output,
+        args.model, temporary,
         validation_summary=report,
         engineer_decision=decision,
         source_identifier=args.source_id or args.model.name,
     )
+    _commit_paths((( _write_json_temp(args.validation_report, report), args.validation_report), (temporary, args.output)))
     return {"engineer_decision": decision, "validated_model": str(args.output)}
 
 
@@ -542,6 +552,80 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def _temporary_path(destination: Path) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=destination.parent, prefix=f".{destination.name}.", suffix=".tmp", delete=False
+    ) as handle:
+        return Path(handle.name)
+
+
+def _write_json_temp(destination: Path, value: Any) -> Path:
+    temporary = _temporary_path(destination)
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    return temporary
+
+
+def _write_json_atomic(destination: Path, value: Any) -> None:
+    temporary = _write_json_temp(destination, value)
+    try:
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _commit_paths(entries: Sequence[tuple[Path, Path]]) -> None:
+    if len({destination.resolve() for _, destination in entries}) != len(entries):
+        raise ValueError("validation output paths must be distinct")
+    backups: list[tuple[Path, Path]] = []
+    committed: list[Path] = []
+    try:
+        for _, destination in entries:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                backup = destination.with_name(f".{destination.name}.{next(tempfile._get_candidate_names())}.bak")
+                os.replace(destination, backup)
+                backups.append((backup, destination))
+        for temporary, destination in entries:
+            os.replace(temporary, destination)
+            committed.append(destination)
+    except Exception:
+        for destination in committed:
+            destination.unlink(missing_ok=True)
+        for backup, destination in reversed(backups):
+            if backup.exists():
+                os.replace(backup, destination)
+        raise
+    else:
+        for backup, _ in backups:
+            backup.unlink(missing_ok=True)
+    finally:
+        for temporary, _ in entries:
+            temporary.unlink(missing_ok=True)
+
+
+def _commit_validation_artifacts(
+    scores_path: Path, contributions_path: Path, report_path: Path,
+    scores: pd.DataFrame, contributions: list[dict[str, Any]], report: dict[str, Any],
+    candidate_path: Path, model: Any, timestamp_column: str,
+) -> None:
+    if len({path.resolve() for path in (scores_path, contributions_path, report_path)}) != 3:
+        raise ValueError("validation output paths must be distinct")
+    scores_temp, contributions_temp = _temporary_path(scores_path), _temporary_path(contributions_path)
+    try:
+        scores.to_csv(scores_temp, index_label=timestamp_column)
+        contributions_temp.write_text(json.dumps(contributions, ensure_ascii=False, indent=2), encoding="utf-8")
+        evidence = build_validation_evidence(candidate_path, model, scores_temp, contributions_temp, timestamp_column=timestamp_column)
+        evidence["scores"]["filename"] = scores_path.name
+        evidence["contributions"]["filename"] = contributions_path.name
+        report["validation_evidence"] = evidence
+        report_temp = _write_json_temp(report_path, report)
+        _commit_paths(((scores_temp, scores_path), (contributions_temp, contributions_path), (report_temp, report_path)))
+    finally:
+        scores_temp.unlink(missing_ok=True)
+        contributions_temp.unlink(missing_ok=True)
 
 
 def _read_tag_configs(

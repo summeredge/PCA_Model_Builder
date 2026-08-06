@@ -66,8 +66,10 @@ from .tag_profile import model_quality_payload, profile_tag
 from .training import build_training_matrix
 from .trend import downsample_trend, trend_payload_data
 from .validation import (
+    build_validation_evidence,
     record_engineer_decision,
     validate_model_windows,
+    verify_validation_evidence,
     validation_context_start,
     validation_windows_from_payload,
 )
@@ -111,8 +113,8 @@ _FROZEN_REPLAY_ARTIFACTS = {
 DATA_SESSIONS = DataSessionCache()
 STATE_EXPLORATION_RUNS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _STATE_EXPLORATION_LOCK = threading.RLock()
-_FREEZE_LOCKS: dict[str, threading.Lock] = {}
-_FREEZE_LOCKS_LOCK = threading.Lock()
+_LIFECYCLE_LOCKS: dict[str, threading.Lock] = {}
+_LIFECYCLE_LOCKS_LOCK = threading.Lock()
 _REPLAY_LOCKS: dict[str, threading.Lock] = {}
 _REPLAY_LOCKS_LOCK = threading.Lock()
 
@@ -1102,6 +1104,12 @@ def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    with _lifecycle_lock(run_id):
+        return _validate_payload_locked(payload)
+
+
+def _validate_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
     model_path = RUNS_DIR / run_id / "model.pcamodel"
     if not model_path.is_file():
         raise ValueError("模型运行记录不存在")
@@ -1208,24 +1216,12 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         result["status_by_engineering_label"] = {}
     run_dir = RUNS_DIR / run_id
-    scores.to_csv(
-        run_dir / "validation_scores.csv",
-        index_label=timestamp_column,
-        encoding="utf-8-sig",
-    )
-    (run_dir / "validation_contributions.json").write_text(
-        json.dumps(contributions, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
     report = {
         key: value
         for key, value in result.items()
         if key not in {"scores", "contributions"}
     }
-    (run_dir / "validation_report.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _commit_web_validation_artifacts(run_dir, model_path, model, scores, contributions, report, timestamp_column)
     result["validation_downloads"] = {
         artifact: f"/download/validation?run_id={run_id}&artifact={artifact}"
         for artifact in _VALIDATION_ARTIFACTS
@@ -1235,13 +1231,21 @@ def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    with _lifecycle_lock(run_id):
+        return _validation_decision_payload_locked(payload)
+
+
+def _validation_decision_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
     run_dir = RUNS_DIR / run_id
     model_path = run_dir / "model.pcamodel"
     report_path = run_dir / "validation_report.json"
     if not model_path.is_file() or not report_path.is_file():
         raise ValueError("候选模型或验证报告不存在")
-    _, manifest = load_model_package(model_path)
+    model, manifest = load_model_package(model_path)
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    config = preprocessing_config_from_mapping(manifest["config"])
+    verify_validation_evidence(model_path, model, report, run_dir / "validation_scores.csv", run_dir / "validation_contributions.json", sample_interval_minutes=config.sample_interval_minutes)
     decision = record_engineer_decision(
         manifest,
         report,
@@ -1252,14 +1256,12 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
     validated_path: Path | None = None
     if decision["decision"] == "passed":
         validated_path = run_dir / "validated_model.pcamodel"
-        copy_validated_model_package(
-            model_path,
-            validated_path,
-            validation_summary=report,
-            engineer_decision=decision,
-            source_identifier=run_id,
-        )
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if validated_path is None:
+        _write_web_json_atomic(report_path, report)
+    else:
+        temporary_validated = _web_temporary_path(validated_path)
+        copy_validated_model_package(model_path, temporary_validated, validation_summary=report, engineer_decision=decision, source_identifier=run_id)
+        _commit_web_paths(((_write_web_json_temp(report_path, report), report_path), (temporary_validated, validated_path)))
     return {
         "run_id": run_id,
         "engineer_decision": decision,
@@ -1272,6 +1274,18 @@ def validation_decision_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def clear_data_session_cache() -> None:
     DATA_SESSIONS.clear()
+
+
+@contextmanager
+def _lifecycle_lock(run_id: str):
+    with _LIFECYCLE_LOCKS_LOCK:
+        lock = _LIFECYCLE_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise ValueError("当前运行正在执行生命周期操作，不能并发提交")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def remove_data_session(file_id: str) -> None:
@@ -1374,16 +1388,77 @@ def _with_data_usage(
     return result
 
 
+def _web_temporary_path(destination: Path) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=f".{destination.name}.", suffix=".tmp", delete=False) as handle:
+        return Path(handle.name)
+
+
+def _write_web_json_temp(destination: Path, value: Any) -> Path:
+    temporary = _web_temporary_path(destination)
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    return temporary
+
+
+def _write_web_json_atomic(destination: Path, value: Any) -> None:
+    temporary = _write_web_json_temp(destination, value)
+    try:
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _commit_web_paths(entries: Sequence[tuple[Path, Path]]) -> None:
+    backups: list[tuple[Path, Path]] = []
+    committed: list[Path] = []
+    try:
+        for _, destination in entries:
+            if destination.exists():
+                backup = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.bak")
+                os.replace(destination, backup)
+                backups.append((backup, destination))
+        for temporary, destination in entries:
+            os.replace(temporary, destination)
+            committed.append(destination)
+    except Exception:
+        for destination in committed:
+            destination.unlink(missing_ok=True)
+        for backup, destination in reversed(backups):
+            if backup.exists():
+                os.replace(backup, destination)
+        raise
+    else:
+        for backup, _ in backups:
+            backup.unlink(missing_ok=True)
+    finally:
+        for temporary, _ in entries:
+            temporary.unlink(missing_ok=True)
+
+
+def _commit_web_validation_artifacts(run_dir: Path, candidate_path: Path, model: Any, scores: pd.DataFrame, contributions: list[dict[str, Any]], report: dict[str, Any], timestamp_column: str) -> None:
+    scores_path = run_dir / "validation_scores.csv"
+    contributions_path = run_dir / "validation_contributions.json"
+    report_path = run_dir / "validation_report.json"
+    scores_temp, contributions_temp = _web_temporary_path(scores_path), _web_temporary_path(contributions_path)
+    try:
+        scores.to_csv(scores_temp, index_label=timestamp_column, encoding="utf-8-sig")
+        contributions_temp.write_text(json.dumps(contributions, ensure_ascii=False, indent=2), encoding="utf-8")
+        evidence = build_validation_evidence(candidate_path, model, scores_temp, contributions_temp, timestamp_column=timestamp_column)
+        evidence["scores"]["filename"] = scores_path.name
+        evidence["contributions"]["filename"] = contributions_path.name
+        report["validation_evidence"] = evidence
+        report_temp = _write_web_json_temp(report_path, report)
+        _commit_web_paths(((scores_temp, scores_path), (contributions_temp, contributions_path), (report_temp, report_path)))
+    finally:
+        scores_temp.unlink(missing_ok=True)
+        contributions_temp.unlink(missing_ok=True)
+    return result
+
+
 def freeze_deployment_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
-    with _FREEZE_LOCKS_LOCK:
-        lock = _FREEZE_LOCKS.setdefault(run_id, threading.Lock())
-    if not lock.acquire(blocking=False):
-        raise ValueError("当前运行正在冻结，不能并发提交")
-    try:
+    with _lifecycle_lock(run_id):
         return _freeze_deployment_payload_locked(payload, run_id)
-    finally:
-        lock.release()
 
 
 def _freeze_deployment_payload_locked(payload: dict[str, Any], run_id: str) -> dict[str, Any]:

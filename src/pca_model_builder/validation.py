@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+import hashlib
+import json
 import math
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -412,6 +415,147 @@ def _known_abnormal_summary(
         and continuous_events[0]["point_count"] == 1,
         "first_event_tags": [tag for event in first_events for tag in event["tags"]],
     }
+
+
+def build_validation_evidence(
+    candidate_path: str | Path,
+    model: DPCAModel,
+    scores_path: str | Path,
+    contributions_path: str | Path,
+    *,
+    timestamp_column: str,
+) -> dict[str, Any]:
+    """Bind a report to the exact candidate and independently written artifacts."""
+    candidate = Path(candidate_path)
+    scores = Path(scores_path)
+    contributions = Path(contributions_path)
+    contribution_records = _read_contribution_records(contributions)
+    return {
+        "verification_status": "verified",
+        "candidate_model": {
+            "filename": candidate.name,
+            "sha256": _file_sha256(candidate),
+            "feature_names": list(model.feature_names),
+        },
+        "scores": {
+            "filename": scores.name,
+            "sha256": _file_sha256(scores),
+            "bytes": scores.stat().st_size,
+            "row_count": int(len(pd.read_csv(scores))),
+            "timestamp_column": timestamp_column,
+        },
+        "contributions": {
+            "filename": contributions.name,
+            "sha256": _file_sha256(contributions),
+            "bytes": contributions.stat().st_size,
+            "record_count": len(contribution_records),
+        },
+    }
+
+
+def verify_validation_evidence(
+    candidate_path: str | Path,
+    model: DPCAModel,
+    report: Mapping[str, Any],
+    scores_path: str | Path,
+    contributions_path: str | Path,
+    *,
+    sample_interval_minutes: int,
+) -> None:
+    """Fail closed unless report, candidate, scores and contributions agree."""
+    evidence = report.get("validation_evidence")
+    if not isinstance(evidence, Mapping) or evidence.get("verification_status") != "verified":
+        raise ValueError("验证报告缺少已校验证据绑定")
+    candidate = Path(candidate_path)
+    scores_file, contributions_file = Path(scores_path), Path(contributions_path)
+    candidate_evidence = evidence.get("candidate_model")
+    if not isinstance(candidate_evidence, Mapping) or candidate_evidence.get("filename") != candidate.name or candidate_evidence.get("sha256") != _file_sha256(candidate) or candidate_evidence.get("feature_names") != list(model.feature_names):
+        raise ValueError("验证报告候选模型证据不匹配")
+    for name, path, count_key in (
+        ("scores", scores_file, "row_count"),
+        ("contributions", contributions_file, "record_count"),
+    ):
+        item = evidence.get(name)
+        if not isinstance(item, Mapping) or item.get("filename") != path.name or item.get("sha256") != _file_sha256(path) or item.get("bytes") != path.stat().st_size:
+            raise ValueError(f"验证报告{name}工件证据不匹配")
+        if not isinstance(item.get(count_key), int) or isinstance(item.get(count_key), bool):
+            raise ValueError(f"验证报告{name}工件计数无效")
+    scores = _read_validation_scores(scores_file, evidence["scores"].get("timestamp_column"), model)
+    contributions = _read_contribution_records(contributions_file)
+    if evidence["scores"]["row_count"] != len(scores) or report.get("scored_rows") != len(scores):
+        raise ValueError("验证评分行数与报告不一致")
+    if evidence["contributions"]["record_count"] != len(contributions):
+        raise ValueError("验证贡献记录数与报告不一致")
+    _verify_score_metrics(report, scores, model, sample_interval_minutes)
+    _verify_contributions(contributions, scores, model)
+    if report.get("contribution_stability") != _contribution_stability(contributions, model.feature_names):
+        raise ValueError("验证贡献稳定性与工件不一致")
+
+
+def _file_sha256(path: Path) -> str:
+    if not path.is_file():
+        raise ValueError(f"验证工件不存在：{path.name}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_contribution_records(path: Path) -> list[dict[str, Any]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("验证贡献工件无法读取") from error
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("验证贡献工件结构无效")
+    return value
+
+
+def _read_validation_scores(path: Path, timestamp_column: object, model: DPCAModel) -> pd.DataFrame:
+    if not isinstance(timestamp_column, str) or not timestamp_column:
+        raise ValueError("验证评分时间戳字段无效")
+    try:
+        scores = pd.read_csv(path)
+    except (OSError, ValueError) as error:
+        raise ValueError("验证评分工件无法读取") from error
+    required = {timestamp_column, "validation_window_id", "validation_type", "t2", "spe", "status", "overall_status", "t2_status", "spe_status", "score_valid", "invalid_reason", *(f"pc{index + 1}" for index in range(model.n_components))}
+    if not required <= set(scores.columns):
+        raise ValueError("验证评分工件字段不完整")
+    timestamps = pd.to_datetime(scores.pop(timestamp_column), errors="coerce")
+    if timestamps.isna().any() or timestamps.duplicated().any():
+        raise ValueError("验证评分时间戳无效或重复")
+    scores.index = pd.DatetimeIndex(timestamps)
+    if not scores.index.is_monotonic_increasing or not scores["validation_type"].isin(_VALIDATION_TYPES).all() or not (scores["status"] == scores["overall_status"]).all():
+        raise ValueError("验证评分状态字段无效")
+    return scores
+
+
+def _verify_score_metrics(report: Mapping[str, Any], scores: pd.DataFrame, model: DPCAModel, sample_interval_minutes: int) -> None:
+    windows = report.get("validation_windows")
+    if not isinstance(windows, list):
+        raise ValueError("验证报告窗口无效")
+    scored_windows = []
+    for window in windows:
+        if not isinstance(window, Mapping) or not window.get("enabled"):
+            continue
+        part = scores.loc[scores["validation_window_id"].eq(window.get("id"))]
+        if part.empty or set(part["validation_type"]) != {window.get("type")}:
+            raise ValueError("验证评分窗口与报告不一致")
+        scored_windows.append({"type": window["type"], "scores": part, "continuous_events": _combined_exceedance_events(part, model, sample_interval_minutes)})
+    metrics = _validation_metrics(scored_windows, model, sample_interval_minutes)
+    if report.get("validation_metrics") != metrics:
+        raise ValueError("验证指标与评分工件不一致")
+
+
+def _verify_contributions(records: Sequence[Mapping[str, Any]], scores: pd.DataFrame, model: DPCAModel) -> None:
+    for record in records:
+        if record.get("statistic") not in {"t2", "spe"} or not isinstance(record.get("peak_timestamp"), str):
+            raise ValueError("验证贡献记录无效")
+        timestamp = pd.Timestamp(record["peak_timestamp"])
+        if timestamp not in scores.index:
+            raise ValueError("验证贡献时间戳不在评分工件中")
+        row = scores.loc[timestamp]
+        statistic = str(record["statistic"])
+        limit = model.t2_limits[0.95] if statistic == "t2" else model.q_limits[0.95]
+        if not isinstance(row, pd.Series) or float(row[statistic]) < limit:
+            raise ValueError("验证贡献未对应95%超限评分")
 
 
 def _validation_metrics(

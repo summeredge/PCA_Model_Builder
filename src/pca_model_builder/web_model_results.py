@@ -202,7 +202,7 @@ _APPLE_DESIGN_STYLE = r"""
     text-decoration:none;
   }
   button:active, .download:active { transform:scale(.95); }
-  button.secondary, .inner-tab, .tab {
+  button.secondary {
     background:#1d1d1f;
     border-color:#1d1d1f;
     color:#ffffff;
@@ -212,8 +212,24 @@ _APPLE_DESIGN_STYLE = r"""
     padding:8px 15px;
   }
   button:focus-visible, .download:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }
-  .tabs, .inner-tabs { gap:0; border-bottom:1px solid var(--line); padding-bottom:0; }
-  .tab, .inner-tab { border:0; border-bottom:2px solid transparent; }
+  .tabs, .inner-tabs {
+    gap:0;
+    border-bottom:1px solid var(--line);
+    padding-bottom:0;
+    background:rgba(245,245,247,.8);
+    backdrop-filter:saturate(180%) blur(20px);
+  }
+  .tab, .inner-tab {
+    border:0;
+    border-bottom:2px solid transparent;
+    border-radius:0;
+    background:transparent;
+    color:var(--text);
+    font-size:14px;
+    letter-spacing:-.224px;
+    padding:8px 15px;
+  }
+  .tab:hover, .inner-tab:hover { background:#fafafc; }
   .tab.active, .inner-tab.active {
     background:#ffffff;
     border-bottom-color:var(--accent);
