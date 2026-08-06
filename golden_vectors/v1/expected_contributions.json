@@ -1,0 +1,170 @@
+[
+  {
+    "timestamp": "2026-01-01T01:35:00",
+    "statistic": "t2",
+    "statistic_value": 5.6225000000000005,
+    "limit_95": 4.0,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "Tag A",
+        "unit": "u",
+        "contribution_pct": 54.468652734548684,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      },
+      {
+        "tag": "B",
+        "description": "Tag B",
+        "unit": "u",
+        "contribution_pct": 45.531347265451316,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-01T01:40:00",
+    "statistic": "t2",
+    "statistic_value": 11.54,
+    "limit_95": 4.0,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "Tag A",
+        "unit": "u",
+        "contribution_pct": 54.15944540727904,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      },
+      {
+        "tag": "B",
+        "description": "Tag B",
+        "unit": "u",
+        "contribution_pct": 45.84055459272097,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-01T01:40:00",
+    "statistic": "spe",
+    "statistic_value": 5.6225000000000005,
+    "limit_95": 4.0,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "Tag A",
+        "unit": "u",
+        "contribution_pct": 54.468652734548684,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "B",
+        "description": "Tag B",
+        "unit": "u",
+        "contribution_pct": 45.531347265451316,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-01T01:45:00",
+    "statistic": "t2",
+    "statistic_value": 23.14,
+    "limit_95": 4.0,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "Tag A",
+        "unit": "u",
+        "contribution_pct": 52.93863439930856,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      },
+      {
+        "tag": "B",
+        "description": "Tag B",
+        "unit": "u",
+        "contribution_pct": 47.06136560069144,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-01T01:45:00",
+    "statistic": "spe",
+    "statistic_value": 11.54,
+    "limit_95": 4.0,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "Tag A",
+        "unit": "u",
+        "contribution_pct": 54.15944540727904,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "B",
+        "description": "Tag B",
+        "unit": "u",
+        "contribution_pct": 45.84055459272097,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-01T01:50:00",
+    "statistic": "t2",
+    "statistic_value": 9.4725,
+    "limit_95": 4.0,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "Tag A",
+        "unit": "u",
+        "contribution_pct": 53.44418052256532,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      },
+      {
+        "tag": "B",
+        "description": "Tag B",
+        "unit": "u",
+        "contribution_pct": 46.55581947743468,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-01-01T01:50:00",
+    "statistic": "spe",
+    "statistic_value": 23.14,
+    "limit_95": 4.0,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "Tag A",
+        "unit": "u",
+        "contribution_pct": 52.93863439930856,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "B",
+        "description": "Tag B",
+        "unit": "u",
+        "contribution_pct": 47.06136560069144,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      }
+    ]
+  }
+]

@@ -1,0 +1,34 @@
+{
+  "golden_schema_version": 1,
+  "fixture_id": "dpca-golden-v1",
+  "model_id": "golden.dpca",
+  "model_version": 1,
+  "replay_start": "2026-01-01T00:20:00",
+  "replay_end": "2026-01-01T01:50:00",
+  "timestamp_column": "time",
+  "input_tags": [
+    "A",
+    "B"
+  ],
+  "dynamic_feature_names": [
+    "A__lag_000min",
+    "B__lag_000min",
+    "A__lag_005min",
+    "B__lag_005min"
+  ],
+  "numeric_tolerance": {
+    "rtol": 1e-09,
+    "atol": 1e-12
+  },
+  "files": {
+    "frozen_model.pcamodel": "8e2c39164e4c2ba8dbe899bd641e65cb3f0f87c65d0a208f27badc57dbba74c1",
+    "deployment_model.pcadeploy": "f758ba51910337889ca446c79f9a77c918b61be204f98203c0d04b2499404232",
+    "raw_input.csv": "ad1b2f3c033a37c9a6e742ec54f0e4f98ae92c360fb6c73dd66510145825e530",
+    "expected_dynamic_features.csv": "c2a59660551707279e848d5cfb64bf01255f188f32f7aa4c56bad6653523c847",
+    "expected_scores.csv": "fc273184a5a21d77508d9668c35ee63e7a0168762959c3d8f4c5f8d2d8765fee",
+    "expected_contributions.json": "3a7847d54ad05dd399d941db40609c6735d958367fa1b93c296227ed5944d88c",
+    "expected_summary.json": "4a99e6676c34b2e8442073d763801f488f14d71aea31d60141a1a76db0a56ca3",
+    "fixture_manifest.json": "708a079450bcf748bde1a6f7547fe21ffca9d14ff17355c955e3fb0cad4c4179"
+  },
+  "manifest_sha256": "708a079450bcf748bde1a6f7547fe21ffca9d14ff17355c955e3fb0cad4c4179"
+}

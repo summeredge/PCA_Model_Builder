@@ -22,6 +22,7 @@ from .model_io import (
     load_model_package,
     save_model_package,
 )
+from .golden import verify_golden_vectors
 from .preprocessing import PreprocessingConfig, preprocessing_config_from_mapping
 from .quality import QualityReport, inspect_data_quality
 from .replay import replay_frozen_model
@@ -124,6 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--summary-output", type=Path, required=True)
     replay.add_argument("--contributions-output", type=Path, required=True)
     replay.set_defaults(handler=_replay_frozen)
+
+    golden = subparsers.add_parser(
+        "verify-golden", help="Verify the committed readonly golden acceptance vectors"
+    )
+    golden.add_argument("--bundle", type=Path, required=True)
+    golden.set_defaults(handler=_verify_golden)
 
     serve = subparsers.add_parser("serve", help="Run the local web interface")
     serve.add_argument("--host", default="127.0.0.1")
@@ -403,6 +410,10 @@ def _replay_frozen(args: argparse.Namespace) -> dict[str, Any]:
         args.timestamp,
     )
     return result.summary
+
+
+def _verify_golden(args: argparse.Namespace) -> dict[str, Any]:
+    return verify_golden_vectors(args.bundle)
 
 
 def _require_frozen_replay_model(path: Path) -> None:

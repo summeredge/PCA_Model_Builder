@@ -1,0 +1,15 @@
+timestamp,pc1,pc2,t2,spe,t2_limit_ratio,spe_limit_ratio,t2_status,spe_status,overall_status,score_valid,invalid_reason,status
+2026-01-01 00:20:00,0.6499999999999999,0.55,0.7249999999999999,0.5050000000000001,0.18124999999999997,0.12625000000000003,normal,normal,normal,True,,normal
+2026-01-01 00:25:00,0.75,0.6499999999999999,0.9849999999999999,0.7249999999999999,0.24624999999999997,0.18124999999999997,normal,normal,normal,True,,normal
+2026-01-01 00:30:00,0.9,0.8,1.4500000000000002,0.9849999999999999,0.36250000000000004,0.24624999999999997,normal,normal,normal,True,,normal
+2026-01-01 00:35:00,1.1,1.0,2.21,1.4500000000000002,0.5525,0.36250000000000004,normal,normal,normal,True,,normal
+2026-01-01 00:40:00,1.35,1.25,3.3850000000000002,2.21,0.8462500000000001,0.5525,normal,normal,normal,True,,normal
+2026-01-01 00:55:00,,,,,,,not_scored,not_scored,not_scored,False,missing_input,not_scored
+2026-01-01 01:00:00,,,,,,,not_scored,not_scored,not_scored,False,insufficient_context,not_scored
+2026-01-01 01:05:00,,,,,,,not_scored,not_scored,not_scored,False,insufficient_context,not_scored
+2026-01-01 01:25:00,,,,,,,not_scored,not_scored,not_scored,False,time_gap_reset,not_scored
+2026-01-01 01:30:00,0.9500000000000001,0.85,1.625,0.15250000000000002,0.40625,0.038125000000000006,normal,normal,normal,True,,normal
+2026-01-01 01:35:00,1.75,1.6,5.6225000000000005,1.625,1.4056250000000001,0.40625,attention,normal,attention,True,,attention
+2026-01-01 01:40:00,2.5,2.3,11.54,5.6225000000000005,2.885,1.4056250000000001,abnormal,attention,abnormal,True,,abnormal
+2026-01-01 01:45:00,3.5,3.3,23.14,11.54,5.785,2.885,abnormal,abnormal,abnormal,True,,abnormal
+2026-01-01 01:50:00,2.25,2.1,9.4725,23.14,2.368125,5.785,abnormal,abnormal,abnormal,True,,abnormal
