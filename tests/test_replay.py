@@ -56,7 +56,7 @@ def _validation_summary():
     }
 
 
-def _frozen_model(tmp_path, history):
+def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailing_mean"):
     config = {
         "model_name": "unit",
         "tags": ["A", "B", "C"],
@@ -65,10 +65,12 @@ def _frozen_model(tmp_path, history):
         "smoothing_window_minutes": 10,
         "max_lag_minutes": 0,
         "lag_step_minutes": 5,
+        "filter_method": filter_method,
+        "state_filters": list(state_filters),
         "variance_threshold": 0.95,
         "tag_configs": {"A": {"description": "a", "unit": "x"}},
     }
-    training = history.iloc[:80].copy()
+    training = history.loc[:, ["A", "B", "C"]].iloc[:80].copy()
     training.columns = [f"{tag}__lag_000min" for tag in training.columns]
     validated = tmp_path / "validated.pcamodel"
     frozen = tmp_path / "frozen.pcamodel"
@@ -125,3 +127,38 @@ def test_frozen_replay_resets_causal_filter_after_a_physical_gap(tmp_path):
 
     assert replay.scores.loc[index[101], "invalid_reason"] == "time_gap_reset"
     assert not replay.scores.loc[index[101], "score_valid"]
+
+
+def test_frozen_replay_state_filter_can_keep_some_or_no_rows(tmp_path):
+    index = pd.date_range("2026-01-01", periods=120, freq="5min")
+    history = pd.DataFrame(
+        np.random.default_rng(915).normal(size=(120, 3)), index=index, columns=["A", "B", "C"]
+    )
+    history["state"] = 1.0
+    bounds = (index[90], index[110])
+    frozen = _frozen_model(
+        tmp_path,
+        history,
+        state_filters=({"column": "state", "minimum": 1.0},),
+        filter_method="none",
+    )
+
+    all_matched = replay_frozen_model(frozen, history, *bounds)
+    assert all_matched.summary["output_row_count"] == len(history.loc[bounds[0]:bounds[1]])
+
+    partial_history = history.copy()
+    partial_history.loc[index[96]:index[100], "state"] = 0.0
+    partial = replay_frozen_model(frozen, partial_history, *bounds)
+    assert partial.summary["state_filter_excluded_rows"] == 5
+    assert len(partial.scores) == len(all_matched.scores) - 5
+
+    empty_history = history.copy()
+    empty_history["state"] = 0.0
+    empty = replay_frozen_model(frozen, empty_history, *bounds)
+    assert empty.scores.empty
+    assert empty.contributions == []
+    assert empty.summary["output_row_count"] == 0
+    assert empty.summary["score_valid_count"] == 0
+    assert empty.summary["state_filter_excluded_rows"] == len(history.loc[bounds[0]:bounds[1]])
+    assert empty.summary["maximum_t2"] is None
+    assert empty.summary["maximum_spe"] is None

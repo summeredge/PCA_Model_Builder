@@ -388,7 +388,7 @@ def filter_warmup_mask(
 
 
 def apply_state_filters(
-    frame: pd.DataFrame, conditions: Sequence[StateFilter]
+    frame: pd.DataFrame, conditions: Sequence[StateFilter], *, allow_empty: bool = False
 ) -> pd.DataFrame:
     if not conditions or frame.empty:
         return frame.copy()
@@ -404,7 +404,7 @@ def apply_state_filters(
             current &= values <= condition.maximum
         keep &= current
     filtered = frame.loc[keep]
-    if filtered.empty:
+    if filtered.empty and not allow_empty:
         raise ValueError("state filters removed all rows")
     return filtered
 
@@ -420,6 +420,7 @@ def preprocess_window(
     include_variability: bool = False,
     preserve_columns: Sequence[str] = (),
     resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+    allow_empty_state_filter: bool = False,
 ) -> PreprocessingResult:
     """Execute the single causal preprocessing contract for one independent window."""
     _validate_index(frame.index)
@@ -517,7 +518,9 @@ def preprocess_window(
         index=numeric_resampled.index,
     )
     state_filter_input_rows = len(filtered)
-    state_filtered = apply_state_filters(filtered, config.state_filters)
+    state_filtered = apply_state_filters(
+        filtered, config.state_filters, allow_empty=allow_empty_state_filter
+    )
     state_filter_output_rows = len(state_filtered)
     original_ids = resampled_segments.reindex(state_filtered.index)
     breaks = original_ids.ne(original_ids.shift()) | state_filtered.index.to_series().diff().gt(

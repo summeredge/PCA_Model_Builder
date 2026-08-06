@@ -1480,7 +1480,7 @@ def _frozen_replay_payload_locked(payload: dict[str, Any], run_id: str) -> dict[
         "notice": "历史回放用于检查冻结模型在历史数据上的表现，不属于独立验证，不改变模型状态。",
         "summary": result.summary,
         "scores": _score_payload(result.scores),
-        "contributions": result.contributions,
+        "contribution_count": len(result.contributions),
         "downloads": {
             artifact: f"/download/frozen-replay?run_id={run_id}&artifact={artifact}"
             for artifact in _FROZEN_REPLAY_ARTIFACTS
@@ -1505,6 +1505,7 @@ def _commit_frozen_replay_artifacts(
     temporary: list[Path] = []
     backups: dict[Path, Path] = {}
     committed: list[Path] = []
+    committed_successfully = False
     try:
         for destination in destinations:
             with tempfile.NamedTemporaryFile(
@@ -1522,18 +1523,33 @@ def _commit_frozen_replay_artifacts(
         for source, destination in zip(temporary, destinations, strict=True):
             os.replace(source, destination)
             committed.append(destination)
-    except Exception:
+        committed_successfully = True
+    except Exception as commit_error:
         for destination in committed:
             destination.unlink(missing_ok=True)
+        recovery_failures: list[tuple[Path, Exception]] = []
         for destination, backup in backups.items():
             if backup.exists():
-                os.replace(backup, destination)
+                try:
+                    os.replace(backup, destination)
+                except Exception as recovery_error:
+                    recovery_failures.append((backup, recovery_error))
+        if recovery_failures:
+            details = "; ".join(
+                f"{backup}: {error}" for backup, error in recovery_failures
+            )
+            preserved = ", ".join(str(backup) for backup, _ in recovery_failures)
+            raise RuntimeError(
+                "frozen replay artifact commit failed: "
+                f"{commit_error}; recovery failed: {details}; preserved backups: {preserved}"
+            ) from commit_error
         raise
     finally:
         for path in temporary:
             path.unlink(missing_ok=True)
-        for path in backups.values():
-            path.unlink(missing_ok=True)
+        if committed_successfully:
+            for path in backups.values():
+                path.unlink(missing_ok=True)
 
 
 def _parse_timestamp_column(frame: pd.DataFrame, timestamp_column: str) -> pd.DataFrame:

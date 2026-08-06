@@ -125,7 +125,7 @@
     const summary = data.summary || {};
     const target = document.getElementById("frozenReplaySummary");
     target.className = "help";
-    target.textContent = `${data.notice} 输出 ${summary.output_row_count ?? 0} 点；有效评分 ${summary.score_valid_count ?? 0} 点；状态过滤排除 ${summary.state_filter_excluded_rows ?? 0} 点；贡献记录 ${(data.contributions || []).length} 条。`;
+    target.textContent = `${data.notice} 输出 ${summary.output_row_count ?? 0} 点；有效评分 ${summary.score_valid_count ?? 0} 点；状态过滤排除 ${summary.state_filter_excluded_rows ?? 0} 点；贡献记录 ${data.contribution_count ?? 0} 条。`;
     const status = document.getElementById("frozenReplayStatus");
     status.textContent = Object.entries(summary.status_counts || {}).map(([key, value]) => `${key}: ${value}`).join("；") || "无可展示评分点。";
     drawReplayTrend(data.scores || []);

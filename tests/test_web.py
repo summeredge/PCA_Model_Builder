@@ -2269,6 +2269,7 @@ def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeyp
         }
     )
     assert replay["summary"]["output_row_count"] > 0
+    assert "contributions" not in replay
     assert replay["downloads"]["scores"].endswith("artifact=scores")
     assert frozen_path.read_bytes() == before
     run_dir = frozen_path.parent
@@ -2277,6 +2278,85 @@ def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeyp
         "frozen_replay_summary.json",
         "frozen_replay_contributions.json",
     }
+    replay_input = history.set_index("time")
+    replay_start, replay_end = history.time.iloc[130], history.time.iloc[-1]
+    stored = web.replay_frozen_model(frozen_path, replay_input, replay_start, replay_end)
+    large_contributions = [{"timestamp": str(index), "tags": []} for index in range(1500)]
+    monkeypatch.setattr(
+        web,
+        "replay_frozen_model",
+        lambda *args: type(stored)(stored.scores, stored.summary, large_contributions),
+    )
+    compact = web.frozen_replay_payload(
+        {
+            "run_id": trained["run_id"],
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "replay_start": replay_start.isoformat(),
+            "replay_end": replay_end.isoformat(),
+        }
+    )
+    assert compact["contribution_count"] == len(large_contributions)
+    assert "contributions" not in compact
+    assert json.loads((run_dir / "frozen_replay_contributions.json").read_text(encoding="utf-8")) == large_contributions
+
+
+def _replay_artifacts(run_dir, marker):
+    scores = _chart_scores(3)
+    result = web.FrozenReplayResult(
+        scores=scores,
+        summary={"marker": marker},
+        contributions=[{"marker": marker}],
+    )
+    web._commit_frozen_replay_artifacts(run_dir, result, "time")
+    return {
+        path.name: path.read_bytes()
+        for path in run_dir.glob("frozen_replay_*")
+    }
+
+
+@pytest.mark.parametrize(
+    "failed_name",
+    ("frozen_replay_summary.json", "frozen_replay_contributions.json"),
+)
+def test_frozen_replay_artifact_commit_restores_all_prior_files(tmp_path, monkeypatch, failed_name):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    before = _replay_artifacts(run_dir, "before")
+    real_replace = web.os.replace
+
+    def fail_new_artifact(source, destination):
+        if Path(source).suffix == ".tmp" and Path(destination).name == failed_name:
+            raise OSError("new artifact commit failed")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(web.os, "replace", fail_new_artifact)
+    with pytest.raises(OSError, match="new artifact commit failed"):
+        _replay_artifacts(run_dir, "after")
+    assert {path.name: path.read_bytes() for path in run_dir.glob("frozen_replay_*")} == before
+    assert not list(run_dir.glob("*.bak"))
+
+
+def test_frozen_replay_artifact_commit_keeps_unrestored_backup(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    _replay_artifacts(run_dir, "before")
+    real_replace = web.os.replace
+
+    def fail_commit_and_restore(source, destination):
+        source_path, destination_path = Path(source), Path(destination)
+        if source_path.suffix == ".tmp" and destination_path.name == "frozen_replay_contributions.json":
+            raise OSError("new artifact commit failed")
+        if source_path.suffix == ".bak" and destination_path.name == "frozen_replay_summary.json":
+            raise OSError("backup restore failed")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(web.os, "replace", fail_commit_and_restore)
+    with pytest.raises(RuntimeError, match="new artifact commit failed.*backup restore failed.*preserved backups") as error:
+        _replay_artifacts(run_dir, "after")
+    backups = list(run_dir.glob("*.bak"))
+    assert len(backups) == 1
+    assert str(backups[0]) in str(error.value)
 
 
 def test_web_freeze_rolls_back_after_second_final_replace_failure(tmp_path, monkeypatch):

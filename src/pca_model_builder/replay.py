@@ -73,6 +73,7 @@ def replay_frozen_model(
         config,
         validate_quality=False,
         include_intermediates=True,
+        allow_empty_state_filter=True,
     )
     if list(processed.dynamic.columns) != list(model.feature_names):
         raise ValueError("frozen model dynamic feature order does not match preprocessing")
