@@ -166,9 +166,19 @@ _APPLE_DESIGN_STYLE = r"""
   .subtitle, .help, label, .legend, .dp-legend { color:var(--muted); }
   .subtitle { color:#cccccc; font-size:14px; line-height:1.43; }
   .help, label, .legend, .dp-legend { font-size:14px; line-height:1.43; }
-  main { max-width:1440px; margin:0 auto; gap:20px; padding:24px; }
+  main {
+    max-width:1440px;
+    margin:0 auto;
+    grid-template-columns:minmax(320px,420px) minmax(0,1fr);
+    gap:24px;
+    padding:24px;
+  }
   section { border:0; border-radius:0; padding:32px; background:var(--panel); }
+  .controls, .controls .group { min-width:0; }
   .controls { gap:20px; }
+  .results { gap:24px; }
+  .row, .actions, .tag-toolbar, .detail-fields { gap:12px; }
+  .inner-panel.active, .panel.active { gap:24px; }
   .group, .metric, .validation-box, .exploration-controls, .dp-inline-help {
     background:#ffffff;
     border:1px solid var(--line);
@@ -191,7 +201,9 @@ _APPLE_DESIGN_STYLE = r"""
     border-color:#0071e3;
   }
   button, .download {
+    box-sizing:border-box;
     min-height:44px;
+    max-width:100%;
     border:1px solid var(--accent);
     background:var(--accent);
     color:#ffffff;
@@ -203,14 +215,13 @@ _APPLE_DESIGN_STYLE = r"""
   }
   button:active, .download:active { transform:scale(.95); }
   button.secondary {
-    background:#1d1d1f;
-    border-color:#1d1d1f;
-    color:#ffffff;
-    border-radius:8px;
-    font-size:14px;
-    letter-spacing:-.224px;
-    padding:8px 15px;
+    background:#fafafc;
+    border-color:#f0f0f0;
+    color:var(--accent);
+    border-radius:9999px;
   }
+  #inspectButton, #qualityButton, #saveTagConfig { background:var(--accent); border-color:var(--accent); color:#ffffff; }
+  .tag-toolbar button { min-height:36px; padding:8px 14px; font-size:14px; }
   button:focus-visible, .download:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }
   .tabs, .inner-tabs {
     gap:0;
@@ -242,12 +253,15 @@ _APPLE_DESIGN_STYLE = r"""
     border-color:var(--line);
     background:#ffffff;
   }
+  .tag-options, .compact-list, .table-wrap, .trend-chart, .chart, .dp-chart,
+  .empty, .variance, .exploration-timeline, .dp-trend-stat-card,
+  .dp-scatter-chart { border-radius:18px; }
   .status { min-height:42px; padding:12px 16px; }
   .status.info { background:#edf5ff; color:#0043ce; border-color:#0f62fe; }
   .status.success { background:#e8f5e9; color:#0e6027; border-color:#24a148; }
   .status.warning, .notice { background:#fff8e1; color:#6f4e00; border-color:#f1c21b; }
   .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
-  .issue-card, .notice { border-left-width:4px; }
+  .issue-card, .notice { border-left-width:4px; border-radius:11px; }
   .tag-row.selected { background:#edf5ff; }
   .metric { padding:24px; }
   .metric strong { font-size:40px; font-weight:600; line-height:1.1; letter-spacing:0; }
