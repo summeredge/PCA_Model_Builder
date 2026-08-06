@@ -133,6 +133,7 @@ class DeploymentModel:
     scale: np.ndarray
     components: np.ndarray
     eigenvalues: np.ndarray
+    explained_variance_ratio: np.ndarray
     t2_limits: dict[float, float]
     q_limits: dict[float, float]
 
@@ -263,6 +264,15 @@ def freeze_validated_model_package(
     if destination.exists():
         raise ValueError("frozen model output already exists")
     _validate_freeze_request(model_id, model_version, frozen_by, comment)
+    try:
+        with zipfile.ZipFile(source) as package:
+            source_schema_version = json.loads(package.read("manifest.json")).get(
+                "schema_version"
+            )
+    except (zipfile.BadZipFile, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise ValueError("validated model package cannot be read") from error
+    if source_schema_version != SCHEMA_VERSION:
+        raise ValueError("only schema 4 validated models can be frozen")
     model, manifest = load_model_package(source)
     if (
         manifest["model_purpose"] != "normal_state"
@@ -363,6 +373,7 @@ def load_deployment_package(path: str | Path) -> tuple[DeploymentModel, dict[str
                     scale=arrays["scale"].copy(),
                     components=arrays["components"].copy(),
                     eigenvalues=arrays["eigenvalues"].copy(),
+                    explained_variance_ratio=arrays["explained_variance_ratio"].copy(),
                     t2_limits={float(key): float(value) for key, value in manifest["t2_limits"].items()},
                     q_limits={float(key): float(value) for key, value in manifest["q_limits"].items()},
                 )
@@ -597,7 +608,7 @@ def _validate_deployment_model(model: DeploymentModel, manifest: dict[str, Any])
         scale=model.scale,
         components=model.components,
         eigenvalues=model.eigenvalues,
-        explained_variance_ratio=np.zeros_like(model.eigenvalues),
+        explained_variance_ratio=model.explained_variance_ratio,
         t2_limits=model.t2_limits,
         q_limits=model.q_limits,
         n_samples=manifest["n_samples"],

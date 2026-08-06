@@ -248,6 +248,8 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     model, manifest = load_model_package(args.model)
     if manifest["model_purpose"] != "normal_state":
         raise ValueError("探索模型不能执行独立验证")
+    if manifest["model_status"] not in {"candidate", "validated"}:
+        raise ValueError("冻结模型不能执行独立验证")
     config_data = manifest["config"]
     tags = list(config_data["tags"])
     tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))

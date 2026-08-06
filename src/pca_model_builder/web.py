@@ -101,6 +101,8 @@ _VALIDATION_ARTIFACTS = {
 DATA_SESSIONS = DataSessionCache()
 STATE_EXPLORATION_RUNS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _STATE_EXPLORATION_LOCK = threading.RLock()
+_FREEZE_LOCKS: dict[str, threading.Lock] = {}
+_FREEZE_LOCKS_LOCK = threading.Lock()
 
 
 class WebStageError(ValueError):
@@ -1362,6 +1364,17 @@ def _with_data_usage(
 
 def freeze_deployment_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    with _FREEZE_LOCKS_LOCK:
+        lock = _FREEZE_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise ValueError("当前运行正在冻结，不能并发提交")
+    try:
+        return _freeze_deployment_payload_locked(payload, run_id)
+    finally:
+        lock.release()
+
+
+def _freeze_deployment_payload_locked(payload: dict[str, Any], run_id: str) -> dict[str, Any]:
     run_dir = RUNS_DIR / run_id
     validated_path = run_dir / "validated_model.pcamodel"
     frozen_path = run_dir / "frozen_model.pcamodel"
@@ -1373,6 +1386,7 @@ def freeze_deployment_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     temporary_frozen = run_dir / f".frozen-{uuid.uuid4().hex}.pcamodel"
     temporary_deployment = run_dir / f".deployment-{uuid.uuid4().hex}.pcadeploy"
+    committed_frozen = False
     try:
         freeze_validated_model_package(
             validated_path,
@@ -1392,7 +1406,12 @@ def freeze_deployment_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if frozen_path.exists() or deployment_path.exists():
             raise ValueError("冻结或部署模型包已存在，拒绝覆盖")
         os.replace(temporary_frozen, frozen_path)
+        committed_frozen = True
         os.replace(temporary_deployment, deployment_path)
+    except Exception:
+        if committed_frozen:
+            frozen_path.unlink(missing_ok=True)
+        raise
     finally:
         temporary_frozen.unlink(missing_ok=True)
         temporary_deployment.unlink(missing_ok=True)

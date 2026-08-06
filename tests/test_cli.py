@@ -406,8 +406,11 @@ def test_cli_validates_legacy_window_packages_without_reconversion(tmp_path, sch
     assert manifest["model_purpose"] == "normal_state"
     assert manifest["model_status"] == ("draft" if schema_version == 1 else "candidate")
     assert main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[0].isoformat(), "--validation-end", time[1].isoformat()]) == 2
-    assert main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[60].isoformat(), "--validation-end", time[-1].isoformat(), "--scores-output", str(scores), "--report-output", str(report), "--contributions-output", str(contributions)]) == 0
-    assert scores.exists() and report.exists() and contributions.exists()
+    result = main(["validate", "--model", str(model_path), "--csv", str(csv_path), "--timestamp", "time", "--validation-start", time[60].isoformat(), "--validation-end", time[-1].isoformat(), "--scores-output", str(scores), "--report-output", str(report), "--contributions-output", str(contributions)])
+    assert result == (2 if schema_version == 1 else 0)
+    assert scores.exists() is (schema_version == 2)
+    assert report.exists() is (schema_version == 2)
+    assert contributions.exists() is (schema_version == 2)
 
 
 def test_cli_typed_validation_review_creates_separate_validated_copy(tmp_path, capsys):
