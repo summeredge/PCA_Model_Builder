@@ -2257,6 +2257,26 @@ def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeyp
     assert result["model_status"] == "frozen"
     assert (tmp_path / "runs" / trained["run_id"] / "frozen_model.pcamodel").is_file()
     assert (tmp_path / "runs" / trained["run_id"] / "deployment_model.pcadeploy").is_file()
+    frozen_path = tmp_path / "runs" / trained["run_id"] / "frozen_model.pcamodel"
+    before = frozen_path.read_bytes()
+    replay = web.frozen_replay_payload(
+        {
+            "run_id": trained["run_id"],
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "replay_start": history.time.iloc[130].isoformat(),
+            "replay_end": history.time.iloc[-1].isoformat(),
+        }
+    )
+    assert replay["summary"]["output_row_count"] > 0
+    assert replay["downloads"]["scores"].endswith("artifact=scores")
+    assert frozen_path.read_bytes() == before
+    run_dir = frozen_path.parent
+    assert {path.name for path in run_dir.glob("frozen_replay_*")} == {
+        "frozen_replay_scores.csv",
+        "frozen_replay_summary.json",
+        "frozen_replay_contributions.json",
+    }
 
 
 def test_web_freeze_rolls_back_after_second_final_replace_failure(tmp_path, monkeypatch):

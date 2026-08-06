@@ -81,6 +81,98 @@
     <div id="modelComparisonResult" class="help">比较只读取已保存的 normal_state/candidate 模型包。</div>`;
   projectionGrid.insertAdjacentElement("afterend", diagnosticCard);
 
+  const replayCard = document.createElement("section");
+  replayCard.className = "chart-card";
+  replayCard.id = "frozenReplay";
+  replayCard.innerHTML = `
+    <h3>冻结模型历史回放</h3>
+    <div class="notice">历史回放用于检查冻结模型在历史数据上的表现，不属于独立验证，不改变模型状态。</div>
+    <div class="validation-box"><label>回放开始<input id="frozenReplayStart" type="datetime-local"></label><label>回放结束<input id="frozenReplayEnd" type="datetime-local"></label><button id="frozenReplayButton" type="button">执行冻结模型回放</button></div>
+    <div id="frozenReplaySummary" class="help">请先完成工程冻结，再选择历史区间执行回放。</div>
+    <div class="chart-grid"><div class="chart-card"><h3>T² / SPE 限值比趋势</h3><div id="frozenReplayTrend" class="chart empty">尚无回放结果。</div></div><div class="chart-card"><h3>状态统计</h3><div id="frozenReplayStatus" class="help">尚无回放结果。</div></div></div>
+    <div class="actions"><a id="frozenReplayScoresDownload" class="download" href="#" hidden>下载完整评分 CSV</a><a id="frozenReplaySummaryDownload" class="download" href="#" hidden>下载回放摘要</a><a id="frozenReplayContributionsDownload" class="download" href="#" hidden>下载贡献记录</a></div>`;
+  diagnosticCard.insertAdjacentElement("afterend", replayCard);
+
+  document.getElementById("frozenReplayButton").addEventListener("click", async () => {
+    const button = document.getElementById("frozenReplayButton");
+    const summary = document.getElementById("frozenReplaySummary");
+    const start = document.getElementById("frozenReplayStart").value;
+    const end = document.getElementById("frozenReplayEnd").value;
+    if (!state.runId || !state.fileId || !start || !end) {
+      summary.className = "error";
+      summary.textContent = "请先保留当前上传数据、完成工程冻结，并填写回放开始和结束时间。";
+      return;
+    }
+    button.disabled = true;
+    try {
+      const response = await fetch("/api/frozen-replay", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({run_id: state.runId, file_id: state.fileId, timestamp_column: el("timestampColumn").value, encoding: el("encoding").value, replay_start: start, replay_end: end}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "冻结模型回放失败");
+      renderFrozenReplay(data);
+    } catch (error) {
+      summary.className = "error";
+      summary.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  function renderFrozenReplay(data) {
+    const summary = data.summary || {};
+    const target = document.getElementById("frozenReplaySummary");
+    target.className = "help";
+    target.textContent = `${data.notice} 输出 ${summary.output_row_count ?? 0} 点；有效评分 ${summary.score_valid_count ?? 0} 点；状态过滤排除 ${summary.state_filter_excluded_rows ?? 0} 点；贡献记录 ${(data.contributions || []).length} 条。`;
+    const status = document.getElementById("frozenReplayStatus");
+    status.textContent = Object.entries(summary.status_counts || {}).map(([key, value]) => `${key}: ${value}`).join("；") || "无可展示评分点。";
+    drawReplayTrend(data.scores || []);
+    const downloads = data.downloads || {};
+    [["scores", "frozenReplayScoresDownload"], ["summary", "frozenReplaySummaryDownload"], ["contributions", "frozenReplayContributionsDownload"]].forEach(([key, id]) => {
+      const link = document.getElementById(id);
+      link.href = downloads[key] || "#";
+      link.hidden = !downloads[key];
+    });
+  }
+
+  function drawReplayTrend(points) {
+    const target = document.getElementById("frozenReplayTrend");
+    target.replaceChildren();
+    const finite = points.filter(point => Number.isFinite(point.t2_limit_ratio) || Number.isFinite(point.spe_limit_ratio));
+    if (!finite.length) { target.className = "chart empty"; target.textContent = "所选区间没有可评分点。"; return; }
+    target.className = "chart";
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 820 260");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", "冻结模型回放 T2 和 SPE 状态趋势");
+    const ratios = finite.flatMap(point => [point.t2_limit_ratio, point.spe_limit_ratio]).filter(Number.isFinite);
+    const maximum = Math.max(1, ...ratios) * 1.1;
+    const x = position => 45 + position / Math.max(points.length - 1, 1) * 750;
+    const y = value => 225 - Math.min(value, maximum) / maximum * 190;
+    addLine(svg, 45, y(1), 795, y(1), "#d19a20", 1);
+    [["t2_limit_ratio", "#2563eb"], ["spe_limit_ratio", "#cf3f36"]].forEach(([field, color]) => {
+      let segment = [];
+      points.forEach((point, position) => {
+        const value = Number(point[field]);
+        if (Number.isFinite(value)) segment.push(`${x(position)},${y(value)}`);
+        else if (segment.length) { replayLine(svg, segment, color); segment = []; }
+      });
+      if (segment.length) replayLine(svg, segment, color);
+    });
+    target.append(svg);
+  }
+
+  function replayLine(svg, points, color) {
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.setAttribute("points", points.join(" "));
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", color);
+    line.setAttribute("stroke-width", "2");
+    svg.append(line);
+  }
+
   const originalRenderTraining = window.renderTraining;
   window.renderTraining = function renderTrainingWithLoadings(data) {
     originalRenderTraining(data);

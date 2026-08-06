@@ -11,6 +11,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
+import tempfile
 import threading
 from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
@@ -48,6 +49,7 @@ from .preprocessing import (
     preprocessing_config_from_mapping,
 )
 from .quality import QualityReport, inspect_data_quality
+from .replay import FrozenReplayResult, replay_frozen_model
 from .screening import screen_performance_states
 from .tag_config import (
     engineering_ranges,
@@ -98,11 +100,21 @@ _VALIDATION_ARTIFACTS = {
         "application/json; charset=utf-8",
     ),
 }
+_FROZEN_REPLAY_ARTIFACTS = {
+    "scores": ("frozen_replay_scores.csv", "text/csv; charset=utf-8"),
+    "summary": ("frozen_replay_summary.json", "application/json; charset=utf-8"),
+    "contributions": (
+        "frozen_replay_contributions.json",
+        "application/json; charset=utf-8",
+    ),
+}
 DATA_SESSIONS = DataSessionCache()
 STATE_EXPLORATION_RUNS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _STATE_EXPLORATION_LOCK = threading.RLock()
 _FREEZE_LOCKS: dict[str, threading.Lock] = {}
 _FREEZE_LOCKS_LOCK = threading.Lock()
+_REPLAY_LOCKS: dict[str, threading.Lock] = {}
+_REPLAY_LOCKS_LOCK = threading.Lock()
 
 
 class WebStageError(ValueError):
@@ -1423,6 +1435,107 @@ def _freeze_deployment_payload_locked(payload: dict[str, Any], run_id: str) -> d
     }
 
 
+def frozen_replay_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    with _REPLAY_LOCKS_LOCK:
+        lock = _REPLAY_LOCKS.setdefault(run_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise ValueError("当前运行正在执行冻结模型回放，不能并发提交")
+    try:
+        return _frozen_replay_payload_locked(payload, run_id)
+    finally:
+        lock.release()
+
+
+def _frozen_replay_payload_locked(payload: dict[str, Any], run_id: str) -> dict[str, Any]:
+    run_dir = RUNS_DIR / run_id
+    frozen_path = run_dir / "frozen_model.pcamodel"
+    if not frozen_path.is_file():
+        raise ValueError("当前运行尚未生成冻结模型")
+    _, manifest = load_model_package(frozen_path)
+    if (
+        manifest.get("schema_version") != 4
+        or manifest.get("model_purpose") != "normal_state"
+        or manifest.get("model_status") != "frozen"
+    ):
+        raise ValueError("当前运行的冻结模型不可用于历史回放")
+    timestamp_column = _required_text(payload, "timestamp_column")
+    config = preprocessing_config_from_mapping(manifest["config"])
+    tags = list(manifest["config"]["tags"])
+    requested_columns = list(dict.fromkeys([*tags, *(item.column for item in config.state_filters)]))
+    loaded = _load_required_upload(payload, requested_columns, "找不到 Tag：")
+    parsed = loaded.frame
+    indexed = _replay_indexed_frame(parsed, timestamp_column, requested_columns)
+    result = replay_frozen_model(
+        frozen_path,
+        indexed,
+        _required_text(payload, "replay_start"),
+        _required_text(payload, "replay_end"),
+    )
+    _commit_frozen_replay_artifacts(run_dir, result, timestamp_column)
+    response = {
+        "run_id": run_id,
+        "model_purpose": "normal_state",
+        "model_status": "frozen",
+        "notice": "历史回放用于检查冻结模型在历史数据上的表现，不属于独立验证，不改变模型状态。",
+        "summary": result.summary,
+        "scores": _score_payload(result.scores),
+        "contributions": result.contributions,
+        "downloads": {
+            artifact: f"/download/frozen-replay?run_id={run_id}&artifact={artifact}"
+            for artifact in _FROZEN_REPLAY_ARTIFACTS
+        },
+    }
+    return _with_data_usage(response, loaded, len(result.scores), len(response["scores"]))
+
+
+def _replay_indexed_frame(
+    frame: pd.DataFrame, timestamp_column: str, columns: Sequence[str]
+) -> pd.DataFrame:
+    timestamps = frame[timestamp_column]
+    if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
+        raise ValueError("回放时间戳必须递增且唯一")
+    return frame.loc[:, [timestamp_column, *columns]].set_index(timestamp_column)
+
+
+def _commit_frozen_replay_artifacts(
+    run_dir: Path, result: FrozenReplayResult, timestamp_column: str
+) -> None:
+    destinations = [run_dir / filename for filename, _ in _FROZEN_REPLAY_ARTIFACTS.values()]
+    temporary: list[Path] = []
+    backups: dict[Path, Path] = {}
+    committed: list[Path] = []
+    try:
+        for destination in destinations:
+            with tempfile.NamedTemporaryFile(
+                dir=run_dir, prefix=f".{destination.name}.", suffix=".tmp", delete=False
+            ) as handle:
+                temporary.append(Path(handle.name))
+        result.scores.to_csv(temporary[0], index_label=timestamp_column, encoding="utf-8-sig")
+        temporary[1].write_text(json.dumps(result.summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary[2].write_text(json.dumps(result.contributions, ensure_ascii=False, indent=2), encoding="utf-8")
+        for destination in destinations:
+            if destination.exists():
+                backup = run_dir / f".{destination.name}.{uuid.uuid4().hex}.bak"
+                os.replace(destination, backup)
+                backups[destination] = backup
+        for source, destination in zip(temporary, destinations, strict=True):
+            os.replace(source, destination)
+            committed.append(destination)
+    except Exception:
+        for destination in committed:
+            destination.unlink(missing_ok=True)
+        for destination, backup in backups.items():
+            if backup.exists():
+                os.replace(backup, destination)
+        raise
+    finally:
+        for path in temporary:
+            path.unlink(missing_ok=True)
+        for path in backups.values():
+            path.unlink(missing_ok=True)
+
+
 def _parse_timestamp_column(frame: pd.DataFrame, timestamp_column: str) -> pd.DataFrame:
     if timestamp_column not in frame.columns:
         raise ValueError(f"找不到时间列：{timestamp_column}")
@@ -1651,6 +1764,13 @@ def _validation_artifact(artifact: str) -> tuple[str, str]:
         raise ValueError("无效的验证工件类型") from error
 
 
+def _frozen_replay_artifact(artifact: str) -> tuple[str, str]:
+    try:
+        return _FROZEN_REPLAY_ARTIFACTS[artifact]
+    except KeyError as error:
+        raise ValueError("无效的冻结回放工件类型") from error
+
+
 def _limit_payload(limits: dict[float, float]) -> dict[str, float]:
     return {str(int(alpha * 100)): float(value) for alpha, value in limits.items()}
 
@@ -1688,12 +1808,12 @@ def _chart_positions(scores: pd.DataFrame, limit: int) -> np.ndarray:
         return np.arange(len(scores), dtype=int)
 
     severity = scores["status"].map(
-        {"normal": 0, "attention": 1, "abnormal": 2}
-    ).to_numpy(dtype=int)
+        {"not_scored": -1, "normal": 0, "attention": 1, "abnormal": 2}
+    ).fillna(-1).to_numpy(dtype=int)
     critical = {0, len(scores) - 1}
     critical.update(np.flatnonzero(severity > 0).tolist())
-    critical.add(int(np.argmax(scores["t2"].to_numpy())))
-    critical.add(int(np.argmax(scores["spe"].to_numpy())))
+    critical.add(int(np.nanargmax(np.nan_to_num(scores["t2"].to_numpy(), nan=-np.inf))))
+    critical.add(int(np.nanargmax(np.nan_to_num(scores["spe"].to_numpy(), nan=-np.inf))))
     for column in ("status", "t2_status", "spe_status"):
         values = scores[column].to_numpy()
         switches = np.flatnonzero(values[1:] != values[:-1]) + 1
@@ -1892,6 +2012,17 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_json(error_payload(error), 400)
             return
+        if parsed.path == "/download/frozen-replay":
+            try:
+                query = parse_qs(parsed.query)
+                run_id = _validated_id(query.get("run_id", [""])[0], "run_id")
+                filename, content_type = _frozen_replay_artifact(
+                    query.get("artifact", [""])[0]
+                )
+                self._send_download(RUNS_DIR / run_id / filename, content_type, filename)
+            except Exception as error:
+                self._send_json(error_payload(error), 400)
+            return
         self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self) -> None:
@@ -1976,6 +2107,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/freeze-deployment":
                 self._send_json(freeze_deployment_payload(payload))
+                return
+            if parsed.path == "/api/frozen-replay":
+                self._send_json(frozen_replay_payload(payload))
                 return
             self._send_json({"error": "Not found"}, 404)
         except Exception as error:

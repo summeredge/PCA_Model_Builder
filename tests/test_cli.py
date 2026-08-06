@@ -13,6 +13,19 @@ from pca_model_builder.preprocessing import PreprocessingConfig
 from pca_model_builder.training import build_training_matrix
 
 
+def test_cli_exposes_frozen_replay_without_model_or_preprocessing_overrides():
+    parser = cli.build_parser()
+    replay = next(action for action in parser._actions if getattr(action, "dest", None) == "command")
+    frozen = replay.choices["replay-frozen"]
+    options = {option for action in frozen._actions for option in action.option_strings}
+
+    assert {
+        "--model", "--csv", "--timestamp", "--replay-start", "--replay-end",
+        "--scores-output", "--summary-output", "--contributions-output",
+    } <= options
+    assert not {"--sample-interval", "--max-lag", "--components", "--tag-config"} & options
+
+
 def _rewrite_as_legacy_window_package(path, schema_version):
     with zipfile.ZipFile(path) as package:
         manifest = json.loads(package.read("manifest.json"))

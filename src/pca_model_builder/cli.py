@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Sequence
 
 import pandas as pd
@@ -22,6 +24,7 @@ from .model_io import (
 )
 from .preprocessing import PreprocessingConfig, preprocessing_config_from_mapping
 from .quality import QualityReport, inspect_data_quality
+from .replay import replay_frozen_model
 from .tag_config import engineering_ranges, normalize_tag_configs
 from .training import build_training_matrix
 from .validation import (
@@ -108,6 +111,19 @@ def build_parser() -> argparse.ArgumentParser:
     deployment.add_argument("--model", type=Path, required=True)
     deployment.add_argument("--output", type=Path, required=True)
     deployment.set_defaults(handler=_export_deployment)
+
+    replay = subparsers.add_parser(
+        "replay-frozen", help="Replay historical data with an immutable frozen model"
+    )
+    replay.add_argument("--model", type=Path, required=True)
+    replay.add_argument("--csv", type=Path, required=True)
+    replay.add_argument("--timestamp", required=True)
+    replay.add_argument("--replay-start", required=True)
+    replay.add_argument("--replay-end", required=True)
+    replay.add_argument("--scores-output", type=Path, required=True)
+    replay.add_argument("--summary-output", type=Path, required=True)
+    replay.add_argument("--contributions-output", type=Path, required=True)
+    replay.set_defaults(handler=_replay_frozen)
 
     serve = subparsers.add_parser("serve", help="Run the local web interface")
     serve.add_argument("--host", default="127.0.0.1")
@@ -368,6 +384,82 @@ def _freeze_model(args: argparse.Namespace) -> dict[str, Any]:
 def _export_deployment(args: argparse.Namespace) -> dict[str, Any]:
     export_deployment_package(args.model, args.output)
     return {"deployment_model": str(args.output), "model_status": "frozen"}
+
+
+def _replay_frozen(args: argparse.Namespace) -> dict[str, Any]:
+    _require_frozen_replay_model(args.model)
+    raw = _read_csv(args.csv, args.timestamp, "utf-8-sig")
+    indexed = _to_replay_indexed_frame(raw, args.timestamp)
+    result = replay_frozen_model(
+        args.model, indexed, args.replay_start, args.replay_end
+    )
+    _write_replay_outputs(
+        args.scores_output,
+        args.summary_output,
+        args.contributions_output,
+        result.scores,
+        result.summary,
+        result.contributions,
+        args.timestamp,
+    )
+    return result.summary
+
+
+def _require_frozen_replay_model(path: Path) -> None:
+    if path.suffix.lower() == ".pcadeploy":
+        raise ValueError("deployment packages cannot be replayed")
+    _, manifest = load_model_package(path)
+    if (
+        manifest.get("schema_version") != 4
+        or manifest.get("model_purpose") != "normal_state"
+        or manifest.get("model_status") != "frozen"
+    ):
+        raise ValueError("only schema 4 normal_state/frozen models can be replayed")
+
+
+def _to_replay_indexed_frame(frame: pd.DataFrame, timestamp_column: str) -> pd.DataFrame:
+    timestamps = frame[timestamp_column]
+    if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
+        raise ValueError("CSV timestamps must be increasing and unique for frozen replay")
+    return frame.set_index(timestamp_column)
+
+
+def _write_replay_outputs(
+    scores_path: Path,
+    summary_path: Path,
+    contributions_path: Path,
+    scores: pd.DataFrame,
+    summary: dict[str, Any],
+    contributions: list[dict[str, Any]],
+    timestamp_column: str,
+) -> None:
+    destinations = (scores_path, summary_path, contributions_path)
+    if len({path.resolve() for path in destinations}) != len(destinations):
+        raise ValueError("frozen replay output paths must be distinct")
+    if any(path.exists() for path in destinations):
+        raise ValueError("frozen replay output already exists")
+    temporary: list[Path] = []
+    committed: list[Path] = []
+    try:
+        for path in destinations:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False
+            ) as handle:
+                temporary.append(Path(handle.name))
+        scores.to_csv(temporary[0], index_label=timestamp_column, encoding="utf-8-sig")
+        temporary[1].write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary[2].write_text(json.dumps(contributions, ensure_ascii=False, indent=2), encoding="utf-8")
+        for source, destination in zip(temporary, destinations, strict=True):
+            os.replace(source, destination)
+            committed.append(destination)
+    except Exception:
+        for path in committed:
+            path.unlink(missing_ok=True)
+        raise
+    finally:
+        for path in temporary:
+            path.unlink(missing_ok=True)
 
 
 def _read_csv(path: Path, timestamp_column: str, encoding: str) -> pd.DataFrame:
