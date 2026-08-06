@@ -167,11 +167,12 @@ _APPLE_DESIGN_STYLE = r"""
   .subtitle { color:#cccccc; font-size:14px; line-height:1.43; }
   .help, label, .legend, .dp-legend { font-size:14px; line-height:1.43; }
   main {
-    max-width:1440px;
-    margin:0 auto;
-    grid-template-columns:minmax(320px,420px) minmax(0,1fr);
+    width:100%;
+    max-width:none;
+    margin:0;
+    grid-template-columns:630px minmax(0,1fr);
     gap:24px;
-    padding:24px;
+    padding:24px 20px;
   }
   section { border:0; border-radius:0; padding:32px; background:var(--panel); }
   .controls, .controls .group { min-width:0; }
@@ -222,6 +223,12 @@ _APPLE_DESIGN_STYLE = r"""
   }
   #inspectButton, #qualityButton, #saveTagConfig { background:var(--accent); border-color:var(--accent); color:#ffffff; }
   .tag-toolbar button { min-height:36px; padding:8px 14px; font-size:14px; }
+  #engineeringPanel #tagRole,
+  #engineeringPanel #tagComment {
+    box-sizing:border-box;
+    height:42px;
+    min-height:42px;
+  }
   button:focus-visible, .download:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }
   .tabs, .inner-tabs {
     gap:0;
@@ -264,7 +271,9 @@ _APPLE_DESIGN_STYLE = r"""
   .issue-card, .notice { border-left-width:4px; border-radius:11px; }
   .tag-row.selected { background:#edf5ff; }
   .metric { padding:24px; }
-  .metric strong { font-size:40px; font-weight:600; line-height:1.1; letter-spacing:0; }
+  .metrics { grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; }
+  .metric { min-width:0; padding:14px 12px; }
+  .metric strong { font-size:28px; font-weight:600; line-height:1.1; letter-spacing:0; white-space:nowrap; }
   .chart-card { gap:12px; }
   .chart-card h3 { margin:0; }
   .chart, .dp-chart, .trend-chart { background:#ffffff; }
@@ -275,6 +284,19 @@ _APPLE_DESIGN_STYLE = r"""
   th, td { border-bottom-color:var(--line); padding:12px 16px; }
   th { background:#f4f4f4; color:var(--text); font-weight:600; }
   a:not(.download) { color:var(--accent); }
+  button, .download {
+    height:30px;
+    min-height:30px;
+    padding:4px 12px;
+    font-size:14px;
+    line-height:20px;
+  }
+  input, select, textarea {
+    height:30px;
+    min-height:30px;
+    padding:4px 10px;
+  }
+  #engineeringPanel #tagComment { resize:vertical; }
   button:focus-visible, .download:focus-visible, a:focus-visible {
     outline:2px solid var(--accent);
     outline-offset:2px;
@@ -285,7 +307,8 @@ _APPLE_DESIGN_STYLE = r"""
     main { padding:12px; }
     section { padding:24px; }
     h2 { font-size:34px; }
-    button, .download, input, select { min-height:48px; }
+    button, .download, input, select, textarea { height:30px; min-height:30px; }
+    .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
 </style>
 """

@@ -91,13 +91,18 @@ def test_final_web_uses_the_apple_visual_tokens() -> None:
     assert "transform:scale(.95);" in html
     assert ".tab, .inner-tab" in html
     assert "background:transparent;" in html
-    assert "grid-template-columns:minmax(320px,420px) minmax(0,1fr);" in html
+    assert "grid-template-columns:630px minmax(0,1fr);" in html
     assert ".controls, .controls .group { min-width:0; }" in html
     assert "max-width:100%;" in html
     assert "background:#fafafc;" in html
     assert ".results { gap:24px; }" in html
     assert ".empty, .variance, .exploration-timeline" in html
     assert "border-radius:18px;" in html
+    assert "#engineeringPanel #tagRole," in html
+    assert "height:42px;" in html
+    assert "height:30px;" in html
+    assert "grid-template-columns:repeat(6,minmax(0,1fr));" in html
+    assert "font-size:28px;" in html
 
 
 def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:

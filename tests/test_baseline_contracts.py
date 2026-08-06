@@ -52,13 +52,13 @@ def test_final_web_keeps_complete_tag_roles_and_chinese_guidance() -> None:
 
     assert '<label>变量角色<select id="tagRole">' in html
     assert "仅勾选且角色为 continuous_input 的Tag进入PCA" in html
-    for role in (
-        "continuous_input",
-        "state_filter",
-        "label_only",
-        "exclude",
+    for role, label in (
+        ("continuous_input", "连续输入"),
+        ("state_filter", "状态过滤"),
+        ("label_only", "仅标签"),
+        ("exclude", "排除"),
     ):
-        assert f'<option value="{role}">{role}</option>' in html
+        assert f'<option value="{role}">{label}</option>' in html
 
 
 def test_final_web_exposes_distinct_model_semantics_and_warnings() -> None:

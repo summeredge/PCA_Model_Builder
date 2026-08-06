@@ -2470,7 +2470,7 @@ INDEX_HTML = r"""<!doctype html>
           <h3 id="selectedTagTitle">请选择左侧Tag</h3>
           <div class="detail-fields">
             <div class="row"><label>描述<input id="tagDescription"></label><label>单位<input id="tagUnit"></label></div>
-            <div class="row"><label>变量角色<select id="tagRole"><option value="continuous_input">continuous_input</option><option value="state_filter">state_filter</option><option value="label_only">label_only</option><option value="exclude">exclude</option></select></label><label>备注<textarea id="tagComment"></textarea></label></div>
+            <div class="row"><label>变量角色<select id="tagRole"><option value="continuous_input">连续输入</option><option value="state_filter">状态过滤</option><option value="label_only">仅标签</option><option value="exclude">排除</option></select></label><label>备注<textarea id="tagComment"></textarea></label></div>
             <div class="row"><label>工程下限<input id="engineeringMin" type="number" step="any"></label><label>工程上限<input id="engineeringMax" type="number" step="any"></label></div>
             <div class="row"><label>正常下限<input id="normalMin" type="number" step="any"></label><label>正常上限<input id="normalMax" type="number" step="any"></label></div>
             <div class="row"><label>报警下限<input id="alarmMin" type="number" step="any"></label><label>报警上限<input id="alarmMax" type="number" step="any"></label></div>
