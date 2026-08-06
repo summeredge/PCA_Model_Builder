@@ -37,6 +37,16 @@ def test_cli_freeze_and_export_reject_candidate_then_export_frozen(tmp_path):
     assert not frozen.exists()
 
 
+@pytest.mark.parametrize("manifest", [[], None, "invalid", 1])
+def test_cli_freeze_rejects_nonobject_manifest_without_traceback(tmp_path, capsys, manifest):
+    source, frozen = tmp_path / "invalid.pcamodel", tmp_path / "frozen.pcamodel"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+    assert main(["freeze-model", "--model", str(source), "--model-id", "unit", "--model-version", "1", "--frozen-by", "engineer", "--output", str(frozen)]) == 2
+    assert "Traceback" not in capsys.readouterr().err
+    assert not frozen.exists()
+
+
 def test_cli_trains_and_replays_independent_validation_window(tmp_path):
     rng = np.random.default_rng(42)
     timestamps = pd.date_range("2026-01-01", periods=160, freq="5min")

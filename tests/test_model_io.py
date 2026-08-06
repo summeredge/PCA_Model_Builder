@@ -292,6 +292,59 @@ def test_freeze_rejects_incomplete_evidence_and_generic_save_cannot_forge_frozen
         save_model_package(tmp_path / "forged.pcamodel", fit_dpca(frame, n_components=2), _valid_config(), [["2026-01-01", "2026-01-02"]], model_status="frozen")
 
 
+@pytest.mark.parametrize("manifest", [[], None, "invalid", 4])
+def test_freeze_rejects_nonobject_manifest_as_controlled_error(tmp_path, manifest):
+    source = tmp_path / "invalid.pcamodel"
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", b"not-used")
+    with pytest.raises(ValueError, match="cannot be read"):
+        freeze_validated_model_package(source, tmp_path / "frozen.pcamodel", model_id="unit", model_version=1, frozen_by="engineer")
+
+
+@pytest.mark.parametrize("schema_version", [2, 3])
+def test_freeze_rejects_legacy_validated_package_before_normalization(tmp_path, schema_version):
+    frame = pd.DataFrame(np.random.default_rng(51).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    source = tmp_path / "validated.pcamodel"
+    _validated_package(source, frame)
+    with zipfile.ZipFile(source) as package:
+        manifest = json.loads(package.read("manifest.json")); arrays = package.read("arrays.npz")
+    manifest["schema_version"] = schema_version
+    with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest)); package.writestr("arrays.npz", arrays)
+    with pytest.raises(ValueError, match="schema 4"):
+        freeze_validated_model_package(source, tmp_path / "frozen.pcamodel", model_id="unit", model_version=1, frozen_by="engineer")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda values: values.reshape(1, -1), "variance arrays have invalid shapes"),
+        (lambda values: np.full_like(values, np.nan), "arrays contain non-finite"),
+        (lambda values: -np.abs(values), "explained variance must not be negative"),
+        (lambda values: np.full_like(values, 0.8), "explained variance exceeds one"),
+    ],
+)
+def test_deployment_validates_actual_explained_variance_ratio(tmp_path, mutate, message):
+    frame = pd.DataFrame(np.random.default_rng(52).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    validated, frozen, deployment = tmp_path / "validated.pcamodel", tmp_path / "frozen.pcamodel", tmp_path / "unit.pcadeploy"
+    _validated_package(validated, frame)
+    freeze_validated_model_package(validated, frozen, model_id="unit", model_version=1, frozen_by="engineer")
+    export_deployment_package(frozen, deployment)
+    with zipfile.ZipFile(deployment) as package:
+        manifest = json.loads(package.read("deployment_manifest.json"))
+        with np.load(BytesIO(package.read("arrays.npz")), allow_pickle=False) as stored:
+            arrays = {name: stored[name].copy() for name in stored.files}
+    arrays["explained_variance_ratio"] = mutate(arrays["explained_variance_ratio"])
+    buffer = BytesIO(); np.savez_compressed(buffer, **arrays)
+    manifest["arrays_sha256"] = hashlib.sha256(buffer.getvalue()).hexdigest()
+    with zipfile.ZipFile(deployment, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("deployment_manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", buffer.getvalue())
+    with pytest.raises(ValueError, match=message):
+        load_deployment_package(deployment)
+
+
 @pytest.mark.parametrize(
     ("model_purpose", "model_status"),
     [

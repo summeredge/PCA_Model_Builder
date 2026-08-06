@@ -2259,6 +2259,26 @@ def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeyp
     assert (tmp_path / "runs" / trained["run_id"] / "deployment_model.pcadeploy").is_file()
 
 
+def test_web_freeze_rolls_back_after_second_final_replace_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads"); monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame(); uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    trained = web.train_payload({"file_id":uploaded["file_id"],"timestamp_column":"time","tags":["A","B","C"],"normal_start":"2026-01-01T00:00:00","normal_end":"2026-01-01T07:55:00","sample_interval_minutes":5,"smoothing_window_minutes":10,"max_lag_minutes":0,"lag_step_minutes":5,"model_name":"candidate"})
+    windows=[{"id":"normal","type":"normal_validation","start":"2026-01-01T08:00:00","end":"2026-01-01T09:55:00","enabled":True,"comment":""},{"id":"abnormal","type":"known_abnormal","start":"2026-01-01T10:50:00","end":"2026-01-01T14:55:00","enabled":True,"comment":""}]
+    web.validate_payload({"run_id":trained["run_id"],"file_id":uploaded["file_id"],"timestamp_column":"time","validation_windows":windows}); web.validation_decision_payload({"run_id":trained["run_id"],"decision":"passed","comment":"approved"})
+    real_replace = web.os.replace
+    def fail_deployment(source, destination):
+        if str(destination).endswith("deployment_model.pcadeploy"): raise OSError("replace failed")
+        return real_replace(source, destination)
+    monkeypatch.setattr(web.os, "replace", fail_deployment)
+    payload={"run_id":trained["run_id"],"model_id":"web.unit","model_version":1,"frozen_by":"engineer","comment":"freeze"}
+    with pytest.raises(OSError, match="replace failed"): web.freeze_deployment_payload(payload)
+    run_dir=tmp_path / "runs" / trained["run_id"]
+    assert not (run_dir / "frozen_model.pcamodel").exists() and not (run_dir / "deployment_model.pcadeploy").exists()
+    assert not list(run_dir.glob(".*.pcamodel")) and not list(run_dir.glob(".*.pcadeploy"))
+    monkeypatch.setattr(web.os, "replace", real_replace)
+    assert web.freeze_deployment_payload(payload)["model_status"] == "frozen"
+
+
 def _chart_scores(count: int) -> pd.DataFrame:
     return pd.DataFrame(
         {

@@ -266,10 +266,17 @@ def freeze_validated_model_package(
     _validate_freeze_request(model_id, model_version, frozen_by, comment)
     try:
         with zipfile.ZipFile(source) as package:
-            source_schema_version = json.loads(package.read("manifest.json")).get(
-                "schema_version"
-            )
-    except (zipfile.BadZipFile, KeyError, TypeError, json.JSONDecodeError) as error:
+            raw_manifest = json.loads(package.read("manifest.json"))
+            if not isinstance(raw_manifest, dict):
+                raise ValueError("manifest must be an object")
+            source_schema_version = raw_manifest.get("schema_version")
+    except (
+        zipfile.BadZipFile,
+        KeyError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
         raise ValueError("validated model package cannot be read") from error
     if source_schema_version != SCHEMA_VERSION:
         raise ValueError("only schema 4 validated models can be frozen")
