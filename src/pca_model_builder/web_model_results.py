@@ -129,17 +129,17 @@ _FORM_ALIGNMENT_STYLE = r"""
 """
 
 
-_IBM_DESIGN_STYLE = r"""
-<style id="ibmDesignStyle">
+_APPLE_DESIGN_STYLE = r"""
+<style id="appleDesignStyle">
   :root {
-    --bg:#ffffff;
+    --bg:#f5f5f7;
     --panel:#ffffff;
     --line:#e0e0e0;
-    --line-soft:#e0e0e0;
-    --text:#161616;
-    --muted:#525252;
-    --accent:#0f62fe;
-    --accent-soft:#edf5ff;
+    --line-soft:#f0f0f0;
+    --text:#1d1d1f;
+    --muted:#7a7a7a;
+    --accent:#0066cc;
+    --accent-soft:#f5f5f7;
     --green:#24a148;
     --warn:#f1c21b;
     --danger:#da1e28;
@@ -148,65 +148,70 @@ _IBM_DESIGN_STYLE = r"""
     --abnormal:#da1e28;
   }
 
-  *, *::before, *::after { border-radius:0 !important; box-shadow:none !important; }
+  *, *::before, *::after { box-shadow:none !important; }
   body {
     background:var(--bg);
     color:var(--text);
-    font-family:"IBM Plex Sans","Microsoft YaHei","Segoe UI",Arial,sans-serif;
-    font-size:16px;
+    font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;
+    font-size:17px;
     font-weight:400;
-    letter-spacing:.16px;
-    line-height:1.5;
+    letter-spacing:-.374px;
+    line-height:1.47;
   }
-  header { padding:24px 32px 16px; background:var(--panel); border-bottom:1px solid var(--line); }
-  h1 { margin:0 0 8px; font-size:32px; font-weight:300; line-height:1.25; }
-  h2 { font-size:24px; font-weight:400; line-height:1.33; }
-  h3 { font-size:20px; font-weight:400; line-height:1.4; }
-  h4 { font-size:16px; font-weight:600; line-height:1.29; }
+  header { padding:12px 32px 10px; background:#000000; border-bottom:0; color:#ffffff; }
+  h1 { margin:0 0 4px; font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
+  h2 { font-size:34px; font-weight:600; line-height:1.1; letter-spacing:-.374px; }
+  h3 { font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
+  h4 { font-size:17px; font-weight:600; line-height:1.24; letter-spacing:-.374px; }
   .subtitle, .help, label, .legend, .dp-legend { color:var(--muted); }
-  .subtitle { font-size:14px; line-height:1.29; }
-  .help, label, .legend, .dp-legend { font-size:14px; line-height:1.29; }
-  main { max-width:1584px; margin:0 auto; gap:16px; padding:16px; }
-  section { border:1px solid var(--line); padding:16px; background:var(--panel); }
-  .controls { gap:16px; }
+  .subtitle { color:#cccccc; font-size:14px; line-height:1.43; }
+  .help, label, .legend, .dp-legend { font-size:14px; line-height:1.43; }
+  main { max-width:1440px; margin:0 auto; gap:20px; padding:24px; }
+  section { border:0; border-radius:0; padding:32px; background:var(--panel); }
+  .controls { gap:20px; }
   .group, .metric, .validation-box, .exploration-controls, .dp-inline-help {
-    background:#f4f4f4;
+    background:#ffffff;
     border:1px solid var(--line);
+    border-radius:18px;
   }
-  .group { gap:12px; padding:16px; }
+  .group { gap:12px; padding:24px; }
   .group-title, .sub-title { font-size:14px; font-weight:600; line-height:1.29; }
   .sub-title { border-top-color:var(--line); }
   input, select, textarea {
-    background:#f4f4f4;
-    border:0;
-    border-bottom:1px solid #8c8c8c;
+    background:#ffffff;
+    border:1px solid rgba(0,0,0,.08);
+    border-radius:11px;
     color:var(--text);
     font:inherit;
-    padding:11px 16px;
+    padding:12px 20px;
   }
   input:focus, select:focus, textarea:focus {
-    outline:2px solid var(--accent);
-    outline-offset:-2px;
-    border-bottom:2px solid var(--accent);
+    outline:2px solid #0071e3;
+    outline-offset:2px;
+    border-color:#0071e3;
   }
   button, .download {
-    min-height:42px;
+    min-height:44px;
     border:1px solid var(--accent);
     background:var(--accent);
     color:#ffffff;
-    font:400 14px/1.29 "IBM Plex Sans","Microsoft YaHei","Segoe UI",Arial,sans-serif;
-    letter-spacing:.16px;
-    padding:12px 16px;
+    border-radius:9999px;
+    font:400 17px/1.47 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;
+    letter-spacing:-.374px;
+    padding:11px 22px;
     text-decoration:none;
   }
-  button:hover, .download:hover { background:#0050e6; border-color:#0050e6; }
-  button:active, .download:active { background:#002d9c; border-color:#002d9c; }
+  button:active, .download:active { transform:scale(.95); }
   button.secondary, .inner-tab, .tab {
-    background:#161616;
-    border-color:#161616;
+    background:#1d1d1f;
+    border-color:#1d1d1f;
     color:#ffffff;
+    border-radius:8px;
+    font-size:14px;
+    letter-spacing:-.224px;
+    padding:8px 15px;
   }
-  button.secondary:hover, .inner-tab:hover, .tab:hover { background:#262626; border-color:#262626; }
+  button:focus-visible, .download:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }
   .tabs, .inner-tabs { gap:0; border-bottom:1px solid var(--line); padding-bottom:0; }
   .tab, .inner-tab { border:0; border-bottom:2px solid transparent; }
   .tab.active, .inner-tab.active {
@@ -228,8 +233,8 @@ _IBM_DESIGN_STYLE = r"""
   .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
   .issue-card, .notice { border-left-width:4px; }
   .tag-row.selected { background:#edf5ff; }
-  .metric { padding:16px; }
-  .metric strong { font-size:32px; font-weight:300; line-height:1.25; }
+  .metric { padding:24px; }
+  .metric strong { font-size:40px; font-weight:600; line-height:1.1; letter-spacing:0; }
   .chart-card { gap:12px; }
   .chart-card h3 { margin:0; }
   .chart, .dp-chart, .trend-chart { background:#ffffff; }
@@ -244,10 +249,12 @@ _IBM_DESIGN_STYLE = r"""
     outline:2px solid var(--accent);
     outline-offset:2px;
   }
-  @media (max-width:672px) {
-    header { padding:16px; }
-    h1 { font-size:32px; }
-    main { padding:8px; }
+  @media (max-width:640px) {
+    header { padding:12px 16px 10px; }
+    h1 { font-size:21px; }
+    main { padding:12px; }
+    section { padding:24px; }
+    h2 { font-size:34px; }
     button, .download, input, select { min-height:48px; }
   }
 </style>
@@ -275,7 +282,7 @@ def apply_model_results_ui(html: str) -> str:
     if "</head>" not in result or "</body>" not in result:
         raise ValueError("Web HTML缺少head或body结束标签")
     result = result.replace(
-        "</head>", f"{_FORM_ALIGNMENT_STYLE}\n{_IBM_DESIGN_STYLE}\n</head>", 1
+        "</head>", f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n</head>", 1
     )
     return result.replace(
         "</body>",

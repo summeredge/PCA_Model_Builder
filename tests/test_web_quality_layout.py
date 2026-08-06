@@ -80,15 +80,15 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     )
 
 
-def test_final_web_uses_the_ibm_carbon_visual_tokens() -> None:
+def test_final_web_uses_the_apple_visual_tokens() -> None:
     html = web_model_results.INDEX_HTML
 
-    assert 'id="ibmDesignStyle"' in html
-    assert "--accent:#0f62fe;" in html
-    assert "font-family:\"IBM Plex Sans\"" in html
-    assert "border-radius:0 !important;" in html
-    assert "background:#f4f4f4;" in html
-    assert "font-size:32px; font-weight:300;" in html
+    assert 'id="appleDesignStyle"' in html
+    assert "--accent:#0066cc;" in html
+    assert "font-family:system-ui,-apple-system" in html
+    assert "border-radius:9999px;" in html
+    assert "--bg:#f5f5f7;" in html
+    assert "transform:scale(.95);" in html
 
 
 def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:
