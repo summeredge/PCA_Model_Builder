@@ -7,6 +7,8 @@ import pandas as pd
 from scipy.stats import f, norm
 from sklearn.decomposition import PCA
 
+from .scoring_core import score_dynamic_feature_matrix
+
 
 @dataclass(frozen=True)
 class DPCAModel:
@@ -34,39 +36,32 @@ class DPCAModel:
         return (values - self.mean) / self.scale
 
     def score(self, frame: pd.DataFrame) -> pd.DataFrame:
-        standardized = self.standardize(frame)
-        principal_scores = standardized @ self.components.T
-        reconstruction = principal_scores @ self.components
-        residual = standardized - reconstruction
-        t2 = np.sum(
-            principal_scores**2 / self.eigenvalues[: self.n_components], axis=1
-        )
-        spe = np.sum(residual**2, axis=1)
-
-        t2_status = _statistic_status(
-            t2, self.t2_limits[0.95], self.t2_limits[0.99]
-        )
-        spe_status = _statistic_status(
-            spe, self.q_limits[0.95], self.q_limits[0.99]
-        )
-        severity = {"normal": 0, "attention": 1, "abnormal": 2}
-        status = np.array(
-            [
-                left if severity[left] >= severity[right] else right
-                for left, right in zip(t2_status, spe_status, strict=True)
-            ],
-            dtype=object,
+        missing = [name for name in self.feature_names if name not in frame.columns]
+        if missing:
+            raise ValueError(f"missing model features: {', '.join(missing)}")
+        scored = score_dynamic_feature_matrix(
+            frame.loc[:, self.feature_names].to_numpy(dtype=float),
+            feature_names=self.feature_names,
+            mean=self.mean,
+            scale=self.scale,
+            components=self.components,
+            eigenvalues=self.eigenvalues,
+            t2_limits=self.t2_limits,
+            q_limits=self.q_limits,
         )
         result = pd.DataFrame(index=frame.index)
         for index in range(self.n_components):
-            result[f"pc{index + 1}"] = principal_scores[:, index]
-        result["t2"] = t2
-        result["spe"] = spe
-        result["t2_limit_ratio"] = t2 / self.t2_limits[0.95]
-        result["spe_limit_ratio"] = spe / self.q_limits[0.95]
-        result["t2_status"] = t2_status
-        result["spe_status"] = spe_status
-        result["status"] = status
+            result[f"pc{index + 1}"] = scored.pc_scores[:, index]
+        result["t2"] = scored.t2
+        result["spe"] = scored.spe
+        result["t2_limit_ratio"] = scored.t2_limit_ratio
+        result["spe_limit_ratio"] = scored.spe_limit_ratio
+        result["t2_status"] = scored.t2_status
+        result["spe_status"] = scored.spe_status
+        result["overall_status"] = scored.overall_status
+        result["score_valid"] = scored.score_valid
+        result["invalid_reason"] = scored.invalid_reason
+        result["status"] = result["overall_status"]
         return result
 
 
@@ -183,12 +178,3 @@ def _q_limit(
     if bracket <= 0:
         return float(np.quantile(training_spe, alpha))
     return float(theta1 * bracket ** (1.0 / h0))
-
-
-def _statistic_status(
-    values: np.ndarray, limit_95: float, limit_99: float
-) -> np.ndarray:
-    status = np.full(len(values), "normal", dtype=object)
-    status[values >= limit_95] = "attention"
-    status[values >= limit_99] = "abnormal"
-    return status
