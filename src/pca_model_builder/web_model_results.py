@@ -467,9 +467,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   const labels = {
-    normal:["正常", "normal"], usable:["可用", "usable"],
-    attention:["关注", "attention"], review:["需确认", "review"],
-    abnormal:["异常", "abnormal"], blocking:["阻止", "blocking"],
+    normal:"正常", usable:"可用", attention:"关注", review:"需确认",
+    abnormal:"异常", blocking:"阻止",
   };
   const enhanceTables = () => document.querySelectorAll(".table-wrap td").forEach(cell => {
     if (cell.dataset.uiEnhanced) return;
@@ -479,8 +478,8 @@ document.addEventListener("DOMContentLoaded", () => {
       cell.dataset.uiEnhanced = "true";
       const badge = document.createElement("span");
       badge.className = `status-label ${key}`;
-      badge.textContent = labels[key][0];
-      cell.replaceChildren(badge, document.createTextNode(labels[key][1]));
+      badge.textContent = labels[key];
+      cell.replaceChildren(badge);
       return;
     }
     if (/^-?[\d,.]+(?:%| 分钟)?$/.test(value)) cell.classList.add("numeric");

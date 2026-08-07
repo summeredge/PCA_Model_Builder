@@ -78,7 +78,7 @@
       <select id="modelComparisonRuns" multiple size="5" aria-label="候选模型比较"></select>
     </label>
     <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button></div>
-    <div id="modelComparisonResult" class="help">比较只读取已保存的 normal_state/candidate 模型包。</div>`;
+    <div id="modelComparisonResult" class="help">比较只读取已保存的正常状态候选模型包。</div>`;
   projectionGrid.insertAdjacentElement("afterend", diagnosticCard);
 
   const replayCard = document.createElement("section");
@@ -127,7 +127,7 @@
     target.className = "help";
     target.textContent = `${data.notice} 输出 ${summary.output_row_count ?? 0} 点；有效评分 ${summary.score_valid_count ?? 0} 点；状态过滤排除 ${summary.state_filter_excluded_rows ?? 0} 点；贡献记录 ${data.contribution_count ?? 0} 条。`;
     const status = document.getElementById("frozenReplayStatus");
-    status.textContent = Object.entries(summary.status_counts || {}).map(([key, value]) => `${key}: ${value}`).join("；") || "无可展示评分点。";
+    status.textContent = Object.entries(summary.status_counts || {}).map(([key, value]) => `${displayValue(key)}：${value}`).join("；") || "无可展示评分点。";
     drawReplayTrend(data.scores || []);
     const downloads = data.downloads || {};
     [["scores", "frozenReplayScoresDownload"], ["summary", "frozenReplaySummaryDownload"], ["contributions", "frozenReplayContributionsDownload"]].forEach(([key, id]) => {
@@ -225,7 +225,7 @@
     const target = document.getElementById("singleModelDiagnostic");
     if (!diagnostic) {
       target.className = "help";
-      target.textContent = "当前为探索草稿模型；仅 normal_state/candidate 模型显示候选模型结构诊断。";
+      target.textContent = "当前为探索草稿模型；仅正常状态候选模型显示候选模型结构诊断。";
       return;
     }
     target.className = "";
@@ -336,8 +336,12 @@
     return td;
   }
 
+  function displayValue(value) {
+    return {continuous_input:"连续输入", state_filter:"状态过滤", label_only:"仅标签", exclude:"排除", higher_is_better:"越高越好", lower_is_better:"越低越好", target_range:"目标范围内", normal:"正常", attention:"关注", abnormal:"异常", usable:"可用", review:"需确认", blocking:"阻止", used:"已使用", dropped:"已丢弃", trailing_mean:"尾随均值", trailing_median:"尾随中位数", mean:"均值", median:"中位数", last:"最后值", none:"不使用"}[value] || value;
+  }
+
   function formatValue(value) {
-    return typeof value === "object" ? JSON.stringify(value) : String(value ?? "—");
+    return typeof value === "object" ? JSON.stringify(value) : String(displayValue(value ?? "—"));
   }
 
   function drawLoadingPlot(plot) {

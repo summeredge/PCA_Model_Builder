@@ -23,3 +23,13 @@ def test_final_web_keeps_algorithm_and_api_paths_out_of_ui_layer() -> None:
     assert "fetch(" not in source
     assert "/api/" not in source
     assert "state." not in source
+
+
+def test_web_translates_display_labels_without_changing_option_values() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert 'value="higher_is_better">越高越好' in html
+    assert 'value="lower_is_better">越低越好' in html
+    assert 'value="target_range">目标范围内' in html
+    assert 'value="continuous_input">连续输入' in html
+    assert '>待决策</option>' in html

@@ -212,7 +212,7 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
         "解释率累计曲线",
         "原始Tag平方载荷能量",
         "Lag平方载荷能量",
-        "当前为探索草稿模型；仅 normal_state/candidate 模型显示候选模型结构诊断。",
+        "当前为探索草稿模型；仅正常状态候选模型显示候选模型结构诊断。",
     ):
         assert text in source
     assert "最佳模型" not in source
@@ -291,7 +291,7 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
     ):
         assert element_id in html
     assert "/api/preprocessing-preview" in html
-    for label in ("raw 原始", "resampled 重采样", "filtered 因果滤波"):
+    for label in ("原始数据", "重采样数据", "因果滤波数据"):
         assert label in html
 
 

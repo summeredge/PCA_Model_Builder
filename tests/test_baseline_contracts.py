@@ -51,7 +51,7 @@ def test_final_web_keeps_complete_tag_roles_and_chinese_guidance() -> None:
     html = web_model_results.INDEX_HTML
 
     assert '<label>变量角色<select id="tagRole">' in html
-    assert "仅勾选且角色为 continuous_input 的Tag进入PCA" in html
+    assert "仅勾选且角色为“连续输入”的 Tag 进入 PCA" in html
     for role, label in (
         ("continuous_input", "连续输入"),
         ("state_filter", "状态过滤"),

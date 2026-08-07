@@ -214,7 +214,7 @@ def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None
         "已验证模型，已完成独立验证和工程师确认；尚未执行工程冻结。",
         "只有正常状态候选模型可以执行独立验证。",
         "验证回放完成，待工程师确认",
-        "已生成 normal_state/validated 模型副本",
+        "已生成已验证模型副本",
         "原候选模型未被原地修改。",
     ):
         assert text in html
