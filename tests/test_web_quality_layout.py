@@ -305,6 +305,19 @@ def test_upload_success_clears_candidate_and_previous_file_state() -> None:
     assert '"/api/inspect"' not in upload_source
 
 
+def test_data_inspection_has_visible_progress_and_timeout() -> None:
+    html = web_model_results.INDEX_HTML
+    inspect_source = html.split(
+        'el("inspectButton").addEventListener("click", async () => {', 1
+    )[1].split('el("tagSearch")', 1)[0]
+
+    assert "new AbortController()" in inspect_source
+    assert "controller.abort()" in inspect_source
+    assert "超过 30 秒未完成" in inspect_source
+    assert "读取时间列与候选 Tag" in inspect_source
+    assert "signal:controller.signal" in inspect_source
+
+
 def test_candidate_confirmation_is_separate_from_training_windows() -> None:
     html = web_model_results.INDEX_HTML
     view_source = html.split("function showCandidateTrend(window)", 1)[1].split(
