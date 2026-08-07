@@ -44,7 +44,7 @@ def test_final_web_moves_controls_into_their_workflow_stages() -> None:
 def test_workflow_status_is_derived_from_existing_ui_state() -> None:
     source = web_model_results._WORKBENCH_UI_SCRIPT
 
-    assert 'candidateChecks.some(input => input.checked)' in source
+    assert 'candidateDecisions.some(select => select.value === "accepted")' in source
     assert '!document.getElementById("modelContent").hidden' in source
     assert '!document.getElementById("validationContent").hidden' in source
     assert '!document.getElementById("deploymentModelDownload").hidden' in source

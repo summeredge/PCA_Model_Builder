@@ -116,6 +116,31 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     assert 'id="varianceThreshold" type="number" min="0.01" max="0.99"' in web.INDEX_HTML
 
 
+def test_upload_reads_only_file_header_and_basic_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(
+        web,
+        "inspect_data_quality",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+    )
+
+    uploaded = web.save_upload("history.csv", b"time,A,B\n2026-01-01,1,2\n")
+
+    assert uploaded["columns"] == ["time", "A", "B"]
+    assert uploaded["size_bytes"] > 0
+    assert "rows" not in uploaded
+    assert (web.UPLOADS_DIR / f'{uploaded["file_id"]}.csv').is_file()
+
+
+def test_upload_csv_read_error_is_explicit_and_removes_partial_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+
+    with pytest.raises(ValueError, match="CSV读取失败："):
+        web.save_upload("invalid.csv", b"\xff\xfe\xff")
+
+    assert not list(web.UPLOADS_DIR.glob("*.csv"))
+
+
 def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls():
     html = web_model_results.INDEX_HTML
     for element_id in (
@@ -1327,9 +1352,13 @@ def test_state_exploration_conversion_keeps_same_candidate_from_separate_runs():
     assert repeated["converted_candidate_ids"] == []
 
 
-def test_state_exploration_conversion_reports_existing_candidates_in_web():
-    assert "if(data.converted_candidate_ids.length)" in web.INDEX_HTML
-    assert "所选候选已存在，未新增正常状态候选时段。" in web.INDEX_HTML
+def test_state_exploration_conversion_adds_only_to_candidate_windows_in_web():
+    assert "state.candidateWindows.some(window=>window.source_ref===candidateRef)" in web.INDEX_HTML
+    assert "请在候选窗口列表确认作为训练窗口。" in web.INDEX_HTML
+    conversion_source = web.INDEX_HTML.split(
+        'el("convertExplorationCandidates").addEventListener', 1
+    )[1].split('el("trainExploratoryButton")', 1)[0]
+    assert "/training-windows" not in conversion_source
 
 
 def test_training_windows_api_normalizes_operations_and_reports_summary():

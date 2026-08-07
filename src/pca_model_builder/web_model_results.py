@@ -465,6 +465,8 @@ _WORKBENCH_UI_SCRIPT = r"""
 <script id="workbenchUiScript">
 document.addEventListener("DOMContentLoaded", () => {
   const controls = document.querySelector(".controls");
+  if (controls.dataset.workflowInitialized) return;
+  controls.dataset.workflowInitialized = "true";
   const results = document.querySelector(".results");
   const sourceGroups = [...controls.querySelectorAll(":scope > .group")];
   const [uploadGroup, tagGroup] = sourceGroups;
@@ -488,7 +490,7 @@ document.addEventListener("DOMContentLoaded", () => {
   candidateManager.className = "group candidate-manager";
   candidateManager.innerHTML = '<div class="group-title">候选窗口</div><div class="help">手工选择、趋势选择、聚类推荐和性能辅助统一进入此列表。候选默认待确认，不会自动参与训练。</div>';
   const candidateRow = document.getElementById("candidateStart").closest(".row");
-  const candidateTable = document.getElementById("trainingWindows");
+  const candidateTable = document.getElementById("candidateWindows");
   const candidateHeading = candidateTable.previousElementSibling;
   const candidateHelp = candidateTable.nextElementSibling;
   candidateHeading.textContent = "候选窗口列表";
@@ -584,7 +586,7 @@ document.addEventListener("DOMContentLoaded", () => {
     button.dataset.panel = target;
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", String(index === 0));
-    button.innerHTML = `<span class="workflow-step-number">${index + 1}</span><span class="workflow-step-copy"><span class="workflow-step-title">${title}</span><span class="workflow-step-summary">尚未完成</span><span class="workflow-step-next">下一步：${next}</span></span><span class="workflow-step-status">${index === 0 ? "当前" : "待开始"}</span>`;
+    button.innerHTML = `<span class="workflow-step-number">${index + 1}</span><span class="workflow-step-copy"><span class="workflow-step-title">${title}</span><span class="workflow-step-next">下一步：${next}</span></span><span class="workflow-step-status">${index === 0 ? "当前" : "待开始"}</span>`;
     button.addEventListener("click", () => globalThis.showWorkflowStage(target));
     workflowSteps.append(button);
   });
@@ -601,27 +603,19 @@ document.addEventListener("DOMContentLoaded", () => {
   globalThis.showWorkflowStage("configPanel");
 
   const refreshWorkflow = () => {
-    const candidateChecks = [...candidateTable.querySelectorAll('tbody input[type="checkbox"]')];
+    const candidateDecisions = [...candidateTable.querySelectorAll('tbody select')];
     const completed = [
       Boolean(document.getElementById("candidateStart").value),
-      candidateChecks.some(input => input.checked),
+      candidateDecisions.some(select => select.value === "accepted"),
       !document.getElementById("modelContent").hidden,
       !document.getElementById("validationContent").hidden,
       !document.getElementById("deploymentModelDownload").hidden,
-    ];
-    const summaries = [
-      completed[0] ? "数据已检查，可配置建模 Tag" : "等待数据检查",
-      `${candidateChecks.length} 个候选，${candidateChecks.filter(input => input.checked).length} 个已确认`,
-      completed[2] ? "模型训练已完成" : "等待已确认训练窗口",
-      completed[3] ? "独立验证已有结果" : "等待候选模型",
-      completed[4] ? "部署包已生成" : "等待验证通过与工程冻结",
     ];
     const canRelease = !validatedDownload.hidden;
     document.getElementById("releaseEmpty").hidden = canRelease;
     releaseContent.hidden = !canRelease;
     workflowSteps.querySelectorAll(".workflow-step").forEach((button, index) => {
       button.classList.toggle("complete", completed[index]);
-      button.querySelector(".workflow-step-summary").textContent = summaries[index];
       button.querySelector(".workflow-step-status").textContent = completed[index] ? "已完成" : button.classList.contains("active") ? "当前" : "待开始";
     });
   };

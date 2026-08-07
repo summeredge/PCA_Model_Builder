@@ -164,24 +164,26 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
         'id="candidateEnd"',
         'id="candidateComment"',
         'id="addManualCandidate"',
+        'id="candidateWindows"',
         'id="trainingWindows"',
     ):
         assert element_id in html
     for label in (
-        "启用",
+        "窗口",
         "来源",
-        "持续时间",
-        "原始 / 有效",
-        "质量",
-        "备注",
+        "时间范围",
+        "状态",
+        "确认作为训练窗口",
+        "参与训练",
         "查看趋势",
         "编辑",
         "删除",
     ):
         assert label in html
+    assert "candidateWindows:[]" in html
     assert "trainingWindows:[]" in html
-    assert 'async function addCandidateWindow(source,start,end,sourceRef=null,comment="")' in html
-    assert 'enabled:false' in html
+    assert 'async function addCandidateWindow(source,start,end,sourceRef=null,comment="",status="pending")' in html
+    assert 'status="pending"' in html
     assert 'addCandidateWindow("manual"' in html
     assert 'addCandidateWindow("cluster"' in html
     assert 'addCandidateWindow("trend"' in html
@@ -202,7 +204,7 @@ def test_final_web_keeps_candidate_decisions_manual_and_non_training() -> None:
     assert "exploration-candidate-decision" in html
     assert "exploration-candidate-comment" in html
     assert "接受仅表示允许加入候选窗口，不会自动参与训练" in html
-    assert "默认待确认且不会自动参与训练" in html
+    assert "请在候选窗口列表确认作为训练窗口" in html
 
 
 def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None:
@@ -266,16 +268,16 @@ def test_candidate_actions_do_not_replace_the_training_window() -> None:
     assert 'normalEnd' not in performance_source
 
 
-def test_inspection_creates_only_a_disabled_suggested_candidate() -> None:
+def test_inspection_creates_only_a_pending_suggested_candidate() -> None:
     html = web_model_results.INDEX_HTML
     inspect_source = html.split('el("inspectButton").addEventListener("click", async () => {', 1)[1].split(
         'el("selectAllTags").addEventListener', 1
     )[0]
 
-    assert 'state.trainingWindows=[{id:"suggested-window-001"' in inspect_source
-    assert 'source:"suggested",source_ref:"inspect-default",enabled:false' in inspect_source
+    assert 'state.candidateWindows=[{id:"suggested-window-001"' in inspect_source
+    assert 'source:"suggested",source_ref:"inspect-default",status:"pending"' in inspect_source
     assert '系统建议的初始正常候选时段' in inspect_source
-    assert 'enabled:true' not in inspect_source
+    assert 'state.trainingWindows=[]' in inspect_source
     assert 'el("qualityButton").disabled=true' in inspect_source
 
 
@@ -286,8 +288,10 @@ def test_upload_success_clears_candidate_and_previous_file_state() -> None:
     )[0]
 
     for statement in (
+        "state.candidateWindows=[]",
         "state.trainingWindows=[]",
         "state.trainingWindowSummary=[]",
+        "renderCandidateWindows()",
         "renderTrainingWindows()",
         "state.quality=null",
         "state.training=null",
@@ -296,11 +300,17 @@ def test_upload_success_clears_candidate_and_previous_file_state() -> None:
         "state.excludedTags=[]",
     ):
         assert statement in upload_source
+    assert 'setStatus("正在读取文件…","info")' in upload_source
+    assert "requestAnimationFrame" in upload_source
+    assert '"/api/inspect"' not in upload_source
 
 
-def test_candidate_view_and_mutations_preserve_explicit_enablement() -> None:
+def test_candidate_confirmation_is_separate_from_training_windows() -> None:
     html = web_model_results.INDEX_HTML
     view_source = html.split("function showCandidateTrend(window)", 1)[1].split(
+        "function renderCandidateWindows", 1
+    )[0]
+    candidate_source = html.split("function renderCandidateWindows", 1)[1].split(
         "function renderTrainingWindows", 1
     )[0]
     mutation_source = html.split("function renderTrainingWindows", 1)[1].split(
@@ -310,9 +320,11 @@ def test_candidate_view_and_mutations_preserve_explicit_enablement() -> None:
     assert "window.enabled" not in view_source
     assert "set_enabled" not in view_source
     assert "state.trainingWindows" not in view_source
+    assert '["pending","accepted","rejected"]' in candidate_source
+    assert 'label==="确认作为训练窗口"&&(window.status!=="accepted"||Boolean(window.trainingWindowId))' in candidate_source
+    assert "async function confirmCandidateWindow(candidate)" in mutation_source
+    assert "enabled:true" in mutation_source
     assert 'action:"set_enabled"' in mutation_source
-    assert 'enabled:false' in mutation_source
-    assert 'enabled:false,comment}},true);' in mutation_source
     assert "function updateQualityButtonAvailability()" in html
     assert "!state.trainingWindows.some(window=>window.enabled)" in html
     assert "renderTrainingWindows(); updateQualityButtonAvailability();" in mutation_source
@@ -321,7 +333,7 @@ def test_candidate_view_and_mutations_preserve_explicit_enablement() -> None:
     assert "if(affectsTraining) invalidateQuality" in mutation_source
 
 
-def test_last_candidate_removal_keeps_the_candidate_table_empty() -> None:
+def test_last_training_window_removal_keeps_the_training_table_empty() -> None:
     html = web_model_results.INDEX_HTML
     update_source = html.split("async function updateTrainingWindows", 1)[1].split(
         "function addCandidateWindow", 1
@@ -336,7 +348,7 @@ def test_last_candidate_removal_keeps_the_candidate_table_empty() -> None:
     assert "renderTrainingWindows(); updateQualityButtonAvailability();" in update_source
     assert "if(affectsTraining) invalidateQuality" in update_source
     assert "suggested-window-001" not in update_source
-    assert "尚无正常候选时段" in render_source
+    assert "尚无已确认训练窗口" in render_source
 
 
 def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPatch) -> None:
