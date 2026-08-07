@@ -2464,9 +2464,13 @@ INDEX_HTML = r"""<!doctype html>
         <div class="inner-tabs">
           <button class="inner-tab active" data-inner="engineeringPanel">工程配置</button>
           <button class="inner-tab" data-inner="qualityPanel">数据质量</button>
-          <button class="inner-tab" data-inner="batchPanel">批量配置</button>
         </div>
         <div id="engineeringPanel" class="inner-panel active">
+          <div class="batch-config">
+            <div class="batch-config-title">批量配置</div>
+            <div class="actions"><a id="templateDownload" class="download" href="#">下载XLSX模板</a><label class="secondary">导入XLSX配置<input id="tagConfigFile" type="file" accept=".xlsx"></label><button id="importConfigButton" class="secondary" disabled>预览导入</button><button id="applyConfigButton" disabled>确认应用非空字段</button><button id="exportConfigButton" class="secondary" disabled>导出当前配置</button></div>
+            <div id="importSummary" class="status info">XLSX是可选工程元数据，导入不会跳过质量检查，也不会立即覆盖当前配置。</div>
+          </div>
           <h3 id="selectedTagTitle">请选择左侧Tag</h3>
           <div class="detail-fields">
             <div class="row"><label>描述<input id="tagDescription"></label><label>单位<input id="tagUnit"></label></div>
@@ -2484,10 +2488,6 @@ INDEX_HTML = r"""<!doctype html>
           <h3>全部问题Tag</h3>
           <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量Tag</button></div>
           <div id="qualityIssues" class="empty">执行统一数据质量检查后，只显示需要确认或阻止训练的Tag。</div>
-        </div>
-        <div id="batchPanel" class="inner-panel">
-          <div class="actions"><a id="templateDownload" class="download" href="#">下载XLSX模板</a><label class="secondary">导入XLSX配置<input id="tagConfigFile" type="file" accept=".xlsx"></label><button id="importConfigButton" class="secondary" disabled>预览导入</button><button id="applyConfigButton" disabled>确认应用非空字段</button><button id="exportConfigButton" class="secondary" disabled>导出当前配置</button></div>
-          <div id="importSummary" class="status info">XLSX是可选工程元数据，导入不会跳过质量检查，也不会立即覆盖当前配置。</div>
         </div>
       </div>
       <div id="stateExplorationPanel" class="panel">

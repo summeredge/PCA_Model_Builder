@@ -31,14 +31,24 @@ _SCATTER_RENDERER = re.compile(
 
 _FORM_ALIGNMENT_STYLE = r"""
 <style id="webFormAlignmentStyle">
-  #batchPanel .actions {
+  #engineeringPanel .batch-config {
+    width:100%;
+    max-width:760px;
+    display:grid;
+    gap:10px;
+  }
+  #engineeringPanel .batch-config-title {
+    font-size:16px;
+    font-weight:600;
+  }
+  #engineeringPanel .batch-config .actions {
     display:grid;
     grid-template-columns:max-content minmax(260px,1fr) max-content max-content max-content;
     gap:10px;
     align-items:end;
   }
-  #batchPanel .actions > .download,
-  #batchPanel .actions > button {
+  #engineeringPanel .batch-config .actions > .download,
+  #engineeringPanel .batch-config .actions > button {
     display:inline-flex;
     align-items:center;
     justify-content:center;
@@ -46,7 +56,7 @@ _FORM_ALIGNMENT_STYLE = r"""
     height:42px;
     white-space:nowrap;
   }
-  #batchPanel .actions > label.secondary {
+  #engineeringPanel .batch-config .actions > label.secondary {
     display:grid;
     grid-template-rows:auto 42px;
     gap:4px;
@@ -57,13 +67,13 @@ _FORM_ALIGNMENT_STYLE = r"""
     color:var(--muted);
     font-size:12px;
   }
-  #batchPanel #tagConfigFile {
+  #engineeringPanel .batch-config #tagConfigFile {
     min-width:0;
     min-height:42px;
     height:42px;
     padding:5px 8px;
   }
-  #batchPanel #importSummary { margin-top:10px; }
+  #engineeringPanel .batch-config #importSummary { margin-top:10px; }
 
   #clusterPanel .group { gap:10px; }
   #clusterPanel .row {
@@ -114,14 +124,14 @@ _FORM_ALIGNMENT_STYLE = r"""
   }
 
   @media (max-width:900px) {
-    #batchPanel .actions {
+    #engineeringPanel .batch-config .actions {
       grid-template-columns:minmax(0,1fr) minmax(0,1fr);
     }
-    #batchPanel .actions > label.secondary {
+    #engineeringPanel .batch-config .actions > label.secondary {
       grid-column:1 / -1;
     }
-    #batchPanel .actions > .download,
-    #batchPanel .actions > button {
+    #engineeringPanel .batch-config .actions > .download,
+    #engineeringPanel .batch-config .actions > button {
       width:100%;
     }
   }
@@ -223,6 +233,28 @@ _APPLE_DESIGN_STYLE = r"""
   }
   #inspectButton, #qualityButton, #saveTagConfig { background:var(--accent); border-color:var(--accent); color:#ffffff; }
   .tag-toolbar button { min-height:36px; padding:8px 14px; font-size:14px; }
+  #tagOptions {
+    max-height:300px;
+    padding:6px;
+    gap:2px;
+  }
+  #tagOptions .tag-row {
+    min-height:30px;
+    height:30px;
+    padding:3px 6px;
+    grid-template-columns:22px minmax(0,1fr) max-content;
+    align-items:center;
+    font-size:14px;
+    line-height:20px;
+  }
+  #tagOptions .tag-row input[type=checkbox] {
+    width:16px;
+    height:16px;
+    min-height:16px;
+    padding:0;
+    margin:0;
+  }
+  #tagOptions .tag-state { font-size:12px; line-height:20px; }
   #engineeringPanel #tagRole,
   #engineeringPanel #tagComment {
     box-sizing:border-box;
@@ -314,6 +346,152 @@ _APPLE_DESIGN_STYLE = r"""
 """
 
 
+_WORKBENCH_UI_STYLE = r"""
+<style id="workbenchUiStyle">
+  /* Keep the operational workflow legible without changing the data model. */
+  .controls > .group { border-color:var(--line); background:var(--panel); }
+  .controls > .group > .group-title {
+    padding-bottom:8px;
+    border-bottom:1px solid var(--line-soft);
+    color:var(--text);
+  }
+  .controls .group:nth-of-type(3) { border-color:#bfd7ef; }
+  .results > .tabs::before {
+    content:"结果与详情";
+    display:block;
+    flex:1 0 100%;
+    padding:0 0 8px;
+    color:var(--muted);
+    font-size:13px;
+    font-weight:600;
+  }
+  .panel.active { padding:4px 0 24px; }
+  .panel.active > h3 { margin:8px 0 0; }
+  .advanced-parameters {
+    border-top:1px solid var(--line);
+    border-bottom:1px solid var(--line);
+    padding:10px 0;
+  }
+  .advanced-parameters > summary {
+    color:var(--text);
+    cursor:pointer;
+    font-weight:600;
+  }
+  .advanced-parameters[open] > summary { margin-bottom:12px; }
+  .advanced-parameters > .row { margin-top:10px; }
+  .operation-log {
+    display:grid;
+    gap:5px;
+    border-left:4px solid var(--accent);
+  }
+  .operation-log::before {
+    content:"运行日志";
+    color:inherit;
+    font-size:12px;
+    font-weight:700;
+  }
+  button:disabled, input:disabled, select:disabled, textarea:disabled {
+    background:#f3f4f6;
+    border-color:var(--line);
+    color:#6b7280;
+    opacity:1;
+  }
+  button:disabled { cursor:not-allowed; }
+  .status-label {
+    display:inline-block;
+    margin-right:6px;
+    padding:1px 6px;
+    border:1px solid currentColor;
+    border-radius:999px;
+    font-size:11px;
+    font-weight:600;
+    line-height:1.45;
+    white-space:nowrap;
+  }
+  .status-label.normal, .status-label.usable { color:var(--normal); }
+  .status-label.attention, .status-label.review { color:#8a5a00; }
+  .status-label.abnormal, .status-label.blocking { color:var(--danger); }
+  .table-wrap tbody tr:hover { background:#f7fbff; }
+  .table-wrap th:first-child, .table-wrap td:first-child { position:sticky; left:0; z-index:1; }
+  .table-wrap th:first-child { background:#f4f4f4; }
+  .table-wrap td:first-child { background:inherit; }
+  .table-wrap td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
+  @media (max-width:760px) {
+    main { grid-template-columns:minmax(0,1fr); padding:12px; gap:12px; }
+    section { padding:18px; }
+    .tabs { overflow-x:auto; flex-wrap:nowrap; }
+    .tab { flex:0 0 auto; }
+    .controls > .group { padding:16px; }
+    .controls .row, #engineeringPanel .detail-fields .row,
+    .validation-box, .exploration-controls, .trend-controls,
+    .condition-row { grid-template-columns:minmax(0,1fr); }
+    .controls .actions > *, .panel .actions > * { width:100%; }
+    .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .metric strong { font-size:22px; }
+    .table-wrap { max-width:100%; }
+  }
+</style>
+"""
+
+
+_WORKBENCH_UI_SCRIPT = r"""
+<script id="workbenchUiScript">
+document.addEventListener("DOMContentLoaded", () => {
+  const controls = document.querySelector(".controls");
+  const parameterGroup = [...controls.querySelectorAll(":scope > .group")]
+    .find(group => group.querySelector(".group-title")?.textContent.includes("DPCA 参数"));
+  if (parameterGroup && !parameterGroup.querySelector(".advanced-parameters")) {
+    const advanced = document.createElement("details");
+    advanced.className = "advanced-parameters";
+    advanced.innerHTML = "<summary>高级预处理与 DPCA 参数</summary>";
+    const fields = ["sampleInterval", "resamplingMethod", "filterMethod", "smoothingWindow", "gapThreshold", "preprocessingPreviewButton", "maxLag", "lagStep", "varianceThreshold", "components"];
+    const rows = [...new Set(fields.map(id => document.getElementById(id)?.closest(".row")).filter(Boolean))];
+    const before = document.getElementById("qualityButton");
+    parameterGroup.insertBefore(advanced, before);
+    rows.forEach(row => advanced.append(row));
+  }
+
+  const status = document.getElementById("status");
+  if (status) {
+    status.classList.add("operation-log");
+    status.setAttribute("aria-label", "运行日志");
+  }
+
+  document.querySelectorAll(".tab, .inner-tab").forEach(button => {
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(button.classList.contains("active")));
+    button.addEventListener("click", () => {
+      const peers = button.closest(".tabs, .inner-tabs")?.querySelectorAll(".tab, .inner-tab") || [];
+      peers.forEach(peer => peer.setAttribute("aria-selected", String(peer === button)));
+    });
+  });
+
+  const labels = {
+    normal:["正常", "normal"], usable:["可用", "usable"],
+    attention:["关注", "attention"], review:["需确认", "review"],
+    abnormal:["异常", "abnormal"], blocking:["阻止", "blocking"],
+  };
+  const enhanceTables = () => document.querySelectorAll(".table-wrap td").forEach(cell => {
+    if (cell.dataset.uiEnhanced) return;
+    const value = cell.textContent.trim();
+    const key = Object.keys(labels).find(statusKey => value === statusKey);
+    if (key) {
+      cell.dataset.uiEnhanced = "true";
+      const badge = document.createElement("span");
+      badge.className = `status-label ${key}`;
+      badge.textContent = labels[key][0];
+      cell.replaceChildren(badge, document.createTextNode(labels[key][1]));
+      return;
+    }
+    if (/^-?[\d,.]+(?:%| 分钟)?$/.test(value)) cell.classList.add("numeric");
+  });
+  enhanceTables();
+  new MutationObserver(enhanceTables).observe(document.body, { childList:true, subtree:true });
+});
+</script>
+"""
+
+
 def apply_model_results_ui(html: str) -> str:
     """Remove XY scatter UI/code and load the final Web assets."""
     if 'src="/assets/model-results.js"' in html:
@@ -335,11 +513,13 @@ def apply_model_results_ui(html: str) -> str:
     if "</head>" not in result or "</body>" not in result:
         raise ValueError("Web HTML缺少head或body结束标签")
     result = result.replace(
-        "</head>", f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n</head>", 1
+        "</head>",
+        f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n</head>",
+        1,
     )
     return result.replace(
         "</body>",
-        '<script src="/assets/model-results.js" defer></script>\n</body>',
+        f'<script src="/assets/model-results.js" defer></script>\n{_WORKBENCH_UI_SCRIPT}\n</body>',
         1,
     )
 

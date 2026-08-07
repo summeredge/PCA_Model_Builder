@@ -59,14 +59,16 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     html = web_model_results.INDEX_HTML
 
     assert 'id="webFormAlignmentStyle"' in html
-    assert "#batchPanel .actions" in html
+    assert 'class="batch-config"' in html
+    assert 'data-inner="batchPanel"' not in html
+    assert "#engineeringPanel .batch-config .actions" in html
     assert (
         "grid-template-columns:max-content minmax(260px,1fr) "
         "max-content max-content max-content;"
     ) in html
-    assert "#batchPanel .actions > label.secondary" in html
+    assert "#engineeringPanel .batch-config .actions > label.secondary" in html
     assert "grid-template-rows:auto 42px;" in html
-    assert "#batchPanel #tagConfigFile" in html
+    assert "#engineeringPanel .batch-config #tagConfigFile" in html
     assert "#clusterPanel #clusterButton" in html
     assert "align-self:end;" in html
     assert "#engineeringPanel .detail-fields .row > label" in html
@@ -75,7 +77,7 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert "#engineeringPanel #tagComment" in html
     assert "@media (max-width:900px)" in html
     assert "grid-column:1 / -1;" in html
-    assert html.rindex("#batchPanel .actions") > html.index(
+    assert html.rindex("#engineeringPanel .batch-config .actions") > html.index(
         ".actions { display:flex"
     )
 
@@ -103,6 +105,9 @@ def test_final_web_uses_the_apple_visual_tokens() -> None:
     assert "height:30px;" in html
     assert "grid-template-columns:repeat(6,minmax(0,1fr));" in html
     assert "font-size:28px;" in html
+    assert "#tagOptions .tag-row" in html
+    assert "height:30px;" in html
+    assert "grid-template-columns:22px minmax(0,1fr) max-content;" in html
 
 
 def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:
