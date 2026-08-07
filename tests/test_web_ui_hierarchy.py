@@ -1,56 +1,120 @@
+from html.parser import HTMLParser
+
 from pca_model_builder import web_model_results
 
 
-def test_final_web_adds_ui_only_workflow_hierarchy_and_accessibility() -> None:
-    html = web_model_results.INDEX_HTML
+class _WorkbenchParser(HTMLParser):
+    _VOID_ELEMENTS = frozenset(
+        {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+    )
 
-    for marker in (
-        'id="workbenchUiStyle"',
-        'id="workbenchUiScript"',
-        '高级预处理与 DPCA 参数',
-        '运行日志',
-        'aria-selected',
-        'status-label',
-        'workflow-sidebar',
-        'workflow-step-status',
-        'candidate-tool-tabs',
-        'button:disabled, input:disabled, select:disabled, textarea:disabled',
-        '@media (max-width:760px)',
+    def __init__(self) -> None:
+        super().__init__()
+        self._stack: list[tuple[str, dict[str, str]]] = []
+        self.ancestors_by_id: dict[str, tuple[str, ...]] = {}
+        self.workflow_steps: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {key: value or "" for key, value in attrs}
+        if tag not in self._VOID_ELEMENTS:
+            self._stack.append((tag, attributes))
+        element_id = attributes.get("id")
+        if element_id:
+            ancestors = self._stack[:-1] if tag not in self._VOID_ELEMENTS else self._stack
+            self.ancestors_by_id[element_id] = tuple(
+                item[1]["id"] for item in ancestors if item[1].get("id")
+            )
+        if "workflow-step" in attributes.get("class", "").split():
+            self.workflow_steps.append(
+                {"panel": attributes.get("data-panel", ""), "text": ""}
+            )
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._stack and self._stack[-1][0] == tag:
+            self._stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if self.workflow_steps and any(
+            "workflow-step" in item[1].get("class", "").split()
+            for item in self._stack
+        ):
+            self.workflow_steps[-1]["text"] += data.strip()
+
+
+def _workbench() -> _WorkbenchParser:
+    parser = _WorkbenchParser()
+    parser.feed(web_model_results.INDEX_HTML)
+    return parser
+
+
+def test_final_web_has_a_static_five_stage_workbench() -> None:
+    parser = _workbench()
+
+    assert [step["panel"] for step in parser.workflow_steps] == [
+        "configPanel",
+        "candidatePanel",
+        "modelPanel",
+        "validationPanel",
+        "releasePanel",
+    ]
+    assert [
+        title
+        for title in ("数据准备", "正常状态候选", "模型训练", "模型验证", "模型发布")
+        if any(title in step["text"] for step in parser.workflow_steps)
+    ] == ["数据准备", "正常状态候选", "模型训练", "模型验证", "模型发布"]
+    for panel_id in (
+        "configPanel",
+        "candidatePanel",
+        "modelPanel",
+        "validationPanel",
+        "releasePanel",
     ):
-        assert marker in html
-
-    for stage in (
-        "数据准备",
-        "正常状态候选",
-        "模型训练",
-        "模型验证",
-        "模型发布",
-    ):
-        assert stage in html
+        assert panel_id in parser.ancestors_by_id
 
 
-def test_final_web_moves_controls_into_their_workflow_stages() -> None:
+def test_static_panels_own_their_existing_controls() -> None:
+    parser = _workbench()
+
+    expected_parent = {
+        "fileInput": "configPanel",
+        "tagOptions": "configPanel",
+        "candidateWindows": "candidatePanel",
+        "trainingWindows": "modelPanel",
+        "sampleInterval": "modelPanel",
+        "maxLag": "modelPanel",
+        "trainButton": "modelPanel",
+        "validateButton": "validationPanel",
+        "validatedModelDownload": "releasePanel",
+        "freezeDeployment": "releasePanel",
+        "deploymentModelDownload": "releasePanel",
+    }
+
+    for element_id, panel_id in expected_parent.items():
+        assert panel_id in parser.ancestors_by_id[element_id]
+
+
+def test_workbench_script_only_updates_static_stage_state() -> None:
     source = web_model_results._WORKBENCH_UI_SCRIPT
 
-    assert 'controls.className = "workflow-sidebar"' in source
-    assert 'dataGrid.append(uploadGroup, tagGroup)' in source
-    assert 'modelPanel.prepend(parameterGroup)' in source
-    assert 'candidatePanel.append(candidateManager)' in source
-    assert 'releaseContent.append(validatedDownload, freezeBox)' in source
     assert 'globalThis.showWorkflowStage = target =>' in source
-    assert 'position:sticky' in web_model_results._WORKBENCH_UI_STYLE
-
-
-def test_workflow_status_is_derived_from_existing_ui_state() -> None:
-    source = web_model_results._WORKBENCH_UI_SCRIPT
-
     assert 'candidateDecisions.some(select => select.value === "accepted")' in source
     assert '!document.getElementById("modelContent").hidden' in source
     assert '!document.getElementById("validationContent").hidden' in source
     assert '!document.getElementById("deploymentModelDownload").hidden' in source
-    assert '"已完成"' in source
-    assert '"当前"' in source
-    assert '"待开始"' in source
+    assert 'position:sticky' in web_model_results._WORKBENCH_UI_STYLE
+    for forbidden in (
+        'controls.innerHTML',
+        'legacyTabs.remove()',
+        'dataGrid.append(',
+        'modelPanel.prepend(',
+        'candidatePanel.append(',
+        'results.insertBefore(',
+        'results.append(releasePanel)',
+        'releaseContent.append(',
+        'document.createElement("div")',
+        "textContent.includes",
+    ):
+        assert forbidden not in source
 
 
 def test_trend_and_manual_selection_use_the_unified_candidate_action() -> None:
@@ -78,4 +142,4 @@ def test_web_translates_display_labels_without_changing_option_values() -> None:
     assert 'value="lower_is_better">越低越好' in html
     assert 'value="target_range">目标范围内' in html
     assert 'value="continuous_input">连续输入' in html
-    assert '>待决策</option>' in html
+    assert ">待决策</option>" in html

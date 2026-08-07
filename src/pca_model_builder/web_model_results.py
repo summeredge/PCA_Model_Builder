@@ -464,132 +464,29 @@ _WORKBENCH_UI_STYLE = r"""
 _WORKBENCH_UI_SCRIPT = r"""
 <script id="workbenchUiScript">
 document.addEventListener("DOMContentLoaded", () => {
-  const controls = document.querySelector(".controls");
-  if (controls.dataset.workflowInitialized) return;
-  controls.dataset.workflowInitialized = "true";
   const results = document.querySelector(".results");
-  const sourceGroups = [...controls.querySelectorAll(":scope > .group")];
-  const [uploadGroup, tagGroup] = sourceGroups;
-  const parameterGroup = sourceGroups.find(group => group.querySelector(".group-title")?.textContent.includes("DPCA 参数"));
   const dataPanel = document.getElementById("configPanel");
+  const candidatePanel = document.getElementById("candidatePanel");
   const modelPanel = document.getElementById("modelPanel");
   const validationPanel = document.getElementById("validationPanel");
-  const legacyTabs = results.querySelector(":scope > .tabs");
-
-  const dataGrid = document.createElement("div");
-  dataGrid.className = "data-preparation-grid";
-  uploadGroup.querySelector(".group-title").textContent = "历史数据";
-  tagGroup.querySelector(".group-title").textContent = "建模 Tag";
-  dataGrid.append(uploadGroup, tagGroup);
-  dataPanel.prepend(dataGrid);
-
-  const candidatePanel = document.createElement("div");
-  candidatePanel.id = "candidatePanel";
-  candidatePanel.className = "panel";
-  const candidateManager = document.createElement("div");
-  candidateManager.className = "group candidate-manager";
-  candidateManager.innerHTML = '<div class="group-title">候选窗口</div><div class="help">手工选择、趋势选择、聚类推荐和性能辅助统一进入此列表。候选默认待确认，不会自动参与训练。</div>';
-  const candidateRow = document.getElementById("candidateStart").closest(".row");
   const candidateTable = document.getElementById("candidateWindows");
-  const candidateHeading = candidateTable.previousElementSibling;
-  const candidateHelp = candidateTable.nextElementSibling;
-  candidateHeading.textContent = "候选窗口列表";
-  candidateManager.append(candidateRow, candidateHeading, candidateTable, candidateHelp);
-  candidatePanel.append(candidateManager);
-
-  if (parameterGroup && !parameterGroup.querySelector(".advanced-parameters")) {
-    parameterGroup.classList.add("training-configuration");
-    parameterGroup.querySelector(".group-title").textContent = "模型训练配置";
-    const advanced = document.createElement("details");
-    advanced.className = "advanced-parameters";
-    advanced.open = true;
-    advanced.innerHTML = "<summary>高级预处理与 DPCA 参数</summary><div class=\"help\">执行顺序保持为时间检查、缺口识别、重采样、数据检查、因果滤波、Lag 扩展和标准化。</div>";
-    const fields = ["sampleInterval", "resamplingMethod", "filterMethod", "smoothingWindow", "gapThreshold", "preprocessingPreviewButton", "maxLag", "lagStep", "varianceThreshold", "components"];
-    const rows = [...new Set(fields.map(id => document.getElementById(id)?.closest(".row")).filter(Boolean))];
-    const before = document.getElementById("qualityButton");
-    parameterGroup.insertBefore(advanced, before);
-    rows.forEach(row => advanced.append(row));
-    modelPanel.prepend(parameterGroup);
-  }
-
-  const status = document.getElementById("status");
-  if (status) {
-    status.classList.add("operation-log");
-    status.setAttribute("aria-label", "运行日志");
-    dataPanel.append(status);
-  }
-  const statusHelp = controls.querySelector(":scope > .help");
-  if (statusHelp) dataPanel.append(statusHelp);
-
-  const candidateTools = document.createElement("div");
-  candidateTools.className = "candidate-tool-tabs";
-  const toolDefinitions = [
-    ["trendPanel", "趋势选择"],
-    ["stateExplorationPanel", "状态探索 / 聚类推荐"],
-    ["statePanels", "聚类与性能辅助"],
-  ];
-  const toolPanels = ["trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"]
-    .map(id => document.getElementById(id));
-  toolPanels.forEach(panel => {
-    panel.classList.remove("panel", "active");
-    panel.classList.add("candidate-tool-panel");
-    candidatePanel.append(panel);
-  });
+  const releasePanel = document.getElementById("releasePanel");
+  const workflowSteps = document.getElementById("workflowSteps");
+  const toolPanels = ["trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"].map(id => document.getElementById(id));
   const showCandidateTool = target => {
     toolPanels.forEach(panel => panel.classList.toggle("active", target === "statePanels" ? ["clusterPanel", "performancePanel"].includes(panel.id) : panel.id === target));
-    candidateTools.querySelectorAll(".candidate-tool-tab").forEach(button => {
+    document.querySelectorAll(".candidate-tool-tab").forEach(button => {
       const selected = button.dataset.panel === target;
       button.classList.toggle("active", selected);
       button.setAttribute("aria-selected", String(selected));
     });
   };
-  toolDefinitions.forEach(([target, label], index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `candidate-tool-tab${index === 0 ? " active" : ""}`;
-    button.dataset.panel = target;
-    button.setAttribute("role", "tab");
-    button.setAttribute("aria-selected", String(index === 0));
-    button.textContent = label;
-    button.addEventListener("click", () => { globalThis.showWorkflowStage("candidatePanel"); showCandidateTool(target); });
-    candidateTools.append(button);
-  });
-  candidatePanel.insertBefore(candidateTools, candidatePanel.children[1]);
+  document.querySelectorAll(".candidate-tool-tab").forEach(button => button.addEventListener("click", () => {
+    globalThis.showWorkflowStage("candidatePanel");
+    showCandidateTool(button.dataset.panel);
+  }));
   showCandidateTool("trendPanel");
-  results.insertBefore(candidatePanel, modelPanel);
-
-  const releasePanel = document.createElement("div");
-  releasePanel.id = "releasePanel";
-  releasePanel.className = "panel";
-  releasePanel.innerHTML = '<div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结并导出部署包。</div><div id="releaseContent" hidden><h3>模型发布</h3><div class="notice">冻结与部署导出沿用现有流程；frozen 表示工程冻结，不表示已经部署。</div></div>';
-  const releaseContent = releasePanel.querySelector("#releaseContent");
   const validatedDownload = document.getElementById("validatedModelDownload");
-  const freezeBox = document.getElementById("freezeDeployment").closest(".validation-box");
-  releaseContent.append(validatedDownload, freezeBox);
-  results.append(releasePanel);
-
-  legacyTabs.remove();
-  const workflowDefinitions = [
-    ["configPanel", "数据准备", "上传数据并完成 Tag 配置"],
-    ["candidatePanel", "正常状态候选", "确认候选后生成训练窗口"],
-    ["modelPanel", "模型训练", "质量检查后训练 DPCA"],
-    ["validationPanel", "模型验证", "执行独立验证并记录结论"],
-    ["releasePanel", "模型发布", "冻结并导出部署包"],
-  ];
-  controls.className = "workflow-sidebar";
-  controls.innerHTML = '<h2 class="workflow-sidebar-title">建模流程</h2><div class="workflow-steps" role="tablist"></div>';
-  const workflowSteps = controls.querySelector(".workflow-steps");
-  workflowDefinitions.forEach(([target, title, next], index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `workflow-step${index === 0 ? " active" : ""}`;
-    button.dataset.panel = target;
-    button.setAttribute("role", "tab");
-    button.setAttribute("aria-selected", String(index === 0));
-    button.innerHTML = `<span class="workflow-step-number">${index + 1}</span><span class="workflow-step-copy"><span class="workflow-step-title">${title}</span><span class="workflow-step-next">下一步：${next}</span></span><span class="workflow-step-status">${index === 0 ? "当前" : "待开始"}</span>`;
-    button.addEventListener("click", () => globalThis.showWorkflowStage(target));
-    workflowSteps.append(button);
-  });
 
   globalThis.showWorkflowStage = target => {
     [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.toggle("active", panel.id === target));
@@ -600,6 +497,7 @@ document.addEventListener("DOMContentLoaded", () => {
       button.querySelector(".workflow-step-status").textContent = button.classList.contains("complete") ? "已完成" : selected ? "当前" : "待开始";
     });
   };
+  workflowSteps.querySelectorAll(".workflow-step").forEach(button => button.addEventListener("click", () => globalThis.showWorkflowStage(button.dataset.panel)));
   globalThis.showWorkflowStage("configPanel");
 
   const refreshWorkflow = () => {
@@ -613,7 +511,7 @@ document.addEventListener("DOMContentLoaded", () => {
     ];
     const canRelease = !validatedDownload.hidden;
     document.getElementById("releaseEmpty").hidden = canRelease;
-    releaseContent.hidden = !canRelease;
+    document.getElementById("releaseContent").hidden = !canRelease;
     workflowSteps.querySelectorAll(".workflow-step").forEach((button, index) => {
       button.classList.toggle("complete", completed[index]);
       button.querySelector(".workflow-step-status").textContent = completed[index] ? "已完成" : button.classList.contains("active") ? "当前" : "待开始";
@@ -656,6 +554,201 @@ document.addEventListener("DOMContentLoaded", () => {
 """
 
 
+def _required_html_match(pattern: str, html: str, description: str) -> re.Match[str]:
+    match = re.search(pattern, html, re.DOTALL)
+    if match is None:
+        raise ValueError(f"无法固定Web工作台结构：{description}")
+    return match
+
+
+def _candidate_manager_html() -> str:
+    return """      <div class="group candidate-manager">
+        <div class="group-title">候选窗口</div>
+        <div class="help">手工选择、趋势选择、聚类推荐和性能辅助统一进入此列表。候选默认待确认，不会自动参与训练。</div>
+        <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
+        <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
+        <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>
+      </div>"""
+
+
+def _workflow_sidebar_html() -> str:
+    steps = (
+        ("configPanel", "数据准备", "上传数据并完成 Tag 配置"),
+        ("candidatePanel", "正常状态候选", "确认候选后生成训练窗口"),
+        ("modelPanel", "模型训练", "质量检查后训练 DPCA"),
+        ("validationPanel", "模型验证", "执行独立验证并记录结论"),
+        ("releasePanel", "模型发布", "冻结并导出部署包"),
+    )
+    buttons = "\n".join(
+        "        <button type=\"button\" class=\"workflow-step{}\" data-panel=\"{}\" role=\"tab\" aria-selected=\"{}\"><span class=\"workflow-step-number\">{}</span><span class=\"workflow-step-copy\"><span class=\"workflow-step-title\">{}</span><span class=\"workflow-step-next\">下一步：{}</span></span><span class=\"workflow-step-status\">{}</span></button>".format(
+            " active" if index == 0 else "",
+            panel,
+            str(index == 0).lower(),
+            index + 1,
+            title,
+            next_step,
+            "当前" if index == 0 else "待开始",
+        )
+        for index, (panel, title, next_step) in enumerate(steps)
+    )
+    return f"""    <section class="controls workflow-sidebar" aria-label="建模流程">
+      <h2 class="workflow-sidebar-title">建模流程</h2>
+      <div id="workflowSteps" class="workflow-steps" role="tablist">
+{buttons}
+      </div>
+    </section>"""
+
+
+def _stabilize_workbench_html(html: str) -> str:
+    """Return the five-stage workbench as static server-rendered HTML."""
+    main_match = _required_html_match(
+        r"  <main>\n(?P<content>.*?)\n  </main>", html, "main"
+    )
+    sections = _required_html_match(
+        r'    <section class="controls">\n(?P<controls>.*?)\n    </section>\n'
+        r'    <section class="results">\n(?P<results>.*?)\n    </section>',
+        main_match.group("content"),
+        "原始左右区域",
+    )
+    controls = sections.group("controls")
+    results = sections.group("results")
+    tag_marker = '      <div class="group">\n        <div class="group-title">2. 建模 Tag</div>'
+    parameters_marker = '      <div class="group">\n        <div class="group-title">3. 参考状态与 DPCA 参数</div>'
+    status_marker = '      <div id="status" class="status info"'
+    upload_group, remaining_controls = controls.split(tag_marker, 1)
+    tag_group, remaining_controls = remaining_controls.split(parameters_marker, 1)
+    parameter_group, status_area = remaining_controls.split(status_marker, 1)
+    upload_group = upload_group.rstrip().replace(
+        '<div class="group-title">1. 历史数据</div>',
+        '<div class="group-title">历史数据</div>',
+        1,
+    )
+    tag_group = (tag_marker + tag_group).replace(
+        '<div class="group-title">2. 建模 Tag</div>',
+        '<div class="group-title">建模 Tag</div>',
+        1,
+    ).rstrip()
+    parameter_group = (parameters_marker + parameter_group).rstrip()
+    parameter_group = re.sub(
+        r'        <div class="group-title">3\. 参考状态与 DPCA 参数</div>\n'
+        r'        <div class="row"><label>候选开始.*?'
+        r'        <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>\n',
+        '        <div class="group-title">模型训练配置（参考状态与 DPCA 参数）</div>\n',
+        parameter_group,
+        count=1,
+        flags=re.DOTALL,
+    )
+    parameter_group = parameter_group.replace(
+        '<div class="group">', '<div class="group training-configuration">', 1
+    )
+    parameter_group, advanced_count = re.subn(
+        r'(?P<rows>        <div class="row"><label>目标采样周期（分钟）.*?'
+        r'        <div class="row"><label>累计解释率.*?</div>\n)',
+        '        <details class="advanced-parameters" open>\n'
+        '          <summary>高级预处理与 DPCA 参数</summary>\n'
+        '          <div class="help">执行顺序保持为时间检查、缺口识别、重采样、数据检查、因果滤波、Lag 扩展和标准化。</div>\n'
+        r'\g<rows>'
+        '        </details>\n',
+        parameter_group,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if advanced_count != 1 or 'id="candidateWindows"' in parameter_group:
+        raise ValueError("无法固定候选窗口或训练参数区域")
+    status_area = (status_marker + status_area).replace(
+        'class="status info" role="status" aria-live="polite"',
+        'class="status info operation-log" role="status" aria-live="polite" aria-label="运行日志"',
+        1,
+    ).rstrip()
+
+    panel_markers = (
+        "configPanel",
+        "stateExplorationPanel",
+        "trendPanel",
+        "modelPanel",
+        "clusterPanel",
+        "performancePanel",
+        "validationPanel",
+    )
+    panel_positions = [
+        results.index(f'      <div id="{panel_id}"') for panel_id in panel_markers
+    ]
+    config_panel = results[panel_positions[0] : panel_positions[1]].rstrip()
+    state_panel = results[panel_positions[1] : panel_positions[2]].rstrip()
+    trend_panel = results[panel_positions[2] : panel_positions[3]].rstrip()
+    model_panel = results[panel_positions[3] : panel_positions[4]].rstrip()
+    cluster_panel = results[panel_positions[4] : panel_positions[5]].rstrip()
+    performance_panel = results[panel_positions[5] : panel_positions[6]].rstrip()
+    validation_panel = results[panel_positions[6] :].rstrip()
+
+    config_panel = config_panel.replace(
+        '>\n',
+        f'>\n      <div class="data-preparation-grid">\n{upload_group}\n{tag_group}\n      </div>\n',
+        1,
+    )
+    config_panel = config_panel.rsplit('\n      </div>', 1)[0] + f'\n{status_area}\n      </div>'
+    candidate_panels = []
+    for panel in (trend_panel, state_panel, cluster_panel, performance_panel):
+        candidate_panels.append(panel.replace('class="panel"', 'class="candidate-tool-panel"', 1))
+    candidate_panels[0] = candidate_panels[0].replace(
+        'class="candidate-tool-panel"', 'class="candidate-tool-panel active"', 1
+    )
+
+    validated_download = _required_html_match(
+        r'<a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a>',
+        validation_panel,
+        "已验证模型下载入口",
+    ).group(0)
+    freeze_box = _required_html_match(
+        r'          <div class="validation-box"><label>模型标识.*?</div>',
+        validation_panel,
+        "冻结与部署入口",
+    ).group(0)
+    validation_panel = validation_panel.replace(validated_download, "", 1).replace(
+        freeze_box, "", 1
+    )
+    release_panel = f"""      <div id="releasePanel" class="panel">
+        <div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结并导出部署包。</div>
+        <div id="releaseContent" hidden>
+          <h3>模型发布</h3>
+          <div class="notice">冻结与部署导出沿用现有流程；frozen 表示工程冻结，不表示已经部署。</div>
+          <div class="actions">{validated_download}</div>
+{freeze_box}
+        </div>
+      </div>"""
+    candidate_panel = "\n".join(
+        (
+            '      <div id="candidatePanel" class="panel">',
+            _candidate_manager_html(),
+            '        <div class="candidate-tool-tabs" role="tablist">',
+            '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索 / 聚类推荐</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="statePanels" role="tab" aria-selected="false">聚类与性能辅助</button>',
+            '        </div>',
+            *candidate_panels,
+            '      </div>',
+        )
+    )
+    model_panel = model_panel.replace(
+        '>\n', f'>\n{parameter_group}\n', 1
+    )
+    static_main = "\n".join(
+        (
+            "  <main>",
+            _workflow_sidebar_html(),
+            '    <section class="results">',
+            config_panel,
+            candidate_panel,
+            model_panel,
+            validation_panel,
+            release_panel,
+            "    </section>",
+            "  </main>",
+        )
+    )
+    return html[: main_match.start()] + static_main + html[main_match.end() :]
+
+
 def apply_model_results_ui(html: str) -> str:
     """Remove XY scatter UI/code and load the final Web assets."""
     if 'src="/assets/model-results.js"' in html:
@@ -676,6 +769,7 @@ def apply_model_results_ui(html: str) -> str:
         raise ValueError("趋势页仍残留XY散点矩阵代码")
     if "</head>" not in result or "</body>" not in result:
         raise ValueError("Web HTML缺少head或body结束标签")
+    result = _stabilize_workbench_html(result)
     result = result.replace(
         "</head>",
         f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n</head>",
