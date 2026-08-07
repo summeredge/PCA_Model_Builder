@@ -180,7 +180,7 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     ):
         assert label in html
     assert "trainingWindows:[]" in html
-    assert 'function addCandidateWindow(source,start,end,sourceRef=null,comment="")' in html
+    assert 'async function addCandidateWindow(source,start,end,sourceRef=null,comment="")' in html
     assert 'enabled:false' in html
     assert 'addCandidateWindow("manual"' in html
     assert 'addCandidateWindow("cluster"' in html
@@ -201,8 +201,8 @@ def test_final_web_keeps_candidate_decisions_manual_and_non_training() -> None:
         assert element_id in html
     assert "exploration-candidate-decision" in html
     assert "exploration-candidate-comment" in html
-    assert "接受仅表示进入正常状态候选池，不会自动参与训练" in html
-    assert "默认未启用且不会自动参与训练" in html
+    assert "接受仅表示允许加入候选窗口，不会自动参与训练" in html
+    assert "默认待确认且不会自动参与训练" in html
 
 
 def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None:

@@ -77,7 +77,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     </div>
     <div class="actions">
       <button id="dpTrendToAnalysis" type="button" class="secondary">将当前窗口设为分析期</button>
-      <button id="dpTrendToReference" type="button" class="secondary">将当前窗口设为参考状态候选期</button>
+      <button id="dpTrendToReference" type="button" class="secondary">加入候选窗口</button>
     </div>
     <div id="dpTrendChart" class="dp-chart empty">选择 1 到 4 个数据后点击“显示趋势”。</div>
     <div id="dpTrendLegend" class="dp-legend"></div>

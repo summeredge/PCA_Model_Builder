@@ -348,23 +348,50 @@ _APPLE_DESIGN_STYLE = r"""
 
 _WORKBENCH_UI_STYLE = r"""
 <style id="workbenchUiStyle">
-  /* Keep the operational workflow legible without changing the data model. */
-  .controls > .group { border-color:var(--line); background:var(--panel); }
-  .controls > .group > .group-title {
-    padding-bottom:8px;
-    border-bottom:1px solid var(--line-soft);
+  main { grid-template-columns:280px minmax(0,1fr); align-items:start; }
+  .workflow-sidebar { position:sticky; top:16px; display:grid; gap:14px; padding:20px; }
+  .workflow-sidebar-title { margin:0; font-size:17px; font-weight:600; }
+  .workflow-steps { display:grid; gap:8px; }
+  .workflow-step {
+    display:grid;
+    grid-template-columns:30px minmax(0,1fr) auto;
+    gap:8px;
+    width:100%;
+    height:auto;
+    min-height:76px;
+    padding:11px;
+    border:1px solid var(--line);
+    border-radius:14px;
+    background:#fff;
     color:var(--text);
+    text-align:left;
   }
-  .controls .group:nth-of-type(3) { border-color:#bfd7ef; }
-  .results > .tabs::before {
-    content:"结果与详情";
-    display:block;
-    flex:1 0 100%;
-    padding:0 0 8px;
-    color:var(--muted);
-    font-size:13px;
+  .workflow-step.active { border-color:var(--accent); background:#edf5ff; }
+  .workflow-step.complete .workflow-step-number { background:var(--green); }
+  .workflow-step-number {
+    display:grid;
+    place-items:center;
+    width:28px;
+    height:28px;
+    border-radius:50%;
+    background:var(--accent);
+    color:#fff;
     font-weight:600;
   }
+  .workflow-step-copy { display:grid; gap:3px; min-width:0; }
+  .workflow-step-title { font-weight:600; }
+  .workflow-step-summary, .workflow-step-next { color:var(--muted); font-size:12px; line-height:1.35; }
+  .workflow-step-status { align-self:start; color:var(--muted); font-size:12px; white-space:nowrap; }
+  .workflow-step.active .workflow-step-status { color:var(--accent); font-weight:600; }
+  .workflow-step.complete .workflow-step-status { color:var(--green); }
+  .data-preparation-grid { display:grid; grid-template-columns:minmax(280px,.75fr) minmax(320px,1.25fr); gap:18px; }
+  .data-preparation-grid > .group { align-content:start; }
+  .candidate-manager, .training-configuration { border-color:#bfd7ef; }
+  .candidate-tool-tabs { display:flex; gap:8px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:10px; }
+  .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
+  .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .candidate-tool-panel { display:none; gap:14px; }
+  .candidate-tool-panel.active { display:grid; }
   .panel.active { padding:4px 0 24px; }
   .panel.active > h3 { margin:8px 0 0; }
   .advanced-parameters {
@@ -418,14 +445,14 @@ _WORKBENCH_UI_STYLE = r"""
   .table-wrap td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
   @media (max-width:760px) {
     main { grid-template-columns:minmax(0,1fr); padding:12px; gap:12px; }
+    .workflow-sidebar { position:static; padding:14px; }
+    .workflow-steps { grid-template-columns:repeat(5,minmax(190px,1fr)); overflow-x:auto; }
     section { padding:18px; }
-    .tabs { overflow-x:auto; flex-wrap:nowrap; }
-    .tab { flex:0 0 auto; }
-    .controls > .group { padding:16px; }
-    .controls .row, #engineeringPanel .detail-fields .row,
+    .data-preparation-grid { grid-template-columns:minmax(0,1fr); }
+    #engineeringPanel .detail-fields .row,
     .validation-box, .exploration-controls, .trend-controls,
     .condition-row { grid-template-columns:minmax(0,1fr); }
-    .controls .actions > *, .panel .actions > * { width:100%; }
+    .panel .actions > * { width:100%; }
     .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .metric strong { font-size:22px; }
     .table-wrap { max-width:100%; }
@@ -438,26 +465,170 @@ _WORKBENCH_UI_SCRIPT = r"""
 <script id="workbenchUiScript">
 document.addEventListener("DOMContentLoaded", () => {
   const controls = document.querySelector(".controls");
-  const parameterGroup = [...controls.querySelectorAll(":scope > .group")]
-    .find(group => group.querySelector(".group-title")?.textContent.includes("DPCA 参数"));
+  const results = document.querySelector(".results");
+  const sourceGroups = [...controls.querySelectorAll(":scope > .group")];
+  const [uploadGroup, tagGroup] = sourceGroups;
+  const parameterGroup = sourceGroups.find(group => group.querySelector(".group-title")?.textContent.includes("DPCA 参数"));
+  const dataPanel = document.getElementById("configPanel");
+  const modelPanel = document.getElementById("modelPanel");
+  const validationPanel = document.getElementById("validationPanel");
+  const legacyTabs = results.querySelector(":scope > .tabs");
+
+  const dataGrid = document.createElement("div");
+  dataGrid.className = "data-preparation-grid";
+  uploadGroup.querySelector(".group-title").textContent = "历史数据";
+  tagGroup.querySelector(".group-title").textContent = "建模 Tag";
+  dataGrid.append(uploadGroup, tagGroup);
+  dataPanel.prepend(dataGrid);
+
+  const candidatePanel = document.createElement("div");
+  candidatePanel.id = "candidatePanel";
+  candidatePanel.className = "panel";
+  const candidateManager = document.createElement("div");
+  candidateManager.className = "group candidate-manager";
+  candidateManager.innerHTML = '<div class="group-title">候选窗口</div><div class="help">手工选择、趋势选择、聚类推荐和性能辅助统一进入此列表。候选默认待确认，不会自动参与训练。</div>';
+  const candidateRow = document.getElementById("candidateStart").closest(".row");
+  const candidateTable = document.getElementById("trainingWindows");
+  const candidateHeading = candidateTable.previousElementSibling;
+  const candidateHelp = candidateTable.nextElementSibling;
+  candidateHeading.textContent = "候选窗口列表";
+  candidateManager.append(candidateRow, candidateHeading, candidateTable, candidateHelp);
+  candidatePanel.append(candidateManager);
+
   if (parameterGroup && !parameterGroup.querySelector(".advanced-parameters")) {
+    parameterGroup.classList.add("training-configuration");
+    parameterGroup.querySelector(".group-title").textContent = "模型训练配置";
     const advanced = document.createElement("details");
     advanced.className = "advanced-parameters";
-    advanced.innerHTML = "<summary>高级预处理与 DPCA 参数</summary>";
+    advanced.open = true;
+    advanced.innerHTML = "<summary>高级预处理与 DPCA 参数</summary><div class=\"help\">执行顺序保持为时间检查、缺口识别、重采样、数据检查、因果滤波、Lag 扩展和标准化。</div>";
     const fields = ["sampleInterval", "resamplingMethod", "filterMethod", "smoothingWindow", "gapThreshold", "preprocessingPreviewButton", "maxLag", "lagStep", "varianceThreshold", "components"];
     const rows = [...new Set(fields.map(id => document.getElementById(id)?.closest(".row")).filter(Boolean))];
     const before = document.getElementById("qualityButton");
     parameterGroup.insertBefore(advanced, before);
     rows.forEach(row => advanced.append(row));
+    modelPanel.prepend(parameterGroup);
   }
 
   const status = document.getElementById("status");
   if (status) {
     status.classList.add("operation-log");
     status.setAttribute("aria-label", "运行日志");
+    dataPanel.append(status);
   }
+  const statusHelp = controls.querySelector(":scope > .help");
+  if (statusHelp) dataPanel.append(statusHelp);
 
-  document.querySelectorAll(".tab, .inner-tab").forEach(button => {
+  const candidateTools = document.createElement("div");
+  candidateTools.className = "candidate-tool-tabs";
+  const toolDefinitions = [
+    ["trendPanel", "趋势选择"],
+    ["stateExplorationPanel", "状态探索 / 聚类推荐"],
+    ["statePanels", "聚类与性能辅助"],
+  ];
+  const toolPanels = ["trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"]
+    .map(id => document.getElementById(id));
+  toolPanels.forEach(panel => {
+    panel.classList.remove("panel", "active");
+    panel.classList.add("candidate-tool-panel");
+    candidatePanel.append(panel);
+  });
+  const showCandidateTool = target => {
+    toolPanels.forEach(panel => panel.classList.toggle("active", target === "statePanels" ? ["clusterPanel", "performancePanel"].includes(panel.id) : panel.id === target));
+    candidateTools.querySelectorAll(".candidate-tool-tab").forEach(button => {
+      const selected = button.dataset.panel === target;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-selected", String(selected));
+    });
+  };
+  toolDefinitions.forEach(([target, label], index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `candidate-tool-tab${index === 0 ? " active" : ""}`;
+    button.dataset.panel = target;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(index === 0));
+    button.textContent = label;
+    button.addEventListener("click", () => { globalThis.showWorkflowStage("candidatePanel"); showCandidateTool(target); });
+    candidateTools.append(button);
+  });
+  candidatePanel.insertBefore(candidateTools, candidatePanel.children[1]);
+  showCandidateTool("trendPanel");
+  results.insertBefore(candidatePanel, modelPanel);
+
+  const releasePanel = document.createElement("div");
+  releasePanel.id = "releasePanel";
+  releasePanel.className = "panel";
+  releasePanel.innerHTML = '<div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结并导出部署包。</div><div id="releaseContent" hidden><h3>模型发布</h3><div class="notice">冻结与部署导出沿用现有流程；frozen 表示工程冻结，不表示已经部署。</div></div>';
+  const releaseContent = releasePanel.querySelector("#releaseContent");
+  const validatedDownload = document.getElementById("validatedModelDownload");
+  const freezeBox = document.getElementById("freezeDeployment").closest(".validation-box");
+  releaseContent.append(validatedDownload, freezeBox);
+  results.append(releasePanel);
+
+  legacyTabs.remove();
+  const workflowDefinitions = [
+    ["configPanel", "数据准备", "上传数据并完成 Tag 配置"],
+    ["candidatePanel", "正常状态候选", "确认候选后生成训练窗口"],
+    ["modelPanel", "模型训练", "质量检查后训练 DPCA"],
+    ["validationPanel", "模型验证", "执行独立验证并记录结论"],
+    ["releasePanel", "模型发布", "冻结并导出部署包"],
+  ];
+  controls.className = "workflow-sidebar";
+  controls.innerHTML = '<h2 class="workflow-sidebar-title">建模流程</h2><div class="workflow-steps" role="tablist"></div>';
+  const workflowSteps = controls.querySelector(".workflow-steps");
+  workflowDefinitions.forEach(([target, title, next], index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `workflow-step${index === 0 ? " active" : ""}`;
+    button.dataset.panel = target;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(index === 0));
+    button.innerHTML = `<span class="workflow-step-number">${index + 1}</span><span class="workflow-step-copy"><span class="workflow-step-title">${title}</span><span class="workflow-step-summary">尚未完成</span><span class="workflow-step-next">下一步：${next}</span></span><span class="workflow-step-status">${index === 0 ? "当前" : "待开始"}</span>`;
+    button.addEventListener("click", () => globalThis.showWorkflowStage(target));
+    workflowSteps.append(button);
+  });
+
+  globalThis.showWorkflowStage = target => {
+    [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.toggle("active", panel.id === target));
+    workflowSteps.querySelectorAll(".workflow-step").forEach(button => {
+      const selected = button.dataset.panel === target;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-selected", String(selected));
+      button.querySelector(".workflow-step-status").textContent = button.classList.contains("complete") ? "已完成" : selected ? "当前" : "待开始";
+    });
+  };
+  globalThis.showWorkflowStage("configPanel");
+
+  const refreshWorkflow = () => {
+    const candidateChecks = [...candidateTable.querySelectorAll('tbody input[type="checkbox"]')];
+    const completed = [
+      Boolean(document.getElementById("candidateStart").value),
+      candidateChecks.some(input => input.checked),
+      !document.getElementById("modelContent").hidden,
+      !document.getElementById("validationContent").hidden,
+      !document.getElementById("deploymentModelDownload").hidden,
+    ];
+    const summaries = [
+      completed[0] ? "数据已检查，可配置建模 Tag" : "等待数据检查",
+      `${candidateChecks.length} 个候选，${candidateChecks.filter(input => input.checked).length} 个已确认`,
+      completed[2] ? "模型训练已完成" : "等待已确认训练窗口",
+      completed[3] ? "独立验证已有结果" : "等待候选模型",
+      completed[4] ? "部署包已生成" : "等待验证通过与工程冻结",
+    ];
+    const canRelease = !validatedDownload.hidden;
+    document.getElementById("releaseEmpty").hidden = canRelease;
+    releaseContent.hidden = !canRelease;
+    workflowSteps.querySelectorAll(".workflow-step").forEach((button, index) => {
+      button.classList.toggle("complete", completed[index]);
+      button.querySelector(".workflow-step-summary").textContent = summaries[index];
+      button.querySelector(".workflow-step-status").textContent = completed[index] ? "已完成" : button.classList.contains("active") ? "当前" : "待开始";
+    });
+  };
+  refreshWorkflow();
+  new MutationObserver(() => requestAnimationFrame(refreshWorkflow)).observe(results, { childList:true, subtree:true, attributes:true, attributeFilter:["hidden"] });
+
+  document.querySelectorAll(".inner-tab").forEach(button => {
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", String(button.classList.contains("active")));
     button.addEventListener("click", () => {

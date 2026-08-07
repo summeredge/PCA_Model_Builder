@@ -180,7 +180,7 @@ def test_final_web_page_exposes_state_exploration_workbench():
         assert label in html
     assert "自动正常 Cluster" not in html
     assert "自动正常窗口" not in html
-    assert "接受仅表示进入正常状态候选池，不会自动参与训练" in html
+    assert "接受仅表示允许加入候选窗口，不会自动参与训练" in html
     assert "exploration-candidate-select" in html
     assert "selectedExplorationCandidateRows" in html
 
