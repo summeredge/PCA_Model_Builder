@@ -316,6 +316,12 @@ def test_data_inspection_has_visible_progress_and_timeout() -> None:
     assert "超过 30 秒未完成" in inspect_source
     assert "读取时间列与候选 Tag" in inspect_source
     assert "signal:controller.signal" in inspect_source
+    assert "ensureInspectionPageReady();" in inspect_source
+    assert 'console.error("数据检查失败:",error)' in inspect_source
+    assert "数据检查失败:" in inspect_source
+    assert "setBusy(button,false" in inspect_source
+    assert "function ensureInspectionPageReady()" in html
+    assert "await response.json()" in html
 
 
 def test_candidate_confirmation_is_separate_from_training_windows() -> None:

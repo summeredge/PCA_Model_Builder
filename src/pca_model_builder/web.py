@@ -2731,9 +2731,16 @@ function editTrainingWindow(window) { const start=prompt("训练窗口开始时�
 
 async function api(path, options={}) {
   const response = await fetch(path, options);
-  const data = await response.json();
+  let data;
+  try { data=await response.json(); }
+  catch(error) { throw new Error(`服务返回无法读取的响应（${response.status}）`); }
   if (!response.ok) throw new Error(data.error || `请求失败：${response.status}`);
   return data;
+}
+
+function ensureInspectionPageReady() {
+  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
+  const missing=ids.filter(id=>!el(id)); if(missing.length) throw new Error(`页面初始化不完整，缺少元素：${missing.join(", ")}`);
 }
 
 function fillSelect(node, values, blankLabel=null) {
@@ -2831,6 +2838,7 @@ el("inspectButton").addEventListener("click", async () => {
   try {
     setStatus("正在检查数据…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value}),signal:controller.signal});
+    ensureInspectionPageReady();
     state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
@@ -2841,7 +2849,7 @@ el("inspectButton").addEventListener("click", async () => {
     if(data.numeric_columns.length) selectTag(data.numeric_columns[0]);
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count}) ${item.tag||""}`).join("、");
     setStatus(issues ? `初步检查完成：${data.rows} 行。发现 ${issues}；选择参考期后必须执行统一质量检查。` : `初步检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个数值列。请选择参考期并执行统一质量检查。`, issues?"warning":"success");
-  } catch (error) { setStatus(timedOut?"数据检查超过 30 秒未完成。请确认文件格式或重新上传后重试。":error.message,"error"); }
+  } catch (error) { console.error("数据检查失败:",error); setStatus(`数据检查失败:\n${timedOut?"数据检查超过 30 秒未完成。请确认文件格式或重新上传后重试。":error.message||String(error)}`,"error"); }
   finally { window.clearTimeout(timeoutId); window.clearTimeout(progressId); setBusy(button,false,""); }
 });
 
