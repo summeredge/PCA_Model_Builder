@@ -280,8 +280,17 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     const pad = {left:76, right:mode === "independent" ? 76 : 28, top:32, bottom:46};
     const shared = valueRange(series.flatMap((item) => item.points.map((point) => finiteNumber(point.y))));
     const ranges = series.map((item) => mode === "shared" ? shared : valueRange(item.points.map((point) => finiteNumber(point.y))));
-    const maxLength = Math.max(...series.map((item) => item.points.length));
-    const x = (index) => pad.left + index / Math.max(1, maxLength - 1) * (width - pad.left - pad.right);
+    const timestamps = series.flatMap((item) => item.points.map((point) => timestampMilliseconds(point.x)).filter((value) => value !== null));
+    if (!timestamps.length) {
+      container.className = "dp-chart empty";
+      container.textContent = "趋势数据缺少可解析的时间戳。";
+      return;
+    }
+    const timeStart = Math.min(...timestamps);
+    const timeEnd = Math.max(...timestamps);
+    const plotWidth = width-pad.left-pad.right;
+    const timeToX = (milliseconds) => pad.left + (milliseconds-timeStart) / Math.max(1, timeEnd-timeStart) * plotWidth;
+    const xToTime = (position) => timeStart + (position-pad.left) / Math.max(1, plotWidth) * (timeEnd-timeStart);
     const y = (value, range) => pad.top + (1 - (value - range.min) / Math.max(1e-12, range.max - range.min)) * (height - pad.top - pad.bottom);
     const tickRange = mode === "shared" ? shared : ranges[0];
     const grid = axisTicks(tickRange).map((tick) => {
@@ -295,21 +304,18 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     const paths = series.map((item, seriesIndex) => {
       const segments = [];
       let current = [];
-      item.points.forEach((point, index) => {
+      item.points.forEach((point) => {
         const value = finiteNumber(point.y);
         if (point.physical_gap_start && current.length) { segments.push(current); current = []; }
-        if (value === null) { if (current.length) segments.push(current); current = []; return; }
-        current.push(`${x(index).toFixed(2)},${y(value, ranges[seriesIndex]).toFixed(2)}`);
+        const pointTime = timestampMilliseconds(point.x);
+        if (value === null || pointTime === null) { if (current.length) segments.push(current); current = []; return; }
+        current.push(`${timeToX(pointTime).toFixed(2)},${y(value, ranges[seriesIndex]).toFixed(2)}`);
       });
       if (current.length) segments.push(current);
       return segments.map((points) => `<polyline points="${points.join(" ")}" fill="none" stroke="${colors[seriesIndex % colors.length]}" stroke-width="2.1"/>`).join("");
     }).join("");
     const firstTime = series[0].points[0]?.x || "";
     const lastTime = series[0].points.at(-1)?.x || "";
-    const timestamps = series.flatMap((item) => item.points.map((point) => timestampMilliseconds(point.x)).filter((value) => value !== null));
-    const timeStart = Math.min(...timestamps);
-    const timeEnd = Math.max(...timestamps);
-    const timeToX = (milliseconds) => pad.left + (milliseconds - timeStart) / Math.max(1, timeEnd - timeStart) * (width - pad.left - pad.right);
     const selection = currentTrendSelection(timeStart, timeEnd);
     const selectionMarkup = selection ? `<g data-trend-selection pointer-events="none"><rect x="${timeToX(selection.start)}" y="${pad.top}" width="${Math.max(0, timeToX(selection.end) - timeToX(selection.start))}" height="${height-pad.top-pad.bottom}" fill="#176b87" fill-opacity=".18"/><line data-trend-selection-edge="start" x1="${timeToX(selection.start)}" x2="${timeToX(selection.start)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/><line data-trend-selection-edge="end" x1="${timeToX(selection.end)}" x2="${timeToX(selection.end)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/></g>` : '<g data-trend-selection pointer-events="none" visibility="hidden"><rect y="0" height="0"/><line data-trend-selection-edge="start"/><line data-trend-selection-edge="end"/></g>';
     const note = mode === "shared" ? "同一 Y 轴：所有曲线使用同一数值范围" : "独立 Y 轴：各曲线按自身范围缩放，仅比较趋势形态";
@@ -326,7 +332,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       const position = (event.clientX - bounds.left) / Math.max(1, bounds.width) * width;
       return Math.min(width-pad.right, Math.max(pad.left, position));
     };
-    const timeAtX = (position) => timeStart + (position-pad.left) / Math.max(1, width-pad.left-pad.right) * (timeEnd-timeStart);
     const drawSelection = (start, end) => {
       const left = Math.min(timeToX(start), timeToX(end));
       const right = Math.max(timeToX(start), timeToX(end));
@@ -354,7 +359,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     });
     hitbox.addEventListener("pointermove", (event) => {
       if (dragStart === null) return;
-      drawSelection(timeAtX(dragStart), timeAtX(positionFromEvent(event)));
+      drawSelection(xToTime(dragStart), xToTime(positionFromEvent(event)));
     });
     hitbox.addEventListener("pointerup", (event) => {
       if (dragStart === null) return;
@@ -362,7 +367,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       const start = dragStart;
       dragStart = null;
       if (Math.abs(dragEnd-start) < selectionThresholdPixels) return restoreSelection();
-      setTrendWindowFromSelection(timeAtX(start), timeAtX(dragEnd));
+      setTrendWindowFromSelection(xToTime(start), xToTime(dragEnd));
       restoreSelection();
     });
     hitbox.addEventListener("pointercancel", () => { dragStart = null; restoreSelection(); });

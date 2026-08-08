@@ -57,15 +57,18 @@ def test_trend_page_no_longer_exposes_xy_scatter_matrix() -> None:
 
 def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
     html = web_model_results.INDEX_HTML
+    trend_source = html.split("function renderTrendChart(data)", 1)[1].split(
+        "function renderStatCard", 1
+    )[0]
 
     for marker in (
         'id="dpTrendSelectionHitbox"',
         'data-trend-selection',
-        "const timeAtX = (position)",
         "const timeToX = (milliseconds)",
+        "const xToTime = (position)",
         "const selectionThresholdPixels = 3;",
         "if (Math.abs(dragEnd-start) < selectionThresholdPixels) return restoreSelection();",
-        "setTrendWindowFromSelection(timeAtX(start), timeAtX(dragEnd));",
+        "setTrendWindowFromSelection(xToTime(start), xToTime(dragEnd));",
         '$("dpTrendStart").value = datetimeLocalValue(earlier);',
         '$("dpTrendEnd").value = datetimeLocalValue(later);',
         '$("trendStart").value = $("dpTrendStart").value;',
@@ -75,7 +78,14 @@ def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
 
     assert "const earlier = Math.min(start, end);" in html
     assert "const later = Math.max(start, end);" in html
-    assert "(milliseconds - timeStart)" in html
+    assert "const pointTime = timestampMilliseconds(point.x);" in trend_source
+    assert "timeToX(pointTime).toFixed(2)" in trend_source
+    assert "timeToX(selection.start)" in trend_source
+    assert "xToTime(dragStart)" in trend_source
+    assert "item.points.forEach((point) =>" in trend_source
+    assert "maxLength" not in trend_source
+    assert "index / Math.max(1, maxLength - 1)" not in trend_source
+    assert "point.physical_gap_start && current.length" in trend_source
     assert "(timeEnd-timeStart)" in html
 
 
