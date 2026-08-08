@@ -61,7 +61,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
 
   const markup = `
     <h2>趋势图</h2>
-    <div class="dp-inline-help">最多选择 4 个位号，在同一张图中浏览真实原始趋势。物理时间缺口不会连线，页面不会插值、补点或修改原始数据。</div>
+    <div class="dp-inline-help">最多选择 4 个位号，在同一张图中浏览真实原始趋势。可在绘图区横向拖拽选择时间窗口。物理时间缺口不会连线，页面不会插值、补点或修改原始数据。</div>
     <div class="dp-trend-controls">
       <label>数据 1<select id="dpTrendVar1"></select></label>
       <label>数据 2<select id="dpTrendVar2"></select></label>
@@ -105,6 +105,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   const colors = ["#176b87", "#c2410c", "#6d28d9", "#15803d"];
   let lastTrend = null;
   let resizeTimer = null;
+  const selectionThresholdPixels = 3;
 
   function availableTags() {
     return Array.from($("trendTags")?.options || []).map((option) => option.value).filter(Boolean);
@@ -237,6 +238,34 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     $("dpTrendStats").innerHTML = data.series.map((item, index) => renderStatCard(item.name, data.statistics[item.name]?.current, data.histograms[item.name], colors[index % colors.length])).join("");
   }
 
+  function timestampMilliseconds(value) {
+    const milliseconds = Date.parse(value);
+    return Number.isFinite(milliseconds) ? milliseconds : null;
+  }
+
+  function datetimeLocalValue(milliseconds) {
+    const local = new Date(milliseconds - new Date(milliseconds).getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 16);
+  }
+
+  function currentTrendSelection(timeStart, timeEnd) {
+    const start = timestampMilliseconds($("dpTrendStart").value);
+    const end = timestampMilliseconds($("dpTrendEnd").value);
+    if (start === null || end === null || start === end) return null;
+    const earlier = Math.min(start, end);
+    const later = Math.max(start, end);
+    return earlier >= timeStart && later <= timeEnd ? {start:earlier, end:later} : null;
+  }
+
+  function setTrendWindowFromSelection(start, end) {
+    const earlier = Math.min(start, end);
+    const later = Math.max(start, end);
+    $("dpTrendStart").value = datetimeLocalValue(earlier);
+    $("dpTrendEnd").value = datetimeLocalValue(later);
+    if ($("trendStart")) $("trendStart").value = $("dpTrendStart").value;
+    if ($("trendEnd")) $("trendEnd").value = $("dpTrendEnd").value;
+  }
+
   function renderTrendChart(data) {
     const container = $("dpTrendChart");
     const series = data.series || [];
@@ -277,9 +306,66 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     }).join("");
     const firstTime = series[0].points[0]?.x || "";
     const lastTime = series[0].points.at(-1)?.x || "";
+    const timestamps = series.flatMap((item) => item.points.map((point) => timestampMilliseconds(point.x)).filter((value) => value !== null));
+    const timeStart = Math.min(...timestamps);
+    const timeEnd = Math.max(...timestamps);
+    const timeToX = (milliseconds) => pad.left + (milliseconds - timeStart) / Math.max(1, timeEnd - timeStart) * (width - pad.left - pad.right);
+    const selection = currentTrendSelection(timeStart, timeEnd);
+    const selectionMarkup = selection ? `<g data-trend-selection pointer-events="none"><rect x="${timeToX(selection.start)}" y="${pad.top}" width="${Math.max(0, timeToX(selection.end) - timeToX(selection.start))}" height="${height-pad.top-pad.bottom}" fill="#176b87" fill-opacity=".18"/><line data-trend-selection-edge="start" x1="${timeToX(selection.start)}" x2="${timeToX(selection.start)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/><line data-trend-selection-edge="end" x1="${timeToX(selection.end)}" x2="${timeToX(selection.end)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/></g>` : '<g data-trend-selection pointer-events="none" visibility="hidden"><rect y="0" height="0"/><line data-trend-selection-edge="start"/><line data-trend-selection-edge="end"/></g>';
     const note = mode === "shared" ? "同一 Y 轴：所有曲线使用同一数值范围" : "独立 Y 轴：各曲线按自身范围缩放，仅比较趋势形态";
     container.className = "dp-chart";
-    container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="多变量趋势图"><rect width="${width}" height="${height}" fill="#fff"/>${grid}<line x1="${pad.left}" x2="${width-pad.right}" y1="${height-pad.bottom}" y2="${height-pad.bottom}" stroke="#9aa4b2"/><line x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#9aa4b2"/>${mode === "independent" ? `<line x1="${width-pad.right}" x2="${width-pad.right}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#9aa4b2"/>` : ""}${rightTicks}<text x="${pad.left}" y="18" font-size="12" fill="#5f6b7a">${escapeHtml(note)}</text>${paths}<text x="${pad.left}" y="${height-10}" font-size="10" fill="#5f6b7a">${escapeHtml(displayTime(firstTime))}</text><text x="${width-pad.right}" y="${height-10}" text-anchor="end" font-size="10" fill="#5f6b7a">${escapeHtml(displayTime(lastTime))}</text></svg>`;
+    container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="多变量趋势图"><rect width="${width}" height="${height}" fill="#fff"/>${grid}<line x1="${pad.left}" x2="${width-pad.right}" y1="${height-pad.bottom}" y2="${height-pad.bottom}" stroke="#9aa4b2"/><line x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#9aa4b2"/>${mode === "independent" ? `<line x1="${width-pad.right}" x2="${width-pad.right}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#9aa4b2"/>` : ""}${rightTicks}<text x="${pad.left}" y="18" font-size="12" fill="#5f6b7a">${escapeHtml(note)}</text>${paths}${selectionMarkup}<rect id="dpTrendSelectionHitbox" x="${pad.left}" y="${pad.top}" width="${width-pad.left-pad.right}" height="${height-pad.top-pad.bottom}" fill="transparent" style="cursor:crosshair;touch-action:none"/><text x="${pad.left}" y="${height-10}" font-size="10" fill="#5f6b7a">${escapeHtml(displayTime(firstTime))}</text><text x="${width-pad.right}" y="${height-10}" text-anchor="end" font-size="10" fill="#5f6b7a">${escapeHtml(displayTime(lastTime))}</text></svg>`;
+    if (!(timeEnd > timeStart)) return;
+    const svg = container.querySelector("svg");
+    const hitbox = $("dpTrendSelectionHitbox");
+    const selectionGroup = svg.querySelector("[data-trend-selection]");
+    const selectionArea = selectionGroup.querySelector("rect");
+    const selectionEdges = selectionGroup.querySelectorAll("[data-trend-selection-edge]");
+    const positionFromEvent = (event) => {
+      const bounds = svg.getBoundingClientRect();
+      const position = (event.clientX - bounds.left) / Math.max(1, bounds.width) * width;
+      return Math.min(width-pad.right, Math.max(pad.left, position));
+    };
+    const timeAtX = (position) => timeStart + (position-pad.left) / Math.max(1, width-pad.left-pad.right) * (timeEnd-timeStart);
+    const drawSelection = (start, end) => {
+      const left = Math.min(timeToX(start), timeToX(end));
+      const right = Math.max(timeToX(start), timeToX(end));
+      selectionGroup.removeAttribute("visibility");
+      selectionArea.setAttribute("x", left);
+      selectionArea.setAttribute("y", pad.top);
+      selectionArea.setAttribute("width", right-left);
+      selectionArea.setAttribute("height", height-pad.top-pad.bottom);
+      selectionEdges[0].setAttribute("x1", left); selectionEdges[0].setAttribute("x2", left);
+      selectionEdges[0].setAttribute("y1", pad.top); selectionEdges[0].setAttribute("y2", height-pad.bottom);
+      selectionEdges[1].setAttribute("x1", right); selectionEdges[1].setAttribute("x2", right);
+      selectionEdges[1].setAttribute("y1", pad.top); selectionEdges[1].setAttribute("y2", height-pad.bottom);
+    };
+    const restoreSelection = () => {
+      const current = currentTrendSelection(timeStart, timeEnd);
+      if (current) drawSelection(current.start, current.end);
+      else selectionGroup.setAttribute("visibility", "hidden");
+    };
+    let dragStart = null;
+    hitbox.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      dragStart = positionFromEvent(event);
+      hitbox.setPointerCapture?.(event.pointerId);
+      event.preventDefault();
+    });
+    hitbox.addEventListener("pointermove", (event) => {
+      if (dragStart === null) return;
+      drawSelection(timeAtX(dragStart), timeAtX(positionFromEvent(event)));
+    });
+    hitbox.addEventListener("pointerup", (event) => {
+      if (dragStart === null) return;
+      const dragEnd = positionFromEvent(event);
+      const start = dragStart;
+      dragStart = null;
+      if (Math.abs(dragEnd-start) < selectionThresholdPixels) return restoreSelection();
+      setTrendWindowFromSelection(timeAtX(start), timeAtX(dragEnd));
+      restoreSelection();
+    });
+    hitbox.addEventListener("pointercancel", () => { dragStart = null; restoreSelection(); });
   }
 
   function renderStatCard(tag, stats, histogram, color) {

@@ -55,6 +55,30 @@ def test_trend_page_no_longer_exposes_xy_scatter_matrix() -> None:
     assert 'src="/assets/model-results.js"' in html
 
 
+def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for marker in (
+        'id="dpTrendSelectionHitbox"',
+        'data-trend-selection',
+        "const timeAtX = (position)",
+        "const timeToX = (milliseconds)",
+        "const selectionThresholdPixels = 3;",
+        "if (Math.abs(dragEnd-start) < selectionThresholdPixels) return restoreSelection();",
+        "setTrendWindowFromSelection(timeAtX(start), timeAtX(dragEnd));",
+        '$("dpTrendStart").value = datetimeLocalValue(earlier);',
+        '$("dpTrendEnd").value = datetimeLocalValue(later);',
+        '$("trendStart").value = $("dpTrendStart").value;',
+        '$("trendEnd").value = $("dpTrendEnd").value;',
+    ):
+        assert marker in html
+
+    assert "const earlier = Math.min(start, end);" in html
+    assert "const later = Math.max(start, end);" in html
+    assert "(milliseconds - timeStart)" in html
+    assert "(timeEnd-timeStart)" in html
+
+
 def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     html = web_model_results.INDEX_HTML
 
