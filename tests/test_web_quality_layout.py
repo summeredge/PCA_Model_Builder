@@ -207,6 +207,40 @@ def test_final_web_keeps_candidate_decisions_manual_and_non_training() -> None:
     assert "请在候选窗口列表确认作为训练窗口" in html
 
 
+def test_model_quality_check_is_in_the_model_training_stage() -> None:
+    html = web_model_results.INDEX_HTML
+    model_start = html.index('<div id="modelPanel"')
+    model_end = html.index('<div id="validationPanel"')
+    model_source = html[model_start:model_end]
+
+    assert "执行建模质量检查" in model_source
+    assert 'id="modelQualityStatus"' in model_source
+    assert 'id="modelQualityResults"' in model_source
+    assert model_source.index('id="qualityButton"') < model_source.index('id="trainButton"')
+    assert "上传后基础数据检查" in html
+    assert "此处仅展示整体历史数据的时间轴与数值列检查结果" in html
+    assert "已失效" not in html
+
+
+def test_model_quality_status_tracks_check_and_configuration_changes() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for label in (
+        "未检查",
+        "检查中",
+        "通过",
+        "有问题",
+        "配置已变更需重新检查",
+        "失败",
+    ):
+        assert label in html
+    assert 'state.qualityStatus="checking"' in html
+    assert 'el("trainButton").disabled=true' in html
+    assert 'state.qualityStatus=data.can_train?"passed":"issues"' in html
+    assert 'state.qualityStatus="failed"' in html
+    assert 'state.qualityStatus=reason&&checked?"changed":"unchecked"' in html
+
+
 def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None:
     html = web_model_results.INDEX_HTML
 

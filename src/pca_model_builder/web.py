@@ -2383,6 +2383,7 @@ INDEX_HTML = r"""<!doctype html>
     .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:9px; }
     .metric { padding:11px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
     .metric strong { display:block; font-size:21px; }
+    .metric.time-range strong { font-size:14px; line-height:1.35; white-space:pre-line; }
     .metric span { color:var(--muted); font-size:12px; }
     .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .chart-card { display:grid; gap:7px; min-width:0; }
@@ -2448,7 +2449,17 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
-        <button id="qualityButton" class="secondary" disabled>执行统一数据质量检查</button>
+        <h3>建模质量检查</h3>
+        <div id="modelQualityStatus" class="status info" role="status">未检查</div>
+        <button id="qualityButton" class="secondary" disabled>执行建模质量检查</button>
+        <div id="modelQualityResults">
+          <div id="qualitySummary" class="metrics"></div>
+          <h3>当前 Tag 建模质量详情</h3>
+          <div id="currentTagQuality" class="empty">尚未执行建模质量检查。</div>
+          <h3>建模质量问题</h3>
+          <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量 Tag</button></div>
+          <div id="qualityIssues" class="empty">执行建模质量检查后，显示需要确认或阻止训练的 Tag。</div>
+        </div>
         <div class="actions"><button id="trainExploratoryButton" class="secondary" disabled>建立探索模型</button><button id="trainButton" disabled>建立正常状态候选模型</button></div>
         <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>
         <div class="notice">正常状态候选模型尚未验证，不能发布或用于部署。</div>
@@ -2470,7 +2481,7 @@ INDEX_HTML = r"""<!doctype html>
       <div id="configPanel" class="panel active">
         <div class="inner-tabs">
           <button class="inner-tab active" data-inner="engineeringPanel">工程配置</button>
-          <button class="inner-tab" data-inner="qualityPanel">数据质量</button>
+          <button class="inner-tab" data-inner="qualityPanel">基础数据检查</button>
         </div>
         <div id="engineeringPanel" class="inner-panel active">
           <div class="batch-config">
@@ -2489,12 +2500,10 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
         <div id="qualityPanel" class="inner-panel">
-          <div id="qualitySummary" class="metrics"></div>
-          <h3>当前Tag详情</h3>
-          <div id="currentTagQuality" class="empty">尚未执行或结果已失效</div>
-          <h3>全部问题Tag</h3>
-          <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量Tag</button></div>
-          <div id="qualityIssues" class="empty">执行统一数据质量检查后，只显示需要确认或阻止训练的Tag。</div>
+          <h3>上传后基础数据检查</h3>
+          <div class="help">此处仅展示整体历史数据的时间轴与数值列检查结果。建模质量检查位于“模型训练”阶段，并依赖已启用的训练窗口。</div>
+          <div id="basicInspectionSummary" class="metrics"></div>
+          <div id="basicInspectionIssues" class="empty">上传并检查数据后显示基础检查结果。</div>
         </div>
       </div>
       <div id="stateExplorationPanel" class="panel">
@@ -2638,12 +2647,13 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, registry:{}, quality:null, selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
 function setBusy(button, busy, text) { if (!button.dataset.label) button.dataset.label=button.textContent; button.disabled=busy; button.textContent=busy?text:button.dataset.label; }
 function localTime(value) { return value ? value.slice(0,16) : ""; }
+function displayTime(value,length=16) { return value ? value.slice(0,length).replace("T"," ") : ""; }
 function selectedTags() { return (state.inspection?.numeric_columns||[]).filter(tag=>state.selectedModelTags.has(tag)&&(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
 function numberValue(id) { return Number(el(id).value); }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
@@ -2679,7 +2689,20 @@ function saveCurrentTagConfig() {
   if(config.role!=="continuous_input") state.selectedModelTags.delete(tag);
   invalidateQuality("Tag工程配置或角色已修改"); renderTagList();
 }
-function invalidateQuality(reason) { state.quality=null; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; if(el("qualitySummary")) el("qualitySummary").innerHTML=metric("质量检查","已失效"); if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent="尚未执行或结果已失效"; } el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); if(reason) setStatus(`${reason}，请重新执行统一数据质量检查。`,"warning"); }
+function renderModelQualityStatus(status=state.qualityStatus,error=state.qualityError) {
+  const node=el("modelQualityStatus"); if(!node) return;
+  const labels={unchecked:"未检查",checking:"检查中",passed:"通过",issues:"有问题",changed:"配置已变更需重新检查",failed:"失败"};
+  node.textContent=error?`${labels[status]}：${error}`:labels[status];
+  node.className=`status ${status==="passed"?"success":status==="issues"||status==="changed"?"warning":status==="failed"?"error":"info"}`;
+}
+function invalidateQuality(reason) {
+  const checked=Boolean(state.quality); state.quality=null; state.qualityError=""; state.qualityStatus=reason&&checked?"changed":"unchecked";
+  el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true;
+  if(el("qualitySummary")) el("qualitySummary").innerHTML="";
+  if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"尚未执行建模质量检查。"; }
+  el("excludeAllConstants").disabled=true; renderModelQualityStatus(); renderCurrentTagQuality();
+  if(reason) setStatus(`${reason}，请重新执行建模质量检查。`,"warning");
+}
 function commonPayload() { const gap=el("gapThreshold").value; return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),resampling_method:el("resamplingMethod").value,filter_method:el("filterMethod").value,smoothing_window_minutes:numberValue("smoothingWindow"),gap_threshold_minutes:gap===""?null:Number(gap),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function trainingWindowsPayload() { return state.trainingWindows; }
@@ -2694,7 +2717,7 @@ function renderCandidateWindows() {
   state.candidateWindows.forEach(window=>{ const row=document.createElement("tr");
     const name=document.createElement("td"); name.textContent=window.id;
     const source=document.createElement("td"); source.textContent=displayUiValue(window.source)+(window.source_ref?` (${window.source_ref})`:"");
-    const range=document.createElement("td"); range.textContent=`${localTime(window.start)} ～ ${localTime(window.end)}`;
+    const range=document.createElement("td"); range.textContent=`${displayTime(window.start)} ～ ${displayTime(window.end)}`;
     const status=document.createElement("td"); const select=document.createElement("select"); ["pending","accepted","rejected"].forEach(value=>{ const option=document.createElement("option"); option.value=value; option.textContent=displayUiValue(value); option.selected=window.status===value; select.append(option); }); select.disabled=Boolean(window.trainingWindowId); select.addEventListener("change",()=>{ window.status=select.value; renderCandidateWindows(); }); status.append(select);
     const actions=document.createElement("td"); [["查看趋势",()=>showCandidateTrend(window)],["确认作为训练窗口",()=>confirmCandidateWindow(window)],["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]].forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&(window.status!=="accepted"||Boolean(window.trainingWindowId)); button.addEventListener("click",handler); actions.append(button); });
     row.append(name,source,range,status,actions); body.append(row);
@@ -2708,7 +2731,7 @@ function renderTrainingWindows() {
   state.trainingWindows.forEach(window=>{ const summary=windowSummary(window.id); const row=document.createElement("tr");
     const enabled=document.createElement("input"); enabled.type="checkbox"; enabled.checked=window.enabled; enabled.addEventListener("change",()=>updateTrainingWindows({action:"set_enabled",id:window.id,enabled:enabled.checked},true)); const enabledCell=document.createElement("td"); enabledCell.append(enabled);
     const source=document.createElement("td"); source.textContent=displayUiValue(window.source)+(window.source_ref?` (${window.source_ref})`:"");
-    const start=document.createElement("td"); start.textContent=localTime(window.start); const end=document.createElement("td"); end.textContent=localTime(window.end);
+    const start=document.createElement("td"); start.textContent=displayTime(window.start); const end=document.createElement("td"); end.textContent=displayTime(window.end);
     const durationMinutes=summary.duration_minutes??Math.round((new Date(window.end)-new Date(window.start))/60000); const duration=document.createElement("td"); duration.textContent=`${durationMinutes} 分钟`;
     const counts=document.createElement("td"); counts.textContent=summary.raw_samples===undefined?"待检查":`${summary.raw_samples} / ${summary.effective_samples}`;
     const quality=document.createElement("td"); quality.textContent=summary.quality_status||summary.status||"待检查";
@@ -2727,7 +2750,7 @@ async function updateTrainingWindows(operation, affectsTraining) {
 }
 async function confirmCandidateWindow(candidate) { if(candidate.status!=="accepted") { setStatus("请先将候选标记为已接受。","warning"); return; } const trainingId=`training-${candidate.id}`; if(state.trainingWindows.some(window=>window.id===trainingId)) { setStatus("该候选已生成训练窗口。","warning"); return; } const added=await updateTrainingWindows({action:"add",window:{id:trainingId,start:candidate.start,end:candidate.end,source:candidate.source,source_ref:candidate.source_ref||candidate.id,enabled:true,comment:candidate.comment}},true); if(added) { candidate.trainingWindowId=trainingId; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("已确认并生成训练窗口；它将参与质量检查和训练。","success"); } }
 async function addCandidateWindow(source,start,end,sourceRef=null,comment="",status="pending") { if(!start||!end) { setStatus("候选窗口需要开始和结束时间。","warning"); return; } if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) { setStatus("该候选已在候选窗口列表中。","warning"); return; } state.candidateWindows.push({id:candidateId(),start,end,source,source_ref:sourceRef,comment,status}); renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel"); el("candidateWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("候选窗口已加入；不会修改训练窗口，请人工确认后再生成训练窗口。","success"); }
-function editTrainingWindow(window) { const start=prompt("训练窗口开始时间",localTime(window.start)); if(start===null) return; const end=prompt("训练窗口结束时间",localTime(window.end)); if(end===null) return; const comment=prompt("备注",window.comment||""); if(comment===null) return; updateTrainingWindows({action:"update",id:window.id,changes:{start,end,comment}},window.enabled); }
+function editTrainingWindow(window) { const start=prompt("训练窗口开始时间",displayTime(window.start)); if(start===null) return; const end=prompt("训练窗口结束时间",displayTime(window.end)); if(end===null) return; const comment=prompt("备注",window.comment||""); if(comment===null) return; updateTrainingWindows({action:"update",id:window.id,changes:{start,end,comment}},window.enabled); }
 
 async function api(path, options={}) {
   const response = await fetch(path, options);
@@ -2739,7 +2762,7 @@ async function api(path, options={}) {
 }
 
 function ensureInspectionPageReady() {
-  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
+  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
   const missing=ids.filter(id=>!el(id)); if(missing.length) throw new Error(`页面初始化不完整，缺少元素：${missing.join(", ")}`);
 }
 
@@ -2752,6 +2775,14 @@ function renderUploadedColumns(columns) {
   const list=el("tagOptions"); list.replaceChildren(); const visible=columns.slice(0,200);
   visible.forEach(column=>{ const row=document.createElement("div"); row.className="tag-row"; const name=document.createElement("span"); name.textContent=column; const badge=document.createElement("span"); badge.className="tag-state"; badge.textContent="待检查"; row.append(name,badge); list.append(row); });
   if(columns.length>visible.length) { const more=document.createElement("span"); more.className="help"; more.textContent=`其余 ${columns.length-visible.length} 个列将在检查数据后显示。`; list.append(more); }
+}
+function renderBasicInspection(data) {
+  const summary=el("basicInspectionSummary"), issues=el("basicInspectionIssues");
+  if(!data) { summary.innerHTML=""; issues.className="empty"; issues.textContent="上传并检查数据后显示基础检查结果。"; return; }
+  summary.innerHTML=metric("历史数据行数",data.rows)+metric("数值列",data.numeric_columns.length)+metric("时间范围",`${displayTime(data.time_start)}\n${displayTime(data.time_end)}`,"time-range")+metric("基础检查",data.can_train_without_review?"通过":"有问题");
+  issues.className=""; issues.replaceChildren();
+  if(!data.quality_issues.length) { issues.className="empty"; issues.textContent="整体历史数据未发现基础时间轴或数值列问题。"; return; }
+  data.quality_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; issues.append(card); });
 }
 
 function addPerformanceCondition() {
@@ -2792,14 +2823,14 @@ function renderExplorationPcChart(data) {
   const rows=data.cluster_series||[]; const container=el("explorationPcChart"); if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
   const palette=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
   const width=760,height=260,pad=34; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad),y=value=>height/2-value/maxY*(height/2-pad);
-  const points=rows.map(row=>{const number=explorationClusterNumber(row.cluster_id);return `<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="3" fill="${palette[(number-1)%palette.length]}" fill-opacity=".75"><title>${escapeHtml(row.timestamp)} · ${escapeHtml(row.cluster_id)}</title></circle>`;}).join("");
+  const points=rows.map(row=>{const number=explorationClusterNumber(row.cluster_id);return `<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="3" fill="${palette[(number-1)%palette.length]}" fill-opacity=".75"><title>${escapeHtml(displayTime(row.timestamp,19))} · ${escapeHtml(row.cluster_id)}</title></circle>`;}).join("");
   const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>{const number=explorationClusterNumber(cluster);const cx=x(Number(center[0])),cy=y(Number(center[1])),color=palette[(number-1)%palette.length];return `<g stroke="${color}" stroke-width="2"><line x1="${cx-7}" x2="${cx+7}" y1="${cy}" y2="${cy}"/><line x1="${cx}" x2="${cx}" y1="${cy-7}" y2="${cy+7}"/><title>${escapeHtml(cluster)} 中心</title></g>`;}).join("");
   const legend=[...new Set(rows.map(row=>row.cluster_id))].map(cluster=>{const number=explorationClusterNumber(cluster);return `<text x="${pad+(number-1)*88}" y="16" fill="${palette[(number-1)%palette.length]}" font-size="10">● ${escapeHtml(cluster)}</text>`;}).join("");
   container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
 }
 function renderExplorationTimeline(rows) {
   const container=el("explorationTimeline"); if(!rows.length){container.innerHTML='<div class="empty">暂无显示序列。</div>';return;}
-  const body=rows.map(row=>`<tr class="${row.break_before?"exploration-break":""}"><td>${escapeHtml(row.timestamp.slice(0,19))}${row.break_before?" · 断点":""}</td><td>${escapeHtml(row.cluster_id)}</td><td>${row.segment_id}</td></tr>`).join("");
+  const body=rows.map(row=>`<tr class="${row.break_before?"exploration-break":""}"><td>${escapeHtml(displayTime(row.timestamp,19))}${row.break_before?" · 断点":""}</td><td>${escapeHtml(row.cluster_id)}</td><td>${row.segment_id}</td></tr>`).join("");
   container.innerHTML=`<table><thead><tr><th>timestamp</th><th>cluster_id</th><th>segment_id</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 function renderExplorationClusterTable(summaries) {
@@ -2809,10 +2840,10 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
   const decisionById=Object.fromEntries(decisions.map(item=>[item.candidate_id,item]));
   const controls=item=>{const decision=decisionById[item.candidate_id]||{decision:"pending",comment:""};return `<td><input class="exploration-candidate-select" type="checkbox" data-candidate-id="${escapeHtml(item.candidate_id)}" aria-label="选择候选"></td><td><select class="exploration-candidate-decision" data-candidate-id="${escapeHtml(item.candidate_id)}"><option value="pending" ${decision.decision==="pending"?"selected":""}>待决策</option><option value="accepted" ${decision.decision==="accepted"?"selected":""}>已接受</option><option value="rejected" ${decision.decision==="rejected"?"selected":""}>已拒绝</option></select></td><td><input class="exploration-candidate-comment" data-candidate-id="${escapeHtml(item.candidate_id)}" value="${escapeHtml(decision.comment||"")}" aria-label="候选备注"></td>`;};
   const clusterHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
-  const clusterBody=clusterCandidates.map(item=>`<tr>${controls(item)}<td>${escapeHtml(item.cluster_id)}</td><td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
+  const clusterBody=clusterCandidates.map(item=>`<tr>${controls(item)}<td>${escapeHtml(item.cluster_id)}</td><td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
   el("explorationClusterCandidates").innerHTML=clusterHead+(clusterBody||'<tr><td colspan="11">暂无满足条件的 Cluster 候选。</td></tr>')+"</tbody></table>";
   const performanceHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
-  const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(item.start.slice(0,19))}</td><td>${escapeHtml(item.end.slice(0,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
+  const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
   el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="10">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
 }
 
@@ -2823,7 +2854,7 @@ el("uploadButton").addEventListener("click", async () => {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderCandidateWindows(); renderTrainingWindows(); invalidateQuality(); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderCandidateWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`文件信息：${data.filename}（${Math.ceil(data.size_bytes/1024)} KB），已读取 ${data.columns.length} 个列名。请选择时间列，下一步：正在检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -2839,7 +2870,7 @@ el("inspectButton").addEventListener("click", async () => {
     setStatus("正在检查数据…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value}),signal:controller.signal});
     ensureInspectionPageReady();
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
@@ -2848,7 +2879,7 @@ el("inspectButton").addEventListener("click", async () => {
     el("templateDownload").href=`/download/tag-config-template?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
     if(data.numeric_columns.length) selectTag(data.numeric_columns[0]);
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count}) ${item.tag||""}`).join("、");
-    setStatus(issues ? `初步检查完成：${data.rows} 行。发现 ${issues}；选择参考期后必须执行统一质量检查。` : `初步检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个数值列。请选择参考期并执行统一质量检查。`, issues?"warning":"success");
+    setStatus(issues ? `基础数据检查完成：${data.rows} 行。发现 ${issues}；确认训练窗口后必须执行建模质量检查。` : `基础数据检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个数值列。请确认训练窗口并执行建模质量检查。`, issues?"warning":"success");
   } catch (error) { console.error("数据检查失败:",error); setStatus(`数据检查失败:\n${timedOut?"数据检查超过 30 秒未完成。请确认文件格式或重新上传后重试。":error.message||String(error)}`,"error"); }
   finally { window.clearTimeout(timeoutId); window.clearTimeout(progressId); setBusy(button,false,""); }
 });
@@ -2893,13 +2924,13 @@ el("exportConfigButton").addEventListener("click",async()=>{
 
 el("qualityButton").addEventListener("click",async()=>{
   const tags=selectedTags(); if(tags.length<2) { setStatus("至少选择两个“连续输入” Tag。","warning"); return; }
-  const button=el("qualityButton"); setBusy(button,true,"检查中…");
+  const button=el("qualityButton"); state.quality=null; state.qualityStatus="checking"; state.qualityError=""; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("qualitySummary").innerHTML=""; el("qualityIssues").className="empty"; el("qualityIssues").textContent="正在执行建模质量检查。"; el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); renderModelQualityStatus(); setBusy(button,true,"检查中…");
   try {
     const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
-    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); el("trainButton").disabled=!data.can_train; el("trainExploratoryButton").disabled=!data.can_train;
-    document.querySelector('[data-panel="configPanel"]').click(); document.querySelector('[data-inner="qualityPanel"]').click();
-    setStatus(data.can_train?"统一质量检查通过，可以训练草稿模型。":"仍有阻止训练的问题，请排除问题Tag或调整参考期后重新检查。",data.can_train?"success":"error");
-  } catch(error) { setStatus(error.message,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
+    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; state.qualityStatus=data.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!data.can_train; el("trainExploratoryButton").disabled=!data.can_train;
+    globalThis.showWorkflowStage?.("modelPanel");
+    setStatus(data.can_train?"建模质量检查通过，可以训练草稿模型。":"建模质量检查发现问题，请排除问题 Tag 或调整训练窗口后重新检查。",data.can_train?"success":"error");
+  } catch(error) { state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
   finally { setBusy(button,false,""); }
 });
 
@@ -2929,7 +2960,7 @@ function renderPreprocessingPreview(data,tags){
   const s=data.summary; const resampledLabel=s.resampling_method==="none"?"未重采样输入":"重采样后";
   const summary=`源数据 ${s.source_row_count}；${resampledLabel} ${s.resampled_row_count}；正常聚合减少 ${s.resampling_row_reduction??"—"}；部分桶删除 ${s.partial_resampling_bin_loss??"—"}；部分桶原始行删除 ${s.partial_resampling_row_loss??"—"}；物理段 ${s.raw_segment_count}；原始缺口 ${s.raw_gap_count}；空桶 ${s.empty_bin_count}；滤波结构预热 ${s.filter_warmup_loss}；滤波上下文无效 ${s.filter_context_invalid_loss??"—"}；状态过滤损失 ${s.state_filter_input_rows-s.state_filter_output_rows}；Lag结构预热 ${s.lag_warmup_loss}；Lag上下文无效 ${s.lag_context_invalid_loss}；当前输入无效 ${s.input_invalid_loss??"—"}；最终动态样本 ${s.final_dynamic_row_count}；动态特征 ${s.dynamic_feature_count}`;
   const labels={raw:"原始数据",resampled:"重采样数据",filtered:"因果滤波数据"};
-  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage].slice(0,12); const head=`<tr><th>时间</th>${tags.map(tag=>`<th>${escapeHtml(tag)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(row.timestamp.slice(0,19))}${row.physical_gap_start?"（物理缺口后）":""}</td>${tags.map(tag=>`<td>${row[tag]===null?"缺失":escapeHtml(String(row[tag]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}${body}</table></div>`;}).join("");
+  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage].slice(0,12); const head=`<tr><th>时间</th>${tags.map(tag=>`<th>${escapeHtml(tag)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(displayTime(row.timestamp,19))}${row.physical_gap_start?"（物理缺口后）":""}</td>${tags.map(tag=>`<td>${row[tag]===null?"缺失":escapeHtml(String(row[tag]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}${body}</table></div>`;}).join("");
   el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${tables}`;
 }
 el("trendZoom").addEventListener("input",()=>{ el("trendChart").querySelectorAll("svg").forEach(svg=>svg.style.width=`${760*Number(el("trendZoom").value)}px`); });
@@ -3001,7 +3032,7 @@ el("clusterButton").addEventListener("click", async () => {
 });
 
 async function trainModel(modelPurpose) {
-  if(!state.quality?.can_train) { setStatus("训练前必须重新执行并通过统一数据质量检查。","error"); return; }
+  if(!state.quality?.can_train) { setStatus("训练前必须重新执行并通过建模质量检查。","error"); return; }
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   try {
@@ -3020,7 +3051,7 @@ function renderValidationWindows() {
   const body=el("validationWindowTable"); body.replaceChildren();
   state.validationWindows.forEach(window=>{ const row=document.createElement("tr");
     const type=document.createElement("td"); type.textContent=window.type==="normal_validation"?"正常样本验证":"已知异常验证";
-    const start=document.createElement("td"); start.textContent=localTime(window.start); const end=document.createElement("td"); end.textContent=localTime(window.end);
+    const start=document.createElement("td"); start.textContent=displayTime(window.start); const end=document.createElement("td"); end.textContent=displayTime(window.end);
     const comment=document.createElement("td"); comment.textContent=window.comment||"—";
     const actions=document.createElement("td"); const remove=document.createElement("button"); remove.className="secondary"; remove.type="button"; remove.textContent="删除"; remove.addEventListener("click",()=>{ state.validationWindows=state.validationWindows.filter(item=>item.id!==window.id); renderValidationWindows(); }); actions.append(remove);
     row.append(type,start,end,comment,actions); body.append(row);
@@ -3064,7 +3095,7 @@ el("freezeDeployment").addEventListener("click",async()=>{
   finally { setBusy(button,false,""); }
 });
 
-function metric(label,value) { return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
+function metric(label,value,className="") { return `<div class="metric${className?` ${className}`:""}"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
 function qualityProfileTable(title,profile) {
   const fields=[["sample_count","样本数"],["valid_count","有效数"],["missing_count","缺失数"],["missing_rate","缺失率"],["non_numeric_count","非数值数"],["non_finite_count","非有限值数"],["unique_count","唯一值"],["minimum","最小值"],["maximum","最大值"],["mean","均值"],["median","中位数"],["standard_deviation","标准差"],["p01","P1"],["p05","P5"],["p95","P95"],["p99","P99"],["engineering_range_outside_count","工程范围越界"],["normal_range_outside_count","正常范围外"],["alarm_range_outside_count","报警范围外"]];
   return `<h4>${title}</h4><div class="table-wrap"><table><tbody>${fields.map(([key,label])=>`<tr><th>${label}</th><td>${formatStat(key,profile[key])}</td></tr>`).join("")}</tbody></table></div>`;
@@ -3072,7 +3103,7 @@ function qualityProfileTable(title,profile) {
 function renderCurrentTagQuality() {
   const container=el("currentTagQuality"); if(!container) return;
   const item=state.selectedTag?qualityFor(state.selectedTag):null;
-  if(!state.quality||!item) { container.className="empty"; container.textContent="尚未执行或结果已失效"; return; }
+  if(!state.quality||!item) { container.className="empty"; container.textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":state.qualityStatus==="checking"?"正在执行建模质量检查。":"尚未执行建模质量检查。"; return; }
   const role=state.registry[item.tag]?.role||item.role; const issueHtml=item.issues.length?item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join(""):"<li>无质量问题</li>";
   container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(role)} · ${escapeHtml(item.status)}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
 }
@@ -3114,7 +3145,7 @@ function formatStat(key,value) { if(value===null||value===undefined) return "—
 function trendSvg(data,tag,colorIndex,zoom) {
   const rows=data.rows,width=760*zoom,height=230,pad={l:48,r:16,t:16,b:28}; const fields=[]; if(data.display_mode!=="smoothed") fields.push([`${tag}__raw`,"#176b87","原始"]); if(data.display_mode!=="raw") fields.push([`${tag}__smoothed`,"#d97706",data.series_stage?.resampling_applied?"重采样后因果滤波":"因果滤波"]);
   const ranges=data.ranges[tag]||{}; const limits=data.axis_limits[tag]; const minimum=limits.minimum,maximum=limits.maximum,span=maximum-minimum; const x=i=>pad.l+i/Math.max(1,rows.length-1)*(width-pad.l-pad.r),y=value=>height-pad.b-(Number(value)-minimum)/span*(height-pad.t-pad.b);
-  const polylines=fields.map(([field,color,label])=>{ const gapField=field.endsWith("__raw")?"raw_physical_gap_start":"filtered_physical_gap_start"; let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row[gapField]) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(row.timestamp)} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(row.timestamp)} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
+  const polylines=fields.map(([field,color,label])=>{ const gapField=field.endsWith("__raw")?"raw_physical_gap_start":"filtered_physical_gap_start"; let segments=[],current=[]; rows.forEach((row,i)=>{ if(row[field]===null||row[gapField]) { if(current.length) segments.push(current); current=[]; } if(row[field]!==null) current.push(`${x(i).toFixed(1)},${y(row[field]).toFixed(1)}`); }); if(current.length) segments.push(current); const lines=segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.7"/>`).join(""); const dots=rows.map((row,i)=>{ if(row[field]===null) return `<circle cx="${x(i)}" cy="${height-pad.b}" r="3" fill="#cf3f36"><title>${escapeHtml(displayTime(row.timestamp,19))} · 缺失值</title></circle>`; const outside=field.endsWith("__raw")&&ranges.engineering_min!==null&&ranges.engineering_min!==undefined&&(Number(row[field])<Number(ranges.engineering_min)||Number(row[field])>Number(ranges.engineering_max)); return `<circle cx="${x(i)}" cy="${y(row[field])}" r="${outside?3:2}" fill="${outside?"#cf3f36":color}"><title>${escapeHtml(displayTime(row.timestamp,19))} · ${label}: ${row[field]}${outside?" · 工程量程越界":""}</title></circle>`; }).join(""); return lines+dots; }).join("");
   const rangeLine=(key,color,label)=>ranges[key]===null||ranges[key]===undefined?"":`<line x1="${pad.l}" x2="${width-pad.r}" y1="${y(ranges[key])}" y2="${y(ranges[key])}" stroke="${color}" stroke-dasharray="5 4"><title>${label}: ${ranges[key]}</title></line>`;
   const gaps=rows.map((row,i)=>row.physical_gap_start?`<line x1="${x(i)}" x2="${x(i)}" y1="${pad.t}" y2="${height-pad.b}" stroke="#cf3f36" stroke-dasharray="3 3"><title>物理时间缺口</title></line>`:"").join("");
   return `<svg viewBox="0 0 ${width} ${height}" style="width:${width}px" aria-label="${escapeHtml(tag)}趋势">${gaps}${rangeLine("engineering_min","#64748b","工程下限")}${rangeLine("engineering_max","#64748b","工程上限")}${rangeLine("normal_min","#16845b","正常下限")}${rangeLine("normal_max","#16845b","正常上限")}${rangeLine("alarm_min","#cf3f36","报警下限")}${rangeLine("alarm_max","#cf3f36","报警上限")}${polylines}<text x="4" y="20" font-size="10">${maximum.toPrecision(4)}</text><text x="4" y="${height-pad.b}" font-size="10">${minimum.toPrecision(4)}</text></svg>`;
@@ -3127,7 +3158,7 @@ function renderPerformance(data) {
   el("performanceEmpty").hidden=true; el("performanceContent").hidden=false;
   el("performanceMetrics").innerHTML=metric("分析样本",data.total_rows)+metric("全部条件命中",data.matched_rows)+metric("命中占比",`${(data.match_share*100).toFixed(1)}%`)+metric("组合方式","AND");
   const conditions=el("performanceConditionTable"); conditions.replaceChildren(); data.conditions.forEach(item=>{ const tr=document.createElement("tr"); const expression=`${item.minimum===null?"":`≥ ${item.minimum}`} ${item.maximum===null?"":`≤ ${item.maximum}`}`.trim(); [item.column,expression,item.matched_rows].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); conditions.append(tr); });
-  const windows=el("performanceTable"); windows.replaceChildren(); data.representative_windows.forEach((window,index)=>{ const tr=document.createElement("tr"); [window.start.slice(0,16),window.end.slice(0,16),window.count].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); const action=document.createElement("td"); const button=document.createElement("button"); button.className="secondary"; button.textContent="加入候选窗口"; button.addEventListener("click",()=>addCandidateWindow("performance",window.start,window.end,`performance-${index+1}`,"")); action.append(button); tr.append(action); windows.append(tr); });
+  const windows=el("performanceTable"); windows.replaceChildren(); data.representative_windows.forEach((window,index)=>{ const tr=document.createElement("tr"); [displayTime(window.start),displayTime(window.end),window.count].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); const action=document.createElement("td"); const button=document.createElement("button"); button.className="secondary"; button.textContent="加入候选窗口"; button.addEventListener("click",()=>addCandidateWindow("performance",window.start,window.end,`performance-${index+1}`,"")); action.append(button); tr.append(action); windows.append(tr); });
   if(!data.representative_windows.length) { const tr=document.createElement("tr"); const td=document.createElement("td"); td.colSpan=4; td.textContent="没有同时满足全部条件的连续时段。"; tr.append(td); windows.append(tr); }
 }
 
@@ -3140,7 +3171,7 @@ function renderClustering(data) {
     const tr=document.createElement("tr");
     [`Cluster ${item.cluster}`,item.count,`${(item.share*100).toFixed(1)}%`,`${item.pc1_center.toFixed(2)} / ${item.pc2_center.toFixed(2)}`].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); });
     const windows=document.createElement("td");
-    item.representative_windows.forEach(window=>{ const button=document.createElement("button"); button.className="secondary"; button.style.margin="2px"; button.textContent=`加入候选窗口：${window.start.slice(0,16)} ～ ${window.end.slice(11,16)} (${window.count}点)`; button.addEventListener("click",()=>addCandidateWindow("cluster",window.start,window.end,`cluster-${item.cluster}`,"")); windows.append(button); });
+    item.representative_windows.forEach(window=>{ const button=document.createElement("button"); button.className="secondary"; button.style.margin="2px"; button.textContent=`加入候选窗口：${displayTime(window.start)} ～ ${window.end.slice(11,16)} (${window.count}点)`; button.addEventListener("click",()=>addCandidateWindow("cluster",window.start,window.end,`cluster-${item.cluster}`,"")); windows.append(button); });
     tr.append(windows); body.append(tr);
   });
 }
@@ -3172,9 +3203,9 @@ function renderTrainingWindowSummary(windows) {
   const header=document.createElement("tr"); ["范围","状态","重采样减少","部分桶","滤波预热","滤波上下文","状态过滤","Lag预热","Lag上下文","输入无效","有效动态样本","原因"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
   windows.forEach(window=>{
     const row=document.createElement("tr");
-    [`窗口 ${window.id}: ${window.start.slice(0,16)} ～ ${window.end.slice(0,16)}`,displayUiValue(window.status),window.resampling_row_reduction??"—",window.partial_resampling_bin_loss??"—",window.filter_warmup_loss??"—",window.filter_context_invalid_loss??"—",window.state_filter_loss??"—",window.lag_warmup_loss??"—",window.lag_context_invalid_loss??"—",window.input_invalid_loss??"—",window.effective_samples,displayUiValue(window.dropped_reason??"—")].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; row.append(td); }); body.append(row);
+    [`窗口 ${window.id}: ${displayTime(window.start)} ～ ${displayTime(window.end)}`,displayUiValue(window.status),window.resampling_row_reduction??"—",window.partial_resampling_bin_loss??"—",window.filter_warmup_loss??"—",window.filter_context_invalid_loss??"—",window.state_filter_loss??"—",window.lag_warmup_loss??"—",window.lag_context_invalid_loss??"—",window.input_invalid_loss??"—",window.effective_samples,displayUiValue(window.dropped_reason??"—")].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; row.append(td); }); body.append(row);
     (window.segments||[]).forEach(segment=>{ const segmentRow=document.createElement("tr");
-      [`连续段 ${segment.start.slice(0,16)} ～ ${segment.end.slice(0,16)}`,displayUiValue(segment.status),segment.resampling_row_reduction??"—",segment.partial_resampling_bin_loss??"—",segment.filter_warmup_loss??"—",segment.filter_context_invalid_loss??"—",segment.state_filter_loss??"—",segment.lag_warmup_loss??"—",segment.lag_context_invalid_loss??"—",segment.input_invalid_loss??"—",segment.effective_samples,displayUiValue(segment.dropped_reason??"—")].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; segmentRow.append(td); }); body.append(segmentRow);
+      [`连续段 ${displayTime(segment.start)} ～ ${displayTime(segment.end)}`,displayUiValue(segment.status),segment.resampling_row_reduction??"—",segment.partial_resampling_bin_loss??"—",segment.filter_warmup_loss??"—",segment.filter_context_invalid_loss??"—",segment.state_filter_loss??"—",segment.lag_warmup_loss??"—",segment.lag_context_invalid_loss??"—",segment.input_invalid_loss??"—",segment.effective_samples,displayUiValue(segment.dropped_reason??"—")].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; segmentRow.append(td); }); body.append(segmentRow);
     });
   });
   table.append(head,body); container.append(table);
@@ -3188,7 +3219,7 @@ function renderValidation(data) {
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
   el("contributionHint").textContent=data.contributions.length ? "按每个连续越过95%控制限的事件保存峰值贡献；事件不会跨物理时间缺口合并。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
-  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${group.event_start.slice(0,16)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td title="点击在趋势页查看">${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; tr.children[2].style.cursor="pointer"; tr.children[2].addEventListener("click",()=>{ [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); el("trendStart").value=localTime(group.event_start); el("trendEnd").value=localTime(group.event_end); document.querySelector('[data-panel="trendPanel"]').click(); }); body.append(tr); }));
+  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${displayTime(group.event_start)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td title="点击在趋势页查看">${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; tr.children[2].style.cursor="pointer"; tr.children[2].addEventListener("click",()=>{ [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); el("trendStart").value=localTime(group.event_start); el("trendEnd").value=localTime(group.event_end); document.querySelector('[data-panel="trendPanel"]').click(); }); body.append(tr); }));
   el("scoresDownload").href=data.validation_downloads.scores; el("reportDownload").href=data.validation_downloads.report; el("contributionsDownload").href=data.validation_downloads.contributions;
 }
 
@@ -3209,7 +3240,7 @@ function lineChart(container, rows, field, limits, label) {
   if (!rows.length) { container.innerHTML='<div class="empty">无可展示数据</div>'; return; }
   const width=760,height=250,pad={l:48,r:16,t:15,b:30}; const values=rows.map(row=>Number(row[field])); const max=Math.max(...values,Number(limits["99"])*1.08,1e-9); const x=index=>pad.l+index/Math.max(1,rows.length-1)*(width-pad.l-pad.r); const y=value=>height-pad.b-value/max*(height-pad.t-pad.b); const points=values.map((value,index)=>`${x(index).toFixed(1)},${y(value).toFixed(1)}`).join(" ");
   const limitLine=(value,color,text)=>`<line x1="${pad.l}" x2="${width-pad.r}" y1="${y(value)}" y2="${y(value)}" stroke="${color}" stroke-width="1.5" stroke-dasharray="6 4"/><text x="${width-pad.r-3}" y="${y(value)-4}" text-anchor="end" fill="${color}" font-size="10">${text}</text>`;
-  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${label}趋势"><line x1="${pad.l}" x2="${pad.l}" y1="${pad.t}" y2="${height-pad.b}" stroke="#bcc6d1"/><line x1="${pad.l}" x2="${width-pad.r}" y1="${height-pad.b}" y2="${height-pad.b}" stroke="#bcc6d1"/>${limitLine(limits["95"],"#d19a20","95%")}${limitLine(limits["99"],"#cf3f36","99%")}<polyline points="${points}" fill="none" stroke="#176b87" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="4" y="${pad.t+8}" fill="#5f6c7b" font-size="10">${max.toFixed(2)}</text><text x="${pad.l}" y="${height-8}" fill="#5f6c7b" font-size="10">${escapeHtml(rows[0].timestamp.slice(0,16))}</text><text x="${width-pad.r}" y="${height-8}" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(rows.at(-1).timestamp.slice(0,16))}</text></svg>`;
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${label}趋势"><line x1="${pad.l}" x2="${pad.l}" y1="${pad.t}" y2="${height-pad.b}" stroke="#bcc6d1"/><line x1="${pad.l}" x2="${width-pad.r}" y1="${height-pad.b}" y2="${height-pad.b}" stroke="#bcc6d1"/>${limitLine(limits["95"],"#d19a20","95%")}${limitLine(limits["99"],"#cf3f36","99%")}<polyline points="${points}" fill="none" stroke="#176b87" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="4" y="${pad.t+8}" fill="#5f6c7b" font-size="10">${max.toFixed(2)}</text><text x="${pad.l}" y="${height-8}" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows[0].timestamp))}</text><text x="${width-pad.r}" y="${height-8}" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows.at(-1).timestamp))}</text></svg>`;
 }
 
 function scoreScatter(container, rows) {
@@ -3221,7 +3252,7 @@ function clusterScatter(container, rows) {
   if (!rows.length) { container.innerHTML='<div class="empty">无可展示数据</div>'; return; }
   const palette=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
   const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad);
-  const circles=rows.map(row=>`<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${palette[(row.cluster-1)%palette.length]}" fill-opacity=".72"><title>Cluster ${row.cluster} · ${escapeHtml(row.timestamp.slice(0,16))}</title></circle>`).join("");
+  const circles=rows.map(row=>`<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${palette[(row.cluster-1)%palette.length]}" fill-opacity=".72"><title>Cluster ${row.cluster} · ${escapeHtml(displayTime(row.timestamp))}</title></circle>`).join("");
   const legend=[...new Set(rows.map(row=>row.cluster))].map(cluster=>`<text x="${pad+(cluster-1)*82}" y="15" fill="${palette[(cluster-1)%palette.length]}" font-size="10">● Cluster ${cluster}</text>`).join("");
   container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="运行状态聚类散点">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${circles}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
 }

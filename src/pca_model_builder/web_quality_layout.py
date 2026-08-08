@@ -43,7 +43,11 @@ _QUALITY_GRID_SCRIPT = r"""
     const item = state.selectedTag ? qualityFor(state.selectedTag) : null;
     if (!state.quality || !item) {
       container.className = "empty";
-      container.textContent = "尚未执行或结果已失效";
+      container.textContent = state.qualityStatus === "changed"
+        ? "配置已变更，请重新执行建模质量检查。"
+        : state.qualityStatus === "checking"
+        ? "正在执行建模质量检查。"
+        : "尚未执行建模质量检查。";
       return;
     }
     const role = state.registry[item.tag]?.role || item.role;

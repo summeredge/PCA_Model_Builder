@@ -210,6 +210,26 @@ def test_final_web_page_exposes_state_exploration_workbench():
     assert "selectedExplorationCandidateRows" in html
 
 
+def test_final_web_compacts_basic_inspection_time_range_into_two_lines():
+    html = web_model_results.INDEX_HTML
+
+    assert ".metric.time-range strong" in html
+    assert "font-size:14px" in html
+    assert 'metric("时间范围",`${displayTime(data.time_start)}\\n${displayTime(data.time_end)}`,"time-range")' in html
+
+
+def test_final_web_formats_displayed_timestamps_with_a_space():
+    html = web_model_results.INDEX_HTML
+
+    assert 'function displayTime(value,length=16)' in html
+    assert '.replace("T"," ")' in html
+    assert 'displayTime(window.start)' in html
+    assert 'displayTime(rows[0].timestamp)' in html
+    assert 'displayTime(firstTime)' in html
+    assert 'el("analysisStart").value=localTime' in html
+    assert 'row.timestamp.slice(0,19)' not in html
+
+
 def test_final_web_entry_uses_cached_base_reading_paths() -> None:
     from pca_model_builder import web_dataproject
 
@@ -632,7 +652,8 @@ def test_web_quality_tab_shows_selected_tag_and_trend_axis_uses_payload_limits()
     html = web.INDEX_HTML
 
     assert "function renderCurrentTagQuality()" in html
-    assert "尚未执行或结果已失效" in html
+    assert "尚未执行建模质量检查。" in html
+    assert "已失效" not in html
     for field in (
         "sample_count",
         "valid_count",
