@@ -649,19 +649,33 @@ def _stabilize_workbench_html(html: str) -> str:
     parameter_group = parameter_group.replace(
         '<div class="group">', '<div class="group training-configuration">', 1
     )
-    parameter_group, advanced_count = re.subn(
-        r'(?P<rows>        <div class="row"><label>目标采样周期（分钟）.*?'
-        r'        <div class="row"><label>累计解释率.*?</div>\n)',
-        '        <details class="advanced-parameters" open>\n'
+    parameter_rows = (
+        '        <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>\n'
+        '        <div class="row"><label>滤波方法<select id="filterMethod"><option value="trailing_mean">尾随均值</option><option value="trailing_median">尾随中位数</option><option value="none">不滤波</option></select></label><label>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10"></label></div>\n'
+        '        <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>\n'
+        '        <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>\n'
+        '        <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>\n'
+        '        <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>'
+    )
+    layered_parameter_rows = (
+        '        <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label></div>\n'
+        '        <div class="row"><label>滤波方法<select id="filterMethod"><option value="trailing_mean">尾随均值</option><option value="trailing_median">尾随中位数</option><option value="none">不滤波</option></select></label><label>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10"></label></div>\n'
+        '        <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label></div>\n'
+        '        <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label></div>\n'
+        '        <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>\n'
+        '        <details class="advanced-parameters">\n'
         '          <summary>高级预处理与 DPCA 参数</summary>\n'
         '          <div class="help">执行顺序保持为时间检查、缺口识别、重采样、数据检查、因果滤波、Lag 扩展和标准化。</div>\n'
-        r'\g<rows>'
-        '        </details>\n',
-        parameter_group,
-        count=1,
-        flags=re.DOTALL,
+        '          <div class="row"><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>\n'
+        '          <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>\n'
+        '          <div class="row"><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>\n'
+        '          <div class="row"><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>\n'
+        '        </details>'
     )
-    if advanced_count != 1 or 'id="candidateWindows"' in parameter_group:
+    if parameter_rows not in parameter_group:
+        raise ValueError("无法固定训练参数字段")
+    parameter_group = parameter_group.replace(parameter_rows, layered_parameter_rows, 1)
+    if 'id="candidateWindows"' in parameter_group:
         raise ValueError("无法固定候选窗口或训练参数区域")
     status_area = (status_marker + status_area).replace(
         'class="status info" role="status" aria-live="polite"',
@@ -736,9 +750,10 @@ def _stabilize_workbench_html(html: str) -> str:
             '      </div>',
         )
     )
-    model_panel = model_panel.replace(
-        '>\n', f'>\n{parameter_group}\n', 1
-    )
+    model_panel_lines = model_panel.rsplit("\n", 1)
+    if len(model_panel_lines) != 2 or model_panel_lines[1] != "      </div>":
+        raise ValueError("无法固定模型训练结果区域")
+    model_panel = f"{model_panel_lines[0]}\n{parameter_group}\n      </div>"
     static_main = "\n".join(
         (
             "  <main>",

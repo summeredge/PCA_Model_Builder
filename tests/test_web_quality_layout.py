@@ -189,6 +189,64 @@ def test_operation_log_is_shared_by_all_workflow_stages() -> None:
     assert 'id="status"' not in html[config_start:candidate_start]
 
 
+def test_training_parameters_split_common_and_advanced_fields() -> None:
+    html = web_model_results.INDEX_HTML
+    config_start = html.index('<div class="group training-configuration">')
+    advanced_start = html.index('<details class="advanced-parameters">', config_start)
+    advanced_end = html.index('</details>', advanced_start)
+    common_source = html[config_start:advanced_start]
+    advanced_source = html[advanced_start:advanced_end]
+
+    assert '<details class="advanced-parameters" open>' not in html
+    assert html.count('<details class="advanced-parameters">') == 1
+    for field_id in (
+        "sampleInterval",
+        "filterMethod",
+        "smoothingWindow",
+        "maxLag",
+        "varianceThreshold",
+        "modelName",
+    ):
+        assert f'id="{field_id}"' in common_source
+        assert f'id="{field_id}"' not in advanced_source
+    for field_id in ("resamplingMethod", "gapThreshold", "lagStep", "components"):
+        assert f'id="{field_id}"' in advanced_source
+        assert f'id="{field_id}"' not in common_source
+    for field_id in (
+        "sampleInterval",
+        "resamplingMethod",
+        "filterMethod",
+        "smoothingWindow",
+        "gapThreshold",
+        "maxLag",
+        "lagStep",
+        "varianceThreshold",
+        "components",
+        "modelName",
+    ):
+        assert html.count(f'id="{field_id}"') == 1
+
+
+def test_model_results_precede_training_configuration() -> None:
+    html = web_model_results.INDEX_HTML
+    model_start = html.index('<div id="modelPanel"')
+    validation_start = html.index('<div id="validationPanel"', model_start)
+    model_source = html[model_start:validation_start]
+
+    assert model_source.index('id="modelContent"') < model_source.index(
+        'class="group training-configuration"'
+    )
+    assert model_source.index('id="modelMetrics"') < model_source.index(
+        'id="trainingWindowSummary"'
+    )
+    assert model_source.index('id="trainingWindowSummary"') < model_source.index(
+        'id="varianceChart"'
+    )
+    assert model_source.index('id="varianceChart"') < model_source.index(
+        'id="t2Chart"'
+    )
+
+
 def test_frozen_replay_is_mounted_in_the_release_stage() -> None:
     source = (
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
