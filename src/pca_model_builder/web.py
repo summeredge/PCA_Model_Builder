@@ -2689,7 +2689,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="validationContent" hidden>
           <h3>验证状态摘要</h3>
           <div id="validationMetrics" class="metrics"></div>
-          <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
+          <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><div id="validationDecisionStatus" class="status info" role="status" aria-live="polite">等待保存工程师结论。</div><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
           <h3>验证指标</h3>
           <div id="validationMetricDetails" class="table-wrap"></div>
           <div class="chart-grid">
@@ -3151,14 +3151,14 @@ el("validateButton").addEventListener("click", async () => {
 
 el("recordValidationDecision").addEventListener("click",async()=>{
   if(!state.validation||!state.runId) { setStatus("请先完成当前模型的独立验证，再保存工程师结论。","error"); return; }
-  const button=el("recordValidationDecision"); setBusy(button,true,"保存中…");
+  const button=el("recordValidationDecision"), decisionStatus=el("validationDecisionStatus"); setBusy(button,true,"保存中…"); decisionStatus.textContent="正在保存工程师结论。"; decisionStatus.className="status info";
   try {
     const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
     if(!data.engineer_decision) throw new Error("服务未返回工程师结论");
     const download=el("validatedModelDownload"); download.href=data.validated_model_download||"#"; download.hidden=!data.validated_model_download;
     state.validation={...state.validation,model_status:data.model_status,engineer_decision:data.engineer_decision}; renderValidation(state.validation);
-    setStatus(data.engineer_decision.decision==="passed"?"工程师结论已保存，已生成已验证模型副本；原候选模型未被原地修改。":"工程师结论已保存；候选模型保持不变。","success");
-  } catch(error) { setStatus(error.message,"error"); }
+    const message=data.engineer_decision.decision==="passed"?"工程师结论已保存并生成已验证模型；原候选模型未被原地修改。":"工程师结论已保存，候选模型保持不变。"; decisionStatus.textContent=message; decisionStatus.className="status success"; setStatus(message,"success");
+  } catch(error) { decisionStatus.textContent=error.message; decisionStatus.className="status error"; setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
 

@@ -88,6 +88,7 @@ def test_static_panels_own_their_existing_controls() -> None:
         "modelQualityResults": "modelPanel",
         "trainButton": "modelPanel",
         "validateButton": "validationPanel",
+        "validationDecisionStatus": "validationPanel",
         "validatedModelDownload": "releasePanel",
         "freezeDeployment": "releasePanel",
         "deploymentModelDownload": "releasePanel",

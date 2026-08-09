@@ -170,6 +170,7 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
         'id="validationType"',
         'id="validationWindowTable"',
         'id="recordValidationDecision"',
+        'id="validationDecisionStatus"',
         'id="validatedModelDownload"',
         'id="validationMetricDetails"',
         'id="contributionStability"',
@@ -211,6 +212,8 @@ def test_validation_decision_handler_uses_current_validation_lifecycle_state():
     assert 'decision:el("validationDecision").value' in source
     assert 'comment:el("validationDecisionComment").value.trim()' in source
     assert 'setBusy(button,true,"保存中…")' in source
+    assert 'decisionStatus=el("validationDecisionStatus")' in source
+    assert 'decisionStatus.textContent="正在保存工程师结论。"' in source
     assert 'download.href=data.validated_model_download||"#"' in source
     assert 'download.hidden=!data.validated_model_download' in source
     assert (
@@ -218,6 +221,12 @@ def test_validation_decision_handler_uses_current_validation_lifecycle_state():
         "engineer_decision:data.engineer_decision}; renderValidation(state.validation);"
         in source
     )
+    assert '工程师结论已保存并生成已验证模型；' in source
+    assert '工程师结论已保存，候选模型保持不变。' in source
+    assert 'decisionStatus.textContent=message;' in source
+    assert 'decisionStatus.className="status success"' in source
+    assert 'catch(error) { decisionStatus.textContent=error.message;' in source
+    assert 'decisionStatus.className="status error"' in source
     assert 'setStatus(error.message,"error")' in source
 
 

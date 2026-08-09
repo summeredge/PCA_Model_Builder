@@ -290,6 +290,15 @@ def test_model_quality_check_is_in_the_model_training_stage() -> None:
     assert "已失效" not in html
 
 
+def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert "#modelPanel #modelQualityStatus," in html
+    assert "#modelPanel #qualityButton { width:fit-content; justify-self:start; }" in html
+    assert "#modelPanel #modelQualityStatus { max-width:100%; }" in html
+    assert "#modelPanel #currentTagQuality { max-width:1200px; }" in html
+
+
 def test_model_quality_status_tracks_check_and_configuration_changes() -> None:
     html = web_model_results.INDEX_HTML
 

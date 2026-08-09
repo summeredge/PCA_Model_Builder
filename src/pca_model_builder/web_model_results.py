@@ -300,6 +300,10 @@ _APPLE_DESIGN_STYLE = r"""
   .status.success { background:#e8f5e9; color:#0e6027; border-color:#24a148; }
   .status.warning, .notice { background:#fff8e1; color:#6f4e00; border-color:#f1c21b; }
   .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
+  #modelPanel #modelQualityStatus,
+  #modelPanel #qualityButton { width:fit-content; justify-self:start; }
+  #modelPanel #modelQualityStatus { max-width:100%; }
+  #modelPanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:11px; }
   .tag-row.selected { background:#edf5ff; }
   .metric { padding:24px; }
