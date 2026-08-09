@@ -199,6 +199,28 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
     assert "*100" not in formatter
 
 
+def test_validation_decision_handler_uses_current_validation_lifecycle_state():
+    html = web_model_results.INDEX_HTML
+    source = html.split(
+        'el("recordValidationDecision").addEventListener("click",async()=>{', 1
+    )[1].split('el("freezeDeployment").addEventListener', 1)[0]
+
+    assert 'if(!state.validation||!state.runId)' in source
+    assert 'api("/api/validation-decision"' in source
+    assert "run_id:state.runId" in source
+    assert 'decision:el("validationDecision").value' in source
+    assert 'comment:el("validationDecisionComment").value.trim()' in source
+    assert 'setBusy(button,true,"保存中…")' in source
+    assert 'download.href=data.validated_model_download||"#"' in source
+    assert 'download.hidden=!data.validated_model_download' in source
+    assert (
+        "state.validation={...state.validation,model_status:data.model_status,"
+        "engineer_decision:data.engineer_decision}; renderValidation(state.validation);"
+        in source
+    )
+    assert 'setStatus(error.message,"error")' in source
+
+
 def test_final_web_page_exposes_state_exploration_workbench():
     html = web_model_results.INDEX_HTML
     for element_id in (

@@ -2687,7 +2687,9 @@ INDEX_HTML = r"""<!doctype html>
         <div class="table-wrap"><table><thead><tr><th>类型</th><th>开始</th><th>结束</th><th>备注</th><th>操作</th></tr></thead><tbody id="validationWindowTable"></tbody></table></div>
         <div id="validationEmpty" class="empty">只有正常状态候选模型可以执行独立验证。</div>
         <div id="validationContent" hidden>
+          <h3>验证状态摘要</h3>
           <div id="validationMetrics" class="metrics"></div>
+          <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
           <h3>验证指标</h3>
           <div id="validationMetricDetails" class="table-wrap"></div>
           <div class="chart-grid">
@@ -2700,7 +2702,6 @@ INDEX_HTML = r"""<!doctype html>
           <h3>贡献稳定性</h3>
           <div id="contributionStability" class="table-wrap"></div>
           <div class="actions"><a id="scoresDownload" class="download" href="#">下载完整评分 CSV</a><a id="reportDownload" class="download" href="#">下载验证摘要</a><a id="contributionsDownload" class="download" href="#">下载贡献记录</a></div>
-          <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
           <div class="validation-box"><label>模型标识<input id="frozenModelId" type="text"></label><label>模型版本<input id="frozenModelVersion" type="number" min="1" step="1" value="1"></label><label>冻结人<input id="frozenBy" type="text"></label><label>冻结备注<input id="freezeComment" type="text"></label><button id="freezeDeployment" type="button">冻结并导出部署包</button><a id="frozenModelDownload" class="download" href="#" hidden>下载冻结模型包</a><a id="deploymentModelDownload" class="download" href="#" hidden>下载部署模型包</a></div>
           <div class="help">每次回放会更新当前模型最近一次验证的下载文件；候选模型不会被验证结果原地修改。</div>
           <div class="notice">验证指标和贡献稳定性只提供工程证据，不能替代工程师确认。贡献表示该时间点偏离在模型中的来源，不等同于工艺根因；最终通过或不通过由工程师确认。frozen表示工程冻结，不表示已部署或已进入模型治理平台。</div>
@@ -3149,11 +3150,14 @@ el("validateButton").addEventListener("click", async () => {
 });
 
 el("recordValidationDecision").addEventListener("click",async()=>{
+  if(!state.validation||!state.runId) { setStatus("请先完成当前模型的独立验证，再保存工程师结论。","error"); return; }
   const button=el("recordValidationDecision"); setBusy(button,true,"保存中…");
   try {
     const data=await api("/api/validation-decision",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:state.runId,decision:el("validationDecision").value,comment:el("validationDecisionComment").value.trim()})});
-    if(data.validated_model_download) { el("validatedModelDownload").href=data.validated_model_download; el("validatedModelDownload").hidden=false; state.validation={...state.validation,model_purpose:"normal_state",model_status:data.model_status}; renderValidation(state.validation); }
-    setStatus(data.engineer_decision.decision==="passed"?"工程师已确认通过，已生成已验证模型副本；原候选模型未被原地修改。":"工程师结论已保存；候选模型保持不变。","success");
+    if(!data.engineer_decision) throw new Error("服务未返回工程师结论");
+    const download=el("validatedModelDownload"); download.href=data.validated_model_download||"#"; download.hidden=!data.validated_model_download;
+    state.validation={...state.validation,model_status:data.model_status,engineer_decision:data.engineer_decision}; renderValidation(state.validation);
+    setStatus(data.engineer_decision.decision==="passed"?"工程师结论已保存，已生成已验证模型副本；原候选模型未被原地修改。":"工程师结论已保存；候选模型保持不变。","success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -3286,7 +3290,7 @@ function renderTrainingWindowSummary(windows) {
 
 function renderValidation(data) {
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
-  const lifecycle=modelLifecycle(data); const validationStatus=data.model_status==="frozen"?"已生成冻结和部署模型包":data.model_status==="validated"?"已生成已验证模型副本":"验证回放完成，待工程师确认";
+  const lifecycle=modelLifecycle(data); const decisionLabels={passed:"通过",insufficient:"结论不足",failed:"不通过"}; const validationStatus=data.model_status==="frozen"?"已生成冻结和部署模型包":data.model_status==="validated"?"已生成已验证模型副本":data.engineer_decision?`工程师结论已保存：${decisionLabels[data.engineer_decision.decision]||data.engineer_decision.decision}`:"验证回放完成，待工程师确认";
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("验证状态",validationStatus);
   renderValidationMetricDetails(data.validation_metrics||{}); renderContributionStability(data.contribution_stability||{});
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");

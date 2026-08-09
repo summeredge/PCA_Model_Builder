@@ -353,6 +353,16 @@ def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None
     assert "renderValidation(state.validation);" in decision_source
 
 
+def test_validation_engineer_confirmation_precedes_validation_metrics() -> None:
+    html = web_model_results.INDEX_HTML
+
+    summary = html.index("<h3>验证状态摘要</h3>")
+    confirmation = html.index('id="recordValidationDecision"')
+    metrics = html.index("<h3>验证指标</h3>")
+
+    assert summary < confirmation < metrics
+
+
 def test_candidate_actions_do_not_replace_the_training_window() -> None:
     html = web_model_results.INDEX_HTML
     cluster_source = html.split("function renderClustering", 1)[1].split(
