@@ -2,6 +2,7 @@
   "use strict";
 
   const modelContent = document.getElementById("modelContent");
+  const releasePanel = document.getElementById("releasePanel");
   if (!modelContent || typeof window.renderTraining !== "function") return;
 
   const SVG_NS = "http://www.w3.org/2000/svg";
@@ -150,7 +151,7 @@
     <div id="frozenReplaySummary" class="help">请先完成工程冻结，再选择历史区间执行回放。</div>
     <div class="chart-grid"><div class="chart-card"><h3>T² / SPE 限值比趋势</h3><div id="frozenReplayTrend" class="chart empty">尚无回放结果。</div></div><div class="chart-card"><h3>状态统计</h3><div id="frozenReplayStatus" class="help">尚无回放结果。</div></div></div>
     <div class="actions"><a id="frozenReplayScoresDownload" class="download" href="#" hidden>下载完整评分 CSV</a><a id="frozenReplaySummaryDownload" class="download" href="#" hidden>下载回放摘要</a><a id="frozenReplayContributionsDownload" class="download" href="#" hidden>下载贡献记录</a></div>`;
-  diagnosticCard.insertAdjacentElement("afterend", replayCard);
+  releasePanel.append(replayCard);
 
   document.getElementById("frozenReplayButton").addEventListener("click", async () => {
     const button = document.getElementById("frozenReplayButton");

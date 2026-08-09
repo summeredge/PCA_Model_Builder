@@ -55,3 +55,18 @@ Not testable as a product regression.
 
 **Related Files**
 - src/pca_model_builder/web_model_results.py
+
+## [ERR-20260809-001] Combined rg search returned exit code 1
+
+**Priority**: low
+**Status**: resolved
+**Area**: tools
+
+### 摘要
+跨文件搜索时，某些文件没有匹配项会使 `rg` 返回 1，即使其他文件已返回结果。
+
+### 建议修复
+对预期可能无匹配项的批量搜索显式处理 `rg` 的退出码，避免将其误判为检查失败。
+
+### 元数据
+- Reproducible: yes

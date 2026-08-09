@@ -176,6 +176,29 @@ def test_final_web_uses_the_apple_visual_tokens() -> None:
     assert "grid-template-columns:22px minmax(0,1fr) max-content;" in html
 
 
+def test_operation_log_is_shared_by_all_workflow_stages() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert html.count('id="status"') == 1
+    assert (
+        '<section class="results">\n'
+        '      <div id="status" class="status info operation-log"'
+    ) in html
+    config_start = html.index('<div id="configPanel"')
+    candidate_start = html.index('<div id="candidatePanel"')
+    assert 'id="status"' not in html[config_start:candidate_start]
+
+
+def test_frozen_replay_is_mounted_in_the_release_stage() -> None:
+    source = (
+        PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'const releasePanel = document.getElementById("releasePanel");' in source
+    assert "releasePanel.append(replayCard);" in source
+    assert 'diagnosticCard.insertAdjacentElement("afterend", replayCard)' not in source
+
+
 def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:
     source = (
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"

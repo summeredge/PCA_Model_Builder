@@ -694,7 +694,6 @@ def _stabilize_workbench_html(html: str) -> str:
         f'>\n      <div class="data-preparation-grid">\n{upload_group}\n{tag_group}\n      </div>\n',
         1,
     )
-    config_panel = config_panel.rsplit('\n      </div>', 1)[0] + f'\n{status_area}\n      </div>'
     candidate_panels = []
     for panel in (trend_panel, state_panel, cluster_panel, performance_panel):
         candidate_panels.append(panel.replace('class="panel"', 'class="candidate-tool-panel"', 1))
@@ -745,6 +744,7 @@ def _stabilize_workbench_html(html: str) -> str:
             "  <main>",
             _workflow_sidebar_html(),
             '    <section class="results">',
+            status_area,
             config_panel,
             candidate_panel,
             model_panel,
