@@ -1407,6 +1407,119 @@ def test_training_windows_api_normalizes_operations_and_reports_summary():
     assert result["summary"][0]["duration_minutes"] == 10
 
 
+def test_candidate_confirmation_splits_training_windows_by_exclusions():
+    candidate = {
+        "id": "candidate-001",
+        "start": "2026-01-01T08:00:00",
+        "end": "2026-01-01T20:00:00",
+        "source": "trend",
+        "source_ref": "trend-current",
+        "comment": "工程师确认",
+    }
+    excluded = [
+        {
+            "id": "exclude-1",
+            "start": "2026-01-01T10:00:00",
+            "end": "2026-01-01T11:00:00",
+            "source": "trend",
+            "comment": "波动",
+        },
+        {
+            "id": "exclude-2",
+            "start": "2026-01-01T16:00:00",
+            "end": "2026-01-01T17:00:00",
+            "source": "trend",
+            "comment": "检修",
+        },
+    ]
+
+    result = web.training_windows_payload(
+        {
+            "training_windows": [],
+            "excluded_windows": excluded,
+            "operation": {"action": "confirm_candidate", "candidate": candidate},
+        }
+    )
+
+    assert [window["id"] for window in result["training_windows"]] == [
+        "training-candidate-001-part-001",
+        "training-candidate-001-part-002",
+        "training-candidate-001-part-003",
+    ]
+    assert [(window["start"], window["end"]) for window in result["training_windows"]] == [
+        ("2026-01-01T08:00:00", "2026-01-01T10:00:00"),
+        ("2026-01-01T11:00:00", "2026-01-01T16:00:00"),
+        ("2026-01-01T17:00:00", "2026-01-01T20:00:00"),
+    ]
+    assert all(window["enabled"] for window in result["training_windows"])
+    removed = web.training_windows_payload(
+        {
+            "training_windows": result["training_windows"],
+            "operation": {
+                "action": "remove",
+                "id": "training-candidate-001-part-001",
+            },
+        }
+    )
+    for window in list(removed["training_windows"]):
+        removed = web.training_windows_payload(
+            {
+                "training_windows": removed["training_windows"],
+                "operation": {"action": "remove", "id": window["id"]},
+            }
+        )
+    reconfirmed = web.training_windows_payload(
+        {
+            "training_windows": removed["training_windows"],
+            "excluded_windows": excluded,
+            "operation": {"action": "confirm_candidate", "candidate": candidate},
+        }
+    )
+    assert [window["id"] for window in reconfirmed["training_windows"]] == [
+        "training-candidate-001-part-001",
+        "training-candidate-001-part-002",
+        "training-candidate-001-part-003",
+    ]
+
+
+def test_candidate_confirmation_keeps_legacy_id_without_intersecting_exclusions():
+    candidate = {
+        "id": "candidate-001",
+        "start": "2026-01-01T08:00:00",
+        "end": "2026-01-01T20:00:00",
+        "source": "manual",
+        "source_ref": None,
+        "comment": "工程师确认",
+    }
+    outside = {
+        "id": "exclude-outside",
+        "start": "2026-01-01T21:00:00",
+        "end": "2026-01-01T22:00:00",
+        "source": "trend",
+        "comment": "无关",
+    }
+
+    result = web.training_windows_payload(
+        {
+            "training_windows": [],
+            "excluded_windows": [outside],
+            "operation": {"action": "confirm_candidate", "candidate": candidate},
+        }
+    )
+
+    assert [window["id"] for window in result["training_windows"]] == [
+        "training-candidate-001"
+    ]
+    with pytest.raises(ValueError, match="完全覆盖"):
+        web.training_windows_payload(
+            {
+                "training_windows": [],
+                "excluded_windows": [{**outside, "start": candidate["start"], "end": candidate["end"]}],
+                "operation": {"action": "confirm_candidate", "candidate": candidate},
+            }
+        )
+
+
 def test_web_quality_uses_all_enabled_candidate_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
     history = _history_frame()

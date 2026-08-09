@@ -81,6 +81,10 @@ def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
     assert "const pointTime = timestampMilliseconds(point.x);" in trend_source
     assert "timeToX(pointTime).toFixed(2)" in trend_source
     assert "timeToX(selection.start)" in trend_source
+    assert "const exclusionMarkup = (state.excludedWindows || [])" in trend_source
+    assert "data-trend-exclusion" in trend_source
+    assert "${exclusionMarkup}${grid}" in trend_source
+    assert "refreshTrendExcludedWindows = () => { if (lastTrend) renderTrendChart(lastTrend); }" in html
     assert "xToTime(dragStart)" in trend_source
     assert "item.points.forEach((point) =>" in trend_source
     assert "maxLength" not in trend_source
@@ -199,6 +203,7 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
         'id="candidateComment"',
         'id="addManualCandidate"',
         'id="candidateWindows"',
+        'id="excludedWindows"',
         'id="trainingWindows"',
     ):
         assert element_id in html
@@ -215,6 +220,7 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     ):
         assert label in html
     assert "candidateWindows:[]" in html
+    assert "excludedWindows:[]" in html
     assert "trainingWindows:[]" in html
     assert 'async function addCandidateWindow(source,start,end,sourceRef=null,comment="",status="pending")' in html
     assert 'status="pending"' in html
@@ -408,16 +414,17 @@ def test_candidate_confirmation_is_separate_from_training_windows() -> None:
     assert "set_enabled" not in view_source
     assert "state.trainingWindows" not in view_source
     assert '["pending","accepted","rejected"]' in candidate_source
-    assert 'label==="确认作为训练窗口"&&(window.status!=="accepted"||Boolean(window.trainingWindowId))' in candidate_source
+    assert "candidateTrainingWindows(window).length>0" in candidate_source
+    assert 'label==="确认作为训练窗口"&&(window.status!=="accepted"||generated)' in candidate_source
     assert "async function confirmCandidateWindow(candidate)" in mutation_source
-    assert "enabled:true" in mutation_source
+    assert 'action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows' in mutation_source
     assert 'action:"set_enabled"' in mutation_source
     assert "function updateQualityButtonAvailability()" in html
     assert "!state.trainingWindows.some(window=>window.enabled)" in html
-    assert "renderTrainingWindows(); updateQualityButtonAvailability();" in mutation_source
+    assert "renderTrainingWindows(); renderCandidateWindows(); updateQualityButtonAvailability();" in mutation_source
     assert '["编辑",()=>editTrainingWindow(window)]' in mutation_source
     assert '["删除",()=>updateTrainingWindows({action:"remove",id:window.id},window.enabled)]' in mutation_source
-    assert "if(affectsTraining) invalidateQuality" in mutation_source
+    assert "if(affectsTraining&&previous!==JSON.stringify(state.trainingWindows)) invalidateQuality" in mutation_source
 
 
 def test_last_training_window_removal_keeps_the_training_table_empty() -> None:
@@ -432,8 +439,8 @@ def test_last_training_window_removal_keeps_the_training_table_empty() -> None:
     assert 'action:"remove"' in html
     assert "state.trainingWindows=data.training_windows" in update_source
     assert "state.trainingWindowSummary=data.summary" in update_source
-    assert "renderTrainingWindows(); updateQualityButtonAvailability();" in update_source
-    assert "if(affectsTraining) invalidateQuality" in update_source
+    assert "renderTrainingWindows(); renderCandidateWindows(); updateQualityButtonAvailability();" in update_source
+    assert "if(affectsTraining&&previous!==JSON.stringify(state.trainingWindows)) invalidateQuality" in update_source
     assert "suggested-window-001" not in update_source
     assert "尚无已确认训练窗口" in render_source
 

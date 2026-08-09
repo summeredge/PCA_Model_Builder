@@ -4,9 +4,11 @@ import pytest
 from pca_model_builder.windows import (
     add_training_window,
     legacy_training_windows_to_canonical,
+    merge_excluded_windows,
     normalize_training_windows,
     remove_training_window,
     set_enabled_training_window,
+    subtract_excluded_windows,
     summarize_training_windows,
     update_training_window,
 )
@@ -64,3 +66,59 @@ def test_legacy_windows_convert_and_summary_counts_raw_samples():
     assert summary[0]["raw_samples"] == summary[0]["effective_samples"] == 3
     assert summary[0]["expected_samples"] == 3
     assert summary[0]["quality_status"] == "ready"
+
+
+def test_excluded_windows_merge_touching_ranges_and_split_a_candidate():
+    excluded = merge_excluded_windows(
+        [
+            {
+                "id": "exclude-2",
+                "start": "2026-01-01T16:00:00",
+                "end": "2026-01-01T17:00:00",
+                "source": "trend",
+                "comment": "检修",
+            },
+            {
+                "id": "exclude-1",
+                "start": "2026-01-01T10:00:00",
+                "end": "2026-01-01T10:30:00",
+                "source": "trend",
+                "comment": "波动",
+            },
+            {
+                "id": "exclude-1b",
+                "start": "2026-01-01T10:30:00",
+                "end": "2026-01-01T11:00:00",
+                "source": "trend",
+                "comment": "波动持续",
+            },
+        ]
+    )
+
+    assert [(item["start"], item["end"]) for item in excluded] == [
+        ("2026-01-01T10:00:00", "2026-01-01T11:00:00"),
+        ("2026-01-01T16:00:00", "2026-01-01T17:00:00"),
+    ]
+    assert subtract_excluded_windows(
+        {"start": "2026-01-01T08:00:00", "end": "2026-01-01T20:00:00"},
+        excluded,
+    ) == [
+        {"start": "2026-01-01T08:00:00", "end": "2026-01-01T10:00:00"},
+        {"start": "2026-01-01T11:00:00", "end": "2026-01-01T16:00:00"},
+        {"start": "2026-01-01T17:00:00", "end": "2026-01-01T20:00:00"},
+    ]
+
+
+def test_excluded_windows_outside_a_candidate_do_not_change_it():
+    candidate = {"start": "2026-01-01T08:00:00", "end": "2026-01-01T20:00:00"}
+    excluded = [
+        {
+            "id": "exclude-outside",
+            "start": "2026-01-01T21:00:00",
+            "end": "2026-01-01T22:00:00",
+            "source": "trend",
+            "comment": "无关",
+        }
+    ]
+
+    assert subtract_excluded_windows(candidate, excluded) == [candidate]

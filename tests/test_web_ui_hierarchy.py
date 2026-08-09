@@ -79,6 +79,7 @@ def test_static_panels_own_their_existing_controls() -> None:
         "fileInput": "configPanel",
         "tagOptions": "configPanel",
         "candidateWindows": "candidatePanel",
+        "excludedWindows": "candidatePanel",
         "trainingWindows": "modelPanel",
         "sampleInterval": "modelPanel",
         "maxLag": "modelPanel",
@@ -127,6 +128,8 @@ def test_trend_and_manual_selection_use_the_unified_candidate_action() -> None:
     assert 'id="dpTrendToReference" type="button" class="secondary">加入候选窗口' in html
     assert "将当前窗口设为参考状态候选期" not in html
     assert 'addCandidateWindow("trend"' in html
+    assert 'id="dpTrendToExclusion" type="button" class="secondary">加入排除窗口' in html
+    assert 'addExcludedWindow("trend"' in html
     assert 'globalThis.showWorkflowStage?.("candidatePanel")' in html
 
 

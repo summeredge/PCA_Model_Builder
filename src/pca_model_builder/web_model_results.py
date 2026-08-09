@@ -568,6 +568,8 @@ def _candidate_manager_html() -> str:
         <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
         <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>
+        <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>
+        <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>
       </div>"""
 
 
@@ -632,7 +634,9 @@ def _stabilize_workbench_html(html: str) -> str:
     parameter_group = re.sub(
         r'        <div class="group-title">3\. 参考状态与 DPCA 参数</div>\n'
         r'        <div class="row"><label>候选开始.*?'
-        r'        <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>\n',
+        r'        <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>\n'
+        r'        <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>\n'
+        r'        <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>\n',
         '        <div class="group-title">模型训练配置（参考状态与 DPCA 参数）</div>\n',
         parameter_group,
         count=1,

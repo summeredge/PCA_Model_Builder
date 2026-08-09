@@ -75,9 +75,11 @@ from .validation import (
 )
 from .windows import (
     add_training_window,
+    merge_excluded_windows,
     normalize_training_windows,
     remove_training_window,
     set_enabled_training_window,
+    subtract_excluded_windows,
     summarize_training_windows,
     update_training_window,
 )
@@ -430,6 +432,57 @@ def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
             windows = set_enabled_training_window(
                 windows, str(operation.get("id", "")), operation.get("enabled")
             )
+        elif action == "confirm_candidate":
+            candidate = operation.get("candidate")
+            if not isinstance(candidate, dict):
+                raise ValueError("候选窗口无效")
+            candidate_id = candidate.get("id")
+            source = candidate.get("source")
+            source_ref = candidate.get("source_ref")
+            comment = candidate.get("comment")
+            if not isinstance(candidate_id, str) or not candidate_id.strip():
+                raise ValueError("候选窗口ID无效")
+            if not isinstance(source, str) or not source.strip():
+                raise ValueError("候选窗口来源无效")
+            if source_ref is not None and (
+                not isinstance(source_ref, str) or not source_ref.strip()
+            ):
+                raise ValueError("候选窗口来源引用无效")
+            if not isinstance(comment, str):
+                raise ValueError("候选窗口备注无效")
+            base_id = f"training-{candidate_id}"
+            if any(
+                window["id"] == base_id
+                or window["id"].startswith(f"{base_id}-part-")
+                for window in windows
+            ):
+                raise ValueError("该候选已生成训练窗口")
+            excluded_windows = merge_excluded_windows(
+                payload.get("excluded_windows", [])
+            )
+            parts = subtract_excluded_windows(candidate, excluded_windows)
+            if not parts:
+                raise ValueError("候选窗口已被排除窗口完全覆盖")
+            candidate_start, candidate_end = candidate["start"], candidate["end"]
+            is_cut = parts != [{"start": pd.Timestamp(candidate_start).isoformat(), "end": pd.Timestamp(candidate_end).isoformat()}]
+            additions = [
+                {
+                    "id": (
+                        f"{base_id}-part-{position:03d}"
+                        if is_cut
+                        else base_id
+                    ),
+                    "start": part["start"],
+                    "end": part["end"],
+                    "source": source,
+                    "source_ref": source_ref or candidate_id,
+                    "enabled": True,
+                    "comment": comment,
+                }
+                for position, part in enumerate(parts, start=1)
+            ]
+            for addition in additions:
+                windows = add_training_window(windows, addition)
         else:
             raise ValueError("training_windows操作无效")
     timestamps = None
@@ -2441,6 +2494,8 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
         <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>
+        <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>
+        <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>
         <h3>训练窗口</h3><div id="trainingWindows" class="table-wrap"><div class="empty">尚无已确认训练窗口。</div></div>
         <div class="help">只有此处的 training_windows 会参与质量检查和训练。</div>
         <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>
@@ -2647,7 +2702,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -2708,6 +2763,17 @@ function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${D
 function trainingWindowsPayload() { return state.trainingWindows; }
 function updateQualityButtonAvailability() { el("qualityButton").disabled=!state.inspection||!state.trainingWindows.some(window=>window.enabled); }
 function windowSummary(id) { return state.trainingWindowSummary.find(item=>item.id===id)||{}; }
+function candidateTrainingWindows(candidate) { const baseId=`training-${candidate.id}`; return state.trainingWindows.filter(window=>window.id===baseId||window.id.startsWith(`${baseId}-part-`)); }
+function mergeExcludedWindows(windows) { const sorted=windows.map(window=>({...window})).sort((left,right)=>Date.parse(left.start)-Date.parse(right.start)||Date.parse(left.end)-Date.parse(right.end)||left.id.localeCompare(right.id)); return sorted.reduce((merged,window)=>{ const previous=merged.at(-1); if(previous&&Date.parse(window.start)<=Date.parse(previous.end)) { if(Date.parse(window.end)>Date.parse(previous.end)) previous.end=window.end; return merged; } merged.push(window); return merged; },[]); }
+function renderExcludedWindows() {
+  const container=el("excludedWindows"); if(!container) return; container.replaceChildren();
+  if(!state.excludedWindows.length) { container.innerHTML='<div class="empty">尚无排除窗口。</div>'; return; }
+  const table=document.createElement("table"), head=document.createElement("thead"), body=document.createElement("tbody"), header=document.createElement("tr"); ["开始","结束","来源","备注","操作"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
+  state.excludedWindows.forEach(window=>{ const row=document.createElement("tr"); [displayTime(window.start),displayTime(window.end),displayUiValue(window.source),window.comment||"—"].forEach(value=>{ const cell=document.createElement("td"); cell.textContent=value; row.append(cell); }); const actions=document.createElement("td"), button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent="删除"; button.addEventListener("click",()=>removeExcludedWindow(window.id)); actions.append(button); row.append(actions); body.append(row); }); table.append(head,body); container.append(table);
+}
+function exclusionOverlapsTraining(window) { const start=Date.parse(window.start), end=Date.parse(window.end); return state.trainingWindows.some(training=>start<=Date.parse(training.end)&&Date.parse(training.start)<=end); }
+function addExcludedWindow(source,start,end,sourceRef=null,comment="") { if(!start||!end||!Number.isFinite(Date.parse(start))||!Number.isFinite(Date.parse(end))||Date.parse(start)>Date.parse(end)) { setStatus("排除窗口需要有效的开始和结束时间。","warning"); return; } const window={id:`excluded-${candidateId()}`,start,end,source,comment}; state.excludedWindows=mergeExcludedWindows([...state.excludedWindows,window]); renderExcludedWindows(); globalThis.refreshTrendExcludedWindows?.(); globalThis.showWorkflowStage?.("candidatePanel"); const overlaps=exclusionOverlapsTraining(window); setStatus(overlaps?"排除窗口已加入；不会修改已有训练窗口。请删除关联训练窗口后重新确认候选。":"排除窗口已加入；确认候选时将据此切分训练窗口。",overlaps?"warning":"success"); }
+function removeExcludedWindow(windowId) { state.excludedWindows=state.excludedWindows.filter(window=>window.id!==windowId); renderExcludedWindows(); globalThis.refreshTrendExcludedWindows?.(); setStatus("排除窗口已删除；已有训练窗口未被修改，如需重新切分请先删除关联训练窗口后重新确认。","warning"); }
 function showCandidateTrend(window) { el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); }
 function renderCandidateWindows() {
   const container=el("candidateWindows"); container.replaceChildren();
@@ -2718,8 +2784,8 @@ function renderCandidateWindows() {
     const name=document.createElement("td"); name.textContent=window.id;
     const source=document.createElement("td"); source.textContent=displayUiValue(window.source)+(window.source_ref?` (${window.source_ref})`:"");
     const range=document.createElement("td"); range.textContent=`${displayTime(window.start)} ～ ${displayTime(window.end)}`;
-    const status=document.createElement("td"); const select=document.createElement("select"); ["pending","accepted","rejected"].forEach(value=>{ const option=document.createElement("option"); option.value=value; option.textContent=displayUiValue(value); option.selected=window.status===value; select.append(option); }); select.disabled=Boolean(window.trainingWindowId); select.addEventListener("change",()=>{ window.status=select.value; renderCandidateWindows(); }); status.append(select);
-    const actions=document.createElement("td"); [["查看趋势",()=>showCandidateTrend(window)],["确认作为训练窗口",()=>confirmCandidateWindow(window)],["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]].forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&(window.status!=="accepted"||Boolean(window.trainingWindowId)); button.addEventListener("click",handler); actions.append(button); });
+    const generated=candidateTrainingWindows(window).length>0; const status=document.createElement("td"); const select=document.createElement("select"); ["pending","accepted","rejected"].forEach(value=>{ const option=document.createElement("option"); option.value=value; option.textContent=displayUiValue(value); option.selected=window.status===value; select.append(option); }); select.disabled=generated; select.addEventListener("change",()=>{ window.status=select.value; renderCandidateWindows(); }); status.append(select); if(generated) { const note=document.createElement("div"); note.textContent="已生成训练窗口"; status.append(note); }
+    const actions=document.createElement("td"); [["查看趋势",()=>showCandidateTrend(window)],["确认作为训练窗口",()=>confirmCandidateWindow(window)],["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]].forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&(window.status!=="accepted"||generated); button.addEventListener("click",handler); actions.append(button); });
     row.append(name,source,range,status,actions); body.append(row);
   }); table.append(head,body); container.append(table);
 }
@@ -2745,10 +2811,10 @@ function renderTrainingWindows() {
   }); table.append(head,body); container.append(table);
 }
 async function updateTrainingWindows(operation, affectsTraining) {
-  try { const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation})}); state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); updateQualityButtonAvailability(); if(affectsTraining) invalidateQuality("人工确认的训练窗口已修改"); return true; }
+  try { const previous=JSON.stringify(state.trainingWindows); const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation})}); state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); renderCandidateWindows(); updateQualityButtonAvailability(); if(affectsTraining&&previous!==JSON.stringify(state.trainingWindows)) invalidateQuality("人工确认的训练窗口已修改"); return true; }
   catch(error) { renderTrainingWindows(); setStatus(error.message,"error"); return false; }
 }
-async function confirmCandidateWindow(candidate) { if(candidate.status!=="accepted") { setStatus("请先将候选标记为已接受。","warning"); return; } const trainingId=`training-${candidate.id}`; if(state.trainingWindows.some(window=>window.id===trainingId)) { setStatus("该候选已生成训练窗口。","warning"); return; } const added=await updateTrainingWindows({action:"add",window:{id:trainingId,start:candidate.start,end:candidate.end,source:candidate.source,source_ref:candidate.source_ref||candidate.id,enabled:true,comment:candidate.comment}},true); if(added) { candidate.trainingWindowId=trainingId; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("已确认并生成训练窗口；它将参与质量检查和训练。","success"); } }
+async function confirmCandidateWindow(candidate) { if(candidate.status!=="accepted") { setStatus("请先将候选标记为已接受。","warning"); return; } if(candidateTrainingWindows(candidate).length) { setStatus("该候选已生成训练窗口。","warning"); return; } const added=await updateTrainingWindows({action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows},true); if(added) { const count=candidateTrainingWindows(candidate).length; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus(`已确认并生成 ${count} 个训练窗口；它们将分别参与质量检查和训练。`,"success"); } }
 async function addCandidateWindow(source,start,end,sourceRef=null,comment="",status="pending") { if(!start||!end) { setStatus("候选窗口需要开始和结束时间。","warning"); return; } if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) { setStatus("该候选已在候选窗口列表中。","warning"); return; } state.candidateWindows.push({id:candidateId(),start,end,source,source_ref:sourceRef,comment,status}); renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel"); el("candidateWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("候选窗口已加入；不会修改训练窗口，请人工确认后再生成训练窗口。","success"); }
 function editTrainingWindow(window) { const start=prompt("训练窗口开始时间",displayTime(window.start)); if(start===null) return; const end=prompt("训练窗口结束时间",displayTime(window.end)); if(end===null) return; const comment=prompt("备注",window.comment||""); if(comment===null) return; updateTrainingWindows({action:"update",id:window.id,changes:{start,end,comment}},window.enabled); }
 
@@ -2762,7 +2828,7 @@ async function api(path, options={}) {
 }
 
 function ensureInspectionPageReady() {
-  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
+  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","excludedWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
   const missing=ids.filter(id=>!el(id)); if(missing.length) throw new Error(`页面初始化不完整，缺少元素：${missing.join(", ")}`);
 }
 
@@ -2854,7 +2920,7 @@ el("uploadButton").addEventListener("click", async () => {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderCandidateWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`文件信息：${data.filename}（${Math.ceil(data.size_bytes/1024)} KB），已读取 ${data.columns.length} 个列名。请选择时间列，下一步：正在检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -2872,7 +2938,7 @@ el("inspectButton").addEventListener("click", async () => {
     ensureInspectionPageReady();
     state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
-    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
+    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.time_start); el("trendEnd").value=localTime(data.time_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
     el("clusterButton").disabled=false; el("stateExplorationButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("preprocessingPreviewButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;

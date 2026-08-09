@@ -7,6 +7,7 @@ import pandas as pd
 
 
 _WINDOW_FIELDS = {"id", "start", "end", "source", "source_ref", "enabled", "comment"}
+_EXCLUDED_WINDOW_FIELDS = {"id", "start", "end", "source", "comment"}
 
 
 def normalize_training_windows(
@@ -113,6 +114,89 @@ def remove_training_window(windows: object, window_id: str) -> list[dict[str, An
 
 def set_enabled_training_window(windows: object, window_id: str, enabled: bool) -> list[dict[str, Any]]:
     return update_training_window(windows, window_id, {"enabled": enabled})
+
+
+def merge_excluded_windows(value: object) -> list[dict[str, Any]]:
+    """Validate, sort, and merge overlapping or touching exclusion windows."""
+    if not isinstance(value, list):
+        raise ValueError("excluded_windows必须是列表")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != _EXCLUDED_WINDOW_FIELDS:
+            raise ValueError("excluded_windows窗口字段无效")
+        window_id = item["id"]
+        if not isinstance(window_id, str) or not window_id.strip() or window_id in seen:
+            raise ValueError("excluded_windows窗口ID无效或重复")
+        source = item["source"]
+        comment = item["comment"]
+        if not isinstance(source, str) or not source.strip() or not isinstance(comment, str):
+            raise ValueError("excluded_windows来源或备注无效")
+        seen.add(window_id)
+        start, end = _window_bounds(item["start"], item["end"])
+        normalized.append(
+            {
+                "id": window_id,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "source": source,
+                "comment": comment,
+            }
+        )
+
+    normalized.sort(key=lambda window: (window["start"], window["end"], window["id"]))
+    merged: list[dict[str, Any]] = []
+    for window in normalized:
+        if not merged:
+            merged.append(window)
+            continue
+        previous = merged[-1]
+        _, previous_end = _window_bounds(previous["start"], previous["end"])
+        start, end = _window_bounds(window["start"], window["end"])
+        if start <= previous_end:
+            if end > previous_end:
+                previous["end"] = end.isoformat()
+            continue
+        merged.append(window)
+    return merged
+
+
+def subtract_excluded_windows(
+    candidate: Mapping[str, Any], excluded_windows: object
+) -> list[dict[str, str]]:
+    """Return the candidate ranges that remain after exclusion-window cuts.
+
+    Boundaries are retained exactly as selected; this function deliberately does
+    not infer or apply a sampling interval.
+    """
+    start, end = _window_bounds(candidate.get("start"), candidate.get("end"))
+    exclusions = merge_excluded_windows(excluded_windows)
+    if start == end:
+        if any(
+            _window_bounds(window["start"], window["end"])[0] <= start
+            <= _window_bounds(window["start"], window["end"])[1]
+            for window in exclusions
+        ):
+            return []
+        return [{"start": start.isoformat(), "end": end.isoformat()}]
+    remaining: list[dict[str, str]] = []
+    cursor = start
+    for excluded in exclusions:
+        excluded_start, excluded_end = _window_bounds(
+            excluded["start"], excluded["end"]
+        )
+        if excluded_end < cursor or excluded_start > end:
+            continue
+        if excluded_start > cursor:
+            remaining.append(
+                {"start": cursor.isoformat(), "end": min(excluded_start, end).isoformat()}
+            )
+        cursor = max(cursor, excluded_end)
+        if cursor >= end:
+            break
+    if cursor < end:
+        remaining.append({"start": cursor.isoformat(), "end": end.isoformat()})
+    return remaining
 
 
 def ensure_non_overlapping_enabled_windows(windows: Sequence[Mapping[str, Any]]) -> None:
