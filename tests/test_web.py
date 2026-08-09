@@ -1382,6 +1382,38 @@ def test_state_exploration_conversion_adds_only_to_candidate_windows_in_web():
     assert "/training-windows" not in conversion_source
 
 
+def test_cluster_representative_windows_use_distinct_physical_source_refs_in_web():
+    cluster_source = web.INDEX_HTML.split("function renderClustering(data)", 1)[1].split(
+        "function modelLifecycle", 1
+    )[0]
+    assert (
+        'addCandidateWindow("cluster",window.start,window.end,'
+        '`cluster-${item.cluster}-${window.start}-${window.end}`,"")'
+    ) in cluster_source
+    assert "state.candidateWindows.some(window=>window.source_ref===sourceRef)" in web.INDEX_HTML
+
+    windows = [
+        {"start": "2026-01-01T00:00:00", "end": "2026-01-01T00:10:00"},
+        {"start": "2026-01-01T01:00:00", "end": "2026-01-01T01:10:00"},
+        {"start": "2026-01-01T02:00:00", "end": "2026-01-01T02:10:00"},
+    ]
+    source_refs = [
+        f"cluster-7-{window['start']}-{window['end']}" for window in windows
+    ]
+    candidates: list[dict[str, str]] = []
+
+    def add_candidate(source_ref: str) -> bool:
+        if any(window["source_ref"] == source_ref for window in candidates):
+            return False
+        candidates.append({"source_ref": source_ref})
+        return True
+
+    assert len(set(source_refs)) == 3
+    assert [add_candidate(source_ref) for source_ref in source_refs] == [True] * 3
+    assert not add_candidate(source_refs[0])
+    assert source_refs[0] != f"cluster-8-{windows[0]['start']}-{windows[0]['end']}"
+
+
 def test_training_windows_api_normalizes_operations_and_reports_summary():
     window = {
         "id": "window-001",
