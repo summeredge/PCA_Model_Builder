@@ -230,6 +230,22 @@ def test_validation_decision_handler_uses_current_validation_lifecycle_state():
     assert 'setStatus(error.message,"error")' in source
 
 
+def test_successful_validation_replay_resets_engineer_decision_status():
+    html = web_model_results.INDEX_HTML
+    source = html.split(
+        'el("validateButton").addEventListener("click", async () => {', 1
+    )[1].split('el("recordValidationDecision").addEventListener', 1)[0]
+
+    assert 'state.validation=data; renderValidation(data);' in source
+    assert 'decisionStatus=el("validationDecisionStatus")' in source
+    assert 'decisionStatus.textContent="等待保存工程师结论。"' in source
+    assert 'decisionStatus.className="status info"' in source
+    assert source.index('renderValidation(data);') < source.index(
+        'decisionStatus.textContent="等待保存工程师结论。"'
+    ) < source.index('setStatus("独立窗口回放完成。')
+    assert 'validationDecisionStatus' not in source.split('} catch (error)', 1)[1]
+
+
 def test_final_web_page_exposes_state_exploration_workbench():
     html = web_model_results.INDEX_HTML
     for element_id in (

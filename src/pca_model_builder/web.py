@@ -3144,7 +3144,7 @@ el("validateButton").addEventListener("click", async () => {
     if(!state.validationWindows.length) { state.validationWindows.push({id:"validation-default-001",type:"normal_validation",start:el("validationStart").value,end:el("validationEnd").value,enabled:true,comment:""}); renderValidationWindows(); }
     const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_windows:state.validationWindows,label_column:el("labelColumn").value};
     const data=await api("/api/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    state.validation=data; renderValidation(data); setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
+    state.validation=data; renderValidation(data); const decisionStatus=el("validationDecisionStatus"); decisionStatus.textContent="等待保存工程师结论。"; decisionStatus.className="status info"; setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
