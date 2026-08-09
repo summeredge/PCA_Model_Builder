@@ -597,6 +597,36 @@ def test_workbench_tables_map_all_runtime_statuses_and_align_numeric_cells() -> 
     assert 'displayUiValue(summary.quality_status||summary.status||"待检查")' in html
 
 
+def test_training_window_summary_uses_numeric_table_wrapper_and_runtime_labels() -> None:
+    html = web_model_results.INDEX_HTML
+    summary_source = html.split(
+        "function renderTrainingWindowSummary(windows)", 1
+    )[1].split("function renderValidation(data)", 1)[0]
+
+    assert 'id="trainingWindowSummary" class="table-wrap"' in html
+    for field in (
+        "重采样减少",
+        "部分桶",
+        "滤波预热",
+        "滤波上下文",
+        "状态过滤",
+        "Lag预热",
+        "Lag上下文",
+        "输入无效",
+        "有效动态样本",
+    ):
+        assert field in summary_source
+    assert "displayUiValue(window.status)" in summary_source
+    assert "displayUiValue(segment.status)" in summary_source
+    assert 'displayUiValue(window.dropped_reason??"—")' in summary_source
+    assert 'displayUiValue(segment.dropped_reason??"—")' in summary_source
+    for status, label in (
+        ("disabled", "已禁用"),
+        ("no_complete_resampling_bins", "无完整重采样时间桶"),
+    ):
+        assert f'{status}:"{label}"' in html
+
+
 def test_model_results_use_visible_error_and_loading_states() -> None:
     source = (
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"

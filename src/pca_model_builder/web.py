@@ -2628,7 +2628,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="modelEmpty" class="empty">完成训练后显示主元解释率、T²/SPE 和模型下载。</div>
         <div id="modelContent" hidden>
           <div id="modelMetrics" class="metrics"></div>
-          <h3>训练窗口与连续段</h3><div id="trainingWindowSummary"></div>
+          <h3>训练窗口与连续段</h3><div id="trainingWindowSummary" class="table-wrap"></div>
           <div id="trainingQualityWarnings" class="hint"></div>
           <h3>主元解释率</h3><div id="varianceChart" class="variance"></div>
           <div class="chart-grid">
@@ -2720,7 +2720,7 @@ function displayTime(value,length=16) { return value ? value.slice(0,length).rep
 function selectedTags() { return (state.inspection?.numeric_columns||[]).filter(tag=>state.selectedModelTags.has(tag)&&(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
 function numberValue(id) { return Number(el(id).value); }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
-function displayUiValue(value) { const labels={continuous_input:"连续输入",state_filter:"状态过滤",label_only:"仅标签",exclude:"排除",manual:"手工选择",trend:"趋势选择",cluster:"聚类推荐",performance:"性能辅助",suggested:"系统建议",pending:"待决策",accepted:"已接受",rejected:"已拒绝",used:"已使用",dropped:"已丢弃",higher_is_better:"越高越好",lower_is_better:"越低越好",target_range:"目标范围内",no_raw_samples:"没有原始样本",insufficient_after_smoothing_and_lag:"滤波与 Lag 后样本不足",normal:"正常",attention:"关注",abnormal:"异常",usable:"可用",review:"需确认",blocking:"阻止"}; return labels[value]||value; }
+function displayUiValue(value) { const labels={continuous_input:"连续输入",state_filter:"状态过滤",label_only:"仅标签",exclude:"排除",manual:"手工选择",trend:"趋势选择",cluster:"聚类推荐",performance:"性能辅助",suggested:"系统建议",pending:"待决策",accepted:"已接受",rejected:"已拒绝",used:"已使用",dropped:"已丢弃",disabled:"已禁用",higher_is_better:"越高越好",lower_is_better:"越低越好",target_range:"目标范围内",no_raw_samples:"没有原始样本",no_complete_resampling_bins:"无完整重采样时间桶",insufficient_after_smoothing_and_lag:"滤波与 Lag 后样本不足",normal:"正常",attention:"关注",abnormal:"异常",usable:"可用",review:"需确认",blocking:"阻止"}; return labels[value]||value; }
 function formField(labelText,field,type="text") { const label=document.createElement("label"); label.textContent=labelText; const input=document.createElement("input"); input.type=type; input.dataset.field=field; if(type==="number") input.step="any"; label.append(input); return label; }
 function emptyTagConfig() { return {description:"",unit:"",role:"continuous_input",engineering_min:null,engineering_max:null,normal_min:null,normal_max:null,alarm_min:null,alarm_max:null,comment:""}; }
 function tagConfigPayload() { return state.registry; }
