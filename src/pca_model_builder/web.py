@@ -2808,7 +2808,7 @@ function renderTrainingWindows() {
     const start=document.createElement("td"); start.textContent=displayTime(window.start); const end=document.createElement("td"); end.textContent=displayTime(window.end);
     const durationMinutes=summary.duration_minutes??Math.round((new Date(window.end)-new Date(window.start))/60000); const duration=document.createElement("td"); duration.textContent=`${durationMinutes} 分钟`;
     const counts=document.createElement("td"); counts.textContent=summary.raw_samples===undefined?"待检查":`${summary.raw_samples} / ${summary.effective_samples}`;
-    const quality=document.createElement("td"); quality.textContent=summary.quality_status||summary.status||"待检查";
+    const quality=document.createElement("td"); quality.textContent=displayUiValue(summary.quality_status||summary.status||"待检查");
     const comment=document.createElement("td"); comment.textContent=window.comment||"—";
     const actions=document.createElement("td"); [
       ["查看趋势",()=>showCandidateTrend(window)],
@@ -3182,7 +3182,7 @@ function renderCurrentTagQuality() {
   const item=state.selectedTag?qualityFor(state.selectedTag):null;
   if(!state.quality||!item) { container.className="empty"; container.textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":state.qualityStatus==="checking"?"正在执行建模质量检查。":"尚未执行建模质量检查。"; return; }
   const role=state.registry[item.tag]?.role||item.role; const issueHtml=item.issues.length?item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join(""):"<li>无质量问题</li>";
-  container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(role)} · ${escapeHtml(item.status)}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
+  container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(role))} · ${escapeHtml(displayUiValue(item.status))}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
 }
 function renderQuality(data) {
   el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("训练条件",data.can_train?"通过":"未通过");
@@ -3190,7 +3190,7 @@ function renderQuality(data) {
   data.time_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; container.append(card); });
   const problemTags=data.tags.filter(item=>item.status!=="usable"); problemTags.forEach(item=>{
     const card=document.createElement("div"); card.className=`issue-card ${item.status}`; const profile=item.reference;
-    card.innerHTML=`<strong>${escapeHtml(item.tag)} · ${escapeHtml(item.status)}</strong><span>参考期样本 ${profile.sample_count}；有效 ${profile.valid_count}；唯一值 ${profile.unique_count}；标准差 ${profile.standard_deviation??"—"}</span>${item.issues.map(issue=>`<span>${escapeHtml(issue.message)}</span>`).join("")}`;
+    card.innerHTML=`<strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(item.status))}</strong><span>参考期样本 ${profile.sample_count}；有效 ${profile.valid_count}；唯一值 ${profile.unique_count}；标准差 ${profile.standard_deviation??"—"}</span>${item.issues.map(issue=>`<span>${escapeHtml(issue.message)}</span>`).join("")}`;
     const actions=document.createElement("div"); actions.className="actions";
     if(item.issues.some(issue=>issue.code==="constant_tag")) { const exclude=document.createElement("button"); exclude.className="secondary"; exclude.textContent="从本次模型排除"; exclude.addEventListener("click",()=>excludeConstantTag(item)); actions.append(exclude); }
     const trend=document.createElement("button"); trend.className="secondary"; trend.textContent="在趋势页查看"; trend.addEventListener("click",()=>{ const window=state.trainingWindows.find(value=>value.enabled)||state.trainingWindows[0]; if(window) showCandidateTrend(window); [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); document.querySelector('[data-panel="trendPanel"]').click(); }); actions.append(trend); card.append(actions); container.append(card);

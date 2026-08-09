@@ -106,6 +106,12 @@
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+    #modelStructureComparison .model-parameter-table td.numeric,
+    #modelStructureComparison .model-energy-table td.numeric {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
   `;
   document.head.append(layoutStyle);
 
@@ -134,6 +140,7 @@
     <h3>模型结构与参数比较</h3>
     <div class="help">诊断用于辅助工程师选择模型结构，不能替代独立验证；不会自动评分、推荐、验证或改变模型状态。</div>
     <div id="singleModelDiagnostic" class="help">完成正常状态候选模型训练后显示结构诊断。</div>
+    <div id="modelCandidateStatus" class="help" role="status" aria-live="polite">正在加载候选模型…</div>
     <label class="secondary">选择 2—4 个已训练候选模型
       <select id="modelComparisonRuns" multiple size="5" aria-label="候选模型比较"></select>
     </label>
@@ -159,11 +166,10 @@
     const start = document.getElementById("frozenReplayStart").value;
     const end = document.getElementById("frozenReplayEnd").value;
     if (!state.runId || !state.fileId || !start || !end) {
-      summary.className = "error";
-      summary.textContent = "请先保留当前上传数据、完成工程冻结，并填写回放开始和结束时间。";
+      setUiMessage(summary, "请先保留当前上传数据、完成工程冻结，并填写回放开始和结束时间。", "error");
       return;
     }
-    button.disabled = true;
+    setBusy(button, true, "回放中…");
     try {
       const response = await fetch("/api/frozen-replay", {
         method: "POST",
@@ -174,18 +180,16 @@
       if (!response.ok) throw new Error(data.error || "冻结模型回放失败");
       renderFrozenReplay(data);
     } catch (error) {
-      summary.className = "error";
-      summary.textContent = error.message;
+      setUiMessage(summary, `冻结模型回放失败：${error.message}`, "error");
     } finally {
-      button.disabled = false;
+      setBusy(button, false);
     }
   });
 
   function renderFrozenReplay(data) {
     const summary = data.summary || {};
     const target = document.getElementById("frozenReplaySummary");
-    target.className = "help";
-    target.textContent = `${data.notice} 输出 ${summary.output_row_count ?? 0} 点；有效评分 ${summary.score_valid_count ?? 0} 点；状态过滤排除 ${summary.state_filter_excluded_rows ?? 0} 点；贡献记录 ${data.contribution_count ?? 0} 条。`;
+    setUiMessage(target, `${data.notice} 输出 ${summary.output_row_count ?? 0} 点；有效评分 ${summary.score_valid_count ?? 0} 点；状态过滤排除 ${summary.state_filter_excluded_rows ?? 0} 点；贡献记录 ${data.contribution_count ?? 0} 条。`, "success");
     const status = document.getElementById("frozenReplayStatus");
     status.textContent = Object.entries(summary.status_counts || {}).map(([key, value]) => `${displayValue(key)}：${value}`).join("；") || "无可展示评分点。";
     drawReplayTrend(data.scores || []);
@@ -245,6 +249,9 @@
     const select = document.getElementById("modelComparisonRuns");
     const runIds = [...select.selectedOptions].map(option => option.value);
     const target = document.getElementById("modelComparisonResult");
+    const button = document.getElementById("compareModelsButton");
+    setBusy(button, true, "比较中…");
+    setUiMessage(target, "正在比较所选候选模型…", "info");
     try {
       const response = await fetch("/api/model-comparison", {
         method: "POST",
@@ -255,8 +262,9 @@
       if (!response.ok) throw new Error(data.error || "模型比较失败");
       renderComparison(data);
     } catch (error) {
-      target.className = "error";
-      target.textContent = error.message;
+      setUiMessage(target, `模型比较失败：${error.message}`, "error");
+    } finally {
+      setBusy(button, false);
     }
   });
 
@@ -264,20 +272,24 @@
 
   async function refreshCandidateOptions(currentRunId) {
     const select = document.getElementById("modelComparisonRuns");
+    const status = document.getElementById("modelCandidateStatus");
+    setUiMessage(status, "正在加载候选模型…", "info");
     try {
       const response = await fetch("/api/model-candidates");
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "无法读取候选模型");
       select.replaceChildren();
-      (data.candidates || []).forEach(candidate => {
+      const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+      candidates.forEach(candidate => {
         const option = document.createElement("option");
         option.value = candidate.run_id;
         option.textContent = `${candidate.model_name} · ${candidate.run_id.slice(0, 8)} · ${candidate.training_dynamic_samples} 样本`;
         option.selected = candidate.run_id === currentRunId;
         select.append(option);
       });
+      setUiMessage(status, candidates.length ? `已加载 ${candidates.length} 个候选模型。` : "暂无可比较候选模型。", candidates.length ? "success" : "empty");
     } catch (error) {
-      select.replaceChildren();
+      setUiMessage(status, `候选模型加载失败：${error.message}`, "error");
     }
   }
 
@@ -302,8 +314,9 @@
     target.className = "";
     const comparability = document.createElement("div");
     const reasons = data.comparability.reasons.length ? `：${data.comparability.reasons.join("；")}` : "";
-    comparability.className = data.comparability.comparable ? "help" : "error";
-    comparability.textContent = `可比性：${data.comparability.status}${reasons}`;
+    comparability.className = data.comparability.comparable ? "help" : "status error";
+    if (!data.comparability.comparable) comparability.setAttribute("role", "alert");
+    comparability.textContent = `可比性：${displayValue(data.comparability.status)}${reasons}`;
     target.replaceChildren(
       comparability,
       parameterTable(data.parameter_table),
@@ -451,15 +464,25 @@
   function cell(value) {
     const td = document.createElement("td");
     td.textContent = value;
+    if (/^-?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?(?:\s*\/\s*-?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?)?(?:\s*(?:%|分钟|点|样本|条))?$/i.test(String(value).trim())) {
+      td.classList.add("numeric");
+    }
     return td;
   }
 
   function displayValue(value) {
-    return {continuous_input:"连续输入", state_filter:"状态过滤", label_only:"仅标签", exclude:"排除", higher_is_better:"越高越好", lower_is_better:"越低越好", target_range:"目标范围内", normal:"正常", attention:"关注", abnormal:"异常", usable:"可用", review:"需确认", blocking:"阻止", used:"已使用", dropped:"已丢弃", trailing_mean:"尾随均值", trailing_median:"尾随中位数", mean:"均值", median:"中位数", last:"最后值", none:"不使用"}[value] || value;
+    return {continuous_input:"连续输入", state_filter:"状态过滤", label_only:"仅标签", exclude:"排除", higher_is_better:"越高越好", lower_is_better:"越低越好", target_range:"目标范围内", structural_comparison_only:"仅结构比较", not_comparable:"不可比较", pending:"待决策", accepted:"已接受", rejected:"已拒绝", normal:"正常", attention:"关注", abnormal:"异常", usable:"可用", review:"需确认", blocking:"阻止", used:"已使用", dropped:"已丢弃", trailing_mean:"尾随均值", trailing_median:"尾随中位数", mean:"均值", median:"中位数", last:"最后值", none:"不使用"}[value] || value;
   }
 
   function formatValue(value) {
     return typeof value === "object" ? JSON.stringify(value) : String(displayValue(value ?? "—"));
+  }
+
+  function setUiMessage(target, message, type = "info") {
+    if (!target) return;
+    target.className = type === "empty" ? "empty" : type === "error" ? "status error" : `status ${type}`;
+    target.setAttribute("role", type === "error" ? "alert" : "status");
+    target.textContent = message;
   }
 
   function drawLoadingPlot(plot) {

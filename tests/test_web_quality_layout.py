@@ -579,3 +579,33 @@ def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPat
 
     assert cli_entry.main(["train"]) == 0
     assert cli_entry.cli._serve is original
+
+
+def test_workbench_tables_map_all_runtime_statuses_and_align_numeric_cells() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert ".table-wrap td.numeric" in html
+    assert "font-variant-numeric:tabular-nums;" in html
+    for status, label in (
+        ("pending", "待决策"),
+        ("accepted", "已接受"),
+        ("rejected", "已拒绝"),
+        ("used", "已使用"),
+        ("dropped", "已丢弃"),
+    ):
+        assert f'{status}:"{label}"' in html
+    assert 'displayUiValue(summary.quality_status||summary.status||"待检查")' in html
+
+
+def test_model_results_use_visible_error_and_loading_states() -> None:
+    source = (
+        PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'setBusy(button, true, "比较中…")' in source
+    assert 'setBusy(button, true, "回放中…")' in source
+    assert "候选模型加载失败：${error.message}" in source
+    assert "模型比较失败：${error.message}" in source
+    assert "冻结模型回放失败：${error.message}" in source
+    assert 'target.className = type === "empty" ? "empty" : type === "error" ? "status error" : `status ${type}`' in source
+    assert 'comparability.className = data.comparability.comparable ? "help" : "status error"' in source

@@ -439,14 +439,21 @@ _WORKBENCH_UI_STYLE = r"""
     line-height:1.45;
     white-space:nowrap;
   }
-  .status-label.normal, .status-label.usable { color:var(--normal); }
-  .status-label.attention, .status-label.review { color:#8a5a00; }
-  .status-label.abnormal, .status-label.blocking { color:var(--danger); }
+  .status-label.normal, .status-label.usable,
+  .status-label.accepted, .status-label.used { color:var(--normal); }
+  .status-label.attention, .status-label.review,
+  .status-label.pending { color:#8a5a00; }
+  .status-label.abnormal, .status-label.blocking,
+  .status-label.rejected, .status-label.dropped { color:var(--danger); }
   .table-wrap tbody tr:hover { background:#f7fbff; }
   .table-wrap th:first-child, .table-wrap td:first-child { position:sticky; left:0; z-index:1; }
   .table-wrap th:first-child { background:#f4f4f4; }
   .table-wrap td:first-child { background:inherit; }
-  .table-wrap td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
+  .table-wrap td.numeric {
+    text-align:right;
+    font-variant-numeric:tabular-nums;
+    white-space:nowrap;
+  }
   @media (max-width:760px) {
     main { grid-template-columns:minmax(0,1fr); padding:12px; gap:12px; }
     .workflow-sidebar { position:static; padding:14px; }
@@ -535,13 +542,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const labels = {
     normal:"正常", usable:"可用", attention:"关注", review:"需确认",
-    abnormal:"异常", blocking:"阻止",
+    abnormal:"异常", blocking:"阻止", pending:"待决策", accepted:"已接受",
+    rejected:"已拒绝", used:"已使用", dropped:"已丢弃",
   };
+  const numericPattern = /^[-+]?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?(?:\s*\/\s*[-+]?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?)?(?:\s*(?:%|分钟|点|样本|条))?$/i;
   const enhanceTables = () => document.querySelectorAll(".table-wrap td").forEach(cell => {
-    if (cell.dataset.uiEnhanced) return;
     const value = cell.textContent.trim();
     const key = Object.keys(labels).find(statusKey => value === statusKey);
-    if (key) {
+    if (key && !cell.dataset.uiEnhanced) {
       cell.dataset.uiEnhanced = "true";
       const badge = document.createElement("span");
       badge.className = `status-label ${key}`;
@@ -549,7 +557,7 @@ document.addEventListener("DOMContentLoaded", () => {
       cell.replaceChildren(badge);
       return;
     }
-    if (/^-?[\d,.]+(?:%| 分钟)?$/.test(value)) cell.classList.add("numeric");
+    if (numericPattern.test(value)) cell.classList.add("numeric");
   });
   enhanceTables();
   new MutationObserver(enhanceTables).observe(document.body, { childList:true, subtree:true });
