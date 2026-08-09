@@ -657,6 +657,23 @@ def _div_containing_unique_field(html: str, field_id: str, description: str) -> 
     raise ValueError(f"无法固定Web工作台结构：{description}容器结束")
 
 
+def _row_containing_unique_field(html: str, field_id: str, description: str) -> tuple[int, int]:
+    field_index = _unique_anchor_index(html, f'id="{field_id}"', description)
+    divs = list(re.finditer(r"<div\b[^>]*>", html[: field_index + 1]))
+    for match in reversed(divs):
+        if not re.search(r'\bclass\s*=\s*["\'][^"\']*\brow\b', match.group()):
+            continue
+        depth = 0
+        for token in re.finditer(r"<div\b[^>]*>|</div>", html[match.start() :]):
+            depth += 1 if token.group().startswith("<div") else -1
+            if depth == 0:
+                end = match.start() + token.end()
+                if field_index < end:
+                    return match.start(), end
+                break
+    raise ValueError(f"无法固定Web工作台结构：{description}参数行")
+
+
 def _candidate_manager_html() -> str:
     return """      <div class="group candidate-manager">
         <div class="group-title">候选窗口</div>
@@ -754,15 +771,11 @@ def _stabilize_workbench_html(html: str) -> str:
         '<div class="group">', '<div class="group training-configuration">', 1
     )
     parameter_ids = ("sampleInterval", "filterMethod", "gapThreshold", "maxLag", "varianceThreshold")
-    row_starts = {
-        field_id: parameter_group.rfind(
-            '        <div class="row">',
-            0,
-            _unique_anchor_index(parameter_group, f'id="{field_id}"', field_id),
-        )
+    field_rows = {
+        field_id: _row_containing_unique_field(parameter_group, field_id, field_id)
         for field_id in parameter_ids
     }
-    if any(start == -1 for start in row_starts.values()) or list(row_starts.values()) != sorted(row_starts.values()):
+    if list(field_rows.values()) != sorted(field_rows.values()):
         raise ValueError("无法固定Web工作台结构：训练参数行")
     quality_start = parameter_group.rfind(
         "        <h3>",
@@ -771,7 +784,7 @@ def _stabilize_workbench_html(html: str) -> str:
     )
     if quality_start == -1:
         raise ValueError("无法固定Web工作台结构：建模质量检查标题")
-    gap_row = parameter_group[row_starts["gapThreshold"] : row_starts["maxLag"]]
+    gap_row = parameter_group[slice(*field_rows["gapThreshold"])]
     common_rows = (
         f'        <div class="row">{_label_for_unique_field(parameter_group, "sampleInterval", "目标采样周期")}</div>\n'
         f'        <div class="row">{_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}{_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}</div>\n'
@@ -789,7 +802,7 @@ def _stabilize_workbench_html(html: str) -> str:
         + f'          <div class="row">{_label_for_unique_field(parameter_group, "components", "主元数")}</div>\n'
         + '        </details>\n'
     )
-    parameter_group = parameter_group[: row_starts["sampleInterval"]] + common_rows + advanced_rows + parameter_group[quality_start:]
+    parameter_group = parameter_group[: field_rows["sampleInterval"][0]] + common_rows + advanced_rows + parameter_group[quality_start:]
     if 'id="candidateWindows"' in parameter_group:
         raise ValueError("无法固定候选窗口或训练参数区域")
     status_area = (status_marker + status_area).replace(

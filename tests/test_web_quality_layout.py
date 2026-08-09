@@ -372,6 +372,32 @@ def test_workbench_assembly_uses_field_anchors_not_copied_parameter_markup() -> 
         assert f'"{field_id}"' in source
 
 
+def test_workbench_parameter_rows_allow_nonsemantic_div_attributes() -> None:
+    base_html = web_model_results.quality_app.INDEX_HTML
+    changed_html = base_html.replace(
+        '<div class="row"><label>目标采样周期（分钟）',
+        '<div data-test="stable" class="row compact"><label>目标采样周期（分钟）',
+        1,
+    )
+
+    html = web_model_results._stabilize_workbench_html(changed_html)
+    config_start = html.index('<div class="group training-configuration">')
+    advanced_start = html.index('<details class="advanced-parameters">', config_start)
+    advanced_end = html.index('</details>', advanced_start)
+    common_source = html[config_start:advanced_start]
+    advanced_source = html[advanced_start:advanced_end]
+
+    for field_id in ("sampleInterval", "filterMethod", "smoothingWindow", "maxLag", "varianceThreshold", "modelName"):
+        assert f'id="{field_id}"' in common_source
+    for field_id in ("resamplingMethod", "gapThreshold", "lagStep", "components"):
+        assert f'id="{field_id}"' in advanced_source
+    for field_id in (
+        "sampleInterval", "resamplingMethod", "filterMethod", "smoothingWindow", "gapThreshold",
+        "maxLag", "lagStep", "varianceThreshold", "components", "modelName",
+    ):
+        assert html.count(f'id="{field_id}"') == 1
+
+
 def test_supported_web_entrypoints_use_model_results_page() -> None:
     start_app = (PROJECT_ROOT / "start_app.bat").read_text(encoding="utf-8")
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
