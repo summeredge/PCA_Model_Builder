@@ -337,6 +337,7 @@ def test_model_structure_diagnostic_labels_retained_components_and_energy_tables
     source = (PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js").read_text(
         encoding="utf-8"
     )
+    html = web_model_results.INDEX_HTML
 
     assert "保留主元：${retained}；累计解释率：${(ratio * 100).toFixed(2)}%" in source
     assert "diagnostic.cumulative_explained_variance_ratio[retained - 1]" in source
@@ -345,32 +346,33 @@ def test_model_structure_diagnostic_labels_retained_components_and_energy_tables
     assert "x(point + 1)" in source
     assert "`保留 ${retained}`" in source
     assert 'container.className = "model-energy-table"' in source
-    assert "#modelStructureComparison .model-energy-table {" in source
-    assert "width: min(100%, 480px);" in source
-    assert "table-layout: fixed;" in source
-    assert "overflow-wrap: anywhere;" in source
-    assert "#modelStructureComparison .model-energy-table th:nth-child(2)," in source
-    assert "text-align: right;" in source
-    assert "@media (max-width: 520px)" in source
+    assert "#modelStructureComparison .model-energy-table" in html
+    assert "width:min(100%,480px);" in html
+    assert "table-layout:fixed;" in html
+    assert "overflow-wrap:anywhere;" in html
+    assert "#modelStructureComparison .model-energy-table th:nth-child(2)," in html
+    assert "text-align:right;" in html
+    assert "@media (max-width:520px)" in html
 
 
 def test_model_comparison_layout_scopes_select_and_wraps_parameter_table_text() -> None:
     source = (PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js").read_text(
         encoding="utf-8"
     )
+    html = web_model_results.INDEX_HTML
 
-    assert "#modelStructureComparison #modelComparisonRuns {" in source
-    assert "height: auto;" in source
-    assert "min-height: 0;" in source
+    assert "#modelStructureComparison #modelComparisonRuns" in html
+    assert "height:auto;" in html
+    assert "min-height:0;" in html
     assert 'table.className = "model-parameter-table";' in source
-    assert "#modelStructureComparison .model-parameter-table {" in source
-    assert "max-width: 100%;" in source
-    assert "table-layout: fixed;" in source
-    assert "#modelStructureComparison .model-parameter-table th:first-child," in source
-    assert "width: 12em;" in source
-    assert "white-space: normal;" in source
-    assert "overflow-wrap: anywhere;" in source
-    assert "word-break: break-word;" in source
+    assert "#modelStructureComparison .model-parameter-table" in html
+    assert "max-width:100%;" in html
+    assert "table-layout:fixed;" in html
+    assert "#modelStructureComparison .model-parameter-table th:first-child," in html
+    assert "width:12em;" in html
+    assert "white-space:normal;" in html
+    assert "overflow-wrap:anywhere;" in html
+    assert "word-break:break-word;" in html
 
 
 def test_final_web_model_comparison_routes_only_read_saved_candidates(

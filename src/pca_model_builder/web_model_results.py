@@ -555,11 +555,66 @@ document.addEventListener("DOMContentLoaded", () => {
 """
 
 
+_MODEL_RESULTS_STYLE = r"""
+<style id="modelResultsStyle">
+  .model-projection-grid {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    gap:14px;
+    align-items:stretch;
+    margin-bottom:14px;
+  }
+  .model-projection-grid > .chart-card {
+    min-width:0;
+    margin:0;
+    display:flex;
+    flex-direction:column;
+  }
+  .model-projection-grid > .chart-card > .chart { flex:1 1 auto; min-height:420px; }
+  .model-projection-grid #scoreChart svg,
+  .model-projection-grid #loadingChart svg { width:100%; height:420px; display:block; }
+  #modelStructureComparison .model-variance-chart svg { display:block; width:100%; max-width:640px; height:auto; }
+  #modelStructureComparison .model-variance-summary { display:flex; flex-wrap:wrap; gap:4px 14px; margin:0 0 10px; }
+  #modelStructureComparison .model-energy-table { width:min(100%,480px); max-width:100%; min-width:0; }
+  #modelStructureComparison .model-energy-table table { width:100%; table-layout:fixed; }
+  #modelStructureComparison .model-energy-table th:first-child,
+  #modelStructureComparison .model-energy-table td:first-child { text-align:left; overflow-wrap:anywhere; }
+  #modelStructureComparison .model-energy-table th:nth-child(2),
+  #modelStructureComparison .model-energy-table td:nth-child(2) { width:7.5em; text-align:right; white-space:nowrap; }
+  #modelStructureComparison .model-energy-table th,
+  #modelStructureComparison .model-energy-table td { padding-top:5px; padding-bottom:5px; }
+  #modelStructureComparison #modelComparisonRuns { height:auto; min-height:0; }
+  #modelStructureComparison .model-parameter-table { width:100%; max-width:100%; table-layout:fixed; }
+  #modelStructureComparison .model-parameter-table th:first-child,
+  #modelStructureComparison .model-parameter-table td:first-child { width:12em; }
+  #modelStructureComparison .model-parameter-table th,
+  #modelStructureComparison .model-parameter-table td { white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
+  #modelStructureComparison .model-parameter-table td.numeric,
+  #modelStructureComparison .model-energy-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  @media (max-width:1200px) {
+    .model-projection-grid { grid-template-columns:1fr; }
+    .model-projection-grid > .chart-card > .chart { min-height:360px; }
+    .model-projection-grid #scoreChart svg,
+    .model-projection-grid #loadingChart svg { height:360px; }
+  }
+  @media (max-width:520px) { #modelStructureComparison .model-energy-table { width:100%; } }
+</style>
+"""
+
+
 def _required_html_match(pattern: str, html: str, description: str) -> re.Match[str]:
     match = re.search(pattern, html, re.DOTALL)
     if match is None:
         raise ValueError(f"无法固定Web工作台结构：{description}")
     return match
+
+
+def _split_at_unique_anchor(html: str, anchor: str, description: str) -> tuple[str, str]:
+    """Split at one stable HTML anchor and fail clearly if the base page changes."""
+    count = html.count(anchor)
+    if count != 1:
+        raise ValueError(f"无法固定Web工作台结构：{description}锚点数量为{count}")
+    return html.split(anchor, 1)
 
 
 def _candidate_manager_html() -> str:
@@ -618,9 +673,15 @@ def _stabilize_workbench_html(html: str) -> str:
     tag_marker = '      <div class="group">\n        <div class="group-title">2. 建模 Tag</div>'
     parameters_marker = '      <div class="group">\n        <div class="group-title">3. 参考状态与 DPCA 参数</div>'
     status_marker = '      <div id="status" class="status info"'
-    upload_group, remaining_controls = controls.split(tag_marker, 1)
-    tag_group, remaining_controls = remaining_controls.split(parameters_marker, 1)
-    parameter_group, status_area = remaining_controls.split(status_marker, 1)
+    upload_group, remaining_controls = _split_at_unique_anchor(
+        controls, tag_marker, "建模Tag"
+    )
+    tag_group, remaining_controls = _split_at_unique_anchor(
+        remaining_controls, parameters_marker, "训练参数"
+    )
+    parameter_group, status_area = _split_at_unique_anchor(
+        remaining_controls, status_marker, "运行日志"
+    )
     upload_group = upload_group.rstrip().replace(
         '<div class="group-title">1. 历史数据</div>',
         '<div class="group-title">历史数据</div>',
@@ -632,16 +693,22 @@ def _stabilize_workbench_html(html: str) -> str:
         1,
     ).rstrip()
     parameter_group = (parameters_marker + parameter_group).rstrip()
-    parameter_group = re.sub(
-        r'        <div class="group-title">3\. 参考状态与 DPCA 参数</div>\n'
-        r'        <div class="row"><label>候选开始.*?'
-        r'        <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>\n'
-        r'        <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>\n'
-        r'        <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>\n',
-        '        <div class="group-title">模型训练配置（参考状态与 DPCA 参数）</div>\n',
-        parameter_group,
-        count=1,
-        flags=re.DOTALL,
+    candidate_anchor = '        <div class="row"><label>候选开始<input id="candidateStart"'
+    training_windows_anchor = '        <h3>训练窗口</h3><div id="trainingWindows"'
+    parameter_prefix, candidate_section = _split_at_unique_anchor(
+        parameter_group, candidate_anchor, "候选窗口"
+    )
+    _, training_section = _split_at_unique_anchor(
+        candidate_section, training_windows_anchor, "训练窗口"
+    )
+    parameter_group = (
+        parameter_prefix.replace(
+            '<div class="group-title">3. 参考状态与 DPCA 参数</div>',
+            '<div class="group-title">模型训练配置（参考状态与 DPCA 参数）</div>',
+            1,
+        )
+        + training_windows_anchor
+        + training_section
     )
     parameter_group = parameter_group.replace(
         '<div class="group">', '<div class="group training-configuration">', 1
@@ -689,9 +756,12 @@ def _stabilize_workbench_html(html: str) -> str:
         "performancePanel",
         "validationPanel",
     )
-    panel_positions = [
-        results.index(f'      <div id="{panel_id}"') for panel_id in panel_markers
-    ]
+    panel_positions = []
+    for panel_id in panel_markers:
+        anchor = f'      <div id="{panel_id}"'
+        if results.count(anchor) != 1:
+            raise ValueError(f"无法固定Web工作台结构：{panel_id}锚点数量为{results.count(anchor)}")
+        panel_positions.append(results.index(anchor))
     config_panel = results[panel_positions[0] : panel_positions[1]].rstrip()
     state_panel = results[panel_positions[1] : panel_positions[2]].rstrip()
     trend_panel = results[panel_positions[2] : panel_positions[3]].rstrip()
@@ -792,7 +862,7 @@ def apply_model_results_ui(html: str) -> str:
     result = _stabilize_workbench_html(result)
     result = result.replace(
         "</head>",
-        f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n</head>",
+        f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n{_MODEL_RESULTS_STYLE}\n</head>",
         1,
     )
     return result.replace(

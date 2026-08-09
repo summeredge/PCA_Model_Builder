@@ -303,16 +303,44 @@ def test_model_score_and_loading_plots_use_side_by_side_grid() -> None:
     source = (
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
     ).read_text(encoding="utf-8")
+    html = web_model_results.INDEX_HTML
 
-    assert 'layoutStyle.id = "modelProjectionGridStyle"' in source
     assert 'projectionGrid.className = "model-projection-grid"' in source
-    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);" in source
     assert "projectionGrid.append(scoreCard, section);" in source
-    assert ".model-projection-grid #scoreChart svg" in source
-    assert ".model-projection-grid #loadingChart svg" in source
-    assert "@media (max-width: 1200px)" in source
-    assert "grid-template-columns: 1fr;" in source
+    assert 'id="modelResultsStyle"' in html
+    assert "grid-template-columns:minmax(0,1fr) minmax(0,1fr);" in html
+    assert ".model-projection-grid #scoreChart svg" in html
+    assert ".model-projection-grid #loadingChart svg" in html
+    assert 'document.createElement("style")' not in source
+    assert "document.head.append(" not in source
     assert 'insertAdjacentElement("afterend", section)' not in source
+
+
+def test_final_web_has_one_static_workbench_structure_and_asset_set() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for element_id in (
+        "workflowSteps",
+        "status",
+        "configPanel",
+        "candidatePanel",
+        "modelPanel",
+        "validationPanel",
+        "releasePanel",
+        "trainingWindowSummary",
+        "validatedModelDownload",
+        "freezeDeployment",
+    ):
+        assert html.count(f'id="{element_id}"') == 1
+    for style_id in (
+        "webFormAlignmentStyle",
+        "appleDesignStyle",
+        "workbenchUiStyle",
+        "modelResultsStyle",
+    ):
+        assert html.count(f'id="{style_id}"') == 1
+    assert html.count('id="workbenchUiScript"') == 1
+    assert html.count('src="/assets/model-results.js"') == 1
 
 
 def test_supported_web_entrypoints_use_model_results_page() -> None:
