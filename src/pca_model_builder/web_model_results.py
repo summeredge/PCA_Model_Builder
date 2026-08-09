@@ -191,45 +191,47 @@ _APPLE_DESIGN_STYLE = r"""
   .row, .actions, .tag-toolbar, .detail-fields { gap:12px; }
   .inner-panel.active, .panel.active { gap:24px; }
   .group, .metric, .validation-box, .exploration-controls, .dp-inline-help {
-    background:#ffffff;
+    background:var(--panel);
     border:1px solid var(--line);
-    border-radius:18px;
+    border-radius:6px;
   }
   .group { gap:12px; padding:24px; }
   .group-title, .sub-title { font-size:14px; font-weight:600; line-height:1.29; }
   .sub-title { border-top-color:var(--line); }
   input, select, textarea {
-    background:#ffffff;
-    border:1px solid rgba(0,0,0,.08);
-    border-radius:11px;
+    height:30px;
+    min-height:30px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:6px;
     color:var(--text);
     font:inherit;
-    padding:12px 20px;
+    padding:4px 10px;
   }
   input:focus, select:focus, textarea:focus {
-    outline:2px solid #0071e3;
+    outline:2px solid var(--accent);
     outline-offset:2px;
-    border-color:#0071e3;
+    border-color:var(--accent);
   }
   button, .download {
     box-sizing:border-box;
-    min-height:44px;
+    height:30px;
+    min-height:30px;
     max-width:100%;
     border:1px solid var(--accent);
     background:var(--accent);
     color:#ffffff;
-    border-radius:9999px;
-    font:400 17px/1.47 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;
+    border-radius:4px;
+    font:400 14px/20px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;
     letter-spacing:-.374px;
-    padding:11px 22px;
+    padding:4px 12px;
     text-decoration:none;
   }
-  button:active, .download:active { transform:scale(.95); }
   button.secondary {
-    background:#fafafc;
-    border-color:#f0f0f0;
+    background:var(--bg);
+    border-color:var(--line-soft);
     color:var(--accent);
-    border-radius:9999px;
+    border-radius:4px;
   }
   #inspectButton, #qualityButton, #saveTagConfig { background:var(--accent); border-color:var(--accent); color:#ffffff; }
   .tag-toolbar button { min-height:36px; padding:8px 14px; font-size:14px; }
@@ -261,13 +263,12 @@ _APPLE_DESIGN_STYLE = r"""
     height:42px;
     min-height:42px;
   }
-  button:focus-visible, .download:focus-visible { outline:2px solid #0071e3; outline-offset:2px; }
+  button:focus-visible, .download:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .tabs, .inner-tabs {
     gap:0;
     border-bottom:1px solid var(--line);
     padding-bottom:0;
-    background:rgba(245,245,247,.8);
-    backdrop-filter:saturate(180%) blur(20px);
+    background:var(--bg);
   }
   .tab, .inner-tab {
     border:0;
@@ -279,9 +280,9 @@ _APPLE_DESIGN_STYLE = r"""
     letter-spacing:-.224px;
     padding:8px 15px;
   }
-  .tab:hover, .inner-tab:hover { background:#fafafc; }
+  .tab:hover, .inner-tab:hover { background:var(--accent-soft); }
   .tab.active, .inner-tab.active {
-    background:#ffffff;
+    background:var(--panel);
     border-bottom-color:var(--accent);
     color:var(--text);
     font-weight:600;
@@ -290,11 +291,11 @@ _APPLE_DESIGN_STYLE = r"""
   .trend-chart, .chart, .dp-chart, .empty, .variance, .exploration-timeline,
   .dp-trend-stat-card, .dp-scatter-chart {
     border-color:var(--line);
-    background:#ffffff;
+    background:var(--panel);
   }
   .tag-options, .compact-list, .table-wrap, .trend-chart, .chart, .dp-chart,
   .empty, .variance, .exploration-timeline, .dp-trend-stat-card,
-  .dp-scatter-chart { border-radius:18px; }
+  .dp-scatter-chart { border-radius:6px; }
   .status { min-height:42px; padding:12px 16px; }
   .status.info { background:#edf5ff; color:#0043ce; border-color:#0f62fe; }
   .status.success { background:#e8f5e9; color:#0e6027; border-color:#24a148; }
@@ -304,7 +305,7 @@ _APPLE_DESIGN_STYLE = r"""
   #modelPanel #qualityButton { width:fit-content; justify-self:start; }
   #modelPanel #modelQualityStatus { max-width:100%; }
   #modelPanel #currentTagQuality { max-width:1200px; }
-  .issue-card, .notice { border-left-width:4px; border-radius:11px; }
+  .issue-card, .notice { border-left-width:4px; border-radius:6px; }
   .tag-row.selected { background:#edf5ff; }
   .metric { padding:24px; }
   .metrics { grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; }
@@ -312,26 +313,14 @@ _APPLE_DESIGN_STYLE = r"""
   .metric strong { font-size:28px; font-weight:600; line-height:1.1; letter-spacing:0; white-space:nowrap; }
   .chart-card { gap:12px; }
   .chart-card h3 { margin:0; }
-  .chart, .dp-chart, .trend-chart { background:#ffffff; }
+  .chart, .dp-chart, .trend-chart { background:var(--panel); }
   .empty { border-style:dashed; color:var(--muted); }
   .variance-bar { background:var(--accent); }
   .variance-bar.selected { background:var(--green); }
   .table-wrap, .exploration-timeline { border:1px solid var(--line); }
   th, td { border-bottom-color:var(--line); padding:12px 16px; }
-  th { background:#f4f4f4; color:var(--text); font-weight:600; }
+  th { background:var(--line-soft); color:var(--text); font-weight:600; }
   a:not(.download) { color:var(--accent); }
-  button, .download {
-    height:30px;
-    min-height:30px;
-    padding:4px 12px;
-    font-size:14px;
-    line-height:20px;
-  }
-  input, select, textarea {
-    height:30px;
-    min-height:30px;
-    padding:4px 10px;
-  }
   #engineeringPanel #tagComment { resize:vertical; }
   button:focus-visible, .download:focus-visible, a:focus-visible {
     outline:2px solid var(--accent);
@@ -365,8 +354,8 @@ _WORKBENCH_UI_STYLE = r"""
     min-height:76px;
     padding:11px;
     border:1px solid var(--line);
-    border-radius:14px;
-    background:#fff;
+    border-radius:6px;
+    background:var(--panel);
     color:var(--text);
     text-align:left;
   }
@@ -433,7 +422,7 @@ _WORKBENCH_UI_STYLE = r"""
     margin-right:6px;
     padding:1px 6px;
     border:1px solid currentColor;
-    border-radius:999px;
+    border-radius:3px;
     font-size:11px;
     font-weight:600;
     line-height:1.45;
@@ -447,7 +436,7 @@ _WORKBENCH_UI_STYLE = r"""
   .status-label.rejected, .status-label.dropped { color:var(--danger); }
   .table-wrap tbody tr:hover { background:#f7fbff; }
   .table-wrap th:first-child, .table-wrap td:first-child { position:sticky; left:0; z-index:1; }
-  .table-wrap th:first-child { background:#f4f4f4; }
+  .table-wrap th:first-child { background:var(--line-soft); }
   .table-wrap td:first-child { background:inherit; }
   .table-wrap td.numeric {
     text-align:right;

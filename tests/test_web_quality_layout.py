@@ -148,24 +148,29 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     )
 
 
-def test_final_web_uses_the_apple_visual_tokens() -> None:
+def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     html = web_model_results.INDEX_HTML
 
     assert 'id="appleDesignStyle"' in html
     assert "--accent:#0066cc;" in html
     assert "font-family:system-ui,-apple-system" in html
-    assert "border-radius:9999px;" in html
     assert "--bg:#f5f5f7;" in html
-    assert "transform:scale(.95);" in html
+    for token in ("--panel:", "--line:", "--line-soft:", "--text:", "--muted:", "--danger:"):
+        assert token in html
+    assert "background:var(--panel);" in html
+    assert "border-color:var(--accent);" in html
+    assert "border-radius:9999px;" not in html
+    assert "border-radius:18px;" not in html
+    assert "backdrop-filter:" not in html
+    assert "blur(" not in html
+    assert "transform:scale(.95);" not in html
     assert ".tab, .inner-tab" in html
     assert "background:transparent;" in html
     assert "grid-template-columns:630px minmax(0,1fr);" in html
     assert ".controls, .controls .group { min-width:0; }" in html
     assert "max-width:100%;" in html
-    assert "background:#fafafc;" in html
     assert ".results { gap:24px; }" in html
     assert ".empty, .variance, .exploration-timeline" in html
-    assert "border-radius:18px;" in html
     assert "#engineeringPanel #tagRole," in html
     assert "height:42px;" in html
     assert "height:30px;" in html
@@ -174,6 +179,25 @@ def test_final_web_uses_the_apple_visual_tokens() -> None:
     assert "#tagOptions .tag-row" in html
     assert "height:30px;" in html
     assert "grid-template-columns:22px minmax(0,1fr) max-content;" in html
+
+    for structure in (
+        'class="controls workflow-sidebar"',
+        'class="results"',
+        'class="group training-configuration"',
+        'id="status" class="status info operation-log"',
+        'id="modelPanel"',
+        'id="trainingWindowSummary"',
+    ):
+        assert structure in html
+    for behavior in (
+        "button:focus-visible",
+        "button:disabled",
+        ".status.error",
+        ".status-label",
+        "font-variant-numeric:tabular-nums;",
+        ".table-wrap { overflow:auto;",
+    ):
+        assert behavior in html
 
 
 def test_operation_log_is_shared_by_all_workflow_stages() -> None:
