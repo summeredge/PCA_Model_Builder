@@ -180,7 +180,6 @@ _APPLE_DESIGN_STYLE = r"""
     width:100%;
     max-width:none;
     margin:0;
-    grid-template-columns:630px minmax(0,1fr);
     gap:24px;
     padding:24px 20px;
   }
@@ -617,6 +616,47 @@ def _split_at_unique_anchor(html: str, anchor: str, description: str) -> tuple[s
     return html.split(anchor, 1)
 
 
+def _unique_anchor_index(html: str, anchor: str, description: str) -> int:
+    count = html.count(anchor)
+    if count != 1:
+        raise ValueError(f"无法固定Web工作台结构：{description}锚点数量为{count}")
+    return html.index(anchor)
+
+
+def _label_for_unique_field(html: str, field_id: str, description: str) -> str:
+    field_index = _unique_anchor_index(html, f'id="{field_id}"', description)
+    start = html.rfind("<label", 0, field_index)
+    end = html.find("</label>", field_index)
+    if start == -1 or end == -1:
+        raise ValueError(f"无法固定Web工作台结构：{description}标签边界")
+    return html[start : end + len("</label>")]
+
+
+def _element_with_unique_id(html: str, field_id: str, tag: str, description: str) -> str:
+    field_index = _unique_anchor_index(html, f'id="{field_id}"', description)
+    start = html.rfind(f"<{tag}", 0, field_index)
+    end = html.find(f"</{tag}>", field_index)
+    if start == -1 or end == -1:
+        raise ValueError(f"无法固定Web工作台结构：{description}元素边界")
+    return html[start : end + len(tag) + 3]
+
+
+def _div_containing_unique_field(html: str, field_id: str, description: str) -> str:
+    field_index = _unique_anchor_index(html, f'id="{field_id}"', description)
+    start = html.rfind("<div", 0, field_index)
+    if start == -1:
+        raise ValueError(f"无法固定Web工作台结构：{description}容器开始")
+    depth = 0
+    for match in re.finditer(r"<div\b[^>]*>|</div>", html[start:]):
+        depth += 1 if match.group().startswith("<div") else -1
+        if depth == 0:
+            end = start + match.end()
+            if field_index >= end:
+                break
+            return html[start:end]
+    raise ValueError(f"无法固定Web工作台结构：{description}容器结束")
+
+
 def _candidate_manager_html() -> str:
     return """      <div class="group candidate-manager">
         <div class="group-title">候选窗口</div>
@@ -713,32 +753,43 @@ def _stabilize_workbench_html(html: str) -> str:
     parameter_group = parameter_group.replace(
         '<div class="group">', '<div class="group training-configuration">', 1
     )
-    parameter_rows = (
-        '        <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>\n'
-        '        <div class="row"><label>滤波方法<select id="filterMethod"><option value="trailing_mean">尾随均值</option><option value="trailing_median">尾随中位数</option><option value="none">不滤波</option></select></label><label>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10"></label></div>\n'
-        '        <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>\n'
-        '        <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>\n'
-        '        <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>\n'
-        '        <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>'
+    parameter_ids = ("sampleInterval", "filterMethod", "gapThreshold", "maxLag", "varianceThreshold")
+    row_starts = {
+        field_id: parameter_group.rfind(
+            '        <div class="row">',
+            0,
+            _unique_anchor_index(parameter_group, f'id="{field_id}"', field_id),
+        )
+        for field_id in parameter_ids
+    }
+    if any(start == -1 for start in row_starts.values()) or list(row_starts.values()) != sorted(row_starts.values()):
+        raise ValueError("无法固定Web工作台结构：训练参数行")
+    quality_start = parameter_group.rfind(
+        "        <h3>",
+        0,
+        _unique_anchor_index(parameter_group, 'id="modelQualityStatus"', "建模质量检查"),
     )
-    layered_parameter_rows = (
-        '        <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label></div>\n'
-        '        <div class="row"><label>滤波方法<select id="filterMethod"><option value="trailing_mean">尾随均值</option><option value="trailing_median">尾随中位数</option><option value="none">不滤波</option></select></label><label>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10"></label></div>\n'
-        '        <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label></div>\n'
-        '        <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label></div>\n'
-        '        <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>\n'
+    if quality_start == -1:
+        raise ValueError("无法固定Web工作台结构：建模质量检查标题")
+    gap_row = parameter_group[row_starts["gapThreshold"] : row_starts["maxLag"]]
+    common_rows = (
+        f'        <div class="row">{_label_for_unique_field(parameter_group, "sampleInterval", "目标采样周期")}</div>\n'
+        f'        <div class="row">{_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}{_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}</div>\n'
+        f'        <div class="row">{_label_for_unique_field(parameter_group, "maxLag", "最大Lag")}</div>\n'
+        f'        <div class="row">{_label_for_unique_field(parameter_group, "varianceThreshold", "累计解释率")}</div>\n'
+        f'        {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
+    )
+    advanced_rows = (
         '        <details class="advanced-parameters">\n'
         '          <summary>高级预处理与 DPCA 参数</summary>\n'
         '          <div class="help">执行顺序保持为时间检查、缺口识别、重采样、数据检查、因果滤波、Lag 扩展和标准化。</div>\n'
-        '          <div class="row"><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>\n'
-        '          <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>\n'
-        '          <div class="row"><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>\n'
-        '          <div class="row"><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>\n'
-        '        </details>'
+        f'          <div class="row">{_label_for_unique_field(parameter_group, "resamplingMethod", "重采样方法")}</div>\n'
+        + gap_row.replace('        ', '          ', 1)
+        + f'          <div class="row">{_label_for_unique_field(parameter_group, "lagStep", "Lag步长")}</div>\n'
+        + f'          <div class="row">{_label_for_unique_field(parameter_group, "components", "主元数")}</div>\n'
+        + '        </details>\n'
     )
-    if parameter_rows not in parameter_group:
-        raise ValueError("无法固定训练参数字段")
-    parameter_group = parameter_group.replace(parameter_rows, layered_parameter_rows, 1)
+    parameter_group = parameter_group[: row_starts["sampleInterval"]] + common_rows + advanced_rows + parameter_group[quality_start:]
     if 'id="candidateWindows"' in parameter_group:
         raise ValueError("无法固定候选窗口或训练参数区域")
     status_area = (status_marker + status_area).replace(
@@ -782,16 +833,12 @@ def _stabilize_workbench_html(html: str) -> str:
         'class="candidate-tool-panel"', 'class="candidate-tool-panel active"', 1
     )
 
-    validated_download = _required_html_match(
-        r'<a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a>',
-        validation_panel,
-        "已验证模型下载入口",
-    ).group(0)
-    freeze_box = _required_html_match(
-        r'          <div class="validation-box"><label>模型标识.*?</div>',
-        validation_panel,
-        "冻结与部署入口",
-    ).group(0)
+    validated_download = _element_with_unique_id(
+        validation_panel, "validatedModelDownload", "a", "已验证模型下载入口"
+    )
+    freeze_box = _div_containing_unique_field(
+        validation_panel, "frozenModelId", "冻结与部署入口"
+    )
     validation_panel = validation_panel.replace(validated_download, "", 1).replace(
         freeze_box, "", 1
     )

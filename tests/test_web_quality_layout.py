@@ -166,7 +166,8 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert "transform:scale(.95);" not in html
     assert ".tab, .inner-tab" in html
     assert "background:transparent;" in html
-    assert "grid-template-columns:630px minmax(0,1fr);" in html
+    assert "main { grid-template-columns:280px minmax(0,1fr); align-items:start; }" in html
+    assert "grid-template-columns:630px minmax(0,1fr);" not in html
     assert ".controls, .controls .group { min-width:0; }" in html
     assert "max-width:100%;" in html
     assert ".results { gap:24px; }" in html
@@ -341,6 +342,34 @@ def test_final_web_has_one_static_workbench_structure_and_asset_set() -> None:
         assert html.count(f'id="{style_id}"') == 1
     assert html.count('id="workbenchUiScript"') == 1
     assert html.count('src="/assets/model-results.js"') == 1
+
+
+def test_workbench_assembly_uses_field_anchors_not_copied_parameter_markup() -> None:
+    source = (PROJECT_ROOT / "src" / "pca_model_builder" / "web_model_results.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "parameter_rows" not in source
+    assert "模型标识.*?" not in source
+    for helper in (
+        "def _unique_anchor_index",
+        "def _label_for_unique_field",
+        "def _div_containing_unique_field",
+    ):
+        assert helper in source
+    for field_id in (
+        "sampleInterval",
+        "resamplingMethod",
+        "filterMethod",
+        "gapThreshold",
+        "maxLag",
+        "lagStep",
+        "varianceThreshold",
+        "components",
+        "modelName",
+        "frozenModelId",
+    ):
+        assert f'"{field_id}"' in source
 
 
 def test_supported_web_entrypoints_use_model_results_page() -> None:
