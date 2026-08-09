@@ -354,6 +354,25 @@ def test_model_structure_diagnostic_labels_retained_components_and_energy_tables
     assert "@media (max-width: 520px)" in source
 
 
+def test_model_comparison_layout_scopes_select_and_wraps_parameter_table_text() -> None:
+    source = (PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "#modelStructureComparison #modelComparisonRuns {" in source
+    assert "height: auto;" in source
+    assert "min-height: 0;" in source
+    assert 'table.className = "model-parameter-table";' in source
+    assert "#modelStructureComparison .model-parameter-table {" in source
+    assert "max-width: 100%;" in source
+    assert "table-layout: fixed;" in source
+    assert "#modelStructureComparison .model-parameter-table th:first-child," in source
+    assert "width: 12em;" in source
+    assert "white-space: normal;" in source
+    assert "overflow-wrap: anywhere;" in source
+    assert "word-break: break-word;" in source
+
+
 def test_final_web_model_comparison_routes_only_read_saved_candidates(
     tmp_path, monkeypatch
 ) -> None:

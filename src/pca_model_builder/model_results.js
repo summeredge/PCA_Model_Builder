@@ -86,6 +86,25 @@
     @media (max-width: 520px) {
       #modelStructureComparison .model-energy-table { width: 100%; }
     }
+    #modelStructureComparison #modelComparisonRuns {
+      height: auto;
+      min-height: 0;
+    }
+    #modelStructureComparison .model-parameter-table {
+      width: 100%;
+      max-width: 100%;
+      table-layout: fixed;
+    }
+    #modelStructureComparison .model-parameter-table th:first-child,
+    #modelStructureComparison .model-parameter-table td:first-child {
+      width: 12em;
+    }
+    #modelStructureComparison .model-parameter-table th,
+    #modelStructureComparison .model-parameter-table td {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
   `;
   document.head.append(layoutStyle);
 
@@ -306,6 +325,7 @@
 
   function parameterTable(rows) {
     const table = document.createElement("table");
+    table.className = "model-parameter-table";
     const runIds = Object.keys(rows[0]?.values || {});
     table.innerHTML = `<thead><tr><th>参数</th>${runIds.map(id => `<th>${id.slice(0, 8)}</th>`).join("")}</tr></thead>`;
     const body = document.createElement("tbody");
