@@ -333,6 +333,27 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
     assert "最佳模型" not in source
 
 
+def test_model_structure_diagnostic_labels_retained_components_and_energy_tables() -> None:
+    source = (PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "保留主元：${retained}；累计解释率：${(ratio * 100).toFixed(2)}%" in source
+    assert "diagnostic.cumulative_explained_variance_ratio[retained - 1]" in source
+    assert '"主元数量"' in source
+    assert '"累计解释率（%）"' in source
+    assert "x(point + 1)" in source
+    assert "`保留 ${retained}`" in source
+    assert 'container.className = "model-energy-table"' in source
+    assert "#modelStructureComparison .model-energy-table {" in source
+    assert "width: min(100%, 480px);" in source
+    assert "table-layout: fixed;" in source
+    assert "overflow-wrap: anywhere;" in source
+    assert "#modelStructureComparison .model-energy-table th:nth-child(2)," in source
+    assert "text-align: right;" in source
+    assert "@media (max-width: 520px)" in source
+
+
 def test_final_web_model_comparison_routes_only_read_saved_candidates(
     tmp_path, monkeypatch
 ) -> None:

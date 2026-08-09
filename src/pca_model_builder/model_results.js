@@ -46,6 +46,46 @@
         height: 360px;
       }
     }
+    #modelStructureComparison .model-variance-chart svg {
+      display: block;
+      width: 100%;
+      max-width: 640px;
+      height: auto;
+    }
+    #modelStructureComparison .model-variance-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      margin: 0 0 10px;
+    }
+    #modelStructureComparison .model-energy-table {
+      width: min(100%, 480px);
+      max-width: 100%;
+      min-width: 0;
+    }
+    #modelStructureComparison .model-energy-table table {
+      width: 100%;
+      table-layout: fixed;
+    }
+    #modelStructureComparison .model-energy-table th:first-child,
+    #modelStructureComparison .model-energy-table td:first-child {
+      text-align: left;
+      overflow-wrap: anywhere;
+    }
+    #modelStructureComparison .model-energy-table th:nth-child(2),
+    #modelStructureComparison .model-energy-table td:nth-child(2) {
+      width: 7.5em;
+      text-align: right;
+      white-space: nowrap;
+    }
+    #modelStructureComparison .model-energy-table th,
+    #modelStructureComparison .model-energy-table td {
+      padding-top: 5px;
+      padding-bottom: 5px;
+    }
+    @media (max-width: 520px) {
+      #modelStructureComparison .model-energy-table { width: 100%; }
+    }
   `;
   document.head.append(layoutStyle);
 
@@ -281,6 +321,7 @@
 
   function energyTable(title, rows, key) {
     const container = document.createElement("div");
+    container.className = "model-energy-table";
     const heading = document.createElement("h4");
     heading.textContent = title;
     const table = document.createElement("table");
@@ -308,26 +349,82 @@
 
   function explainedVarianceChart(diagnostics) {
     const container = document.createElement("div");
+    container.className = "model-variance-chart";
     const heading = document.createElement("h4");
     heading.textContent = "解释率累计曲线";
+    const summary = document.createElement("div");
+    summary.className = "model-variance-summary help";
+    diagnostics.forEach(diagnostic => {
+      const item = document.createElement("span");
+      const retained = diagnostic.retained_component_count;
+      const ratio = diagnostic.cumulative_explained_variance_ratio[retained - 1];
+      const prefix = diagnostics.length > 1 ? `${diagnostic.model_name}：` : "";
+      item.textContent = `${prefix}保留主元：${retained}；累计解释率：${(ratio * 100).toFixed(2)}%`;
+      summary.append(item);
+    });
     const svg = document.createElementNS(SVG_NS, "svg");
-    svg.setAttribute("viewBox", "0 0 620 190");
+    svg.setAttribute("viewBox", "0 0 640 245");
     svg.setAttribute("role", "img");
-    svg.setAttribute("aria-label", "主元累计解释率曲线");
+    svg.setAttribute("aria-label", "主元累计解释率曲线，横轴为主元数量，纵轴为累计解释率百分比");
     const maxPoints = Math.max(...diagnostics.map(item => item.cumulative_explained_variance_ratio.length), 1);
-    [0.8, 0.9, 0.95].forEach(level => addLine(svg, 45, 165 - level * 135, 590, 165 - level * 135, "#cbd5e1", 1));
+    const plotLeft = 62;
+    const plotRight = 610;
+    const plotTop = 24;
+    const plotBottom = 184;
+    const x = component => plotLeft + (component - 1) / Math.max(maxPoints - 1, 1) * (plotRight - plotLeft);
+    const y = ratio => plotBottom - ratio * (plotBottom - plotTop);
+    addLine(svg, plotLeft, plotBottom, plotRight, plotBottom, "#64748b", 1);
+    addLine(svg, plotLeft, plotTop, plotLeft, plotBottom, "#64748b", 1);
+    [0, 0.25, 0.5, 0.75, 1].forEach(level => {
+      const position = y(level);
+      addLine(svg, plotLeft, position, plotRight, position, "#e2e8f0", 1);
+      varianceLabel(svg, plotLeft - 8, position + 3, `${(level * 100).toFixed(0)}%`, "end");
+    });
+    [0.8, 0.9, 0.95].forEach(level => addLine(svg, plotLeft, y(level), plotRight, y(level), "#cbd5e1", 1));
+    const componentStep = Math.max(1, Math.ceil(maxPoints / 12));
+    for (let component = 1; component <= maxPoints; component += componentStep) {
+      varianceLabel(svg, x(component), plotBottom + 17, String(component), "middle");
+    }
+    if ((maxPoints - 1) % componentStep !== 0) varianceLabel(svg, x(maxPoints), plotBottom + 17, String(maxPoints), "middle");
+    varianceLabel(svg, (plotLeft + plotRight) / 2, 232, "主元数量", "middle", "13");
+    const yTitle = varianceLabel(svg, 18, (plotTop + plotBottom) / 2, "累计解释率（%）", "middle", "13");
+    yTitle.setAttribute("transform", `rotate(-90 18 ${(plotTop + plotBottom) / 2})`);
     diagnostics.forEach((diagnostic, index) => {
       const color = ["#9f3f3f", "#2563eb", "#059669", "#7c3aed"][index];
-      const points = diagnostic.cumulative_explained_variance_ratio.map((value, point) => `${45 + point / Math.max(maxPoints - 1, 1) * 545},${165 - value * 135}`).join(" ");
+      const points = diagnostic.cumulative_explained_variance_ratio.map((value, point) => `${x(point + 1)},${y(value)}`).join(" ");
       const line = document.createElementNS(SVG_NS, "polyline");
       line.setAttribute("points", points);
       line.setAttribute("fill", "none");
       line.setAttribute("stroke", color);
       line.setAttribute("stroke-width", "2");
       svg.append(line);
+      const retained = diagnostic.retained_component_count;
+      const ratio = diagnostic.cumulative_explained_variance_ratio[retained - 1];
+      if (Number.isFinite(ratio)) {
+        addLine(svg, x(retained), plotTop, x(retained), plotBottom, color, 1);
+        const marker = document.createElementNS(SVG_NS, "circle");
+        marker.setAttribute("cx", String(x(retained)));
+        marker.setAttribute("cy", String(y(ratio)));
+        marker.setAttribute("r", "4");
+        marker.setAttribute("fill", color);
+        svg.append(marker);
+        varianceLabel(svg, x(retained), plotTop + 12 + index * 13, `保留 ${retained}`, "middle", "10", color);
+      }
     });
-    container.append(heading, svg);
+    container.append(heading, summary, svg);
     return container;
+  }
+
+  function varianceLabel(svg, x, y, text, anchor = "start", size = "10", color = "#64748b") {
+    const label = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("x", String(x));
+    label.setAttribute("y", String(y));
+    label.setAttribute("text-anchor", anchor);
+    label.setAttribute("font-size", size);
+    label.setAttribute("fill", color);
+    label.textContent = text;
+    svg.append(label);
+    return label;
   }
 
   function cell(value) {
