@@ -1407,7 +1407,24 @@ def test_training_windows_api_normalizes_operations_and_reports_summary():
     assert result["summary"][0]["duration_minutes"] == 10
 
 
-def test_candidate_confirmation_splits_training_windows_by_exclusions():
+def test_candidate_confirmation_splits_training_windows_by_exclusions(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    timestamps = pd.date_range(
+        "2026-01-01T08:00:00", "2026-01-01T20:00:00", freq="5min"
+    )
+    history = pd.DataFrame(
+        {
+            "time": timestamps,
+            "A": np.arange(len(timestamps), dtype=float),
+            "B": np.arange(len(timestamps), dtype=float) + 1,
+            "C": np.arange(len(timestamps), dtype=float) + 2,
+        }
+    )
+    uploaded = web.save_upload(
+        "candidate.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
     candidate = {
         "id": "candidate-001",
         "start": "2026-01-01T08:00:00",
@@ -1435,9 +1452,14 @@ def test_candidate_confirmation_splits_training_windows_by_exclusions():
 
     result = web.training_windows_payload(
         {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
             "training_windows": [],
-            "excluded_windows": excluded,
-            "operation": {"action": "confirm_candidate", "candidate": candidate},
+            "operation": {
+                "action": "confirm_candidate",
+                "candidate": candidate,
+                "excluded_windows": excluded,
+            },
         }
     )
 
@@ -1447,13 +1469,34 @@ def test_candidate_confirmation_splits_training_windows_by_exclusions():
         "training-candidate-001-part-003",
     ]
     assert [(window["start"], window["end"]) for window in result["training_windows"]] == [
-        ("2026-01-01T08:00:00", "2026-01-01T10:00:00"),
-        ("2026-01-01T11:00:00", "2026-01-01T16:00:00"),
-        ("2026-01-01T17:00:00", "2026-01-01T20:00:00"),
+        ("2026-01-01T08:00:00", "2026-01-01T09:55:00"),
+        ("2026-01-01T11:05:00", "2026-01-01T15:55:00"),
+        ("2026-01-01T17:05:00", "2026-01-01T20:00:00"),
     ]
     assert all(window["enabled"] for window in result["training_windows"])
+    excluded_points = set(
+        pd.to_datetime(
+            [
+                "2026-01-01T10:00:00",
+                "2026-01-01T11:00:00",
+                "2026-01-01T16:00:00",
+                "2026-01-01T17:00:00",
+            ]
+        )
+    )
+    selected = set()
+    for window in result["training_windows"]:
+        selected.update(
+            timestamps[
+                (timestamps >= pd.Timestamp(window["start"]))
+                & (timestamps <= pd.Timestamp(window["end"]))
+            ]
+        )
+    assert excluded_points.isdisjoint(selected)
     removed = web.training_windows_payload(
         {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
             "training_windows": result["training_windows"],
             "operation": {
                 "action": "remove",
@@ -1464,15 +1507,22 @@ def test_candidate_confirmation_splits_training_windows_by_exclusions():
     for window in list(removed["training_windows"]):
         removed = web.training_windows_payload(
             {
+                "file_id": uploaded["file_id"],
+                "timestamp_column": "time",
                 "training_windows": removed["training_windows"],
                 "operation": {"action": "remove", "id": window["id"]},
             }
         )
     reconfirmed = web.training_windows_payload(
         {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
             "training_windows": removed["training_windows"],
-            "excluded_windows": excluded,
-            "operation": {"action": "confirm_candidate", "candidate": candidate},
+            "operation": {
+                "action": "confirm_candidate",
+                "candidate": candidate,
+                "excluded_windows": excluded,
+            },
         }
     )
     assert [window["id"] for window in reconfirmed["training_windows"]] == [
@@ -1482,7 +1532,19 @@ def test_candidate_confirmation_splits_training_windows_by_exclusions():
     ]
 
 
-def test_candidate_confirmation_keeps_legacy_id_without_intersecting_exclusions():
+def test_candidate_confirmation_keeps_legacy_id_without_intersecting_exclusions(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    timestamps = pd.date_range(
+        "2026-01-01T08:00:00", "2026-01-01T20:00:00", freq="5min"
+    )
+    history = pd.DataFrame(
+        {"time": timestamps, "A": range(len(timestamps)), "B": range(len(timestamps))}
+    )
+    uploaded = web.save_upload(
+        "candidate.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
     candidate = {
         "id": "candidate-001",
         "start": "2026-01-01T08:00:00",
@@ -1501,9 +1563,14 @@ def test_candidate_confirmation_keeps_legacy_id_without_intersecting_exclusions(
 
     result = web.training_windows_payload(
         {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
             "training_windows": [],
-            "excluded_windows": [outside],
-            "operation": {"action": "confirm_candidate", "candidate": candidate},
+            "operation": {
+                "action": "confirm_candidate",
+                "candidate": candidate,
+                "excluded_windows": [outside],
+            },
         }
     )
 
@@ -1513,9 +1580,20 @@ def test_candidate_confirmation_keeps_legacy_id_without_intersecting_exclusions(
     with pytest.raises(ValueError, match="完全覆盖"):
         web.training_windows_payload(
             {
+                "file_id": uploaded["file_id"],
+                "timestamp_column": "time",
                 "training_windows": [],
-                "excluded_windows": [{**outside, "start": candidate["start"], "end": candidate["end"]}],
-                "operation": {"action": "confirm_candidate", "candidate": candidate},
+                "operation": {
+                    "action": "confirm_candidate",
+                    "candidate": candidate,
+                    "excluded_windows": [
+                        {
+                            **outside,
+                            "start": candidate["start"],
+                            "end": candidate["end"],
+                        }
+                    ],
+                },
             }
         )
 

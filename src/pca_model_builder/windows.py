@@ -162,40 +162,40 @@ def merge_excluded_windows(value: object) -> list[dict[str, Any]]:
 
 
 def subtract_excluded_windows(
-    candidate: Mapping[str, Any], excluded_windows: object
+    candidate: Mapping[str, Any],
+    excluded_windows: object,
+    timestamps: Sequence[object],
 ) -> list[dict[str, str]]:
-    """Return the candidate ranges that remain after exclusion-window cuts.
-
-    Boundaries are retained exactly as selected; this function deliberately does
-    not infer or apply a sampling interval.
-    """
+    """Return timestamp-bounded candidate ranges remaining after exclusion cuts."""
     start, end = _window_bounds(candidate.get("start"), candidate.get("end"))
     exclusions = merge_excluded_windows(excluded_windows)
-    if start == end:
-        if any(
-            _window_bounds(window["start"], window["end"])[0] <= start
-            <= _window_bounds(window["start"], window["end"])[1]
-            for window in exclusions
-        ):
-            return []
+    intersecting = []
+    for window in exclusions:
+        excluded_start, excluded_end = _window_bounds(window["start"], window["end"])
+        if excluded_end >= start and excluded_start <= end:
+            intersecting.append((excluded_start, excluded_end))
+    if not intersecting:
         return [{"start": start.isoformat(), "end": end.isoformat()}]
+
+    available = pd.DatetimeIndex(pd.to_datetime(list(timestamps), errors="raise"))
+    available = available.dropna().sort_values().unique()
+    available = available[(available >= start) & (available <= end)]
     remaining: list[dict[str, str]] = []
-    cursor = start
-    for excluded in exclusions:
-        excluded_start, excluded_end = _window_bounds(
-            excluded["start"], excluded["end"]
-        )
-        if excluded_end < cursor or excluded_start > end:
-            continue
-        if excluded_start > cursor:
+    segment_start = start
+    for excluded_start, excluded_end in intersecting:
+        before = available[
+            (available >= segment_start) & (available < excluded_start)
+        ]
+        if len(before):
             remaining.append(
-                {"start": cursor.isoformat(), "end": min(excluded_start, end).isoformat()}
+                {"start": segment_start.isoformat(), "end": before[-1].isoformat()}
             )
-        cursor = max(cursor, excluded_end)
-        if cursor >= end:
-            break
-    if cursor < end:
-        remaining.append({"start": cursor.isoformat(), "end": end.isoformat()})
+        after = available[(available > excluded_end) & (available <= end)]
+        if not len(after):
+            return remaining
+        segment_start = after[0]
+    if len(available[(available >= segment_start) & (available <= end)]):
+        remaining.append({"start": segment_start.isoformat(), "end": end.isoformat()})
     return remaining
 
 

@@ -415,6 +415,8 @@ def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if "training_windows" in payload
         else training_windows_from_payload(payload)
     )
+    timestamps = None
+    loaded = None
     operation = payload.get("operation")
     if operation is not None:
         if not isinstance(operation, dict):
@@ -458,9 +460,12 @@ def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
             ):
                 raise ValueError("该候选已生成训练窗口")
             excluded_windows = merge_excluded_windows(
-                payload.get("excluded_windows", [])
+                operation.get("excluded_windows", [])
             )
-            parts = subtract_excluded_windows(candidate, excluded_windows)
+            timestamp_column = _required_text(payload, "timestamp_column")
+            loaded = _load_upload(payload, [])
+            timestamps = loaded.frame[timestamp_column]
+            parts = subtract_excluded_windows(candidate, excluded_windows, timestamps)
             if not parts:
                 raise ValueError("候选窗口已被排除窗口完全覆盖")
             candidate_start, candidate_end = candidate["start"], candidate["end"]
@@ -485,9 +490,7 @@ def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 windows = add_training_window(windows, addition)
         else:
             raise ValueError("training_windows操作无效")
-    timestamps = None
-    loaded = None
-    if payload.get("file_id"):
+    if payload.get("file_id") and loaded is None:
         timestamp_column = _required_text(payload, "timestamp_column")
         loaded = _load_upload(payload, [])
         timestamps = loaded.frame[timestamp_column]

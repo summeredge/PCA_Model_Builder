@@ -102,10 +102,11 @@ def test_excluded_windows_merge_touching_ranges_and_split_a_candidate():
     assert subtract_excluded_windows(
         {"start": "2026-01-01T08:00:00", "end": "2026-01-01T20:00:00"},
         excluded,
+        pd.date_range("2026-01-01T08:00:00", "2026-01-01T20:00:00", freq="5min"),
     ) == [
-        {"start": "2026-01-01T08:00:00", "end": "2026-01-01T10:00:00"},
-        {"start": "2026-01-01T11:00:00", "end": "2026-01-01T16:00:00"},
-        {"start": "2026-01-01T17:00:00", "end": "2026-01-01T20:00:00"},
+        {"start": "2026-01-01T08:00:00", "end": "2026-01-01T09:55:00"},
+        {"start": "2026-01-01T11:05:00", "end": "2026-01-01T15:55:00"},
+        {"start": "2026-01-01T17:05:00", "end": "2026-01-01T20:00:00"},
     ]
 
 
@@ -121,4 +122,8 @@ def test_excluded_windows_outside_a_candidate_do_not_change_it():
         }
     ]
 
-    assert subtract_excluded_windows(candidate, excluded) == [candidate]
+    assert subtract_excluded_windows(
+        candidate,
+        excluded,
+        pd.date_range("2026-01-01T08:00:00", "2026-01-01T20:00:00", freq="5min"),
+    ) == [candidate]
