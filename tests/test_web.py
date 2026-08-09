@@ -132,6 +132,29 @@ def test_upload_reads_only_file_header_and_basic_metadata(tmp_path, monkeypatch)
     assert (web.UPLOADS_DIR / f'{uploaded["file_id"]}.csv').is_file()
 
 
+@pytest.mark.parametrize("point_count", [29999, 30000, 30001])
+def test_inspection_trend_default_uses_up_to_30000_real_timestamps(
+    tmp_path, monkeypatch, point_count
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    timestamps = pd.date_range("2026-01-01", periods=point_count, freq="min")
+    frame = pd.DataFrame(
+        {"time": timestamps, "A": np.arange(point_count), "B": np.arange(point_count)}
+    )
+    uploaded = web.save_upload(
+        "trend-default.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+
+    inspected = web.inspect_payload(
+        {"file_id": uploaded["file_id"], "timestamp_column": "time"}
+    )
+
+    assert inspected["trend_default_start"] == timestamps[0].isoformat()
+    assert inspected["trend_default_end"] == timestamps[
+        min(point_count, 30000) - 1
+    ].isoformat()
+
+
 def test_upload_csv_read_error_is_explicit_and_removes_partial_file(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
 

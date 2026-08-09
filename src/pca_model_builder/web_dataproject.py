@@ -73,12 +73,13 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     <div class="dp-trend-options">
       <label>开始时间<input id="dpTrendStart" type="datetime-local"></label>
       <label>结束时间<input id="dpTrendEnd" type="datetime-local"></label>
-      <label>最大绘图点数<input id="dpTrendMaxPoints" type="number" min="100" max="100000" value="10000"></label>
+      <label>最大绘图点数<input id="dpTrendMaxPoints" type="number" min="100" max="100000" value="30000"></label>
     </div>
     <div class="actions">
       <button id="dpTrendToAnalysis" type="button" class="secondary">将当前窗口设为分析期</button>
       <button id="dpTrendToReference" type="button" class="secondary">加入候选窗口</button>
       <button id="dpTrendToExclusion" type="button" class="secondary">加入排除窗口</button>
+      <button id="dpTrendReset" type="button" class="secondary">趋势复位</button>
     </div>
     <div id="dpTrendChart" class="dp-chart empty">选择 1 到 4 个数据后点击“显示趋势”。</div>
     <div id="dpTrendLegend" class="dp-legend"></div>
@@ -105,6 +106,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   const scatterIds = ["dpScatterX1", "dpScatterX2", "dpScatterX3", "dpScatterY1", "dpScatterY2", "dpScatterY3"];
   const colors = ["#176b87", "#c2410c", "#6d28d9", "#15803d"];
   let lastTrend = null;
+  let hasDraggedTrendSelection = false;
   let resizeTimer = null;
   const selectionThresholdPixels = 3;
 
@@ -169,7 +171,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       start: $("dpTrendStart").value,
       end: $("dpTrendEnd").value,
       display_mode: "raw",
-      max_points: Number($("dpTrendMaxPoints").value || 10000),
+      max_points: Number($("dpTrendMaxPoints").value || 30000),
       purpose,
     };
     return api("/api/trend", {
@@ -214,6 +216,20 @@ _DATAPROJECT_TREND_SCRIPT = r"""
 
   $("dpTrendToExclusion").addEventListener("click", () => {
     addExcludedWindow("trend", $("dpTrendStart").value, $("dpTrendEnd").value, "trend-current", "");
+  });
+
+  $("dpTrendReset").addEventListener("click", () => {
+    const defaults = state.inspection;
+    if (!defaults?.trend_default_start || !defaults?.trend_default_end) {
+      return setStatus("请先完成当前文件的数据检查。", "warning");
+    }
+    $("dpTrendStart").value = localTime(defaults.trend_default_start);
+    $("dpTrendEnd").value = localTime(defaults.trend_default_end);
+    $("dpTrendMaxPoints").value = "30000";
+    hasDraggedTrendSelection = false;
+    if (lastTrend) renderTrendChart(lastTrend);
+    syncToLegacy(chosen(trendIds));
+    $("dpDrawTrend").click();
   });
 
   $("dpDrawScatter").addEventListener("click", async () => {
@@ -329,7 +345,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       const visibleEnd = Math.min(end, timeEnd);
       return `<rect data-trend-exclusion x="${timeToX(visibleStart)}" y="${pad.top}" width="${Math.max(0, timeToX(visibleEnd) - timeToX(visibleStart))}" height="${height-pad.top-pad.bottom}" fill="#dc2626" fill-opacity=".16" pointer-events="none"/>`;
     }).join("");
-    const selection = currentTrendSelection(timeStart, timeEnd);
+    const selection = hasDraggedTrendSelection ? currentTrendSelection(timeStart, timeEnd) : null;
     const selectionMarkup = selection ? `<g data-trend-selection pointer-events="none"><rect x="${timeToX(selection.start)}" y="${pad.top}" width="${Math.max(0, timeToX(selection.end) - timeToX(selection.start))}" height="${height-pad.top-pad.bottom}" fill="#176b87" fill-opacity=".18"/><line data-trend-selection-edge="start" x1="${timeToX(selection.start)}" x2="${timeToX(selection.start)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/><line data-trend-selection-edge="end" x1="${timeToX(selection.end)}" x2="${timeToX(selection.end)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/></g>` : '<g data-trend-selection pointer-events="none" visibility="hidden"><rect y="0" height="0"/><line data-trend-selection-edge="start"/><line data-trend-selection-edge="end"/></g>';
     const note = mode === "shared" ? "同一 Y 轴：所有曲线使用同一数值范围" : "独立 Y 轴：各曲线按自身范围缩放，仅比较趋势形态";
     container.className = "dp-chart";
@@ -381,6 +397,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       dragStart = null;
       if (Math.abs(dragEnd-start) < selectionThresholdPixels) return restoreSelection();
       setTrendWindowFromSelection(xToTime(start), xToTime(dragEnd));
+      hasDraggedTrendSelection = true;
       restoreSelection();
     });
     hitbox.addEventListener("pointercancel", () => { dragStart = null; restoreSelection(); });
@@ -684,7 +701,7 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if missing:
         raise ValueError(f"找不到趋势Tag：{', '.join(missing)}")
     try:
-        max_points = int(payload.get("max_points", 10000))
+        max_points = int(payload.get("max_points", 30000))
     except (TypeError, ValueError) as error:
         raise ValueError("最大绘图点数必须是整数") from error
     max_points = min(100000, max(100, max_points))

@@ -93,6 +93,34 @@ def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
     assert "(timeEnd-timeStart)" in html
 
 
+def test_trend_reset_restores_uploaded_defaults_without_clearing_windows() -> None:
+    html = web_model_results.INDEX_HTML
+    reset_source = html.split('$("dpTrendReset").addEventListener("click", () => {', 1)[1].split(
+        '$("dpDrawScatter").addEventListener', 1
+    )[0]
+
+    assert 'id="dpTrendMaxPoints" type="number" min="100" max="100000" value="30000"' in html
+    assert html.index('id="dpTrendToExclusion"') < html.index('id="dpTrendReset"')
+    assert "趋势复位" in html
+    assert "defaults?.trend_default_start" in reset_source
+    assert "defaults?.trend_default_end" in reset_source
+    assert "localTime(defaults.trend_default_start)" in reset_source
+    assert "localTime(defaults.trend_default_end)" in reset_source
+    assert '$("dpTrendMaxPoints").value = "30000";' in reset_source
+    assert "hasDraggedTrendSelection = false;" in reset_source
+    assert "if (lastTrend) renderTrendChart(lastTrend);" in reset_source
+    assert "syncToLegacy(chosen(trendIds));" in reset_source
+    assert '$("dpDrawTrend").click();' in reset_source
+    for preserved_state in (
+        "state.excludedWindows=",
+        "state.candidateWindows=",
+        "state.trainingWindows=",
+        '$("dpTrendAxisMode").value =',
+        '$("dpTrendVar1").value =',
+    ):
+        assert preserved_state not in reset_source
+
+
 def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     html = web_model_results.INDEX_HTML
 

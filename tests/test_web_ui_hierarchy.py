@@ -130,6 +130,7 @@ def test_trend_and_manual_selection_use_the_unified_candidate_action() -> None:
     assert 'addCandidateWindow("trend"' in html
     assert 'id="dpTrendToExclusion" type="button" class="secondary">加入排除窗口' in html
     assert 'addExcludedWindow("trend"' in html
+    assert 'id="dpTrendReset" type="button" class="secondary">趋势复位' in html
     assert 'globalThis.showWorkflowStage?.("candidatePanel")' in html
 
 
