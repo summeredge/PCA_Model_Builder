@@ -237,8 +237,6 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
     parsed = loaded.frame
     with _web_stage("quality_check"):
         numeric_columns = list(loaded.metadata.numeric_candidate_columns)
-        if len(numeric_columns) < 2:
-            raise ValueError("至少需要两个可用的连续数值 Tag")
         report = inspect_data_quality(parsed, timestamp_column, numeric_columns)
         raw_columns = [
             str(column) for column in parsed.columns if column != timestamp_column
@@ -276,6 +274,16 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "can_train_without_review": report.can_train,
         "quality_issues": [asdict(issue) for issue in report.issues],
         "column_profiles": column_profiles,
+        "modeling_tag_hint": (
+            {
+                "code": "insufficient_continuous_tags",
+                "candidate_count": len(numeric_columns),
+                "minimum_count": 2,
+                "message": "当前可建模连续数值 Tag 少于 2 个，不能进入后续建模。",
+            }
+            if len(numeric_columns) < 2
+            else None
+        ),
     }
     return _with_data_usage(result, loaded, len(parsed), len(parsed))
 
@@ -3015,7 +3023,7 @@ el("inspectButton").addEventListener("click", async () => {
     el("templateDownload").href=`/download/tag-config-template?file_id=${encodeURIComponent(state.fileId)}&timestamp_column=${encodeURIComponent(el("timestampColumn").value)}&encoding=${encodeURIComponent(el("encoding").value)}`;
     if(data.numeric_columns.length) selectTag(data.numeric_columns[0]);
     const issues=data.quality_issues.map(item=>`${item.code}(${item.count}) ${item.tag||""}`).join("、");
-    setStatus(issues ? `基础数据检查完成：${data.rows} 行。发现 ${issues}；确认训练窗口后必须执行建模质量检查。` : `基础数据检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个数值列。请确认训练窗口并执行建模质量检查。`, issues?"warning":"success");
+    setStatus(issues ? `基础数据检查完成：${data.rows} 行。发现 ${issues}；确认训练窗口后必须执行建模质量检查。` : data.modeling_tag_hint ? `基础数据检查完成：${data.rows} 行。${data.modeling_tag_hint.message}` : `基础数据检查完成：${data.rows} 行，识别 ${data.numeric_columns.length} 个数值列。请确认训练窗口并执行建模质量检查。`, issues||data.modeling_tag_hint?"warning":"success");
   } catch (error) { console.error("数据检查失败:",error); setStatus(`数据检查失败:\n${timedOut?"数据检查超过 30 秒未完成。请确认文件格式或重新上传后重试。":error.message||String(error)}`,"error"); }
   finally { window.clearTimeout(timeoutId); window.clearTimeout(progressId); setBusy(button,false,""); }
 });

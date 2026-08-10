@@ -323,6 +323,76 @@ def test_inspect_payload_profiles_all_original_columns_and_range_hints(
     assert tag_configs["MIX"]["engineering_min"] == 0.0
 
 
+def test_inspect_payload_with_one_numeric_candidate_still_profiles_raw_columns(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(
+        web,
+        "preprocess_window",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+    )
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=3, freq="5min"),
+            "A": [1.0, 2.0, 3.0],
+            "EMPTY": [None, None, None],
+            "TEXT": ["label", "label", "label"],
+        }
+    )
+    uploaded = web.save_upload(
+        "one-candidate.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+
+    inspected = web.inspect_payload(
+        {"file_id": uploaded["file_id"], "timestamp_column": "time"}
+    )
+    profiles = {profile["tag"]: profile for profile in inspected["column_profiles"]}
+
+    assert inspected["numeric_columns"] == ["A"]
+    assert set(profiles) == {"A", "EMPTY", "TEXT"}
+    assert profiles["EMPTY"]["suggestion"]["reason"] == "all_empty"
+    assert profiles["TEXT"]["suggestion"]["reason"] == "no_finite_numeric_values"
+    assert inspected["modeling_tag_hint"] == {
+        "code": "insufficient_continuous_tags",
+        "candidate_count": 1,
+        "minimum_count": 2,
+        "message": "当前可建模连续数值 Tag 少于 2 个，不能进入后续建模。",
+    }
+
+
+def test_inspect_payload_with_no_numeric_candidates_still_returns_profiles(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(
+        web,
+        "preprocess_window",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+    )
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=3, freq="5min"),
+            "EMPTY": [None, None, None],
+            "TEXT": ["label", "label", "label"],
+        }
+    )
+    uploaded = web.save_upload(
+        "no-candidate.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+
+    inspected = web.inspect_payload(
+        {"file_id": uploaded["file_id"], "timestamp_column": "time"}
+    )
+    profiles = {profile["tag"]: profile for profile in inspected["column_profiles"]}
+
+    assert inspected["numeric_columns"] == []
+    assert set(profiles) == {"EMPTY", "TEXT"}
+    assert profiles["EMPTY"]["suggestion"]["reason"] == "all_empty"
+    assert profiles["TEXT"]["suggestion"]["reason"] == "no_finite_numeric_values"
+    assert inspected["modeling_tag_hint"]["candidate_count"] == 0
+
+
 def test_upload_rejects_invalid_txt_and_removes_partial_file(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
 
