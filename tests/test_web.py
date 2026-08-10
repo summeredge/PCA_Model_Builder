@@ -253,6 +253,76 @@ def test_upload_accepts_u400ph_txt_and_inspects_raw_data_without_preprocessing(
     )
 
 
+def test_inspect_payload_profiles_all_original_columns_and_range_hints(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=8, freq="5min"),
+            "A": range(8),
+            "B": range(10, 18),
+            "MIX": [-1.0, 0.5, 2.0, None, " ", "BAD", float("inf"), -float("inf")],
+            "CONST": [7.0] * 8,
+            "EMPTY": [None, " ", None, " ", None, " ", None, " "],
+            "TEXT": ["label"] * 8,
+        }
+    )
+    uploaded = web.save_upload(
+        "raw-quality.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+    tag_configs = {
+        "MIX": {
+            "engineering_min": 0.0,
+            "engineering_max": 1.0,
+            "normal_min": 0.25,
+            "normal_max": 0.75,
+            "alarm_min": 0.0,
+            "alarm_max": 1.0,
+        }
+    }
+
+    inspected = web.inspect_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tag_configs": tag_configs,
+        }
+    )
+    profiles = {profile["tag"]: profile for profile in inspected["column_profiles"]}
+
+    assert "TEXT" not in inspected["numeric_columns"]
+    assert set(profiles) == {"A", "B", "MIX", "CONST", "EMPTY", "TEXT"}
+    assert profiles["MIX"] | {"suggestion": None} == {
+        "tag": "MIX",
+        "sample_count": 8,
+        "total_count": 8,
+        "valid_count": 3,
+        "finite_valid_count": 3,
+        "missing_count": 1,
+        "empty_string_count": 1,
+        "non_numeric_count": 1,
+        "positive_infinite_count": 1,
+        "negative_infinite_count": 1,
+        "non_finite_count": 2,
+        "invalid_count": 5,
+        "finite_unique_count": 3,
+        "minimum": -1.0,
+        "maximum": 2.0,
+        "engineering_range_outside_count": 2,
+        "normal_range_outside_count": 2,
+        "alarm_range_outside_count": 2,
+        "suggestion": None,
+        "missing_rate": pytest.approx(0.125),
+        "invalid_rate": pytest.approx(0.625),
+        "unique_count": 3,
+    }
+    assert profiles["EMPTY"]["suggestion"]["reason"] == "all_empty"
+    assert profiles["TEXT"]["suggestion"]["reason"] == "no_finite_numeric_values"
+    assert profiles["CONST"]["suggestion"]["reason"] == "exact_constant_finite_values"
+    assert tag_configs["MIX"]["engineering_min"] == 0.0
+
+
 def test_upload_rejects_invalid_txt_and_removes_partial_file(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
 

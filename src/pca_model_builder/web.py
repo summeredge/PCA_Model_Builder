@@ -52,7 +52,7 @@ from .preprocessing import (
     preprocess_window,
     preprocessing_config_from_mapping,
 )
-from .quality import QualityReport, inspect_data_quality
+from .quality import QualityReport, inspect_data_quality, raw_column_profile
 from .replay import FrozenReplayResult, replay_frozen_model
 from .screening import screen_performance_states
 from .tag_config import (
@@ -240,6 +240,19 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if len(numeric_columns) < 2:
             raise ValueError("至少需要两个可用的连续数值 Tag")
         report = inspect_data_quality(parsed, timestamp_column, numeric_columns)
+        raw_columns = [
+            str(column) for column in parsed.columns if column != timestamp_column
+        ]
+        tag_configs = normalize_tag_registry(
+            raw_columns, payload.get("tag_configs")
+        )
+        column_profiles = [
+            {
+                "tag": column,
+                **raw_column_profile(parsed[column], tag_configs[column]),
+            }
+            for column in raw_columns
+        ]
         timestamps = parsed[timestamp_column].dropna().sort_values().drop_duplicates()
         if len(timestamps) < 3:
             raise ValueError("至少需要三个有效时间点")
@@ -262,6 +275,7 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "sample_interval_minutes": report.inferred_interval_minutes,
         "can_train_without_review": report.can_train,
         "quality_issues": [asdict(issue) for issue in report.issues],
+        "column_profiles": column_profiles,
     }
     return _with_data_usage(result, loaded, len(parsed), len(parsed))
 
@@ -2604,7 +2618,7 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div id="qualityPanel" class="inner-panel">
           <h3>上传后基础数据检查</h3>
-          <div class="help">此处仅展示整体历史数据的时间轴与数值列检查结果。建模质量检查位于“模型训练”阶段，并依赖已启用的训练窗口。</div>
+          <div class="help">此处仅展示整体历史数据的时间轴与原始逐列检查结果。建模质量检查位于“模型训练”阶段，并依赖已启用的训练窗口。</div>
           <div id="basicInspectionSummary" class="metrics"></div>
           <div id="basicInspectionIssues" class="empty">上传并检查数据后显示基础检查结果。</div>
         </div>
@@ -2894,10 +2908,16 @@ function renderUploadedColumns(columns) {
 function renderBasicInspection(data) {
   const summary=el("basicInspectionSummary"), issues=el("basicInspectionIssues");
   if(!data) { summary.innerHTML=""; issues.className="empty"; issues.textContent="上传并检查数据后显示基础检查结果。"; return; }
-  summary.innerHTML=metric("历史数据行数",data.rows)+metric("数值列",data.numeric_columns.length)+metric("时间范围",`${displayTime(data.time_start)}\n${displayTime(data.time_end)}`,"time-range")+metric("基础检查",data.can_train_without_review?"通过":"有问题");
+  summary.innerHTML=metric("历史数据行数",data.rows)+metric("原始列",data.column_profiles.length)+metric("数值候选列",data.numeric_columns.length)+metric("时间范围",`${displayTime(data.time_start)}\n${displayTime(data.time_end)}`,"time-range")+metric("基础检查",data.can_train_without_review?"通过":"有问题");
   issues.className=""; issues.replaceChildren();
-  if(!data.quality_issues.length) { issues.className="empty"; issues.textContent="整体历史数据未发现基础时间轴或数值列问题。"; return; }
-  data.quality_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; issues.append(card); });
+  if(!data.quality_issues.length) { const notice=document.createElement("div"); notice.className="empty"; notice.textContent="整体历史数据未发现基础时间轴或数值候选列问题。"; issues.append(notice); }
+  else data.quality_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; issues.append(card); });
+  const profiles=data.column_profiles||[]; if(!profiles.length) return;
+  const hasRanges=profiles.some(profile=>["engineering_range_outside_count","normal_range_outside_count","alarm_range_outside_count"].some(key=>profile[key]!==null&&profile[key]!==undefined));
+  const table=document.createElement("table"); const head=document.createElement("thead"), headRow=document.createElement("tr");
+  const headers=["Tag","有效数值","缺失 / 空白","非数字","+Inf / -Inf","最小 / 最大",...(hasRanges?["工程越界","正常越界","报警越界"]:[]),"状态 / 建议"];
+  headers.forEach(value=>{ const cell=document.createElement("th"); cell.textContent=value; headRow.append(cell); }); head.append(headRow); table.append(head);
+  const body=document.createElement("tbody"); profiles.forEach(profile=>{ const row=document.createElement("tr"); const suggestion=profile.suggestion; const rangeOutside=["engineering_range_outside_count","normal_range_outside_count","alarm_range_outside_count"].some(key=>Number(profile[key])>0); const values=[profile.tag,profile.valid_count,`${profile.missing_count} / ${profile.empty_string_count}`,profile.non_numeric_count,`${profile.positive_infinite_count} / ${profile.negative_infinite_count}`,`${formatStat("minimum",profile.minimum)} / ${formatStat("maximum",profile.maximum)}`,...(hasRanges?[profile.engineering_range_outside_count,profile.normal_range_outside_count,profile.alarm_range_outside_count]:[]),suggestion?suggestion.message:(profile.invalid_count?"提示":(rangeOutside?"范围提示":"正常"))]; values.forEach(value=>{ const cell=document.createElement("td"); cell.textContent=value===null||value===undefined?"—":value; row.append(cell); }); body.append(row); }); table.append(body); issues.append(table);
 }
 
 function addPerformanceCondition() {
@@ -2979,13 +2999,14 @@ el("uploadButton").addEventListener("click", async () => {
 el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   const controller=new AbortController(); let timedOut=false;
+  const previousRegistry=state.registry, previousSelectedTags=new Set(state.selectedModelTags), hadInspection=state.inspection!==null;
   const timeoutId=window.setTimeout(()=>{ timedOut=true; controller.abort(); },30000);
   const progressId=window.setTimeout(()=>setStatus("正在检查数据：读取时间列与候选 Tag，大文件可能需要数十秒。","info"),1500);
   try {
     setStatus("正在检查数据…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
-    const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value}),signal:controller.signal});
+    const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:previousRegistry}),signal:controller.signal});
     ensureInspectionPageReady();
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,emptyTagConfig()])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.trend_default_start); el("trendEnd").value=localTime(data.trend_default_end);

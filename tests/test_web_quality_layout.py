@@ -474,7 +474,10 @@ def test_model_quality_check_is_in_the_model_training_stage() -> None:
     assert 'id="modelQualityResults"' in model_source
     assert model_source.index('id="qualityButton"') < model_source.index('id="trainButton"')
     assert "上传后基础数据检查" in html
-    assert "此处仅展示整体历史数据的时间轴与数值列检查结果" in html
+    assert "此处仅展示整体历史数据的时间轴与原始逐列检查结果" in html
+    assert "column_profiles" in html
+    assert "有效数值" in html
+    assert "状态 / 建议" in html
     assert "已失效" not in html
 
 

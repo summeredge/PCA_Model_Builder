@@ -27,6 +27,88 @@ class QualityReport:
         return not any(issue.severity == "error" for issue in self.issues)
 
 
+def raw_column_profile(
+    series: pd.Series,
+    config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Describe one original input column without changing its values."""
+    config = config or {}
+    numeric = pd.to_numeric(series, errors="coerce")
+    missing = series.isna()
+    empty_strings = series.map(
+        lambda value: isinstance(value, str) and not value.strip()
+    )
+    non_numeric = ~(missing | empty_strings) & numeric.isna()
+    finite_mask = numeric.notna() & np.isfinite(numeric)
+    finite = numeric[finite_mask].astype(float)
+    positive_infinite = numeric.notna() & np.isposinf(numeric)
+    negative_infinite = numeric.notna() & np.isneginf(numeric)
+
+    missing_count = int(missing.sum())
+    empty_string_count = int(empty_strings.sum())
+    non_numeric_count = int(non_numeric.sum())
+    positive_infinite_count = int(positive_infinite.sum())
+    negative_infinite_count = int(negative_infinite.sum())
+    invalid_count = (
+        missing_count
+        + empty_string_count
+        + non_numeric_count
+        + positive_infinite_count
+        + negative_infinite_count
+    )
+    sample_count = int(len(series))
+    valid_count = int(len(finite))
+    suggestion = None
+    if missing_count + empty_string_count == sample_count:
+        suggestion = {
+            "action": "suggest_ignore",
+            "reason": "all_empty",
+            "message": "全空，建议忽略。",
+        }
+    elif valid_count == 0:
+        suggestion = {
+            "action": "suggest_ignore",
+            "reason": "no_finite_numeric_values",
+            "message": "没有任何有限有效数值，建议忽略。",
+        }
+    elif finite.nunique() == 1:
+        suggestion = {
+            "action": "suggest_ignore",
+            "reason": "exact_constant_finite_values",
+            "message": "有限有效数值为精确常量，建议忽略。",
+        }
+
+    profile: dict[str, Any] = {
+        "sample_count": sample_count,
+        "total_count": sample_count,
+        "valid_count": valid_count,
+        "finite_valid_count": valid_count,
+        "missing_count": missing_count,
+        "missing_rate": float(missing.mean()) if sample_count else 0.0,
+        "empty_string_count": empty_string_count,
+        "non_numeric_count": non_numeric_count,
+        "positive_infinite_count": positive_infinite_count,
+        "negative_infinite_count": negative_infinite_count,
+        "non_finite_count": positive_infinite_count + negative_infinite_count,
+        "invalid_count": invalid_count,
+        "invalid_rate": invalid_count / sample_count if sample_count else 0.0,
+        "unique_count": int(finite.nunique()),
+        "finite_unique_count": int(finite.nunique()),
+        "minimum": float(finite.min()) if not finite.empty else None,
+        "maximum": float(finite.max()) if not finite.empty else None,
+        "suggestion": suggestion,
+    }
+    for prefix in ("engineering", "normal", "alarm"):
+        lower = config.get(f"{prefix}_min")
+        upper = config.get(f"{prefix}_max")
+        profile[f"{prefix}_range_outside_count"] = (
+            int(((finite < float(lower)) | (finite > float(upper))).sum())
+            if lower is not None and upper is not None
+            else None
+        )
+    return profile
+
+
 def inspect_data_quality(
     frame: pd.DataFrame,
     timestamp_column: str,

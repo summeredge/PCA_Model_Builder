@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from pca_model_builder.quality import inspect_data_quality
+from pca_model_builder.quality import inspect_data_quality, raw_column_profile
 from pca_model_builder.tag_profile import model_quality_payload, profile_tag
 
 
@@ -329,3 +329,59 @@ def test_tag_profile_separates_missing_non_numeric_and_non_finite_values():
     assert issues["missing_value"].count == 1
     assert issues["non_numeric_value"].count == 1
     assert issues["non_finite_value"].count == 1
+
+
+def test_raw_column_profile_classifies_original_values_without_overlap():
+    profile = raw_column_profile(
+        pd.Series([1.0, None, "", "  ", "BAD", float("inf"), -float("inf"), 2.0])
+    )
+
+    assert profile["total_count"] == 8
+    assert profile["finite_valid_count"] == 2
+    assert profile["missing_count"] == 1
+    assert profile["empty_string_count"] == 2
+    assert profile["non_numeric_count"] == 1
+    assert profile["positive_infinite_count"] == 1
+    assert profile["negative_infinite_count"] == 1
+    assert profile["invalid_count"] == 6
+    assert profile["invalid_rate"] == pytest.approx(0.75)
+    assert profile["finite_unique_count"] == 2
+    assert profile["minimum"] == 1.0
+    assert profile["maximum"] == 2.0
+    assert profile["suggestion"] is None
+    assert profile["finite_valid_count"] + profile["invalid_count"] == profile["total_count"]
+
+
+@pytest.mark.parametrize(
+    ("series", "reason"),
+    [
+        (pd.Series([None, "", " "]), "all_empty"),
+        (pd.Series(["BAD", float("inf"), -float("inf")]), "no_finite_numeric_values"),
+        (pd.Series([7.0, "7", 7.0]), "exact_constant_finite_values"),
+    ],
+)
+def test_raw_column_profile_suggests_ignoring_objectively_unusable_columns(
+    series, reason
+):
+    suggestion = raw_column_profile(series)["suggestion"]
+
+    assert suggestion["action"] == "suggest_ignore"
+    assert suggestion["reason"] == reason
+
+
+def test_raw_column_profile_reports_configured_ranges_without_altering_values():
+    profile = raw_column_profile(
+        pd.Series([-1.0, 0.5, 2.0]),
+        {
+            "engineering_min": 0.0,
+            "engineering_max": 1.0,
+            "normal_min": 0.25,
+            "normal_max": 0.75,
+            "alarm_min": 0.0,
+            "alarm_max": 1.0,
+        },
+    )
+
+    assert profile["engineering_range_outside_count"] == 2
+    assert profile["normal_range_outside_count"] == 2
+    assert profile["alarm_range_outside_count"] == 2
