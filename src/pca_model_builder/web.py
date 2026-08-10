@@ -32,6 +32,9 @@ from .data_session import (
     DataSessionCache,
     DataSessionMetadata,
     DataSessionStageError,
+    TXT_ENCODING,
+    TXT_HEADER_ROW,
+    TXT_SEPARATOR,
     normalize_column_names,
 )
 from .dpca import fit_dpca
@@ -164,9 +167,10 @@ def run_server(
 
 
 def save_upload(filename: str, content: bytes) -> dict[str, Any]:
-    suffix = Path(filename).suffix.lower()
-    if suffix not in {".csv", ".xlsx"}:
-        raise ValueError("当前仅支持 CSV 或 XLSX 文件")
+    suffix = Path(filename).suffix
+    normalized_suffix = suffix.lower()
+    if normalized_suffix not in {".csv", ".xlsx", ".txt"}:
+        raise ValueError("当前仅支持 CSV、XLSX 或 TXT 文件")
     if not content:
         raise ValueError("上传文件为空")
     if len(content) > MAX_REQUEST_BODY_BYTES:
@@ -180,18 +184,18 @@ def save_upload(filename: str, content: bytes) -> dict[str, Any]:
     except Exception as error:
         path.unlink(missing_ok=True)
         DATA_SESSIONS.remove_dataset(file_id)
-        file_type = "CSV" if suffix == ".csv" else "XLSX"
+        file_type = _upload_file_type(normalized_suffix)
         raise ValueError(f"{file_type}读取失败：{error}") from error
     if not columns:
         path.unlink(missing_ok=True)
         DATA_SESSIONS.remove_dataset(file_id)
-        raise ValueError(f"{'CSV' if suffix == '.csv' else 'XLSX'} 不包含列")
+        raise ValueError(f"{_upload_file_type(normalized_suffix)} 不包含列")
     return {
         "file_id": file_id,
         "filename": Path(filename).name,
         "columns": columns,
-        "file_type": suffix[1:],
-        **({"encoding": encoding} if suffix == ".csv" else {}),
+        "file_type": normalized_suffix[1:],
+        **({"encoding": encoding} if normalized_suffix == ".csv" else {}),
         "size_bytes": len(content),
     }
 
@@ -201,6 +205,17 @@ def _read_header(path: Path) -> tuple[str, list[str]]:
         return "", normalize_column_names(
             pd.read_excel(path, nrows=0, sheet_name=0, engine="openpyxl").columns
         )
+    if path.suffix.lower() == ".txt":
+        frame = pd.read_csv(
+            path,
+            nrows=0,
+            encoding=TXT_ENCODING,
+            sep=TXT_SEPARATOR,
+            header=TXT_HEADER_ROW,
+        )
+        if len(frame.columns) < 2:
+            raise ValueError("TXT 格式必须使用 Tab 分隔且首行为表头")
+        return TXT_ENCODING, normalize_column_names(frame.columns)
     last_error: UnicodeDecodeError | None = None
     for encoding in ("utf-8-sig", "gb18030"):
         try:
@@ -210,6 +225,10 @@ def _read_header(path: Path) -> tuple[str, list[str]]:
         except UnicodeDecodeError as error:
             last_error = error
     raise ValueError("CSV 编码无法识别，请转换为 UTF-8 或 GB18030") from last_error
+
+
+def _upload_file_type(suffix: str) -> str:
+    return {".csv": "CSV", ".xlsx": "XLSX", ".txt": "TXT"}[suffix]
 
 
 def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1372,7 +1391,7 @@ def _upload_source(payload: dict[str, Any]) -> tuple[str, Path, str]:
     paths = [
         path
         for path in UPLOADS_DIR.glob(f"{file_id}.*")
-        if path.is_file() and path.suffix.lower() in {".csv", ".xlsx"}
+        if path.is_file() and path.suffix.lower() in {".csv", ".xlsx", ".txt"}
     ]
     if len(paths) != 1:
         DATA_SESSIONS.remove_dataset(file_id)
@@ -1380,6 +1399,8 @@ def _upload_source(payload: dict[str, Any]) -> tuple[str, Path, str]:
     path = paths[0]
     if path.suffix.lower() == ".xlsx":
         return file_id, path, ""
+    if path.suffix.lower() == ".txt":
+        return file_id, path, TXT_ENCODING
     encoding = str(payload.get("encoding", "utf-8-sig"))
     if encoding not in {"utf-8-sig", "gb18030"}:
         raise WebStageError("loading", ValueError("CSV 编码仅支持 UTF-8-SIG 或 GB18030"))
@@ -1412,6 +1433,9 @@ def _load_upload(
             requested_columns,
         )
     except DataSessionStageError as error:
+        if path.suffix.lower() == ".txt":
+            path.unlink(missing_ok=True)
+            DATA_SESSIONS.remove_dataset(file_id)
         raise WebStageError(error.stage, error) from error
 
 
@@ -2501,7 +2525,7 @@ INDEX_HTML = r"""<!doctype html>
     <section class="controls">
       <div class="group">
         <div class="group-title">1. 历史数据</div>
-        <label>CSV / XLSX 文件<input id="fileInput" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
+        <label>CSV / XLSX / TXT 文件<input id="fileInput" type="file" accept=".csv,.xlsx,.txt,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
         <div class="actions"><button id="uploadButton">上传并读取列</button><button id="resetButton" class="secondary">清空</button></div>
         <div class="row">
           <label>时间列<select id="timestampColumn"></select></label>
@@ -2942,7 +2966,7 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
 }
 
 el("uploadButton").addEventListener("click", async () => {
-  const file=el("fileInput").files[0]; if (!file) { setStatus("请选择 CSV 或 XLSX 文件。","warning"); return; }
+  const file=el("fileInput").files[0]; if (!file) { setStatus("请选择 CSV、XLSX 或 TXT 文件。","warning"); return; }
   const button=el("uploadButton"); setBusy(button,true,"上传中…");
   try {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));

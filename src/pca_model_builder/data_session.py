@@ -11,6 +11,10 @@ import pandas as pd
 
 DEFAULT_MAX_CACHE_BYTES = 512 * 1024 * 1024
 _CSV_ENCODINGS = frozenset({"utf-8-sig", "gb18030"})
+TXT_ENCODING = "ascii"
+TXT_SEPARATOR = "\t"
+TXT_HEADER_ROW = 0
+TXT_TIMESTAMP_FORMAT = "%Y/%m/%d %H:%M"
 
 
 def normalize_column_names(columns: Sequence[object]) -> list[str]:
@@ -256,8 +260,21 @@ class DataSessionCache:
                 if usecols is not None:
                     frame.columns = normalize_column_names(frame.columns)
                     return frame.loc[:, list(usecols)]
+            elif path.suffix.lower() == ".txt":
+                if encoding != TXT_ENCODING:
+                    raise ValueError("TXT 编码固定为 ASCII")
+                kwargs = {
+                    "encoding": TXT_ENCODING,
+                    "sep": TXT_SEPARATOR,
+                    "header": TXT_HEADER_ROW,
+                }
+                if usecols is not None:
+                    kwargs["usecols"] = list(usecols)
+                frame = pd.read_csv(path, **kwargs)
+                if len(frame.columns) < 2:
+                    raise ValueError("TXT 格式必须使用 Tab 分隔且首行为表头")
             elif path.suffix.lower() != ".csv":
-                raise ValueError("仅支持 CSV 或 XLSX 文件")
+                raise ValueError("仅支持 CSV、XLSX 或 TXT 文件")
             frame.columns = normalize_column_names(frame.columns)
             return frame
         except Exception as error:
@@ -273,7 +290,14 @@ class DataSessionCache:
             return f"csv:{encoding}"
         if path.suffix.lower() == ".xlsx":
             return "xlsx:sheet=0:header=0"
-        raise DataSessionStageError("loading", ValueError("仅支持 CSV 或 XLSX 文件"))
+        if path.suffix.lower() == ".txt":
+            if encoding != TXT_ENCODING:
+                raise DataSessionStageError("loading", ValueError("TXT 编码固定为 ASCII"))
+            return (
+                "txt:encoding=ascii:separator=tab:header=0:"
+                "timestamp_format=%Y/%m/%d %H:%M"
+            )
+        raise DataSessionStageError("loading", ValueError("仅支持 CSV、XLSX 或 TXT 文件"))
 
     @staticmethod
     def _fingerprint(path: Path) -> FileFingerprint:
@@ -397,7 +421,10 @@ class DataSessionCache:
         try:
             if timestamp_column not in frame.columns:
                 raise ValueError(f"找不到时间列：{timestamp_column}")
-            parsed = pd.to_datetime(frame[timestamp_column], errors="coerce")
+            timestamp_kwargs: dict[str, object] = {"errors": "coerce"}
+            if path.suffix.lower() == ".txt":
+                timestamp_kwargs["format"] = TXT_TIMESTAMP_FORMAT
+            parsed = pd.to_datetime(frame[timestamp_column], **timestamp_kwargs)
             if parsed.isna().any():
                 raise ValueError("时间列包含无法解析的值")
             candidates = []

@@ -10,6 +10,9 @@ import pytest
 from pca_model_builder.data_session import DataSessionCache, DataSessionStageError
 
 
+TXT_FIXTURE = Path(__file__).parent / "fixtures" / "u400ph_desensitized.txt"
+
+
 def _write_csv(path: Path, offset: float = 0.0) -> pd.DataFrame:
     frame = pd.DataFrame(
         {
@@ -36,6 +39,95 @@ def _write_xlsx(path: Path, offset: float = 0.0) -> pd.DataFrame:
     )
     frame.to_excel(path, index=False)
     return frame
+
+
+def _write_txt_fixture(path: Path) -> None:
+    path.write_bytes(TXT_FIXTURE.read_bytes())
+
+
+def test_u400ph_txt_uses_fixed_sample_contract_and_shared_data_session(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "U400PH.txt"
+    _write_txt_fixture(path)
+    cache = DataSessionCache()
+
+    metadata, metadata_hit = cache.get_metadata("txt", path, "ascii", "TIME")
+    full = cache.load_columns("txt", path, "ascii", "TIME", None)
+    subset = cache.load_columns("txt", path, "ascii", "TIME", ["AIC450005.PV"])
+
+    assert not metadata_hit
+    assert metadata.encoding == "ascii"
+    assert metadata.column_names == (
+        "TIME",
+        "AI450006.PV",
+        "AIC450005.PV",
+        "UY400015CAL.P01",
+        "FICQ400001.PV",
+        "AI400014.PV",
+        "FIC420091.PV",
+        "FIC440403.PV",
+        "FIC442403.PV",
+        "FIC413001.PV",
+        "FIC420207.PV",
+        "FIC421002.PV",
+        "AI421004.PV",
+        "UFIA502005.PV",
+        "FIC400002.SV",
+    )
+    assert metadata.numeric_candidate_columns == metadata.column_names[1:]
+    assert metadata.time_start == pd.Timestamp("2026-04-24 12:00")
+    assert metadata.time_end == pd.Timestamp("2026-04-24 12:02")
+    assert metadata.inferred_sample_interval == 1.0
+    assert full.frame.loc[0, "TIME"] == pd.Timestamp("2026-04-24 12:00")
+    assert full.frame.loc[1, "AI450006.PV"] == pytest.approx(0.651416361)
+    assert full.frame.loc[2, "AIC450005.PV"] == pytest.approx(88.10217285)
+    pd.testing.assert_frame_equal(
+        subset.frame,
+        full.frame.loc[:, ["TIME", "AIC450005.PV"]],
+    )
+    assert any(
+        key[1]
+        == "txt:encoding=ascii:separator=tab:header=0:timestamp_format=%Y/%m/%d %H:%M"
+        for key in cache._metadata
+    )
+
+
+def test_txt_contract_rejects_other_delimiters_and_timestamp_formats(
+    tmp_path: Path,
+) -> None:
+    delimiter_path = tmp_path / "comma.txt"
+    timestamp_path = tmp_path / "timestamp.txt"
+    delimiter_path.write_text("TIME,A,B\n2026/4/24 12:00,1,2\n", encoding="ascii")
+    timestamp_path.write_text(
+        "TIME\tA\tB\n2026-04-24 12:00\t1\t2\n", encoding="ascii"
+    )
+    cache = DataSessionCache()
+
+    with pytest.raises(DataSessionStageError, match="Tab 分隔") as delimiter:
+        cache.get_metadata("delimiter", delimiter_path, "ascii", "TIME")
+    with pytest.raises(DataSessionStageError, match="时间列包含无法解析") as timestamp:
+        cache.get_metadata("timestamp", timestamp_path, "ascii", "TIME")
+
+    assert delimiter.value.stage == "loading"
+    assert timestamp.value.stage == "parsing"
+
+
+def test_txt_file_change_invalidates_cached_columns(tmp_path: Path) -> None:
+    path = tmp_path / "U400PH.txt"
+    _write_txt_fixture(path)
+    cache = DataSessionCache()
+    first = cache.load_columns("txt", path, "ascii", "TIME", ["AI450006.PV"])
+
+    changed = path.read_text(encoding="ascii").replace("0.651876032", "1.651876032")
+    path.write_text(changed, encoding="ascii", newline="")
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    reloaded = cache.load_columns("txt", path, "ascii", "TIME", ["AI450006.PV"])
+
+    assert not first.cache_hit
+    assert not reloaded.cache_hit
+    assert reloaded.frame.loc[0, "AI450006.PV"] == pytest.approx(1.651876032)
 
 
 def test_csv_encodings_and_xlsx_share_metadata_and_column_loading(tmp_path: Path) -> None:

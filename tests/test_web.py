@@ -21,6 +21,7 @@ from pca_model_builder.training import build_training_matrix
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TXT_FIXTURE = Path(__file__).parent / "fixtures" / "u400ph_desensitized.txt"
 
 
 def _history_frame() -> pd.DataFrame:
@@ -213,11 +214,77 @@ def test_upload_accepts_xlsx_and_inspects_raw_data_without_preprocessing(
     assert observed[0]["A"].tolist() == source["A"].tolist()
 
 
+def test_upload_accepts_u400ph_txt_and_inspects_raw_data_without_preprocessing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    observed = []
+    original_inspect = web.inspect_data_quality
+
+    def record_inspection(frame, timestamp_column, numeric_columns):
+        observed.append(frame.copy(deep=True))
+        return original_inspect(frame, timestamp_column, numeric_columns)
+
+    monkeypatch.setattr(web, "inspect_data_quality", record_inspection)
+    monkeypatch.setattr(
+        web,
+        "preprocess_window",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+    )
+    uploaded = web.save_upload("U400PH.txt", TXT_FIXTURE.read_bytes())
+    inspected, status = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {"file_id": uploaded["file_id"], "timestamp_column": "TIME"},
+    )
+
+    assert status == 200
+    assert uploaded["file_type"] == "txt"
+    assert "encoding" not in uploaded
+    assert (web.UPLOADS_DIR / f'{uploaded["file_id"]}.txt').is_file()
+    assert inspected["rows"] == 3
+    assert inspected["columns"][:3] == ["TIME", "AI450006.PV", "AIC450005.PV"]
+    assert len(inspected["columns"]) == 15
+    assert observed[0]["TIME"].tolist() == list(
+        pd.to_datetime(["2026-04-24 12:00", "2026-04-24 12:01", "2026-04-24 12:02"])
+    )
+    assert observed[0]["AI450006.PV"].tolist() == pytest.approx(
+        [0.651876032, 0.651416361, 0.652001739]
+    )
+
+
+def test_upload_rejects_invalid_txt_and_removes_partial_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+
+    with pytest.raises(ValueError, match="TXT读取失败：.*Tab 分隔"):
+        web.save_upload("invalid.txt", b"TIME,A,B\n2026/4/24 12:00,1,2\n")
+
+    assert not list(web.UPLOADS_DIR.glob("*.txt"))
+
+
+def test_txt_timestamp_parse_error_removes_invalid_upload(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    uploaded = web.save_upload(
+        "invalid-time.txt",
+        b"TIME\tA\tB\n2026-04-24 12:00\t1\t2\n",
+    )
+
+    rejected, status = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {"file_id": uploaded["file_id"], "timestamp_column": "TIME"},
+    )
+
+    assert status == 400
+    assert rejected == {"error": "时间列包含无法解析的值", "stage": "parsing"}
+    assert not (web.UPLOADS_DIR / f'{uploaded["file_id"]}.txt').exists()
+
+
 def test_upload_rejects_unsupported_files_and_cleans_invalid_xlsx(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
 
-    with pytest.raises(ValueError, match="CSV 或 XLSX"):
-        web.save_upload("history.txt", b"time,A\n2026-01-01,1\n")
+    with pytest.raises(ValueError, match="CSV、XLSX 或 TXT"):
+        web.save_upload("history.json", b"{}")
     with pytest.raises(ValueError, match="XLSX读取失败："):
         web.save_upload("invalid.xlsx", b"not an xlsx")
 
@@ -271,6 +338,8 @@ def test_web_rejects_xlsx_as_csv_encoding_and_keeps_one_upload_control(
     }
     assert web.INDEX_HTML.count('id="fileInput"') == 1
     assert '<option value="xlsx">' not in web.INDEX_HTML
+    assert 'accept=".csv,.xlsx,.txt,' in web.INDEX_HTML
+    assert '<option value="ascii">' not in web.INDEX_HTML
 
 
 def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls():
