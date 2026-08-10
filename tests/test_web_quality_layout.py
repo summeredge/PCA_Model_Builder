@@ -214,6 +214,18 @@ def test_operation_log_is_shared_by_all_workflow_stages() -> None:
     assert 'id="status"' not in html[config_start:candidate_start]
 
 
+def test_final_web_preprocessing_notice_matches_schema5_invalid_row_policy() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert "数据缺失、重复、乱序或采样间隔不一致时训练会停止" not in html
+    for text in (
+        "时间戳重复、乱序或无法满足采样时间轴契约会阻断训练",
+        "缺失、非数字、NaN、Inf 在重采样后删除整行并重新分段",
+        "不插值、不补点、不自动修复异常值",
+    ):
+        assert text in html
+
+
 def test_training_parameters_split_common_and_advanced_fields() -> None:
     html = web_model_results.INDEX_HTML
     config_start = html.index('<div class="group training-configuration">')

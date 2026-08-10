@@ -2597,7 +2597,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="notice">探索模型和正常状态候选模型均不提供根因、因果或控制建议。</div>
       </div>
       <div id="status" class="status info" role="status" aria-live="polite">请先上传 CSV。</div>
-      <div class="help">数据缺失、重复、乱序或采样间隔不一致时训练会停止，不会静默清洗。</div>
+      <div class="help">时间戳重复、乱序或无法满足采样时间轴契约会阻断训练；建模 Tag 或启用状态过滤列中的缺失、非数字、NaN、Inf 在重采样后删除整行并重新分段；不插值、不补点、不自动修复异常值。</div>
     </section>
     <section class="results">
       <div class="tabs" role="tablist">
