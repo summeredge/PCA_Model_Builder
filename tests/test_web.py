@@ -1085,6 +1085,40 @@ def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
     ) in html
 
 
+def test_web_unifies_confirmed_exclusions_and_keeps_raw_suggestions_manual():
+    html = web.INDEX_HTML
+    inspect_source = html.split(
+        'el("inspectButton").addEventListener("click", async () => {', 1
+    )[1].split('el("tagSearch")', 1)[0]
+    basic_source = html.split("function renderBasicInspection(data)", 1)[1].split(
+        "function addPerformanceCondition", 1
+    )[0]
+
+    assert "function setTagExclusion(tag, record)" in html
+    assert "function reconcileExcludedTags()" in html
+    assert 'reason:"manual_exclude"' in html
+    assert 'reason:"constant_in_reference_window"' in html
+    assert "confirmSuggestedExclusion(profile)" in html
+    assert 'previousRole==="exclude"&&config.role==="continuous_input"' in html
+    assert 'confirm.textContent="确认排除"' in basic_source
+    assert "state.inspection.numeric_columns.includes(profile.tag)" in basic_source
+    assert "previousExcludedTags=state.excludedTags" in inspect_source
+    assert "state.excludedTags=previousExcludedTags; reconcileExcludedTags();" in inspect_source
+    assert "state.excludedTags=[]" not in inspect_source
+    assert "constants.forEach(item=>excludeConstantTag(item,false));" in html
+
+
+def test_train_payload_keeps_constant_exclusion_metadata_schema():
+    html = web.INDEX_HTML
+    train_source = html.split("async function trainModel(modelPurpose)", 1)[1].split(
+        'el("trainExploratoryButton")', 1
+    )[0]
+
+    assert 'record.reason==="constant_in_reference_window"' in train_source
+    assert 'state.registry[record.tag]?.role==="exclude"' in train_source
+    assert "excluded_tags:excludedTags" in train_source
+
+
 def test_web_quality_tab_shows_selected_tag_and_trend_axis_uses_payload_limits():
     html = web.INDEX_HTML
 
@@ -2493,7 +2527,7 @@ def test_web_multistate_windows_allow_local_constants_and_use_global_reference(t
     np.testing.assert_allclose(model.mean, expected.dynamic.mean().to_numpy())
     np.testing.assert_allclose(model.scale, expected.dynamic.std(ddof=0).to_numpy())
     with pytest.raises(ValueError, match="并非参考期精确常量"):
-        web.train_payload({**payload, "excluded_tags": [{"tag": "FIXED", "reason": "constant_in_reference_window"}]})
+        web.train_payload({**payload, "tag_configs": {"FIXED": {"role": "exclude"}}, "excluded_tags": [{"tag": "FIXED", "reason": "constant_in_reference_window"}]})
 
 
 def test_web_multistate_windows_reject_global_constant_feature(tmp_path, monkeypatch):

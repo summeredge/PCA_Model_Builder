@@ -85,3 +85,33 @@ Exclude datetime dtypes before numeric-candidate detection and cover equivalent 
 
 ### 元数据
 - Reproducible: yes
+
+## 2026-08-10 - Exclusion metadata schema was broadened without validation
+
+**Scope**
+Project
+
+**Area**
+backend / model package
+
+**Failure**
+A change attempted to persist manual exclusion reasons in `excluded_tags`, causing model-package validation failures.
+
+**Root Cause**
+The existing `excluded_tags` contract was not checked before extending its record shape and reason semantics.
+
+**Correction**
+Keep manual and basic-check reasons in the Web exclusion state; preserve `excluded_tags` as reference-window constant metadata.
+
+**Prevention Rule**
+Before changing data sent to model-package fields, inspect the corresponding schema validator and preserve its exact semantics unless the task explicitly authorizes a schema change.
+
+**Promotion Decision**
+Do not promote.
+
+**Test Decision**
+Regression test updated.
+
+**Related Files**
+- src/pca_model_builder/model_io.py
+- src/pca_model_builder/web.py

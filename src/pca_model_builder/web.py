@@ -1884,6 +1884,8 @@ def _excluded_tag_records(
             raise ValueError("excluded_tags包含无效、重复或未知Tag")
         if tag in selected_tags:
             raise ValueError(f"已排除Tag仍在建模选择中：{tag}")
+        if registry[tag]["role"] != "exclude":
+            raise ValueError(f"{tag}尚未确认排除")
         if item.get("reason") != "constant_in_reference_window":
             raise ValueError(f"{tag}的排除原因无效")
         profile = profile_tag(reference[tag], registry[tag])
@@ -2788,6 +2790,9 @@ function formField(labelText,field,type="text") { const label=document.createEle
 function emptyTagConfig() { return {description:"",unit:"",role:"continuous_input",engineering_min:null,engineering_max:null,normal_min:null,normal_max:null,alarm_min:null,alarm_max:null,comment:""}; }
 function tagConfigPayload() { return state.registry; }
 function qualityFor(tag) { return state.quality?.tags?.find(item=>item.tag===tag)||null; }
+function setTagExclusion(tag, record) { state.registry[tag]={...state.registry[tag],role:"exclude"}; state.selectedModelTags.delete(tag); state.excludedTags=[...state.excludedTags.filter(value=>value.tag!==tag),record]; }
+function reconcileExcludedTags() { const candidates=new Set(state.inspection?.numeric_columns||[]); const existing=new Map(state.excludedTags.map(record=>[record.tag,record])); state.excludedTags=[...candidates].filter(tag=>state.registry[tag]?.role==="exclude").map(tag=>existing.get(tag)||{tag,reason:"manual_exclude"}); }
+function confirmSuggestedExclusion(profile) { if(!state.inspection?.numeric_columns.includes(profile.tag)||!profile.suggestion) return; setTagExclusion(profile.tag,{tag:profile.tag,reason:profile.suggestion.reason}); if(state.selectedTag===profile.tag) selectTag(profile.tag); invalidateQuality(`${profile.tag}已确认排除`); renderBasicInspection(state.inspection); renderTagList(); }
 function renderTagList() {
   if(!state.inspection) return;
   const query=el("tagSearch").value.trim().toLowerCase(); const list=el("tagOptions"); list.replaceChildren();
@@ -2811,8 +2816,8 @@ function selectTag(tag) {
 function optionalNumber(id) { const value=el(id).value.trim(); return value===""?null:Number(value); }
 function saveCurrentTagConfig() {
   if(!state.selectedTag) throw new Error("请先选择Tag。");
-  const tag=state.selectedTag; const config={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:el("tagComment").value.trim(),engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")}; state.registry[tag]=config;
-  if(config.role!=="continuous_input") state.selectedModelTags.delete(tag);
+  const tag=state.selectedTag, previousRole=state.registry[tag]?.role; const config={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:el("tagComment").value.trim(),engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")}; state.registry[tag]=config;
+  if(config.role==="exclude"&&previousRole!=="exclude") setTagExclusion(tag,{tag,reason:"manual_exclude"}); else { if(previousRole==="exclude"&&config.role==="continuous_input") state.selectedModelTags.add(tag); else if(config.role!=="continuous_input") state.selectedModelTags.delete(tag); reconcileExcludedTags(); }
   invalidateQuality("Tag工程配置或角色已修改"); renderTagList();
 }
 function renderModelQualityStatus(status=state.qualityStatus,error=state.qualityError) {
@@ -2925,7 +2930,7 @@ function renderBasicInspection(data) {
   const table=document.createElement("table"); const head=document.createElement("thead"), headRow=document.createElement("tr");
   const headers=["Tag","有效数值","缺失 / 空白","非数字","+Inf / -Inf","最小 / 最大",...(hasRanges?["工程越界","正常越界","报警越界"]:[]),"状态 / 建议"];
   headers.forEach(value=>{ const cell=document.createElement("th"); cell.textContent=value; headRow.append(cell); }); head.append(headRow); table.append(head);
-  const body=document.createElement("tbody"); profiles.forEach(profile=>{ const row=document.createElement("tr"); const suggestion=profile.suggestion; const rangeOutside=["engineering_range_outside_count","normal_range_outside_count","alarm_range_outside_count"].some(key=>Number(profile[key])>0); const values=[profile.tag,profile.valid_count,`${profile.missing_count} / ${profile.empty_string_count}`,profile.non_numeric_count,`${profile.positive_infinite_count} / ${profile.negative_infinite_count}`,`${formatStat("minimum",profile.minimum)} / ${formatStat("maximum",profile.maximum)}`,...(hasRanges?[profile.engineering_range_outside_count,profile.normal_range_outside_count,profile.alarm_range_outside_count]:[]),suggestion?suggestion.message:(profile.invalid_count?"提示":(rangeOutside?"范围提示":"正常"))]; values.forEach(value=>{ const cell=document.createElement("td"); cell.textContent=value===null||value===undefined?"—":value; row.append(cell); }); body.append(row); }); table.append(body); issues.append(table);
+  const body=document.createElement("tbody"); profiles.forEach(profile=>{ const row=document.createElement("tr"); const suggestion=profile.suggestion; const rangeOutside=["engineering_range_outside_count","normal_range_outside_count","alarm_range_outside_count"].some(key=>Number(profile[key])>0); const values=[profile.tag,profile.valid_count,`${profile.missing_count} / ${profile.empty_string_count}`,profile.non_numeric_count,`${profile.positive_infinite_count} / ${profile.negative_infinite_count}`,`${formatStat("minimum",profile.minimum)} / ${formatStat("maximum",profile.maximum)}`,...(hasRanges?[profile.engineering_range_outside_count,profile.normal_range_outside_count,profile.alarm_range_outside_count]:[])]; values.forEach(value=>{ const cell=document.createElement("td"); cell.textContent=value===null||value===undefined?"—":value; row.append(cell); }); const suggestionCell=document.createElement("td"); suggestionCell.textContent=suggestion?suggestion.message:(profile.invalid_count?"提示":(rangeOutside?"范围提示":"正常")); if(suggestion&&state.inspection.numeric_columns.includes(profile.tag)) { const confirm=document.createElement("button"); confirm.type="button"; confirm.className="secondary"; confirm.textContent="确认排除"; confirm.disabled=state.registry[profile.tag]?.role==="exclude"; confirm.addEventListener("click",()=>confirmSuggestedExclusion(profile)); suggestionCell.append(document.createElement("br"),confirm); } row.append(suggestionCell); body.append(row); }); table.append(body); issues.append(table);
 }
 
 function addPerformanceCondition() {
@@ -3007,14 +3012,14 @@ el("uploadButton").addEventListener("click", async () => {
 el("inspectButton").addEventListener("click", async () => {
   const button=el("inspectButton"); setBusy(button,true,"检查中…");
   const controller=new AbortController(); let timedOut=false;
-  const previousRegistry=state.registry, previousSelectedTags=new Set(state.selectedModelTags), hadInspection=state.inspection!==null;
+  const previousRegistry=state.registry, previousSelectedTags=new Set(state.selectedModelTags), previousExcludedTags=state.excludedTags, hadInspection=state.inspection!==null;
   const timeoutId=window.setTimeout(()=>{ timedOut=true; controller.abort(); },30000);
   const progressId=window.setTimeout(()=>setStatus("正在检查数据：读取时间列与候选 Tag，大文件可能需要数十秒。","info"),1500);
   try {
     setStatus("正在检查数据…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:previousRegistry}),signal:controller.signal});
     ensureInspectionPageReady();
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=[]; state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.trend_default_start); el("trendEnd").value=localTime(data.trend_default_end);
@@ -3055,7 +3060,7 @@ el("applyConfigButton").addEventListener("click",()=>{
   const overwrites=Object.entries(state.importPreview.provided_configs).some(([tag,config])=>Object.entries(config).some(([key,value])=>value!==null&&value!==""&&state.registry[tag]?.[key]!==null&&state.registry[tag]?.[key]!==""));
   if(overwrites&&!confirm("导入内容将覆盖页面已有的非空字段，是否继续？")) return;
   Object.entries(state.importPreview.provided_configs).forEach(([tag,config])=>{ Object.entries(config).forEach(([key,value])=>{ if(value!==null&&value!=="") state.registry[tag][key]=value; }); });
-  for(const tag of [...state.selectedModelTags]) { if((state.registry[tag]?.role||"continuous_input")!=="continuous_input") state.selectedModelTags.delete(tag); }
+  for(const tag of [...state.selectedModelTags]) { if((state.registry[tag]?.role||"continuous_input")!=="continuous_input") state.selectedModelTags.delete(tag); } reconcileExcludedTags();
   state.importPreview=null; el("applyConfigButton").disabled=true; if(state.selectedTag) selectTag(state.selectedTag); invalidateQuality("XLSX工程配置已应用"); renderTagList();
 });
 el("exportConfigButton").addEventListener("click",async()=>{
@@ -3181,7 +3186,7 @@ async function trainModel(modelPurpose) {
   const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   try {
     const components=el("components").value.trim();
-    const payload={...commonPayload(),tags,excluded_tags:state.excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
+    const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
@@ -3269,15 +3274,15 @@ function renderQuality(data) {
   if(!container.children.length) { container.className="empty"; container.textContent="所选Tag和时间轴没有需要处理的问题。"; }
   renderCurrentTagQuality();
 }
-function excludeConstantTag(item) {
+function excludeConstantTag(item, refresh=true) {
   const issue=item.issues.find(value=>value.code==="constant_tag"); if(!issue) return;
-  state.registry[item.tag].role="exclude"; state.excludedTags=state.excludedTags.filter(record=>record.tag!==item.tag); state.excludedTags.push({tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value});
+  setTagExclusion(item.tag,{tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value});
   state.selectedModelTags.delete(item.tag);
-  if(state.selectedTag===item.tag) selectTag(item.tag); invalidateQuality(`${item.tag}已标记为排除`); renderTagList();
+  if(refresh) { if(state.selectedTag===item.tag) selectTag(item.tag); invalidateQuality(`${item.tag}已标记为排除`); renderTagList(); }
 }
 el("excludeAllConstants").addEventListener("click",()=>{
   const constants=state.quality?.tags.filter(item=>item.issues.some(issue=>issue.code==="constant_tag"))||[]; if(!constants.length) return;
-  constants.forEach(item=>{ const issue=item.issues.find(value=>value.code==="constant_tag"); state.registry[item.tag].role="exclude"; state.excludedTags=state.excludedTags.filter(record=>record.tag!==item.tag); state.excludedTags.push({tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value}); state.selectedModelTags.delete(item.tag); });
+  constants.forEach(item=>excludeConstantTag(item,false));
   invalidateQuality(`已标记排除 ${constants.length} 个精确常量Tag`); renderTagList();
 });
 function renderTrend(data) {
