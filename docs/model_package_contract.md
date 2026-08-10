@@ -17,7 +17,7 @@
 
 冻结包为 `normal_state / frozen`，仍只包含 `manifest.json` 和 `arrays.npz`。它只能由验证证据完整、工程师结论为 `passed` 的 `normal_state / validated` 包单向生成；冻结包不能训练、重新验证或回退状态。通用保存接口不得写入 frozen。
 
-当前 frozen 包结构和上述生命周期语义不变。本 PR 不修改代码中的 `SCHEMA_VERSION`；schema 5 仅是后续首次写入一阶滤波语义时的目标契约，尚未实现。
+当前 frozen 包结构和上述生命周期语义不变。本 PR 不修改代码中的 `SCHEMA_VERSION`；schema 5 仅是后续新预处理语义的目标契约，尚未实现。
 
 ## 冻结模型字段
 
@@ -48,11 +48,25 @@
 
 字段顺序属于计算契约，不允许部署端重新推断。
 
-## 一阶滤波的 schema 演进边界
+## 预处理 schema 演进边界
 
-首次写入 `first_order` 或 `first_order_alpha` 时，新写模型包必须升级到新的模型 schema（目标 schema 5）；不得静默扩展 schema 4 的计算语义。
+任何会改变动态特征生成结果、且旧 schema 没有字段可区分的预处理语义变化，都必须通过新 schema 区分；不得静默扩展 schema 4 的计算语义。该版本边界覆盖以下动态特征生成链：
 
-- schema 4 继续按其原有预处理字段和历史默认值解释；缺失 `filter_method` 的旧包仍按 `trailing_mean` 读取。
-- 新 schema 必须显式记录 `filter_method`；当其为 `first_order` 时，必须记录 `first_order_alpha`。
-- 模型加载不得用当前软件默认值重新解释任何旧包。
-- schema 5 的具体写入/读取实现、`SCHEMA_VERSION` 变更和包格式变更属于后续 PR，不属于本 PR。
+```text
+重采样
+→ 数值转换
+→ 删除无效整行
+→ 删除后重新分段
+→ 滤波
+→ Lag
+```
+
+schema 4 必须继续按其原有预处理字段、历史默认值和历史计算语义读取及回放；缺失 `filter_method` 的旧包仍按 `trailing_mean` 读取。即使在新版程序中加载，schema 4 模型也不得被无效行删除、重新分段、新模型 `none` 默认值或一阶滤波等新规则重新解释。
+
+后续首次写入“无效行先删除并重新分段”的新模型时，必须升级到目标 schema 5，不能等到启用 `first_order` 才升级。目标 schema 5 同时承载下列新预处理语义：
+
+- 无效行删除与删除后重新分段；
+- 新建模型默认 `none`；
+- 显式 `filter_method`；当其为 `first_order` 时必需的 `first_order_alpha`。
+
+模型加载不得用当前软件默认值重新解释任何旧包。schema 5 的具体写入/读取实现、`SCHEMA_VERSION` 变更和包格式变更属于后续 PR，不属于本 PR。

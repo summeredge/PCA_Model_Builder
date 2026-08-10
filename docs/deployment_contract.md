@@ -34,13 +34,17 @@ frozen 表示工程冻结，不表示已部署、在线监控或完整模型治�
 
 当前 `.pcadeploy` 使用 deployment schema 1。部署清单固定记录部署 schema、模型标识及版本、创建时间、冻结来源及 SHA-256、数组 SHA-256、输入 Tag 顺序、预处理固定参数、动态特征顺序、主元数、T²/SPE 控制限、状态规则和贡献规则。预处理必须固定采样间隔、重采样方法及原点、因果滤波、物理缺口阈值、Lag 范围/步长和状态过滤条件；部署端不得重新推断这些参数。
 
-本 PR 不修改代码中的 `DEPLOYMENT_SCHEMA_VERSION`。deployment schema 2 只是后续首次支持一阶滤波时的目标契约，尚未实现。
+本 PR 不修改代码中的 `DEPLOYMENT_SCHEMA_VERSION`。deployment schema 2 只是后续新预处理语义的目标契约，尚未实现。
 
-## 一阶滤波的部署 schema 演进边界
+## 预处理 deployment schema 演进边界
 
-首次支持一阶滤波的部署包必须升级到目标 deployment schema 2；不得向 deployment schema 1 静默加入 `first_order_alpha`，也不得以当前软件默认值重新解释 schema 1。
+任何会改变动态特征生成结果、且 deployment schema 1 没有字段可区分的预处理语义变化，都必须通过新的 deployment schema 区分；不得静默扩展 deployment schema 1。该版本边界覆盖重采样、数值转换、删除无效整行、删除后重新分段、滤波和 Lag。
 
-deployment schema 2 必须固定记录：
+deployment schema 1 必须继续按其历史预处理字段和历史计算语义读取及回放；即使在新版程序中加载，也不得被无效行删除、重新分段、新模型 `none` 默认值或一阶滤波等新规则重新解释。
+
+后续首次导出采用“无效行先删除并重新分段”新模型预处理语义的部署包时，必须升级到目标 deployment schema 2，不能等到启用 `first_order` 才升级，也不得向 deployment schema 1 静默加入 `first_order_alpha`。
+
+deployment schema 2 必须与目标 schema 5 的预处理语义同步，并固定记录：
 
 - `filter_method`；
 - 当 `filter_method` 为 `first_order` 时必需的 `first_order_alpha`；
@@ -49,7 +53,7 @@ deployment schema 2 必须固定记录：
 
 对同一完整输入，frozen → deployment → replay 的预处理语义必须完全一致：数值转换后删除无法参与计算的无效整行，按删除后的时间轴重新识别连续段，滤波和 Lag 不跨段；每个连续段的一阶滤波从首个有效样本初始化，且不得以任意固定分钟数截断历史后重新初始化。
 
-schema 2 的具体写入/读取实现和 `DEPLOYMENT_SCHEMA_VERSION` 变更属于后续 PR，不属于本 PR。
+deployment schema 2 的具体写入/读取实现和 `DEPLOYMENT_SCHEMA_VERSION` 变更属于后续 PR，不属于本 PR。
 
 ## 部署一致性
 
