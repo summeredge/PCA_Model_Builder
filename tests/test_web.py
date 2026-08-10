@@ -204,7 +204,8 @@ def test_upload_accepts_xlsx_and_inspects_raw_data_without_preprocessing(
     )
 
     assert status == 200
-    assert uploaded["encoding"] == "xlsx"
+    assert uploaded["file_type"] == "xlsx"
+    assert "encoding" not in uploaded
     assert (web.UPLOADS_DIR / f'{uploaded["file_id"]}.xlsx').is_file()
     assert inspected["rows"] == len(source)
     assert inspected["columns"] == ["time", "A", "B"]
@@ -221,6 +222,55 @@ def test_upload_rejects_unsupported_files_and_cleans_invalid_xlsx(tmp_path, monk
         web.save_upload("invalid.xlsx", b"not an xlsx")
 
     assert not list(web.UPLOADS_DIR.glob("*.xlsx"))
+
+
+def test_web_xlsx_headers_are_strings_and_ignore_csv_encoding(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    source = pd.DataFrame(
+        [
+            ["2026-01-01 00:00", 1.0, 2.0],
+            ["2026-01-01 00:05", 3.0, 4.0],
+            ["2026-01-01 00:10", 5.0, 6.0],
+        ],
+        columns=[1001, 2002, 3003],
+    )
+    uploaded = web.save_upload("numeric.xlsx", _xlsx_bytes(source))
+    inspected, status = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "1001",
+            "encoding": "gb18030",
+        },
+    )
+
+    assert status == 200
+    assert uploaded["columns"] == ["1001", "2002", "3003"]
+    assert inspected["columns"] == ["1001", "2002", "3003"]
+    assert inspected["numeric_columns"] == ["2002", "3003"]
+
+
+def test_web_rejects_xlsx_as_csv_encoding_and_keeps_one_upload_control(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    uploaded = web.save_upload(
+        "history.csv", b"time,A,B\n2026-01-01 00:00,1,2\n2026-01-01 00:05,3,4\n2026-01-01 00:10,5,6\n"
+    )
+    rejected, status = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {"file_id": uploaded["file_id"], "timestamp_column": "time", "encoding": "xlsx"},
+    )
+
+    assert status == 400
+    assert rejected == {
+        "error": "CSV 编码仅支持 UTF-8-SIG 或 GB18030",
+        "stage": "loading",
+    }
+    assert web.INDEX_HTML.count('id="fileInput"') == 1
+    assert '<option value="xlsx">' not in web.INDEX_HTML
 
 
 def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls():

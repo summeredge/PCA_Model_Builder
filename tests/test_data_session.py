@@ -67,6 +67,58 @@ def test_csv_encodings_and_xlsx_share_metadata_and_column_loading(tmp_path: Path
     pd.testing.assert_frame_equal(csv.frame, gb.frame, check_dtype=False)
 
 
+def test_csv_and_xlsx_stringify_headers_and_exclude_boolean_candidates(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "numeric-header.csv"
+    xlsx_path = tmp_path / "numeric-header.xlsx"
+    source = pd.DataFrame(
+        [
+            ["2026-01-01 00:00", 1.0, 10.0, True],
+            ["2026-01-01 00:05", 2.0, 20.0, False],
+            ["2026-01-01 00:10", 3.0, 30.0, True],
+        ],
+        columns=[1001, 2002, 3003, "enabled"],
+    )
+    csv_source = source.copy()
+    csv_source.columns = [str(column) for column in source.columns]
+    csv_source.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    source.to_excel(xlsx_path, index=False)
+    cache = DataSessionCache()
+
+    csv_metadata, _ = cache.get_metadata("csv", csv_path, "utf-8-sig", "1001")
+    xlsx_metadata, _ = cache.get_metadata("xlsx", xlsx_path, "xlsx", "1001")
+    csv = cache.load_columns("csv", csv_path, "utf-8-sig", "1001", ["3003", "2002"])
+    xlsx = cache.load_columns("xlsx", xlsx_path, "xlsx", "1001", ["3003", "2002"])
+
+    assert csv_metadata.column_names == ("1001", "2002", "3003", "enabled")
+    assert csv_metadata.column_names == xlsx_metadata.column_names
+    assert csv_metadata.numeric_candidate_columns == ("2002", "3003")
+    assert csv_metadata.numeric_candidate_columns == xlsx_metadata.numeric_candidate_columns
+    assert list(csv.frame.columns) == ["1001", "3003", "2002"]
+    pd.testing.assert_frame_equal(csv.frame, xlsx.frame, check_dtype=False)
+
+
+def test_stringified_duplicate_xlsx_headers_and_csv_xlsx_encoding_are_explicit(
+    tmp_path: Path,
+) -> None:
+    duplicate_path = tmp_path / "duplicate.xlsx"
+    csv_path = tmp_path / "history.csv"
+    pd.DataFrame([["2026-01-01", 1]], columns=[1001, "1001"]).to_excel(
+        duplicate_path, index=False
+    )
+    _write_csv(csv_path)
+    cache = DataSessionCache()
+
+    with pytest.raises(DataSessionStageError, match="列名字符串化后重复：1001") as duplicate:
+        cache.get_metadata("duplicate", duplicate_path, "xlsx", "1001")
+    with pytest.raises(DataSessionStageError, match="CSV 编码仅支持 UTF-8-SIG 或 GB18030") as invalid:
+        cache.get_metadata("csv", csv_path, "xlsx", "time")
+
+    assert duplicate.value.stage == "loading"
+    assert invalid.value.stage == "loading"
+
+
 def test_xlsx_timestamp_errors_are_parsing_failures(tmp_path: Path) -> None:
     missing_path = tmp_path / "missing.xlsx"
     invalid_path = tmp_path / "invalid.xlsx"

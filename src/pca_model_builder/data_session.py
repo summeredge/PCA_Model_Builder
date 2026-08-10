@@ -10,6 +10,15 @@ import pandas as pd
 
 
 DEFAULT_MAX_CACHE_BYTES = 512 * 1024 * 1024
+_CSV_ENCODINGS = frozenset({"utf-8-sig", "gb18030"})
+
+
+def normalize_column_names(columns: Sequence[object]) -> list[str]:
+    names = [str(column) for column in columns]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"列名字符串化后重复：{', '.join(duplicates)}")
+    return names
 
 
 @dataclass(frozen=True)
@@ -240,19 +249,27 @@ class DataSessionCache:
                 kwargs: dict[str, object] = {"encoding": encoding}
                 if usecols is not None:
                     kwargs["usecols"] = list(usecols)
-                return pd.read_csv(path, **kwargs)
+                frame = pd.read_csv(path, **kwargs)
             if path.suffix.lower() == ".xlsx":
                 kwargs = {"sheet_name": 0, "engine": "openpyxl"}
+                frame = pd.read_excel(path, **kwargs)
                 if usecols is not None:
-                    kwargs["usecols"] = list(usecols)
-                return pd.read_excel(path, **kwargs)
-            raise ValueError("仅支持 CSV 或 XLSX 文件")
+                    frame.columns = normalize_column_names(frame.columns)
+                    return frame.loc[:, list(usecols)]
+            elif path.suffix.lower() != ".csv":
+                raise ValueError("仅支持 CSV 或 XLSX 文件")
+            frame.columns = normalize_column_names(frame.columns)
+            return frame
         except Exception as error:
             raise DataSessionStageError("loading", error) from error
 
     @staticmethod
     def _read_key(path: Path, encoding: str) -> str:
         if path.suffix.lower() == ".csv":
+            if encoding not in _CSV_ENCODINGS:
+                raise DataSessionStageError(
+                    "loading", ValueError("CSV 编码仅支持 UTF-8-SIG 或 GB18030")
+                )
             return f"csv:{encoding}"
         if path.suffix.lower() == ".xlsx":
             return "xlsx:sheet=0:header=0"
@@ -388,6 +405,8 @@ class DataSessionCache:
                 if column == timestamp_column:
                     continue
                 if pd.api.types.is_datetime64_any_dtype(frame[column]):
+                    continue
+                if pd.api.types.is_bool_dtype(frame[column]):
                     continue
                 original_non_null = int(frame[column].notna().sum())
                 if original_non_null == 0:

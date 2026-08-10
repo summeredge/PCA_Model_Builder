@@ -32,6 +32,7 @@ from .data_session import (
     DataSessionCache,
     DataSessionMetadata,
     DataSessionStageError,
+    normalize_column_names,
 )
 from .dpca import fit_dpca
 from .model_io import (
@@ -189,20 +190,23 @@ def save_upload(filename: str, content: bytes) -> dict[str, Any]:
         "file_id": file_id,
         "filename": Path(filename).name,
         "columns": columns,
-        "encoding": encoding,
+        "file_type": suffix[1:],
+        **({"encoding": encoding} if suffix == ".csv" else {}),
         "size_bytes": len(content),
     }
 
 
 def _read_header(path: Path) -> tuple[str, list[str]]:
     if path.suffix.lower() == ".xlsx":
-        return "xlsx", list(
+        return "", normalize_column_names(
             pd.read_excel(path, nrows=0, sheet_name=0, engine="openpyxl").columns
         )
     last_error: UnicodeDecodeError | None = None
     for encoding in ("utf-8-sig", "gb18030"):
         try:
-            return encoding, list(pd.read_csv(path, nrows=0, encoding=encoding).columns)
+            return encoding, normalize_column_names(
+                pd.read_csv(path, nrows=0, encoding=encoding).columns
+            )
         except UnicodeDecodeError as error:
             last_error = error
     raise ValueError("CSV 编码无法识别，请转换为 UTF-8 或 GB18030") from last_error
@@ -1374,9 +1378,11 @@ def _upload_source(payload: dict[str, Any]) -> tuple[str, Path, str]:
         DATA_SESSIONS.remove_dataset(file_id)
         raise WebStageError("loading", ValueError("上传文件不存在，请重新上传"))
     path = paths[0]
-    encoding = "xlsx" if path.suffix.lower() == ".xlsx" else str(
-        payload.get("encoding", "utf-8-sig")
-    )
+    if path.suffix.lower() == ".xlsx":
+        return file_id, path, ""
+    encoding = str(payload.get("encoding", "utf-8-sig"))
+    if encoding not in {"utf-8-sig", "gb18030"}:
+        raise WebStageError("loading", ValueError("CSV 编码仅支持 UTF-8-SIG 或 GB18030"))
     return file_id, path, encoding
 
 
@@ -2499,7 +2505,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="actions"><button id="uploadButton">上传并读取列</button><button id="resetButton" class="secondary">清空</button></div>
         <div class="row">
           <label>时间列<select id="timestampColumn"></select></label>
-          <label>编码<select id="encoding"><option value="utf-8-sig">UTF-8</option><option value="gb18030">GB18030</option><option value="xlsx">XLSX（首个工作表）</option></select></label>
+          <label>CSV 编码<select id="encoding"><option value="utf-8-sig">UTF-8-SIG</option><option value="gb18030">GB18030</option></select></label>
         </div>
         <button id="inspectButton" class="secondary" disabled>检查时间轴与数值列</button>
       </div>
@@ -2942,7 +2948,7 @@ el("uploadButton").addEventListener("click", async () => {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`文件信息：${data.filename}（${Math.ceil(data.size_bytes/1024)} KB），已读取 ${data.columns.length} 个列名。请选择时间列，下一步：正在检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
