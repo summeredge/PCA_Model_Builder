@@ -321,6 +321,8 @@ def _resample_segment_data(
     frame: pd.DataFrame,
     method: str,
     sample_interval_minutes: int,
+    *,
+    numeric_errors: str = "raise",
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Return one resampled segment and the actual source count per bucket."""
     _validate_index(frame.index)
@@ -335,10 +337,9 @@ def _resample_segment_data(
         raise ValueError(
             "target sampling interval must not be shorter than source interval"
         )
-    # Aggregation needs numeric inputs, but a bad value in an unrelated upload
-    # column must not reject a training row.  The formal input-validity decision
-    # is made after resampling for model Tags and active state-filter columns.
-    numeric = frame.apply(pd.to_numeric, errors="coerce")
+    if numeric_errors not in {"raise", "coerce"}:
+        raise ValueError("resampling numeric conversion mode is invalid")
+    numeric = frame.apply(pd.to_numeric, errors=numeric_errors)
     rule = f"{sample_interval_minutes}min"
     kwargs = {"origin": "epoch", "closed": "right", "label": "right"}
     resampler = numeric.resample(rule, **kwargs)
@@ -714,7 +715,10 @@ def _preprocess_window_schema5(
     for segment_id in raw_segments.unique():
         segment = raw.loc[raw_segments.eq(segment_id)]
         resampled, counts = _resample_segment_data(
-            segment, config.resampling_method, config.sample_interval_minutes
+            segment,
+            config.resampling_method,
+            config.sample_interval_minutes,
+            numeric_errors="coerce",
         )
         partial_loss = 0
         if resampling_window is not None and config.resampling_method != "none":

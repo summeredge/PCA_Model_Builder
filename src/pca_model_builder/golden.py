@@ -264,6 +264,7 @@ def _deployment_scores(raw: pd.DataFrame, manifest: Mapping[str, Any], deploymen
         validate_quality=False,
         include_intermediates=True,
         allow_empty_state_filter=True,
+        preprocessing_semantics="legacy",
     )
     dynamic = processed.dynamic.loc[
         processed.dynamic.index.to_series().between(start, end, inclusive="both"),

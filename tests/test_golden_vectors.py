@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.cli import main
+from pca_model_builder import golden
 from pca_model_builder.golden import _manifest_sha256, verify_golden_vectors
 
 
@@ -29,8 +30,16 @@ def _refresh_member_sha(bundle: Path, name: str) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
-def test_static_golden_bundle_passes_repeatedly_and_remains_unchanged():
+def test_static_golden_bundle_passes_repeatedly_and_remains_unchanged(monkeypatch):
     before = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in _BUNDLE.iterdir()}
+    actual_preprocess = golden.preprocess_window
+    semantics: list[str] = []
+
+    def spy_preprocess(*args, **kwargs):
+        semantics.append(kwargs["preprocessing_semantics"])
+        return actual_preprocess(*args, **kwargs)
+
+    monkeypatch.setattr(golden, "preprocess_window", spy_preprocess)
 
     first = verify_golden_vectors(_BUNDLE)
     second = verify_golden_vectors(_BUNDLE)
@@ -39,6 +48,7 @@ def test_static_golden_bundle_passes_repeatedly_and_remains_unchanged():
     assert first["acceptance_status"] == "passed"
     assert first["replay_row_count"] == 14
     assert first["score_valid_count"] == 10
+    assert semantics == ["legacy", "legacy"]
     assert {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in _BUNDLE.iterdir()} == before
 
 

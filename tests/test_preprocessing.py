@@ -140,6 +140,40 @@ def test_resampling_none_preserves_timestamps_and_upsampling_is_rejected():
         resample_segment(frame, "mean", 1)
 
 
+@pytest.mark.parametrize("method", ["mean", "median", "last"])
+def test_legacy_resampling_rejects_non_numeric_model_input(method):
+    index = pd.to_datetime(["2026-01-01 00:01", "2026-01-01 00:04", "2026-01-01 00:06"])
+    frame = pd.DataFrame({"A": [1.0, "bad", 2.0]}, index=index)
+    config = PreprocessingConfig(
+        5, 0, 0, 5, resampling_method=method, filter_method="none"
+    )
+
+    with pytest.raises(ValueError):
+        preprocess_window(
+            frame,
+            ["A"],
+            config,
+            validate_quality=False,
+            preprocessing_semantics="legacy",
+        )
+
+
+def test_schema5_resampling_coerces_then_drops_invalid_bucket():
+    index = pd.to_datetime(["2026-01-01 00:01", "2026-01-01 00:02", "2026-01-01 00:06"])
+    result = preprocess_window(
+        pd.DataFrame({"A": [1.0, "bad", 2.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 0, 0, 5, resampling_method="last", filter_method="none"),
+        validate_quality=False,
+        include_intermediates=True,
+        preprocessing_semantics="schema5",
+    )
+
+    assert result.summary.input_invalid_loss == 1
+    assert result.dynamic.index.tolist() == [pd.Timestamp("2026-01-01 00:10")]
+    assert pd.Timestamp("2026-01-01 00:05") not in result.filtered.index
+
+
 def test_resampling_anchor_is_independent_of_batch_start():
     index = pd.to_datetime(
         ["2026-01-01 00:01", "2026-01-01 00:04", "2026-01-01 00:06"]

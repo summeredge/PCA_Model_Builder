@@ -8,6 +8,7 @@ import pytest
 
 from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.model_io import freeze_validated_model_package, save_model_package
+from pca_model_builder import replay as replay_module
 from pca_model_builder.replay import replay_frozen_model
 
 
@@ -109,7 +110,7 @@ def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailin
     return frozen
 
 
-def test_frozen_replay_is_deterministic_and_preserves_unscorable_axis(tmp_path):
+def test_frozen_replay_is_deterministic_and_preserves_unscorable_axis(tmp_path, monkeypatch):
     rng = np.random.default_rng(912)
     index = pd.date_range("2026-01-01", periods=120, freq="5min")
     values = pd.DataFrame(rng.normal(size=(len(index), 3)), index=index, columns=["A", "B", "C"])
@@ -118,6 +119,14 @@ def test_frozen_replay_is_deterministic_and_preserves_unscorable_axis(tmp_path):
     replay_input = values.copy()
     replay_input.loc[index[94], "A"] = np.nan
     replay_input.loc[index[95], "B"] = np.inf
+    actual_preprocess = replay_module.preprocess_window
+    semantics: list[str] = []
+
+    def spy_preprocess(*args, **kwargs):
+        semantics.append(kwargs["preprocessing_semantics"])
+        return actual_preprocess(*args, **kwargs)
+
+    monkeypatch.setattr(replay_module, "preprocess_window", spy_preprocess)
 
     first = replay_frozen_model(frozen, replay_input, index[90], index[-1])
     second = replay_frozen_model(frozen, replay_input, index[90], index[-1])
@@ -128,6 +137,7 @@ def test_frozen_replay_is_deterministic_and_preserves_unscorable_axis(tmp_path):
     assert first.scores.loc[index[94], "invalid_reason"] == "missing_input"
     assert first.scores.loc[index[95], "invalid_reason"] == "non_finite_input"
     assert not first.scores.loc[index[94], "score_valid"]
+    assert semantics == ["legacy", "legacy"]
     assert set(first.scores["overall_status"]).issuperset({"not_scored", "normal"})
     assert first.summary["source_frozen_sha256"] == hashlib.sha256(before).hexdigest()
 

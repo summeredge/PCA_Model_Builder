@@ -115,3 +115,33 @@ Regression test updated.
 **Related Files**
 - src/pca_model_builder/model_io.py
 - src/pca_model_builder/web.py
+
+## 2026-08-10 - Schema-specific resampling conversion was shared
+
+**Scope**
+Project
+
+**Area**
+preprocessing / model compatibility
+
+**Failure**
+A schema 5 coercive resampling change also changed schema 1–4 behavior through a shared helper.
+
+**Root Cause**
+The helper's conversion policy was not made an explicit schema-semantic input.
+
+**Correction**
+Split legacy strict conversion from schema 5 coercion and add legacy replay/deployment regression coverage.
+
+**Prevention Rule**
+When preprocessing semantics differ by schema, pass the schema semantic explicitly to every shared transformation helper and historical caller.
+
+**Promotion Decision**
+Do not promote.
+
+**Test Decision**
+Regression tests added.
+
+**Related Files**
+- src/pca_model_builder/preprocessing.py
+- src/pca_model_builder/golden.py
