@@ -319,6 +319,7 @@ def test_original_missing_value_is_not_counted_as_filter_warmup():
         ["A"],
         PreprocessingConfig(5, 10, 0, 5, filter_method="trailing_mean"),
         validate_quality=False,
+        preprocessing_semantics="legacy",
     )
 
     assert result.summary.filter_warmup_loss == 0
@@ -360,6 +361,7 @@ def test_lag_context_invalid_is_not_structural_warmup_after_empty_bin():
             gap_threshold_minutes=10,
         ),
         validate_quality=False,
+        preprocessing_semantics="legacy",
     )
 
     assert result.summary.empty_bin_count == 1
@@ -419,6 +421,7 @@ def test_filter_context_invalid_is_not_lag_context_without_lag():
         ["A"],
         PreprocessingConfig(5, 10, 0, 5),
         validate_quality=False,
+        preprocessing_semantics="legacy",
     )
 
     assert result.summary.input_invalid_loss == 1
@@ -434,6 +437,7 @@ def test_invalid_lag_history_is_context_invalid_not_structural_warmup():
         ["A"],
         PreprocessingConfig(5, 0, 5, 5, filter_method="none"),
         validate_quality=False,
+        preprocessing_semantics="legacy",
     )
 
     assert result.summary.input_invalid_loss == 1
@@ -452,6 +456,7 @@ def test_filter_context_invalid_history_is_lag_context_not_warmup():
         ["A"],
         PreprocessingConfig(5, 10, 5, 5),
         validate_quality=False,
+        preprocessing_semantics="legacy",
     )
 
     assert result.filter_context_invalid_mask.loc[index[1]]
@@ -468,6 +473,7 @@ def test_missing_input_without_filter_or_lag_has_no_context_losses():
         PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
         validate_quality=False,
         include_intermediates=True,
+        preprocessing_semantics="legacy",
     )
 
     assert result.summary.input_invalid_loss == 1
@@ -510,6 +516,7 @@ def test_empty_resampling_bins_do_not_reduce_aggregation_reduction():
         ),
         validate_quality=False,
         include_intermediates=True,
+        preprocessing_semantics="legacy",
     )
 
     empty_timestamp = pd.Timestamp("2026-01-01 00:15")
@@ -544,3 +551,49 @@ def test_resampling_reduction_excludes_partial_bucket_rows():
     assert result.summary.resampling_row_reduction == 48
     assert result.summary.partial_resampling_bin_loss == 1
     assert result.summary.partial_resampling_row_loss == 1
+
+
+def test_schema5_drops_invalid_model_rows_before_filter_and_lag_context():
+    index = pd.date_range("2026-01-01", periods=6, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [1.0, 2.0, "bad", 100.0, 100.0, 100.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 10, 5, 5),
+        include_intermediates=True,
+    )
+
+    assert result.summary.input_invalid_loss == 1
+    assert index[2] not in result.filtered.index
+    assert result.post_invalid_segment_ids.loc[index[1]] != result.post_invalid_segment_ids.loc[index[3]]
+    assert result.dynamic.index.tolist() == [index[5]]
+    assert result.dynamic.loc[index[5], "A__lag_005min"] == 100.0
+
+
+def test_schema5_invalid_state_and_unused_columns_have_separate_effects():
+    index = pd.date_range("2026-01-01", periods=4, freq="5min")
+    config = PreprocessingConfig(
+        5, 0, 0, 5, filter_method="none", state_filters=(StateFilter("STATE", minimum=1),)
+    )
+    frame = pd.DataFrame(
+        {"A": [1.0, 2.0, 3.0, 4.0], "STATE": [1.0, np.inf, 1.0, 1.0], "REFERENCE": ["bad"] * 4},
+        index=index,
+    )
+    result = preprocess_window(
+        frame, ["A"], config, preserve_columns=["REFERENCE"], include_intermediates=True
+    )
+
+    assert result.summary.input_invalid_loss == 1
+    assert result.dynamic.index.tolist() == [index[0], index[2], index[3]]
+    assert index[1] not in result.state_filtered.index
+
+
+def test_schema5_resegments_after_deletion_using_gap_tolerance():
+    index = pd.date_range("2026-01-01", periods=4, freq="5min")
+    frame = pd.DataFrame({"A": [1.0, 2.0, np.nan, 4.0]}, index=index)
+    strict = preprocess_window(frame, ["A"], PreprocessingConfig(5, 0, 5, 5, filter_method="none"))
+    tolerant = preprocess_window(
+        frame, ["A"], PreprocessingConfig(5, 0, 5, 5, filter_method="none", gap_threshold_minutes=10)
+    )
+
+    assert strict.dynamic.index.tolist() == [index[1]]
+    assert tolerant.dynamic.index.tolist() == [index[1], index[3]]

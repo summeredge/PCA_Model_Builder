@@ -2994,6 +2994,7 @@ def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeyp
     history = _history_frame()
     uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
     trained = web.train_payload({"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "normal_start": "2026-01-01T00:00:00", "normal_end": "2026-01-01T07:55:00", "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 0, "lag_step_minutes": 5, "model_name": "candidate"})
+    _rewrite_model_schema(tmp_path / "runs" / trained["run_id"] / "model.pcamodel", 4)
     windows = [{"id":"normal", "type":"normal_validation", "start":"2026-01-01T08:00:00", "end":"2026-01-01T09:55:00", "enabled":True, "comment":""}, {"id":"abnormal", "type":"known_abnormal", "start":"2026-01-01T10:50:00", "end":"2026-01-01T14:55:00", "enabled":True, "comment":""}]
     web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
     web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved"})
@@ -3107,6 +3108,7 @@ def test_web_freeze_rolls_back_after_second_final_replace_failure(tmp_path, monk
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads"); monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
     history = _history_frame(); uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
     trained = web.train_payload({"file_id":uploaded["file_id"],"timestamp_column":"time","tags":["A","B","C"],"normal_start":"2026-01-01T00:00:00","normal_end":"2026-01-01T07:55:00","sample_interval_minutes":5,"smoothing_window_minutes":10,"max_lag_minutes":0,"lag_step_minutes":5,"model_name":"candidate"})
+    _rewrite_model_schema(tmp_path / "runs" / trained["run_id"] / "model.pcamodel", 4)
     windows=[{"id":"normal","type":"normal_validation","start":"2026-01-01T08:00:00","end":"2026-01-01T09:55:00","enabled":True,"comment":""},{"id":"abnormal","type":"known_abnormal","start":"2026-01-01T10:50:00","end":"2026-01-01T14:55:00","enabled":True,"comment":""}]
     web.validate_payload({"run_id":trained["run_id"],"file_id":uploaded["file_id"],"timestamp_column":"time","validation_windows":windows}); web.validation_decision_payload({"run_id":trained["run_id"],"decision":"passed","comment":"approved"})
     real_replace = web.os.replace
@@ -3138,3 +3140,13 @@ def _chart_scores(count: int) -> pd.DataFrame:
         },
         index=pd.date_range("2026-01-01", periods=count, freq="5min"),
     )
+
+
+def _rewrite_model_schema(path: Path, schema_version: int) -> None:
+    with zipfile.ZipFile(path) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays = package.read("arrays.npz")
+    manifest["schema_version"] = schema_version
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)

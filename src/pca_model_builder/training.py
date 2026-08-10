@@ -119,9 +119,12 @@ def build_training_matrix(
             segment = indexed.loc[segment_ids.eq(segment_id)]
             resampled_mask = resampled_segment_ids.eq(segment_id)
             resampled_segment = processed.resampled.loc[resampled_mask]
-            filtered_segment = processed.filtered.loc[resampled_mask]
+            retained_index = processed.post_invalid_segment_ids.index[
+                resampled_segment_ids.reindex(processed.post_invalid_segment_ids.index).eq(segment_id)
+            ]
+            filtered_segment = processed.filtered.loc[retained_index]
             state_segment = processed.state_filtered.loc[
-                processed.state_filtered.index.intersection(resampled_segment.index)
+                processed.state_filtered.index.intersection(retained_index)
             ]
             dynamic_segment = dynamic.loc[
                 dynamic.index.intersection(resampled_segment.index)
@@ -183,7 +186,7 @@ def build_training_matrix(
                         .sum()
                     ),
                     "input_invalid_loss": int(
-                        processed.input_invalid_mask.reindex(state_segment.index)
+                        processed.input_invalid_mask.reindex(resampled_segment.index)
                         .fillna(False)
                         .sum()
                     ),

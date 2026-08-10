@@ -308,7 +308,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
             validation_context_start(pd.Timestamp(window["start"]), config).isoformat(),
             window["end"],
         )
-        if config.resampling_method == "none":
+        if config.resampling_method == "none" and manifest["schema_version"] <= 4:
             _require_clean_data(
                 context,
                 args.timestamp,
@@ -326,6 +326,7 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         training_windows,
         validation_windows,
         tag_configs,
+        preprocessing_semantics=("legacy" if manifest["schema_version"] <= 4 else "schema5"),
     )
     scores = validation_result["scores"]
     contribution_records = validation_result["contributions"]

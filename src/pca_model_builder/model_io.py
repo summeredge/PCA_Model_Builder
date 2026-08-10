@@ -29,7 +29,7 @@ from .validation import has_complete_validation_evidence, has_verified_validatio
 from .windows import normalize_training_windows
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEPLOYMENT_SCHEMA_VERSION = 1
 _ARRAY_NAMES = {
     "mean",
@@ -160,12 +160,16 @@ def save_model_package(
     validation_summary: dict[str, Any] | None = None,
     engineer_decision: dict[str, Any] | None = None,
     source_candidate_package: dict[str, str] | None = None,
+    *,
+    _schema_version: int = SCHEMA_VERSION,
 ) -> None:
     validate_new_model_semantics(model_purpose, model_status)
+    if _schema_version not in {4, SCHEMA_VERSION}:
+        raise ValueError("new model package schema version is invalid")
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": _schema_version,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model_purpose": model_purpose,
         "model_status": model_status,
@@ -255,6 +259,7 @@ def copy_validated_model_package(
             "filename": source.name,
             "sha256": source_sha256,
         },
+        _schema_version=manifest["schema_version"],
     )
 
 
@@ -289,8 +294,8 @@ def freeze_validated_model_package(
         json.JSONDecodeError,
     ) as error:
         raise ValueError("validated model package cannot be read") from error
-    if source_schema_version != SCHEMA_VERSION:
-        raise ValueError("only schema 4 validated models can be frozen")
+    if source_schema_version not in {4, SCHEMA_VERSION}:
+        raise ValueError("only schema 4 or schema 5 validated models can be frozen")
     model, manifest = load_model_package(source)
     if (
         manifest["model_purpose"] != "normal_state"
@@ -315,7 +320,7 @@ def freeze_validated_model_package(
     destination.parent.mkdir(parents=True, exist_ok=True)
     frozen_manifest = {
         **manifest,
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": source_schema_version,
         "model_status": "frozen",
         "model_id": model_id,
         "model_version": model_version,
@@ -355,6 +360,8 @@ def export_deployment_package(
         or manifest["model_status"] != "frozen"
     ):
         raise ValueError("only normal_state/frozen models can be exported")
+    if manifest["schema_version"] >= 5:
+        raise ValueError("schema 5 models require deployment schema 2 and cannot be exported")
     arrays = _arrays_bytes(model)
     preprocessing = {
         field: manifest["config"][field] for field in _DEPLOYMENT_PREPROCESSING_FIELDS
@@ -468,7 +475,7 @@ def _validate_manifest_structure(manifest: object) -> None:
     missing = sorted(fields - set(manifest))
     if missing:
         raise ValueError(f"model package manifest is missing: {', '.join(missing)}")
-    if schema_version not in {1, 2, 3, SCHEMA_VERSION}:
+    if schema_version not in {1, 2, 3, 4, SCHEMA_VERSION}:
         raise ValueError("unsupported model package schema version")
     normalize_model_semantics(manifest)
     if (

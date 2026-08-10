@@ -125,6 +125,8 @@ def build_validation_matrix(
     validation_start: pd.Timestamp,
     validation_end: pd.Timestamp,
     engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
+    *,
+    preprocessing_semantics: str = "schema5",
 ) -> pd.DataFrame:
     """Build validation features with pre-window history, then score from start."""
     scoring, _ = _preprocess_validation_window(
@@ -134,6 +136,7 @@ def build_validation_matrix(
         validation_start,
         validation_end,
         engineering_ranges,
+        preprocessing_semantics=preprocessing_semantics,
     )
     return scoring
 
@@ -145,6 +148,8 @@ def _preprocess_validation_window(
     validation_start: pd.Timestamp,
     validation_end: pd.Timestamp,
     engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
+    *,
+    preprocessing_semantics: str = "schema5",
 ) -> tuple[pd.DataFrame, PreprocessingResult]:
     context_start = validation_context_start(validation_start, config)
     context = indexed_frame.loc[context_start:validation_end]
@@ -152,7 +157,11 @@ def _preprocess_validation_window(
         # Validation deliberately includes pre-start context so the requested
         # first score can use a complete bucket, filter history, and Lag history.
         processed = preprocess_window(
-            context, tag_columns, config, engineering_ranges
+            context,
+            tag_columns,
+            config,
+            engineering_ranges,
+            preprocessing_semantics=preprocessing_semantics,
         )
     except PreprocessingQualityError as error:
         details = "; ".join(
@@ -178,6 +187,8 @@ def validate_model_windows(
     training_windows: Sequence[TimeWindow],
     validation_windows: object,
     tag_configs: Mapping[str, Mapping[str, Any]] | None = None,
+    *,
+    preprocessing_semantics: str = "schema5",
 ) -> dict[str, Any]:
     """Score enabled typed validation windows without fitting or changing a model."""
     windows = normalize_validation_windows(validation_windows)
@@ -211,6 +222,7 @@ def validate_model_windows(
             start,
             end,
             configured_ranges,
+            preprocessing_semantics=preprocessing_semantics,
         )
         scores = model.score(dynamic)
         events = contribution_event_records(

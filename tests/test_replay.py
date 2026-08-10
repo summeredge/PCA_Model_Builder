@@ -1,5 +1,6 @@
 import hashlib
 import json
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -98,6 +99,13 @@ def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailin
         source_candidate_package={"identifier": "unit", "filename": candidate.name, "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest()},
     )
     freeze_validated_model_package(validated, frozen, model_id="unit", model_version=1, frozen_by="engineer")
+    with zipfile.ZipFile(frozen) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays = package.read("arrays.npz")
+    manifest["schema_version"] = 4
+    with zipfile.ZipFile(frozen, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)
     return frozen
 
 

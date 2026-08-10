@@ -87,6 +87,16 @@ def _validated_package(path, frame):
     )
 
 
+def _rewrite_schema(path, schema_version):
+    with zipfile.ZipFile(path) as package:
+        manifest = json.loads(package.read("manifest.json"))
+        arrays = package.read("arrays.npz")
+    manifest["schema_version"] = schema_version
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr("manifest.json", json.dumps(manifest))
+        package.writestr("arrays.npz", arrays)
+
+
 def test_model_package_round_trip_uses_json_and_npz(tmp_path):
     rng = np.random.default_rng(9)
     frame = pd.DataFrame(
@@ -108,7 +118,7 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
         assert set(package.namelist()) == {"manifest.json", "arrays.npz"}
         assert "validation_status" not in json.loads(package.read("manifest.json"))
     pd.testing.assert_frame_equal(model.score(frame), loaded.score(frame))
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
     assert manifest["model_purpose"] == "normal_state"
     assert manifest["model_status"] == "candidate"
     assert "validation_status" not in manifest
@@ -160,7 +170,7 @@ def test_schema_v3_training_window_totals_are_optional_and_round_trip(
     )
     model, manifest = load_model_package(path)
 
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
     assert manifest["config"]["preprocessing_summary"] == summaries
     assert manifest["config"].get("training_window_totals") == (
         config.get("training_window_totals")
@@ -297,6 +307,7 @@ def test_freeze_and_deployment_preserve_fixed_scoring_contract(tmp_path):
     _validated_package(validated, frame)
     source_before = validated.read_bytes()
     freeze_validated_model_package(validated, frozen, model_id="unit.model-1", model_version=2, frozen_by="engineer", comment="frozen")
+    _rewrite_schema(frozen, 4)
     frozen_model, frozen_manifest = load_model_package(frozen)
     assert validated.read_bytes() == source_before
     assert frozen_manifest["model_status"] == "frozen"
@@ -313,6 +324,16 @@ def test_freeze_and_deployment_preserve_fixed_scoring_contract(tmp_path):
     np.testing.assert_allclose(actual.t2, expected.t2)
     np.testing.assert_allclose(actual.spe, expected.spe)
     assert actual.overall_status == expected.overall_status
+
+
+def test_schema5_frozen_model_cannot_use_deployment_schema1(tmp_path):
+    frame = pd.DataFrame(np.random.default_rng(47).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
+    validated, frozen = tmp_path / "validated.pcamodel", tmp_path / "frozen.pcamodel"
+    _validated_package(validated, frame)
+    freeze_validated_model_package(validated, frozen, model_id="unit", model_version=1, frozen_by="engineer")
+
+    with pytest.raises(ValueError, match="deployment schema 2"):
+        export_deployment_package(frozen, tmp_path / "unit.pcadeploy")
 
 
 @pytest.mark.parametrize("status", ["candidate", "draft"])
@@ -354,7 +375,7 @@ def test_freeze_rejects_legacy_validated_package_before_normalization(tmp_path, 
     manifest["schema_version"] = schema_version
     with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as package:
         package.writestr("manifest.json", json.dumps(manifest)); package.writestr("arrays.npz", arrays)
-    with pytest.raises(ValueError, match="schema 4"):
+    with pytest.raises(ValueError, match="schema 5"):
         freeze_validated_model_package(source, tmp_path / "frozen.pcamodel", model_id="unit", model_version=1, frozen_by="engineer")
 
 
@@ -372,6 +393,7 @@ def test_deployment_validates_actual_explained_variance_ratio(tmp_path, mutate, 
     validated, frozen, deployment = tmp_path / "validated.pcamodel", tmp_path / "frozen.pcamodel", tmp_path / "unit.pcadeploy"
     _validated_package(validated, frame)
     freeze_validated_model_package(validated, frozen, model_id="unit", model_version=1, frozen_by="engineer")
+    _rewrite_schema(frozen, 4)
     export_deployment_package(frozen, deployment)
     with zipfile.ZipFile(deployment) as package:
         manifest = json.loads(package.read("deployment_manifest.json"))

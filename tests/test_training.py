@@ -255,9 +255,6 @@ def test_training_reports_global_near_constant_feature_without_window_blocking()
 @pytest.mark.parametrize(
     ("mutate", "code"),
     [
-        (lambda frame: frame.__setitem__("A", [1.0] * 60 + [None] + [2.0] * 59), "missing_value"),
-        (lambda frame: frame.__setitem__("A", [1.0] * 60 + ["bad"] + [2.0] * 59), "non_numeric_value"),
-        (lambda frame: frame.__setitem__("A", [1.0] * 60 + [float("inf")] + [2.0] * 59), "non_finite_value"),
         (lambda frame: frame.__setitem__("A", [1.0] * 60 + [1000.0] + [2.0] * 59), "engineering_range"),
         (lambda frame: frame.__setitem__("time", list(frame.time.iloc[:60]) + [frame.time.iloc[61]] + list(frame.time.iloc[61:])), "duplicate_timestamp"),
         (lambda frame: frame.__setitem__("time", list(frame.time.iloc[:60]) + [frame.time.iloc[60] + pd.Timedelta(minutes=2)] + list(frame.time.iloc[61:])), "irregular_sampling"),
@@ -308,6 +305,25 @@ def test_training_resamples_each_window_and_records_preprocessing_summary():
     assert summary["empty_bins"] == 0
     assert summary["filter_warmup_loss"] == 0
     assert summary["effective_samples"] == 12
+
+
+@pytest.mark.parametrize("invalid", [None, "bad", float("inf"), float("-inf")])
+def test_training_drops_invalid_model_rows_and_records_loss(invalid):
+    frame = _frame(20)
+    frame.loc[10, "A"] = invalid
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+        _windows((frame.time.iloc[0], frame.time.iloc[-1], True)),
+        validate_dynamic=False,
+    )
+
+    summary = result.window_summaries[0]
+    assert summary["input_invalid_loss"] == 1
+    assert frame.time.iloc[10] not in result.dynamic.index
+    assert summary["resampled_samples"] == summary["empty_bins"] + summary["input_invalid_loss"] + summary["state_filter_input_rows"]
 
 
 def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():

@@ -7,7 +7,7 @@
 - `manifest.json`
 - `arrays.npz`
 
-不包含原始过程数据，不使用 pickle。Schema 1–3 仅用于读取兼容；当前新写入模型包使用 schema 4。
+不包含原始过程数据，不使用 pickle。Schema 1–4 仅用于读取兼容；当前新写入模型包使用 schema 5。
 
 当前可写入：
 
@@ -17,7 +17,7 @@
 
 冻结包为 `normal_state / frozen`，仍只包含 `manifest.json` 和 `arrays.npz`。它只能由验证证据完整、工程师结论为 `passed` 的 `normal_state / validated` 包单向生成；冻结包不能训练、重新验证或回退状态。通用保存接口不得写入 frozen。
 
-当前 frozen 包结构和上述生命周期语义不变。本 PR 不修改代码中的 `SCHEMA_VERSION`；schema 5 仅是后续新预处理语义的目标契约，尚未实现。
+当前 frozen 包结构和上述生命周期语义不变。schema 5 是首个采用“无效行删除后重新分段”预处理语义的可写入模型包；schema 1–4 继续使用历史预处理语义。
 
 ## 冻结模型字段
 
@@ -63,10 +63,10 @@
 
 schema 4 必须继续按其原有预处理字段、历史默认值和历史计算语义读取及回放；缺失 `filter_method` 的旧包仍按 `trailing_mean` 读取。即使在新版程序中加载，schema 4 模型也不得被无效行删除、重新分段、新模型 `none` 默认值或一阶滤波等新规则重新解释。
 
-后续首次写入“无效行先删除并重新分段”的新模型时，必须升级到目标 schema 5，不能等到启用 `first_order` 才升级。目标 schema 5 同时承载下列新预处理语义：
+首次写入“无效行先删除并重新分段”的新模型已升级至 schema 5，不能等到启用 `first_order` 才升级。schema 5 承载下列新预处理语义：
 
 - 无效行删除与删除后重新分段；
 - 新建模型默认 `none`；
 - 显式 `filter_method`；当其为 `first_order` 时必需的 `first_order_alpha`。
 
-模型加载不得用当前软件默认值重新解释任何旧包。schema 5 的具体写入/读取实现、`SCHEMA_VERSION` 变更和包格式变更属于后续 PR，不属于本 PR。
+模型加载不得用当前软件默认值重新解释任何旧包。schema 5 当前写入与读取实现仅覆盖无效行删除与删除后重新分段；`first_order` 及其字段、完整 schema 5 冻结回放和 deployment schema 2 仍属于后续 PR。

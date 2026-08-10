@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .model_io import SCHEMA_VERSION, load_model_package
+from .model_io import load_model_package
 from .preprocessing import (
     PreprocessingConfig,
     PreprocessingResult,
@@ -47,7 +47,7 @@ def replay_frozen_model(
     source_sha256 = hashlib.sha256(before).hexdigest()
     model, manifest = load_model_package(source)
     if (
-        manifest.get("schema_version") != SCHEMA_VERSION
+        manifest.get("schema_version") != 4
         or manifest.get("model_purpose") != "normal_state"
         or manifest.get("model_status") != "frozen"
     ):
@@ -74,6 +74,7 @@ def replay_frozen_model(
         validate_quality=False,
         include_intermediates=True,
         allow_empty_state_filter=True,
+        preprocessing_semantics="legacy",
     )
     if list(processed.dynamic.columns) != list(model.feature_names):
         raise ValueError("frozen model dynamic feature order does not match preprocessing")

@@ -192,7 +192,9 @@ def test_stage_rows_are_display_limited_without_changing_statistics(monkeypatch)
     for stage in ("raw", "resampled", "filtered"):
         rows = result["stage_rows"][stage]
         assert len(rows) <= 12
-        assert result["stage_counts"][stage]["analysis_rows"] == 40
+        assert result["stage_counts"][stage]["analysis_rows"] == (
+            39 if stage == "filtered" else 40
+        )
         assert result["stage_counts"][stage]["display_rows"] == len(rows)
         assert rows[0]["timestamp"] == index[0].isoformat()
         assert rows[-1]["timestamp"] == index[-1].isoformat()

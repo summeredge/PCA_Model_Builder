@@ -1267,7 +1267,7 @@ def _validate_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
             validation_context_start(pd.Timestamp(window["start"]), config).isoformat(),
             window["end"],
         )
-        if config.resampling_method == "none":
+        if config.resampling_method == "none" and manifest["schema_version"] <= 4:
             with _web_stage("quality_check"):
                 _require_clean_data(
                     context,
@@ -1287,6 +1287,7 @@ def _validate_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
             training_windows,
             validation_windows,
             tag_configs,
+            preprocessing_semantics=("legacy" if manifest["schema_version"] <= 4 else "schema5"),
         )
         scores = validation_result["scores"]
         focus_timestamp = _focus_timestamp(
@@ -1607,6 +1608,9 @@ def _freeze_deployment_payload_locked(payload: dict[str, Any], run_id: str) -> d
         raise ValueError("当前运行尚未生成已验证模型")
     if frozen_path.exists() or deployment_path.exists():
         raise ValueError("冻结或部署模型包已存在，拒绝覆盖")
+    _, validated_manifest = load_model_package(validated_path)
+    if validated_manifest.get("schema_version") >= 5:
+        raise ValueError("schema 5模型需等待deployment schema 2，当前不能导出部署包")
 
     temporary_frozen = run_dir / f".frozen-{uuid.uuid4().hex}.pcamodel"
     temporary_deployment = run_dir / f".deployment-{uuid.uuid4().hex}.pcadeploy"

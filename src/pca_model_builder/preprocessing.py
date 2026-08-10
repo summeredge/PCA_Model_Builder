@@ -170,6 +170,7 @@ class PreprocessingResult:
     dynamic: pd.DataFrame
     segment_ids: pd.Series
     raw_segment_ids: pd.Series
+    post_invalid_segment_ids: pd.Series
     summary: PreprocessingSummary
     empty_bin_mask: pd.Series
     filter_warmup_mask: pd.Series
@@ -334,7 +335,10 @@ def _resample_segment_data(
         raise ValueError(
             "target sampling interval must not be shorter than source interval"
         )
-    numeric = frame.apply(pd.to_numeric, errors="raise")
+    # Aggregation needs numeric inputs, but a bad value in an unrelated upload
+    # column must not reject a training row.  The formal input-validity decision
+    # is made after resampling for model Tags and active state-filter columns.
+    numeric = frame.apply(pd.to_numeric, errors="coerce")
     rule = f"{sample_interval_minutes}min"
     kwargs = {"origin": "epoch", "closed": "right", "label": "right"}
     resampler = numeric.resample(rule, **kwargs)
@@ -421,8 +425,51 @@ def preprocess_window(
     preserve_columns: Sequence[str] = (),
     resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
     allow_empty_state_filter: bool = False,
+    preprocessing_semantics: str = "schema5",
 ) -> PreprocessingResult:
     """Execute the single causal preprocessing contract for one independent window."""
+    if preprocessing_semantics == "schema5":
+        return _preprocess_window_schema5(
+            frame,
+            tag_columns,
+            config,
+            engineering_ranges,
+            validate_quality=validate_quality,
+            include_intermediates=include_intermediates,
+            include_variability=include_variability,
+            preserve_columns=preserve_columns,
+            resampling_window=resampling_window,
+            allow_empty_state_filter=allow_empty_state_filter,
+        )
+    if preprocessing_semantics != "legacy":
+        raise ValueError("unsupported preprocessing semantics")
+    return _preprocess_window_legacy(
+        frame,
+        tag_columns,
+        config,
+        engineering_ranges,
+        validate_quality=validate_quality,
+        include_intermediates=include_intermediates,
+        include_variability=include_variability,
+        preserve_columns=preserve_columns,
+        resampling_window=resampling_window,
+        allow_empty_state_filter=allow_empty_state_filter,
+    )
+
+
+def _preprocess_window_legacy(
+    frame: pd.DataFrame,
+    tag_columns: Sequence[str],
+    config: PreprocessingConfig,
+    engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
+    *,
+    validate_quality: bool = True,
+    include_intermediates: bool = False,
+    include_variability: bool = False,
+    preserve_columns: Sequence[str] = (),
+    resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+    allow_empty_state_filter: bool = False,
+) -> PreprocessingResult:
     _validate_index(frame.index)
     required = [
         *tag_columns,
@@ -615,6 +662,7 @@ def preprocess_window(
         dynamic=dynamic,
         segment_ids=resampled_segments,
         raw_segment_ids=raw_segments,
+        post_invalid_segment_ids=resampled_segments.reindex(state_filtered.index),
         summary=summary,
         empty_bin_mask=empty_bin_mask,
         filter_warmup_mask=warmup_mask,
@@ -631,6 +679,216 @@ def preprocess_window(
         filtered=filtered if include_intermediates else None,
         state_filtered=state_filtered if include_intermediates else None,
     )
+
+
+def _preprocess_window_schema5(
+    frame: pd.DataFrame,
+    tag_columns: Sequence[str],
+    config: PreprocessingConfig,
+    engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
+    *,
+    validate_quality: bool = True,
+    include_intermediates: bool = False,
+    include_variability: bool = False,
+    preserve_columns: Sequence[str] = (),
+    resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+    allow_empty_state_filter: bool = False,
+) -> PreprocessingResult:
+    """Schema 5: discard invalid resampled inputs before segment-local filtering."""
+    _validate_index(frame.index)
+    state_columns = [item.column for item in config.state_filters]
+    required = list(dict.fromkeys([*tag_columns, *state_columns, *preserve_columns]))
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(f"missing tag columns: {', '.join(missing)}")
+    raw = frame.loc[:, required].copy()
+    raw_segments, source_interval, gap_ranges = segment_raw_data(raw.index, config)
+
+    resampled_parts: list[pd.DataFrame] = []
+    segment_parts: list[pd.Series] = []
+    empty_parts: list[pd.Series] = []
+    partial_bin_loss_by_segment: dict[int, int] = {}
+    partial_row_loss_by_segment: dict[int, int] = {}
+    source_rows_in_complete_bins = 0
+    non_empty_resampled_bins = 0
+    for segment_id in raw_segments.unique():
+        segment = raw.loc[raw_segments.eq(segment_id)]
+        resampled, counts = _resample_segment_data(
+            segment, config.resampling_method, config.sample_interval_minutes
+        )
+        partial_loss = 0
+        if resampling_window is not None and config.resampling_method != "none":
+            start, end = resampling_window
+            interval = pd.Timedelta(minutes=config.sample_interval_minutes)
+            complete = (resampled.index - interval >= start) & (resampled.index <= end)
+            partial_loss = int((~complete).sum())
+            partial_row_loss_by_segment[int(segment_id)] = int(counts.loc[~complete].sum())
+            resampled, counts = resampled.loc[complete], counts.loc[complete]
+        else:
+            partial_row_loss_by_segment[int(segment_id)] = 0
+        partial_bin_loss_by_segment[int(segment_id)] = partial_loss
+        if config.resampling_method != "none":
+            source_rows_in_complete_bins += int(counts.sum())
+            non_empty_resampled_bins += int(counts.gt(0).sum())
+        resampled_parts.append(resampled)
+        segment_parts.append(pd.Series(segment_id, index=resampled.index))
+        empty_parts.append(counts.eq(0))
+
+    resampled = pd.concat(resampled_parts).sort_index() if resampled_parts else raw.iloc[0:0]
+    resampled_segments = pd.concat(segment_parts).reindex(resampled.index).astype(int)
+    empty_bin_mask = pd.concat(empty_parts).reindex(resampled.index).astype(bool)
+    if resampled.index.has_duplicates:
+        raise ValueError("resampling produced duplicate timestamps across segments")
+    if not resampled.empty and validate_quality:
+        report = inspect_data_quality(
+            resampled.reset_index(names="__timestamp__"),
+            "__timestamp__",
+            tag_columns,
+            engineering_ranges=engineering_ranges,
+            expected_interval_minutes=config.sample_interval_minutes,
+            include_variability=include_variability,
+        )
+        if any(
+            issue.severity == "error"
+            and issue.code not in {"missing_value", "non_numeric_value", "non_finite_value"}
+            for issue in report.issues
+        ):
+            raise PreprocessingQualityError(report)
+
+    numeric_resampled = resampled.apply(pd.to_numeric, errors="coerce")
+    input_columns = [*tag_columns, *state_columns]
+    input_valid = pd.Series(
+        np.isfinite(numeric_resampled.loc[:, input_columns].to_numpy(dtype=float)).all(axis=1),
+        index=resampled.index,
+    )
+    # Empty buckets are a distinct resampling loss, never an input-invalid loss.
+    input_invalid_mask = ~empty_bin_mask & ~input_valid
+    usable = input_valid & ~empty_bin_mask
+    usable_frame = numeric_resampled.loc[usable]
+    if len(resampled) != int(empty_bin_mask.sum()) + int(input_invalid_mask.sum()) + len(usable_frame):
+        raise ValueError("resampled preprocessing losses do not close")
+    usable_raw_segments = resampled_segments.loc[usable]
+    post_invalid_segments = _resegment_remaining(
+        usable_frame.index, usable_raw_segments, config
+    )
+
+    window_rows = filter_window_rows(config)
+    filtered = (
+        usable_frame.groupby(post_invalid_segments, sort=False).transform(
+            lambda group: filter_segment(group, config.filter_method, window_rows)
+        )
+        if not usable_frame.empty
+        else usable_frame.copy()
+    )
+    structural_filter_warmup = filter_warmup_mask(
+        filtered.index, post_invalid_segments, config.filter_method, window_rows
+    )
+    state_filter_input_rows = len(filtered)
+    state_filtered = apply_state_filters(
+        filtered, config.state_filters, allow_empty=allow_empty_state_filter
+    )
+    state_filter_output_rows = len(state_filtered)
+    final_segments = _resegment_remaining(
+        state_filtered.index,
+        post_invalid_segments.reindex(state_filtered.index),
+        config,
+    )
+    final_filter_structural = structural_filter_warmup.reindex(
+        state_filtered.index, fill_value=False
+    )
+    filtered_is_valid = pd.Series(
+        np.isfinite(filtered.loc[:, tag_columns].to_numpy(dtype=float)).all(axis=1),
+        index=filtered.index,
+    ).reindex(state_filtered.index, fill_value=False)
+    warmup_mask = final_filter_structural
+    filter_context_invalid_mask = ~warmup_mask & ~filtered_is_valid
+    eligible_for_lag = ~(warmup_mask | filter_context_invalid_mask)
+    lag_features = _lag_feature_frame(state_filtered, tag_columns, config, final_segments)
+    lag_warmup_mask = _lag_warmup_mask(
+        state_filtered.index, final_segments, config, ~eligible_for_lag
+    )
+    feature_is_valid = pd.Series(
+        np.isfinite(lag_features.to_numpy(dtype=float)).all(axis=1), index=lag_features.index
+    )
+    lag_context_invalid_mask = (
+        ~feature_is_valid & eligible_for_lag & ~lag_warmup_mask & (config.max_lag_minutes > 0)
+    )
+    dynamic_valid_mask = eligible_for_lag & feature_is_valid
+    if _mask_union_count(
+        warmup_mask,
+        filter_context_invalid_mask,
+        lag_warmup_mask,
+        lag_context_invalid_mask,
+        dynamic_valid_mask,
+    ) != len(state_filtered):
+        raise ValueError("preprocessing loss masks do not classify every retained row")
+    dynamic = lag_features.loc[dynamic_valid_mask]
+    summary = PreprocessingSummary(
+        source_row_count=len(raw),
+        source_interval_minutes=source_interval,
+        target_interval_minutes=config.sample_interval_minutes,
+        resampling_method=config.resampling_method,
+        resampled_row_count=len(resampled),
+        resampling_row_reduction=(0 if config.resampling_method == "none" else source_rows_in_complete_bins - non_empty_resampled_bins),
+        empty_bin_count=int(empty_bin_mask.sum()),
+        partial_resampling_bin_loss=sum(partial_bin_loss_by_segment.values()),
+        partial_resampling_row_loss=sum(partial_row_loss_by_segment.values()),
+        raw_segment_count=int(raw_segments.nunique()) if len(raw_segments) else 0,
+        raw_gap_count=len(gap_ranges),
+        raw_gap_ranges=gap_ranges,
+        filter_method=config.filter_method,
+        filter_window_minutes=config.smoothing_window_minutes,
+        filter_warmup_loss=int(warmup_mask.sum()),
+        filter_context_invalid_loss=int(filter_context_invalid_mask.sum()),
+        state_filter_input_rows=state_filter_input_rows,
+        state_filter_output_rows=state_filter_output_rows,
+        lag_max_minutes=config.max_lag_minutes,
+        lag_step_minutes=config.lag_step_minutes,
+        lag_warmup_loss=int(lag_warmup_mask.sum()),
+        lag_context_invalid_loss=int(lag_context_invalid_mask.sum()),
+        input_invalid_loss=int(input_invalid_mask.sum()),
+        final_dynamic_row_count=len(dynamic),
+        dynamic_feature_count=dynamic.shape[1],
+    )
+    return PreprocessingResult(
+        dynamic=dynamic,
+        segment_ids=resampled_segments,
+        raw_segment_ids=raw_segments,
+        post_invalid_segment_ids=post_invalid_segments,
+        summary=summary,
+        empty_bin_mask=empty_bin_mask,
+        filter_warmup_mask=warmup_mask,
+        filter_context_invalid_mask=filter_context_invalid_mask,
+        final_segment_ids=final_segments,
+        lag_warmup_mask=lag_warmup_mask,
+        lag_context_invalid_mask=lag_context_invalid_mask,
+        input_invalid_mask=input_invalid_mask,
+        dynamic_valid_mask=dynamic_valid_mask,
+        partial_resampling_bin_loss_by_segment=partial_bin_loss_by_segment,
+        partial_resampling_row_loss_by_segment=partial_row_loss_by_segment,
+        raw=raw if include_intermediates else None,
+        resampled=numeric_resampled if include_intermediates else None,
+        filtered=filtered if include_intermediates else None,
+        state_filtered=state_filtered if include_intermediates else None,
+    )
+
+
+def _resegment_remaining(
+    index: pd.DatetimeIndex,
+    raw_segments: pd.Series,
+    config: PreprocessingConfig,
+) -> pd.Series:
+    """Split retained rows at source physical boundaries and newly created gaps."""
+    if not len(index):
+        return pd.Series(dtype=int, index=index)
+    source = raw_segments.reindex(index)
+    if source.isna().any():
+        raise ValueError("raw segment identifiers must cover retained timestamps")
+    threshold = pd.Timedelta(
+        minutes=config.gap_threshold_minutes or config.sample_interval_minutes
+    )
+    breaks = source.ne(source.shift()) | index.to_series().diff().gt(threshold)
+    return (breaks.cumsum().astype(int) - 1).set_axis(index)
 
 
 def build_dynamic_matrix(
