@@ -1,0 +1,130 @@
+[
+  {
+    "timestamp": "2026-02-01T08:45:00",
+    "statistic": "spe",
+    "statistic_value": 37.59411010772115,
+    "limit_95": 5.883867224440341,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 47.60035302657339,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "C",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 45.15031570138775,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "B",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 7.249331272038864,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 5
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-02-01T08:50:00",
+    "statistic": "spe",
+    "statistic_value": 17.795818535460345,
+    "limit_95": 5.883867224440341,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 46.144088950885894,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "C",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 44.034586306631795,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "B",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 9.821324742482313,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-02-01T09:55:00",
+    "statistic": "spe",
+    "statistic_value": 10.514914258239873,
+    "limit_95": 5.883867224440341,
+    "tags": [
+      {
+        "tag": "C",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 52.808513593797954,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      },
+      {
+        "tag": "A",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 42.41752233944875,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "B",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 4.773964066753292,
+        "lag_start_minutes": 5,
+        "lag_end_minutes": 5
+      }
+    ]
+  },
+  {
+    "timestamp": "2026-02-01T10:00:00",
+    "statistic": "spe",
+    "statistic_value": 10.133196185078004,
+    "limit_95": 5.883867224440341,
+    "tags": [
+      {
+        "tag": "A",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 46.28838383213886,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "C",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 43.06531848819392,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 5
+      },
+      {
+        "tag": "B",
+        "description": "",
+        "unit": "",
+        "contribution_pct": 10.646297679667239,
+        "lag_start_minutes": 0,
+        "lag_end_minutes": 0
+      }
+    ]
+  }
+]

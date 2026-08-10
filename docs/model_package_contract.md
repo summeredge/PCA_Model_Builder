@@ -69,4 +69,4 @@ schema 4 必须继续按其原有预处理字段、历史默认值和历史计�
 - 新建模型默认 `none`；
 - 显式 `filter_method`；当其为 `first_order` 时必需的 `first_order_alpha`。
 
-模型加载不得用当前软件默认值重新解释任何旧包。schema 5 当前写入与读取实现仅覆盖无效行删除与删除后重新分段；`first_order` 及其字段、完整 schema 5 冻结回放和 deployment schema 2 仍属于后续 PR。
+模型加载不得用当前软件默认值重新解释任何旧包。schema 5 写入与读取固定无效行删除、删除后重新分段、`filter_method` 和 `first_order_alpha`；schema 5 frozen 回放及 deployment schema 2 以这些固定字段执行，不依赖运行时默认值。

@@ -1280,7 +1280,7 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     )
     assert manifest["config"]["tag_configs"]["A"]["description"] == "A变量"
     normal = history.iloc[:120].set_index("time")[["A", "B", "C"]]
-    preprocessing = PreprocessingConfig(5, 10, 10, 5)
+    preprocessing = PreprocessingConfig(5, 10, 10, 5, filter_method="trailing_mean")
     dynamic = build_dynamic_matrix(
         normal,
         ["A", "B", "C"],
@@ -1385,7 +1385,7 @@ def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
         tmp_path / "runs" / exploratory["run_id"] / "model.pcamodel"
     )
     analysis = history.iloc[:180].set_index("time")[["A", "B", "C"]]
-    config = PreprocessingConfig(5, 10, 10, 5)
+    config = PreprocessingConfig(5, 10, 10, 5, filter_method="trailing_mean")
     dynamic = build_dynamic_matrix(analysis, ["A", "B", "C"], config, infer_segment_ids(analysis.index, 5))
     expected_scores = model.score(dynamic)
     points = pd.DataFrame(clustered["points"])

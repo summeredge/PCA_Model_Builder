@@ -171,9 +171,10 @@ def _add_train_parser(
     )
     train.add_argument(
         "--filter-method",
-        choices=("none", "trailing_mean", "trailing_median"),
-        default="trailing_mean",
+        choices=("none", "first_order", "trailing_mean"),
+        default="none",
     )
+    train.add_argument("--first-order-alpha", type=float)
     train.add_argument("--gap-threshold-minutes", type=float)
     train.add_argument("--variance-threshold", type=float, default=0.95)
     train.add_argument("--components", type=int)
@@ -208,6 +209,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         lag_step_minutes=args.lag_step,
         resampling_method=args.resampling_method,
         filter_method=args.filter_method,
+        first_order_alpha=args.first_order_alpha,
         gap_threshold_minutes=args.gap_threshold_minutes,
     )
     tag_configs = _read_tag_configs(args.tag_config, args.tags)
@@ -448,11 +450,11 @@ def _require_frozen_replay_model(path: Path) -> None:
         raise ValueError("deployment packages cannot be replayed")
     _, manifest = load_model_package(path)
     if (
-        manifest.get("schema_version") != 4
+        manifest.get("schema_version") not in {4, 5}
         or manifest.get("model_purpose") != "normal_state"
         or manifest.get("model_status") != "frozen"
     ):
-        raise ValueError("only schema 4 normal_state/frozen models can be replayed")
+        raise ValueError("only schema 4 or schema 5 normal_state/frozen models can be replayed")
 
 
 def _to_replay_indexed_frame(frame: pd.DataFrame, timestamp_column: str) -> pd.DataFrame:

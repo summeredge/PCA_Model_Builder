@@ -1,0 +1,37 @@
+{
+  "golden_schema_version": 1,
+  "fixture_id": "schema5-first-order-v1",
+  "model_id": "golden-schema5",
+  "model_version": 1,
+  "replay_start": "2026-02-01T07:30:00",
+  "replay_end": "2026-02-01T10:00:00",
+  "timestamp_column": "time",
+  "input_tags": [
+    "A",
+    "B",
+    "C"
+  ],
+  "dynamic_feature_names": [
+    "A__lag_000min",
+    "B__lag_000min",
+    "C__lag_000min",
+    "A__lag_005min",
+    "B__lag_005min",
+    "C__lag_005min"
+  ],
+  "numeric_tolerance": {
+    "rtol": 1e-09,
+    "atol": 1e-12
+  },
+  "files": {
+    "raw_input.csv": "b7276c3f2780d7c96c7edd87edd1fbf8b4e8897480e45081a92cac09cc79028d",
+    "frozen_model.pcamodel": "1cc9879d887f37ec218787e1a11afdc64b2c84dec869bcac974b6e2932ae918c",
+    "deployment_model.pcadeploy": "75a13cafb78c61f30fedd70305cefe428483f535107e475915974ac3a59e1503",
+    "expected_dynamic_features.csv": "d95344450ffc0704e34e3212b0bf0ceb7224050a18e5a9ba7b32946e961dd8d6",
+    "expected_scores.csv": "34c64a11d25850875c1e98206782174fcb18190fab08c3ecaf11e4a8f01ea2e6",
+    "expected_contributions.json": "d5b4fedb0eba411e60fc6f3fe6ba63fc5e15806dcc5d387b4af27d83319b5274",
+    "expected_summary.json": "7b3cd84d6869ace785207626a5da5cf192166e4222f736dd6eb165de4ded45c9",
+    "fixture_manifest.json": "a34774d8a442e59380d9df79f341c05986dae29de79a0ad4ad4f8859c7daece3"
+  },
+  "manifest_sha256": "a34774d8a442e59380d9df79f341c05986dae29de79a0ad4ad4f8859c7daece3"
+}

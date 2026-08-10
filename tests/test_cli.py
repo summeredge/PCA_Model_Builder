@@ -376,7 +376,7 @@ def test_cli_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(cli, "build_training_matrix", recorded)
-    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--max-lag", "0", "--components", "2", "--model-name", "shared", "--output", str(model_path)]) == 0
+    assert main(["train-normal", "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C", "--training-windows", str(windows_path), "--filter-method", "trailing_mean", "--max-lag", "0", "--components", "2", "--model-name", "shared", "--output", str(model_path)]) == 0
     assert [window["id"] for window in calls[0]] == ["window-001", "window-002"]
     model, manifest = load_model_package(model_path)
     assert manifest["config"]["training_summary"][1]["status"] == "dropped"
@@ -548,8 +548,10 @@ def test_cli_training_allows_physical_time_gap(tmp_path):
             str(frame.time.iloc[-1]),
             "--sample-interval",
             "5",
-            "--smoothing-window",
-            "10",
+                "--smoothing-window",
+                "10",
+                "--filter-method",
+                "trailing_mean",
             "--max-lag",
             "10",
             "--lag-step",

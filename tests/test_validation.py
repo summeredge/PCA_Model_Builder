@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 from types import SimpleNamespace
@@ -388,3 +389,18 @@ def test_contribution_stability_streams_pairs_with_exact_results():
     assert "pairs =" not in source
     assert "jaccards =" not in source
     assert "cosines =" not in source
+
+
+def test_schema5_first_order_validation_uses_full_history_regardless_of_start():
+    index = pd.date_range("2026-01-01", periods=120, freq="5min")
+    frame = pd.DataFrame(
+        np.random.default_rng(415).normal(size=(120, 2)), index=index, columns=["A", "B"]
+    )
+    config = PreprocessingConfig(
+        5, 0, 5, 5, filter_method="first_order", first_order_alpha=0.4
+    )
+
+    earlier = build_validation_matrix(frame, ["A", "B"], config, index[80], index[110])
+    later = build_validation_matrix(frame, ["A", "B"], config, index[100], index[110])
+
+    pd.testing.assert_frame_equal(earlier.loc[index[100]:], later)

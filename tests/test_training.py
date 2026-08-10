@@ -61,7 +61,7 @@ def _two_windows(frame):
 def test_training_builds_windows_independently_without_lag_or_smoothing_leakage():
     frame = _frame()
     frame.loc[:19, ["A", "B", "C"]] = 10_000.0
-    config = PreprocessingConfig(5, 10, 10, 5)
+    config = PreprocessingConfig(5, 10, 10, 5, filter_method="trailing_mean")
     windows = _windows(
         (frame.time.iloc[0], frame.time.iloc[19], True),
         (frame.time.iloc[40], frame.time.iloc[79], True),
@@ -334,7 +334,8 @@ def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():
         0,
         5,
         5,
-        filter_method="none",
+        filter_method="first_order",
+        first_order_alpha=0.5,
         state_filters=(StateFilter("LOAD", minimum=1),),
     )
 
@@ -349,6 +350,7 @@ def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():
     assert not any("LOAD" in column for column in result.dynamic.columns)
     assert frame.time.iloc[12] not in result.dynamic.index
     assert result.window_summaries[0]["state_filter_output_rows"] == 16
+    assert result.window_summaries[0]["first_order_alpha"] == 0.5
 
 
 def test_training_resampling_keeps_only_complete_window_bins():

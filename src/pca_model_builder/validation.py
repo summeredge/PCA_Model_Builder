@@ -151,7 +151,11 @@ def _preprocess_validation_window(
     *,
     preprocessing_semantics: str = "schema5",
 ) -> tuple[pd.DataFrame, PreprocessingResult]:
-    context_start = validation_context_start(validation_start, config)
+    context_start = (
+        indexed_frame.index[0]
+        if preprocessing_semantics == "schema5" and config.filter_method == "first_order"
+        else validation_context_start(validation_start, config)
+    )
     context = indexed_frame.loc[context_start:validation_end]
     try:
         # Validation deliberately includes pre-start context so the requested

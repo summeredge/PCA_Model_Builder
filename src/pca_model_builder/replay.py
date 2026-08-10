@@ -34,7 +34,7 @@ def replay_frozen_model(
     replay_start: object,
     replay_end: object,
 ) -> FrozenReplayResult:
-    """Replay one historical interval using only a schema-4 frozen package.
+    """Replay one historical interval using its fixed frozen-package semantics.
 
     ``historical_data`` must already have its timestamp as a unique, increasing
     ``DatetimeIndex``.  The package is read-only: neither its bytes nor its
@@ -47,11 +47,11 @@ def replay_frozen_model(
     source_sha256 = hashlib.sha256(before).hexdigest()
     model, manifest = load_model_package(source)
     if (
-        manifest.get("schema_version") != 4
+        manifest.get("schema_version") not in {4, 5}
         or manifest.get("model_purpose") != "normal_state"
         or manifest.get("model_status") != "frozen"
     ):
-        raise ValueError("only schema 4 normal_state/frozen models can be replayed")
+        raise ValueError("only schema 4 or schema 5 normal_state/frozen models can be replayed")
 
     start, end = _replay_bounds(replay_start, replay_end)
     _validate_history(historical_data)
@@ -63,7 +63,12 @@ def replay_frozen_model(
     if missing:
         raise ValueError(f"missing frozen model input Tags: {', '.join(missing)}")
 
-    context_start = _context_start(start, config)
+    semantics = "legacy" if manifest["schema_version"] <= 4 else "schema5"
+    context_start = (
+        historical_data.index[0]
+        if semantics == "schema5" and config.filter_method == "first_order"
+        else _context_start(start, config)
+    )
     context = historical_data.loc[context_start:end, required].copy()
     if context.empty:
         raise ValueError("replay interval contains no available historical data")
@@ -74,7 +79,7 @@ def replay_frozen_model(
         validate_quality=False,
         include_intermediates=True,
         allow_empty_state_filter=True,
-        preprocessing_semantics="legacy",
+        preprocessing_semantics=semantics,
     )
     if list(processed.dynamic.columns) != list(model.feature_names):
         raise ValueError("frozen model dynamic feature order does not match preprocessing")

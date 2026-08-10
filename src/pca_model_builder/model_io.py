@@ -30,7 +30,7 @@ from .windows import normalize_training_windows
 
 
 SCHEMA_VERSION = 5
-DEPLOYMENT_SCHEMA_VERSION = 1
+DEPLOYMENT_SCHEMA_VERSION = 2
 _ARRAY_NAMES = {
     "mean",
     "scale",
@@ -88,7 +88,7 @@ _DEPLOYMENT_MANIFEST_FIELDS = {
     "status_rules",
     "contribution_rules",
 }
-_DEPLOYMENT_PREPROCESSING_FIELDS = {
+_DEPLOYMENT_PREPROCESSING_FIELDS_V1 = {
     "sample_interval_minutes",
     "resampling_method",
     "resampling_origin",
@@ -100,6 +100,11 @@ _DEPLOYMENT_PREPROCESSING_FIELDS = {
     "max_lag_minutes",
     "lag_step_minutes",
     "state_filters",
+}
+_DEPLOYMENT_PREPROCESSING_FIELDS_V2 = _DEPLOYMENT_PREPROCESSING_FIELDS_V1 | {
+    "first_order_alpha",
+    "invalid_row_policy",
+    "continuous_segment_policy",
 }
 _TRAINING_WINDOW_TOTAL_FIELDS = {
     "enabled_window_count",
@@ -168,6 +173,10 @@ def save_model_package(
         raise ValueError("new model package schema version is invalid")
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    normalized_config = _normalize_preprocessing_config(
+        config, _schema_version, for_load=False
+    )
+    _validate_config(normalized_config, _schema_version)
     manifest = {
         "schema_version": _schema_version,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -178,7 +187,7 @@ def save_model_package(
         "n_components": model.n_components,
         "t2_limits": {str(key): value for key, value in model.t2_limits.items()},
         "q_limits": {str(key): value for key, value in model.q_limits.items()},
-        "config": _normalize_preprocessing_config(config),
+        "config": normalized_config,
         "training_windows": normalize_training_windows_for_write(training_windows),
     }
     if validation_summary is not None:
@@ -360,14 +369,27 @@ def export_deployment_package(
         or manifest["model_status"] != "frozen"
     ):
         raise ValueError("only normal_state/frozen models can be exported")
-    if manifest["schema_version"] >= 5:
-        raise ValueError("schema 5 models require deployment schema 2 and cannot be exported")
+    deployment_schema_version = 1 if manifest["schema_version"] <= 4 else 2
     arrays = _arrays_bytes(model)
+    fields = (
+        _DEPLOYMENT_PREPROCESSING_FIELDS_V1
+        if deployment_schema_version == 1
+        else _DEPLOYMENT_PREPROCESSING_FIELDS_V2
+    )
     preprocessing = {
-        field: manifest["config"][field] for field in _DEPLOYMENT_PREPROCESSING_FIELDS
+        field: manifest["config"][field]
+        for field in fields
+        if field in manifest["config"]
     }
+    if deployment_schema_version == 2:
+        preprocessing.update(
+            {
+                "invalid_row_policy": "drop_nonfinite_model_tags_and_state_filters_after_resampling",
+                "continuous_segment_policy": "resegment_after_invalid_row_and_state_filter;first_order_initializes_at_segment_start",
+            }
+        )
     deployment_manifest = {
-        "deployment_schema_version": DEPLOYMENT_SCHEMA_VERSION,
+        "deployment_schema_version": deployment_schema_version,
         "model_id": manifest["model_id"],
         "model_version": manifest["model_version"],
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -460,7 +482,9 @@ def load_model_package(path: str | Path) -> tuple[DPCAModel, dict[str, Any]]:
     manifest = {
         **manifest,
         **normalize_model_semantics(manifest),
-        "config": _normalize_preprocessing_config(manifest["config"]),
+        "config": _normalize_preprocessing_config(
+            manifest["config"], manifest["schema_version"], for_load=True
+        ),
         "training_windows": normalize_manifest_training_windows(manifest),
     }
     _validate_loaded_model(model, manifest)
@@ -507,7 +531,9 @@ def _validate_loaded_model(model: DPCAModel, manifest: dict[str, Any]) -> None:
         or len(feature_names) != len(set(feature_names))
     ):
         raise ValueError("model package feature names are invalid")
-    config, preprocessing = _validate_config(manifest["config"])
+    config, preprocessing = _validate_config(
+        manifest["config"], manifest.get("schema_version", SCHEMA_VERSION)
+    )
     normalize_training_windows(manifest["training_windows"])
     _validate_dynamic_features(feature_names, config["tags"], preprocessing)
 
@@ -609,7 +635,8 @@ def _validate_frozen_manifest(manifest: dict[str, Any]) -> None:
 def _validate_deployment_manifest(manifest: object, arrays: bytes) -> None:
     if not isinstance(manifest, dict) or set(manifest) != _DEPLOYMENT_MANIFEST_FIELDS:
         raise ValueError("deployment package manifest fields are invalid")
-    if manifest["deployment_schema_version"] != DEPLOYMENT_SCHEMA_VERSION:
+    schema_version = manifest["deployment_schema_version"]
+    if schema_version not in {1, DEPLOYMENT_SCHEMA_VERSION}:
         raise ValueError("unsupported deployment package schema version")
     _validate_freeze_request(manifest["model_id"], manifest["model_version"], "deployment", "")
     _validate_utc_timestamp(manifest["created_at"], "created_at")
@@ -620,12 +647,20 @@ def _validate_deployment_manifest(manifest: object, arrays: bytes) -> None:
     if not isinstance(tags, list) or not tags or not all(isinstance(tag, str) and tag for tag in tags) or len(tags) != len(set(tags)):
         raise ValueError("deployment package input Tags are invalid")
     preprocessing = manifest["preprocessing"]
-    if not isinstance(preprocessing, dict) or set(preprocessing) != _DEPLOYMENT_PREPROCESSING_FIELDS:
+    expected_fields = (
+        _DEPLOYMENT_PREPROCESSING_FIELDS_V1
+        if schema_version == 1
+        else _DEPLOYMENT_PREPROCESSING_FIELDS_V2
+    )
+    if not isinstance(preprocessing, dict) or set(preprocessing) != expected_fields:
         raise ValueError("deployment package preprocessing is invalid")
     try:
         config = preprocessing_config_from_mapping(preprocessing)
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError("deployment package preprocessing is invalid") from error
+    if schema_version == 2:
+        if preprocessing["invalid_row_policy"] != "drop_nonfinite_model_tags_and_state_filters_after_resampling" or preprocessing["continuous_segment_policy"] != "resegment_after_invalid_row_and_state_filter;first_order_initializes_at_segment_start":
+            raise ValueError("deployment package schema 2 preprocessing semantics are invalid")
     _validate_dynamic_features(manifest["dynamic_feature_names"], tags, config)
     if not isinstance(manifest["n_samples"], int) or isinstance(manifest["n_samples"], bool) or manifest["n_samples"] < 3:
         raise ValueError("deployment package sample count is invalid")
@@ -727,7 +762,9 @@ def _write_zip(destination: Path, members: dict[str, bytes], *, overwrite: bool)
             temporary_path.unlink()
 
 
-def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfig]:
+def _validate_config(
+    config: object, schema_version: int = SCHEMA_VERSION
+) -> tuple[dict[str, Any], PreprocessingConfig]:
     if not isinstance(config, dict):
         raise ValueError("model package config must be an object")
     missing = sorted(_CONFIG_FIELDS - set(config))
@@ -767,6 +804,8 @@ def _validate_config(config: object) -> tuple[dict[str, Any], PreprocessingConfi
         raise ValueError("model package variance threshold must be in (0, 1)")
     try:
         preprocessing = preprocessing_config_from_mapping(config)
+        if schema_version <= 4 and preprocessing.filter_method == "first_order":
+            raise ValueError("schema 4 does not support first_order filtering")
         if "tag_configs" in config and not isinstance(config["tag_configs"], dict):
             raise ValueError("tag_configs must be an object")
         if "tag_configs" in config:
@@ -820,7 +859,9 @@ def _validate_training_window_totals(value: object) -> None:
         raise ValueError("training_window_totals window counts are inconsistent")
 
 
-def _normalize_preprocessing_config(config: object) -> dict[str, Any]:
+def _normalize_preprocessing_config(
+    config: object, schema_version: int, *, for_load: bool
+) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError("model package config must be an object")
     normalized = dict(config)
@@ -828,9 +869,18 @@ def _normalize_preprocessing_config(config: object) -> dict[str, Any]:
     normalized.setdefault("resampling_origin", "epoch")
     normalized.setdefault("resampling_closed", "right")
     normalized.setdefault("resampling_label", "right")
-    normalized.setdefault("filter_method", "trailing_mean")
+    if "filter_method" not in normalized:
+        if schema_version <= 4:
+            normalized["filter_method"] = "trailing_mean"
+        elif for_load:
+            raise ValueError("schema 5 model package config is missing: filter_method")
+        else:
+            normalized["filter_method"] = "none"
+    normalized.setdefault("first_order_alpha", None)
     normalized.setdefault("gap_threshold_minutes", None)
     normalized.setdefault("state_filters", [])
+    if schema_version >= 5 and normalized["filter_method"] == "trailing_median" and not for_load:
+        raise ValueError("schema 5 new model packages cannot use trailing_median")
     return normalized
 
 

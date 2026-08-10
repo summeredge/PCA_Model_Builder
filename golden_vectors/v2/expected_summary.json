@@ -1,0 +1,53 @@
+{
+  "model_id": "golden-schema5",
+  "model_version": 1,
+  "source_frozen_sha256": "1cc9879d887f37ec218787e1a11afdc64b2c84dec869bcac974b6e2932ae918c",
+  "replay_start": "2026-02-01T07:30:00",
+  "replay_end": "2026-02-01T10:00:00",
+  "source_row_count": 121,
+  "output_row_count": 30,
+  "score_valid_count": 29,
+  "invalid_reason_counts": {
+    "insufficient_context": 1
+  },
+  "status_counts": {
+    "normal": 25,
+    "not_scored": 1,
+    "abnormal": 4
+  },
+  "state_filter_excluded_rows": 1,
+  "t2_exceedance_95_count": 0,
+  "t2_exceedance_99_count": 0,
+  "spe_exceedance_95_count": 4,
+  "spe_exceedance_99_count": 4,
+  "maximum_t2": 6.2185331756820865,
+  "maximum_spe": 37.59411010772115,
+  "preprocessing_summary": {
+    "source_row_count": 121,
+    "source_interval_minutes": 5.0,
+    "target_interval_minutes": 5,
+    "resampling_method": "none",
+    "resampled_row_count": 121,
+    "resampling_row_reduction": 0,
+    "empty_bin_count": 0,
+    "partial_resampling_bin_loss": 0,
+    "partial_resampling_row_loss": 0,
+    "raw_segment_count": 1,
+    "raw_gap_count": 0,
+    "raw_gap_ranges": [],
+    "filter_method": "first_order",
+    "filter_window_minutes": 0,
+    "filter_warmup_loss": 0,
+    "filter_context_invalid_loss": 0,
+    "state_filter_input_rows": 120,
+    "state_filter_output_rows": 120,
+    "lag_max_minutes": 5,
+    "lag_step_minutes": 5,
+    "lag_warmup_loss": 2,
+    "lag_context_invalid_loss": 0,
+    "input_invalid_loss": 1,
+    "final_dynamic_row_count": 118,
+    "dynamic_feature_count": 6,
+    "replay_context_start": "2026-02-01T00:00:00"
+  }
+}

@@ -10,7 +10,7 @@ from .quality import QualityReport, inspect_data_quality
 
 
 _RESAMPLING_METHODS = {"none", "mean", "median", "last"}
-_FILTER_METHODS = {"none", "trailing_mean", "trailing_median"}
+_FILTER_METHODS = {"none", "first_order", "trailing_mean", "trailing_median"}
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,8 @@ class PreprocessingConfig:
     max_lag_minutes: int = 60
     lag_step_minutes: int = 5
     resampling_method: str = "none"
-    filter_method: str = "trailing_mean"
+    filter_method: str = "none"
+    first_order_alpha: float | None = None
     gap_threshold_minutes: float | None = None
     state_filters: tuple[StateFilter, ...] = ()
 
@@ -74,11 +75,24 @@ class PreprocessingConfig:
             raise ValueError(f"unsupported resampling method: {self.resampling_method}")
         if self.filter_method not in _FILTER_METHODS:
             raise ValueError(f"unsupported filter method: {self.filter_method}")
+        if self.filter_method == "first_order":
+            if (
+                not isinstance(self.first_order_alpha, (int, float))
+                or isinstance(self.first_order_alpha, bool)
+                or not 0 < float(self.first_order_alpha) <= 1
+            ):
+                raise ValueError("first_order_alpha must be in (0, 1]")
+        elif self.first_order_alpha is not None and (
+            not isinstance(self.first_order_alpha, (int, float))
+            or isinstance(self.first_order_alpha, bool)
+            or not np.isfinite(self.first_order_alpha)
+        ):
+            raise ValueError("first_order_alpha must be finite or null")
         if self.max_lag_minutes % self.lag_step_minutes:
             raise ValueError("maximum lag must be an integer multiple of lag step")
         if self.lag_step_minutes % self.sample_interval_minutes:
             raise ValueError("lag step must be an integer multiple of sampling")
-        if self.filter_method != "none":
+        if self.filter_method in {"trailing_mean", "trailing_median"}:
             if self.smoothing_window_minutes < self.sample_interval_minutes:
                 raise ValueError("filter window must not be shorter than sampling")
             if self.smoothing_window_minutes % self.sample_interval_minutes:
@@ -123,6 +137,11 @@ class PreprocessingConfig:
             "resampling_closed": self.resampling_closed,
             "resampling_label": self.resampling_label,
             "filter_method": self.filter_method,
+            "first_order_alpha": (
+                float(self.first_order_alpha)
+                if self.filter_method == "first_order"
+                else None
+            ),
             "smoothing_window_minutes": self.smoothing_window_minutes,
             "gap_threshold_minutes": self.gap_threshold_minutes,
             "max_lag_minutes": self.max_lag_minutes,
@@ -215,6 +234,7 @@ def preprocessing_config_from_mapping(value: Mapping[str, Any]) -> Preprocessing
         lag_step_minutes=_integer_config_value(value["lag_step_minutes"], "lag step"),
         resampling_method=str(value.get("resampling_method", "none")),
         filter_method=str(value.get("filter_method", "trailing_mean")),
+        first_order_alpha=value.get("first_order_alpha"),
         gap_threshold_minutes=(
             None
             if value.get("gap_threshold_minutes") is None
@@ -356,19 +376,23 @@ def _resample_segment_data(
 
 
 def filter_window_rows(config: PreprocessingConfig) -> int:
-    if config.filter_method == "none":
+    if config.filter_method in {"none", "first_order"}:
         return 1
     return config.smoothing_window_minutes // config.sample_interval_minutes
 
 
 def filter_segment(
-    frame: pd.DataFrame, method: str, window_rows: int
+    frame: pd.DataFrame, method: str, window_rows: int, first_order_alpha: float | None = None
 ) -> pd.DataFrame:
     """Apply one causal trailing filter to a single physical segment."""
     if method not in _FILTER_METHODS:
         raise ValueError(f"unsupported filter method: {method}")
     if method == "none":
         return frame.copy()
+    if method == "first_order":
+        if first_order_alpha is None:
+            raise ValueError("first_order_alpha is required for first_order filtering")
+        return frame.ewm(alpha=float(first_order_alpha), adjust=False).mean()
     if window_rows < 1:
         raise ValueError("filter window rows must be positive")
     rolling = frame.rolling(window_rows, min_periods=window_rows)
@@ -383,7 +407,7 @@ def filter_warmup_mask(
 ) -> pd.Series:
     """Identify only rows unavailable because causal filter history is incomplete."""
     mask = pd.Series(False, index=index)
-    if method == "none" or window_rows <= 1:
+    if method in {"none", "first_order"} or window_rows <= 1:
         return mask
     aligned = segment_ids.reindex(index)
     for segment_id in aligned.drop_duplicates():
@@ -551,7 +575,9 @@ def _preprocess_window_legacy(
     window_rows = filter_window_rows(config)
     filtered = (
         numeric_resampled.groupby(resampled_segments, sort=False).transform(
-            lambda group: filter_segment(group, config.filter_method, window_rows)
+            lambda group: filter_segment(
+                group, config.filter_method, window_rows, config.first_order_alpha
+            )
         )
         if not numeric_resampled.empty
         else numeric_resampled.copy()
@@ -777,19 +803,10 @@ def _preprocess_window_schema5(
     )
 
     window_rows = filter_window_rows(config)
-    filtered = (
-        usable_frame.groupby(post_invalid_segments, sort=False).transform(
-            lambda group: filter_segment(group, config.filter_method, window_rows)
-        )
-        if not usable_frame.empty
-        else usable_frame.copy()
-    )
-    structural_filter_warmup = filter_warmup_mask(
-        filtered.index, post_invalid_segments, config.filter_method, window_rows
-    )
-    state_filter_input_rows = len(filtered)
+    # State exclusions create a new causal boundary for every filter method.
+    state_filter_input_rows = len(usable_frame)
     state_filtered = apply_state_filters(
-        filtered, config.state_filters, allow_empty=allow_empty_state_filter
+        usable_frame, config.state_filters, allow_empty=allow_empty_state_filter
     )
     state_filter_output_rows = len(state_filtered)
     final_segments = _resegment_remaining(
@@ -797,6 +814,19 @@ def _preprocess_window_schema5(
         post_invalid_segments.reindex(state_filtered.index),
         config,
     )
+    filtered = (
+        state_filtered.groupby(final_segments, sort=False).transform(
+            lambda group: filter_segment(
+                group, config.filter_method, window_rows, config.first_order_alpha
+            )
+        )
+        if not state_filtered.empty
+        else state_filtered.copy()
+    )
+    structural_filter_warmup = filter_warmup_mask(
+        filtered.index, final_segments, config.filter_method, window_rows
+    )
+    state_filtered = filtered
     final_filter_structural = structural_filter_warmup.reindex(
         state_filtered.index, fill_value=False
     )
@@ -921,7 +951,9 @@ def build_dynamic_matrix(
             raise ValueError("segment identifiers must cover every timestamp")
     window_rows = filter_window_rows(config)
     filtered = numeric.groupby(segment_ids, sort=False).transform(
-        lambda group: filter_segment(group, config.filter_method, window_rows)
+        lambda group: filter_segment(
+            group, config.filter_method, window_rows, config.first_order_alpha
+        )
     )
     return _build_lag_matrix(filtered, tag_columns, config, segment_ids)
 

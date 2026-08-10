@@ -34,6 +34,7 @@ def test_dynamic_lags_do_not_cross_physical_time_gaps():
         smoothing_window_minutes=10,
         max_lag_minutes=5,
         lag_step_minutes=5,
+        filter_method="trailing_mean",
     )
 
     dynamic = build_dynamic_matrix(frame, ["T1"], config, segments)
@@ -51,6 +52,7 @@ def test_smoothing_is_trailing_and_never_uses_future_samples():
         smoothing_window_minutes=10,
         max_lag_minutes=0,
         lag_step_minutes=5,
+        filter_method="trailing_mean",
     )
 
     dynamic = build_dynamic_matrix(
@@ -220,6 +222,57 @@ def test_filter_methods_are_causal_and_require_complete_windows(method, expected
     pd.testing.assert_series_equal(result["A"].iloc[:-1], changed_result["A"].iloc[:-1])
 
 
+def test_first_order_filter_uses_alpha_and_resets_after_invalid_row_deletion():
+    index = pd.date_range("2026-01-01", periods=5, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [0.0, 10.0, np.nan, 100.0, 200.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="first_order", first_order_alpha=0.5),
+        validate_quality=False,
+        include_intermediates=True,
+    )
+
+    assert PreprocessingConfig().filter_method == "none"
+    assert result.filtered["A"].tolist() == [0.0, 5.0, 100.0, 150.0]
+    assert result.summary.filter_warmup_loss == 0
+    with pytest.raises(ValueError, match="first_order_alpha"):
+        PreprocessingConfig(filter_method="first_order")
+
+
+def test_first_order_filter_resets_after_state_filter_boundary():
+    index = pd.date_range("2026-01-01", periods=4, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [0.0, 10.0, 100.0, 200.0], "STATE": [1, 1, 0, 1]}, index=index),
+        ["A"],
+        PreprocessingConfig(
+            5, 0, 0, 5, filter_method="first_order", first_order_alpha=0.5,
+            state_filters=(StateFilter("STATE", minimum=1),),
+        ),
+        validate_quality=False,
+        include_intermediates=True,
+    )
+
+    assert result.filtered["A"].tolist() == [0.0, 5.0, 200.0]
+
+
+def test_trailing_filter_resets_after_state_filter_boundary():
+    index = pd.date_range("2026-01-01", periods=4, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [0.0, 10.0, 100.0, 200.0], "STATE": [1, 1, 0, 1]}, index=index),
+        ["A"],
+        PreprocessingConfig(
+            5, 10, 0, 5, filter_method="trailing_mean",
+            state_filters=(StateFilter("STATE", minimum=1),),
+        ),
+        validate_quality=False,
+        include_intermediates=True,
+    )
+
+    assert result.filtered.loc[index[1], "A"] == 5.0
+    assert pd.isna(result.filtered.loc[index[3], "A"])
+    assert result.summary.filter_warmup_loss == 2
+
+
 def test_state_filters_support_bounds_and_and_semantics():
     index = pd.date_range("2026-01-01", periods=4, freq="5min")
     frame = pd.DataFrame(
@@ -338,7 +391,7 @@ def test_filter_warmup_loss_is_structural_per_physical_segment():
     )
     frame = pd.DataFrame({"A": [1.0, 2.0, 3.0, 4.0, 5.0]}, index=index)
     result = preprocess_window(
-        frame, ["A"], PreprocessingConfig(5, 10, 0, 5)
+        frame, ["A"], PreprocessingConfig(5, 10, 0, 5, filter_method="trailing_mean")
     )
 
     assert result.summary.filter_warmup_loss == 2
@@ -426,7 +479,7 @@ def test_loss_masks_are_disjoint_for_filter_and_lag_warmup():
     result = preprocess_window(
         pd.DataFrame({"A": np.arange(5, dtype=float)}, index=index),
         ["A"],
-        PreprocessingConfig(5, 10, 10, 5),
+            PreprocessingConfig(5, 10, 10, 5, filter_method="trailing_mean"),
         validate_quality=False,
         include_intermediates=True,
     )
@@ -453,7 +506,7 @@ def test_filter_context_invalid_is_not_lag_context_without_lag():
     result = preprocess_window(
         pd.DataFrame({"A": [np.nan, 2.0, 3.0]}, index=index),
         ["A"],
-        PreprocessingConfig(5, 10, 0, 5),
+        PreprocessingConfig(5, 10, 0, 5, filter_method="trailing_mean"),
         validate_quality=False,
         preprocessing_semantics="legacy",
     )
@@ -488,7 +541,7 @@ def test_filter_context_invalid_history_is_lag_context_not_warmup():
     result = preprocess_window(
         pd.DataFrame({"A": [np.nan, 2.0, 3.0, 4.0]}, index=index),
         ["A"],
-        PreprocessingConfig(5, 10, 5, 5),
+        PreprocessingConfig(5, 10, 5, 5, filter_method="trailing_mean"),
         validate_quality=False,
         preprocessing_semantics="legacy",
     )
@@ -592,7 +645,7 @@ def test_schema5_drops_invalid_model_rows_before_filter_and_lag_context():
     result = preprocess_window(
         pd.DataFrame({"A": [1.0, 2.0, "bad", 100.0, 100.0, 100.0]}, index=index),
         ["A"],
-        PreprocessingConfig(5, 10, 5, 5),
+        PreprocessingConfig(5, 10, 5, 5, filter_method="trailing_mean"),
         include_intermediates=True,
     )
 

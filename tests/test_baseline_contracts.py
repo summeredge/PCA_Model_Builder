@@ -118,6 +118,8 @@ def test_cli_and_final_web_single_window_training_produce_the_same_model(
             "5",
             "--smoothing-window",
             "10",
+            "--filter-method",
+            "trailing_mean",
             "--max-lag",
             "10",
             "--lag-step",

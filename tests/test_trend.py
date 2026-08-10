@@ -24,7 +24,7 @@ def test_trend_smoothing_is_trailing_and_does_not_cross_gap():
     )
     frame = pd.DataFrame({"A": [0.0, 10.0, 20.0, 100.0, 120.0]}, index=index)
     raw, resampled, smoothed, segments, resampled_segments = prepare_trend_frame(
-        frame, ["A"], PreprocessingConfig(5, 10, 0, 5)
+        frame, ["A"], PreprocessingConfig(5, 10, 0, 5, filter_method="trailing_mean")
     )
 
     assert raw.equals(frame)

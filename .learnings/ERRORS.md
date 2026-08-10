@@ -145,3 +145,62 @@ Regression tests added.
 **Related Files**
 - src/pca_model_builder/preprocessing.py
 - src/pca_model_builder/golden.py
+
+## 2026-08-10 - Broad test patch introduced indentation error
+
+**Scope**
+Project
+
+**Area**
+tests
+
+**Failure**
+A multi-file test expectation patch added excess indentation to two standalone assignments in `tests/test_web.py`, preventing test collection.
+
+**Root Cause**
+The patch matched line text without preserving the surrounding indentation context.
+
+**Correction**
+Inspect the affected lines, restore their function-level indentation, and rerun the full suite.
+
+**Prevention Rule**
+When patching indentation-sensitive Python lines across files, inspect the immediate context or use a patch hunk that includes the enclosing block.
+
+**Promotion Decision**
+Do not promote.
+
+**Test Decision**
+Full pytest collection catches this regression.
+
+**Related Files**
+- tests/test_web.py
+
+## 2026-08-10 - State-filter boundary was omitted from causal filtering
+
+**Scope**
+Project
+
+**Area**
+preprocessing / training
+
+**Failure**
+Schema 5 filtering was applied before state filtering, allowing trailing and first-order filters to use rows later removed by the state filter; training summaries could also index filtered rows that no longer existed.
+
+**Root Cause**
+The new resegmentation logic covered invalid rows but did not consistently treat state filtering as a causal segment boundary.
+
+**Correction**
+Apply schema 5 state filters before segment-local filtering, resegment retained rows, and use the filtered-index intersection in training summaries.
+
+**Prevention Rule**
+When a preprocessing step removes rows, verify every stateful transform and every intermediate-frame consumer against the resulting segment boundaries.
+
+**Promotion Decision**
+Do not promote.
+
+**Test Decision**
+Regression tests added for first-order and trailing filtering with state-filter boundaries.
+
+**Related Files**
+- src/pca_model_builder/preprocessing.py
+- src/pca_model_builder/training.py

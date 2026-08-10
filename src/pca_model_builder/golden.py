@@ -219,6 +219,9 @@ def _validate_models(manifest: Mapping[str, Any], frozen_model: Any, frozen_mani
         raise ValueError("golden model_version does not match frozen and deployment packages")
     if deployment_manifest["source_frozen_package"]["sha256"] != hashlib.sha256(frozen_bytes).hexdigest():
         raise ValueError("deployment package source frozen SHA-256 does not match")
+    expected_deployment_schema = 1 if frozen_manifest["schema_version"] <= 4 else 2
+    if deployment_manifest["deployment_schema_version"] != expected_deployment_schema:
+        raise ValueError("golden frozen and deployment schema versions do not match")
     if list(frozen_manifest["config"]["tags"]) != manifest["input_tags"] or deployment_manifest["input_tags"] != manifest["input_tags"]:
         raise ValueError("golden input Tag order does not match packages")
     if list(frozen_model.feature_names) != manifest["dynamic_feature_names"] or list(deployment_model.feature_names) != manifest["dynamic_feature_names"]:
@@ -232,9 +235,25 @@ def _validate_models(manifest: Mapping[str, Any], frozen_model: Any, frozen_mani
         raise ValueError("golden package status rules differ")
     if frozen_manifest["contribution_rules"] != CONTRIBUTION_RULES or deployment_manifest["contribution_rules"] != CONTRIBUTION_RULES:
         raise ValueError("golden package contribution rules differ")
-    frozen_preprocessing = {name: frozen_manifest["config"][name] for name in deployment_manifest["preprocessing"]}
-    if frozen_preprocessing != deployment_manifest["preprocessing"]:
+    frozen_preprocessing = {
+        name: frozen_manifest["config"][name]
+        for name in deployment_manifest["preprocessing"]
+        if name in frozen_manifest["config"]
+    }
+    deployment_preprocessing = {
+        name: value
+        for name, value in deployment_manifest["preprocessing"].items()
+        if name in frozen_manifest["config"]
+    }
+    if frozen_preprocessing != deployment_preprocessing:
         raise ValueError("frozen and deployment preprocessing differs")
+    if expected_deployment_schema == 2 and (
+        deployment_manifest["preprocessing"].get("invalid_row_policy")
+        != "drop_nonfinite_model_tags_and_state_filters_after_resampling"
+        or deployment_manifest["preprocessing"].get("continuous_segment_policy")
+        != "resegment_after_invalid_row_and_state_filter;first_order_initializes_at_segment_start"
+    ):
+        raise ValueError("golden deployment schema 2 preprocessing semantics are invalid")
 
 
 def _read_raw_input(path: Path, manifest: Mapping[str, Any], deployment_manifest: Mapping[str, Any]) -> pd.DataFrame:
@@ -252,9 +271,14 @@ def _read_raw_input(path: Path, manifest: Mapping[str, Any], deployment_manifest
 def _deployment_scores(raw: pd.DataFrame, manifest: Mapping[str, Any], deployment_model: Any, deployment_manifest: Mapping[str, Any]) -> tuple[pd.DataFrame, pd.DataFrame]:
     config = preprocessing_config_from_mapping(deployment_manifest["preprocessing"])
     start, end = pd.Timestamp(manifest["replay_start"]), pd.Timestamp(manifest["replay_end"])
-    filter_context = 0 if config.filter_method == "none" else config.smoothing_window_minutes - config.sample_interval_minutes
+    filter_context = 0 if config.filter_method in {"none", "first_order"} else config.smoothing_window_minutes - config.sample_interval_minutes
     resampling_context = config.sample_interval_minutes if config.resampling_method != "none" else 0
-    context_start = start - pd.Timedelta(minutes=config.max_lag_minutes + filter_context + resampling_context)
+    semantics = "legacy" if deployment_manifest["deployment_schema_version"] == 1 else "schema5"
+    context_start = (
+        raw.index[0]
+        if semantics == "schema5" and config.filter_method == "first_order"
+        else start - pd.Timedelta(minutes=config.max_lag_minutes + filter_context + resampling_context)
+    )
     required = [*manifest["input_tags"], *(item.column for item in config.state_filters)]
     context = raw.loc[context_start:end, list(dict.fromkeys(required))]
     processed = preprocess_window(
@@ -264,7 +288,7 @@ def _deployment_scores(raw: pd.DataFrame, manifest: Mapping[str, Any], deploymen
         validate_quality=False,
         include_intermediates=True,
         allow_empty_state_filter=True,
-        preprocessing_semantics="legacy",
+        preprocessing_semantics=semantics,
     )
     dynamic = processed.dynamic.loc[
         processed.dynamic.index.to_series().between(start, end, inclusive="both"),

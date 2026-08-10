@@ -68,7 +68,7 @@ def _validation_summary(candidate_path, feature_names):
     return summary
 
 
-def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailing_mean"):
+def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailing_mean", first_order_alpha=None, schema_version=4):
     config = {
         "model_name": "unit",
         "tags": ["A", "B", "C"],
@@ -78,6 +78,7 @@ def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailin
         "max_lag_minutes": 0,
         "lag_step_minutes": 5,
         "filter_method": filter_method,
+        "first_order_alpha": first_order_alpha,
         "state_filters": list(state_filters),
         "variance_threshold": 0.95,
         "tag_configs": {"A": {"description": "a", "unit": "x"}},
@@ -103,10 +104,11 @@ def _frozen_model(tmp_path, history, *, state_filters=(), filter_method="trailin
     with zipfile.ZipFile(frozen) as package:
         manifest = json.loads(package.read("manifest.json"))
         arrays = package.read("arrays.npz")
-    manifest["schema_version"] = 4
-    with zipfile.ZipFile(frozen, "w", zipfile.ZIP_DEFLATED) as package:
-        package.writestr("manifest.json", json.dumps(manifest))
-        package.writestr("arrays.npz", arrays)
+    if schema_version == 4:
+        manifest["schema_version"] = 4
+        with zipfile.ZipFile(frozen, "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("manifest.json", json.dumps(manifest))
+            package.writestr("arrays.npz", arrays)
     return frozen
 
 
@@ -148,6 +150,23 @@ def test_frozen_replay_rejects_nonfrozen_and_disordered_history(tmp_path):
     frozen = _frozen_model(tmp_path, values)
     with pytest.raises(ValueError, match="increasing and unique"):
         replay_frozen_model(frozen, values.iloc[[1, 0, *range(2, len(values))]], index[10], index[-1])
+
+
+def test_schema5_first_order_replay_uses_full_history_regardless_of_start(tmp_path):
+    index = pd.date_range("2026-01-01", periods=120, freq="5min")
+    values = pd.DataFrame(
+        np.random.default_rng(916).normal(size=(120, 3)),
+        index=index,
+        columns=["A", "B", "C"],
+    )
+    frozen = _frozen_model(
+        tmp_path, values, filter_method="first_order", first_order_alpha=0.2, schema_version=5
+    )
+
+    earlier = replay_frozen_model(frozen, values, index[80], index[110])
+    later = replay_frozen_model(frozen, values, index[100], index[110])
+
+    pd.testing.assert_frame_equal(earlier.scores.loc[index[100]:], later.scores)
 
 
 def test_frozen_replay_resets_causal_filter_after_a_physical_gap(tmp_path):

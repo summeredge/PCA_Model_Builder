@@ -8,4 +8,6 @@
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-001","summary":"Exclude XLSX datetime columns from numeric candidates"}
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-002","summary":"Preserve excluded_tags model-package schema"}
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-003","summary":"Keep schema-specific resampling conversion explicit"}
+{"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-004","summary":"Preserve indentation context in multi-file Python patches"}
+{"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-005","summary":"Treat state-filter exclusions as causal segment boundaries"}
 ```

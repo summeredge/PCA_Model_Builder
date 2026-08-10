@@ -122,7 +122,9 @@ def build_training_matrix(
             retained_index = processed.post_invalid_segment_ids.index[
                 resampled_segment_ids.reindex(processed.post_invalid_segment_ids.index).eq(segment_id)
             ]
-            filtered_segment = processed.filtered.loc[retained_index]
+            filtered_segment = processed.filtered.loc[
+                processed.filtered.index.intersection(retained_index)
+            ]
             state_segment = processed.state_filtered.loc[
                 processed.state_filtered.index.intersection(retained_index)
             ]
@@ -232,6 +234,7 @@ def build_training_matrix(
                 "raw_gap_count": preprocessing_summary.raw_gap_count,
                 "raw_gap_ranges": list(preprocessing_summary.raw_gap_ranges),
                 "filter_method": config.filter_method,
+                "first_order_alpha": config.first_order_alpha,
                 "filter_warmup_loss": preprocessing_summary.filter_warmup_loss,
                 "filter_context_invalid_loss": preprocessing_summary.filter_context_invalid_loss,
                 "state_filter_input_rows": preprocessing_summary.state_filter_input_rows,

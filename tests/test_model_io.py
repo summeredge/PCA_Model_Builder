@@ -135,7 +135,8 @@ def test_model_package_round_trip_uses_json_and_npz(tmp_path):
     ]
     assert manifest["config"]["tags"] == ["A", "B", "C"]
     assert manifest["config"]["resampling_method"] == "none"
-    assert manifest["config"]["filter_method"] == "trailing_mean"
+    assert manifest["config"]["filter_method"] == "none"
+    assert manifest["config"]["first_order_alpha"] is None
     assert manifest["config"]["gap_threshold_minutes"] is None
     assert manifest["config"]["state_filters"] == []
     assert manifest["config"]["resampling_origin"] == "epoch"
@@ -219,6 +220,7 @@ def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
         fit_dpca(frame, n_components=2),
         config,
         [["2026-01-01", "2026-01-02"]],
+        _schema_version=4,
     )
 
     _, manifest = load_model_package(path)
@@ -326,14 +328,31 @@ def test_freeze_and_deployment_preserve_fixed_scoring_contract(tmp_path):
     assert actual.overall_status == expected.overall_status
 
 
-def test_schema5_frozen_model_cannot_use_deployment_schema1(tmp_path):
+def test_schema5_frozen_model_exports_deployment_schema2(tmp_path):
     frame = pd.DataFrame(np.random.default_rng(47).normal(size=(100, 3)), columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"])
     validated, frozen = tmp_path / "validated.pcamodel", tmp_path / "frozen.pcamodel"
     _validated_package(validated, frame)
     freeze_validated_model_package(validated, frozen, model_id="unit", model_version=1, frozen_by="engineer")
 
-    with pytest.raises(ValueError, match="deployment schema 2"):
-        export_deployment_package(frozen, tmp_path / "unit.pcadeploy")
+    deployment = tmp_path / "unit.pcadeploy"
+    export_deployment_package(frozen, deployment)
+    _, manifest = load_deployment_package(deployment)
+    assert manifest["deployment_schema_version"] == 2
+
+
+def test_schema4_rejects_first_order_filtering(tmp_path):
+    frame = pd.DataFrame(
+        np.random.default_rng(48).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    config = _valid_config()
+    config.update({"filter_method": "first_order", "first_order_alpha": 0.5})
+
+    with pytest.raises(ValueError, match="schema 4 does not support first_order"):
+        save_model_package(
+            tmp_path / "legacy.pcamodel", fit_dpca(frame, n_components=2), config,
+            [["2026-01-01", "2026-01-02"]], _schema_version=4,
+        )
 
 
 @pytest.mark.parametrize("status", ["candidate", "draft"])

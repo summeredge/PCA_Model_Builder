@@ -12,6 +12,7 @@ from pca_model_builder.golden import _manifest_sha256, verify_golden_vectors
 
 
 _BUNDLE = Path(__file__).parents[1] / "golden_vectors" / "v1"
+_SCHEMA5_BUNDLE = Path(__file__).parents[1] / "golden_vectors" / "v2"
 
 
 def _copy_bundle(tmp_path: Path) -> Path:
@@ -68,6 +69,26 @@ def test_static_vectors_cover_the_required_preprocessing_and_status_cases():
     assert "2026-01-01 00:45:00" not in set(scores["timestamp"])
     assert {"missing_input", "time_gap_reset"} <= set(scores["invalid_reason"].dropna())
     assert {record["statistic"] for record in contributions} == {"t2", "spe"}
+
+
+def test_schema5_deployment_schema2_golden_covers_first_order_and_invalid_row_reset(monkeypatch):
+    actual_preprocess = golden.preprocess_window
+    semantics: list[str] = []
+
+    def spy_preprocess(*args, **kwargs):
+        semantics.append(kwargs["preprocessing_semantics"])
+        return actual_preprocess(*args, **kwargs)
+
+    monkeypatch.setattr(golden, "preprocess_window", spy_preprocess)
+    result = verify_golden_vectors(_SCHEMA5_BUNDLE)
+    manifest = json.loads((_SCHEMA5_BUNDLE / "fixture_manifest.json").read_text(encoding="utf-8"))
+    scores = pd.read_csv(_SCHEMA5_BUNDLE / "expected_scores.csv")
+
+    assert result["acceptance_status"] == "passed"
+    assert semantics == ["schema5"]
+    assert manifest["fixture_id"] == "schema5-first-order-v1"
+    assert "2026-02-01 08:35:00" not in set(scores["timestamp"])
+    assert result["dynamic_row_count"] == result["score_valid_count"]
 
 
 @pytest.mark.parametrize(
