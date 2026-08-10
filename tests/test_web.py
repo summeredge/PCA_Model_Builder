@@ -11,7 +11,7 @@ import pytest
 
 from pca_model_builder.cli import build_parser
 from pca_model_builder import cli, web, web_model_results
-from pca_model_builder.model_io import load_model_package
+from pca_model_builder.model_io import load_deployment_package, load_model_package
 from pca_model_builder.preprocessing import (
     PreprocessingConfig,
     build_dynamic_matrix,
@@ -768,13 +768,24 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
     for element_id in (
         'id="resamplingMethod"',
         'id="filterMethod"',
+        'id="firstOrderAlpha"',
         'id="gapThreshold"',
         'id="preprocessingPreviewButton"',
     ):
         assert element_id in html
+    assert html.count('id="firstOrderAlpha"') == 1
+    assert '<option value="none" selected>不滤波</option>' in html
+    assert 'option value="trailing_median"' not in html
     assert "/api/preprocessing-preview" in html
     for label in ("原始数据", "重采样数据", "因果滤波数据"):
         assert label in html
+
+
+def test_web_preprocessing_config_defaults_to_none():
+    config = web._preprocessing_config({})
+
+    assert config.filter_method == "none"
+    assert config.first_order_alpha is None
 
 
 def test_preprocessing_preview_uses_unified_core_and_preserves_empty_bins(
@@ -1186,6 +1197,7 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
             "analysis_end": "2026-01-01T14:55:00",
             "sample_interval_minutes": 5,
             "smoothing_window_minutes": 10,
+            "filter_method": "trailing_mean",
             "max_lag_minutes": 10,
             "lag_step_minutes": 5,
             "variance_threshold": 0.95,
@@ -1224,6 +1236,7 @@ def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
             "normal_end": "2026-01-01T09:55:00",
             "sample_interval_minutes": 5,
             "smoothing_window_minutes": 10,
+            "filter_method": "trailing_mean",
             "max_lag_minutes": 10,
             "lag_step_minutes": 5,
             "variance_threshold": 0.95,
@@ -1353,6 +1366,7 @@ def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
         "normal_end": "2026-01-01T09:55:00",
         "sample_interval_minutes": 5,
         "smoothing_window_minutes": 10,
+        "filter_method": "trailing_mean",
         "max_lag_minutes": 10,
         "lag_step_minutes": 5,
         "model_name": "SEMANTICS_DPCA",
@@ -2136,6 +2150,7 @@ def test_web_quality_uses_all_enabled_candidate_windows(tmp_path, monkeypatch):
             "training_windows": windows,
             "sample_interval_minutes": 5,
             "smoothing_window_minutes": 10,
+            "filter_method": "trailing_mean",
             "max_lag_minutes": 10,
             "lag_step_minutes": 5,
         }
@@ -2477,6 +2492,7 @@ def test_web_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
             "training_windows": windows,
             "sample_interval_minutes": 5,
             "smoothing_window_minutes": 10,
+            "filter_method": "trailing_mean",
             "max_lag_minutes": 10,
             "lag_step_minutes": 5,
             "n_components": 2,
@@ -2710,6 +2726,7 @@ def test_web_training_and_clustering_allow_physical_time_gap(tmp_path, monkeypat
         "analysis_end": history.time.iloc[-1].isoformat(),
         "sample_interval_minutes": 5,
         "smoothing_window_minutes": 10,
+        "filter_method": "trailing_mean",
         "max_lag_minutes": 10,
         "lag_step_minutes": 5,
         "variance_threshold": 0.95,
@@ -3002,6 +3019,10 @@ def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeyp
     assert result["model_status"] == "frozen"
     assert (tmp_path / "runs" / trained["run_id"] / "frozen_model.pcamodel").is_file()
     assert (tmp_path / "runs" / trained["run_id"] / "deployment_model.pcadeploy").is_file()
+    _, deployment_manifest = load_deployment_package(
+        tmp_path / "runs" / trained["run_id"] / "deployment_model.pcadeploy"
+    )
+    assert deployment_manifest["deployment_schema_version"] == 1
     frozen_path = tmp_path / "runs" / trained["run_id"] / "frozen_model.pcamodel"
     before = frozen_path.read_bytes()
     replay = web.frozen_replay_payload(
@@ -3044,6 +3065,109 @@ def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeyp
     assert compact["contribution_count"] == len(large_contributions)
     assert "contributions" not in compact
     assert json.loads((run_dir / "frozen_replay_contributions.json").read_text(encoding="utf-8")) == large_contributions
+
+
+def test_web_schema5_first_order_lifecycle_uses_fixed_alpha(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    alpha = 0.35
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": "2026-01-01T00:00:00",
+        "normal_end": "2026-01-01T07:55:00",
+        "sample_interval_minutes": 5,
+        "filter_method": "first_order",
+        "first_order_alpha": alpha,
+        "smoothing_window_minutes": 0,
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "n_components": 2,
+        "model_name": "schema5_first_order",
+    }
+    preview_configs = []
+    original_preview = web.preprocess_window
+
+    def record_preview(*args, **kwargs):
+        preview_configs.append(args[2])
+        return original_preview(*args, **kwargs)
+
+    monkeypatch.setattr(web, "preprocess_window", record_preview)
+    preview = web.preprocessing_preview_payload(
+        {
+            **payload,
+            "start": history.time.iloc[0].isoformat(),
+            "end": history.time.iloc[-1].isoformat(),
+        }
+    )
+    assert preview["filtered"]
+    assert preview_configs[-1].filter_method == "first_order"
+    assert preview_configs[-1].first_order_alpha == alpha
+
+    training_configs = []
+    original_build = web._build_training_matrix_with_stage
+
+    def record_training(*args, **kwargs):
+        training_configs.append(args[3])
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(web, "_build_training_matrix_with_stage", record_training)
+    quality = web.quality_payload(payload)
+    assert quality["can_train"]
+    trained = web.train_payload(payload)
+    assert training_configs[-1].filter_method == "first_order"
+    assert training_configs[-1].first_order_alpha == alpha
+
+    run_dir = tmp_path / "runs" / trained["run_id"]
+    _, candidate_manifest = load_model_package(run_dir / "model.pcamodel")
+    assert candidate_manifest["schema_version"] == 5
+    assert candidate_manifest["config"]["filter_method"] == "first_order"
+    assert candidate_manifest["config"]["first_order_alpha"] == alpha
+
+    windows = [
+        {"id": "normal", "type": "normal_validation", "start": "2026-01-01T08:00:00", "end": "2026-01-01T09:55:00", "enabled": True, "comment": ""},
+        {"id": "abnormal", "type": "known_abnormal", "start": "2026-01-01T10:50:00", "end": "2026-01-01T14:55:00", "enabled": True, "comment": ""},
+    ]
+    validation = web.validate_payload(
+        {
+            "run_id": trained["run_id"],
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "validation_windows": windows,
+        }
+    )
+    assert validation["model_status"] == "candidate"
+    validated = web.validation_decision_payload(
+        {"run_id": trained["run_id"], "decision": "passed", "comment": "approved"}
+    )
+    assert validated["model_status"] == "validated"
+
+    frozen = web.freeze_deployment_payload(
+        {"run_id": trained["run_id"], "model_id": "web.schema5", "model_version": 1, "frozen_by": "engineer", "comment": "freeze"}
+    )
+    assert frozen["model_status"] == "frozen"
+    _, frozen_manifest = load_model_package(run_dir / "frozen_model.pcamodel")
+    _, deployment_manifest = load_deployment_package(run_dir / "deployment_model.pcadeploy")
+    assert frozen_manifest["config"]["first_order_alpha"] == alpha
+    assert deployment_manifest["deployment_schema_version"] == 2
+    assert deployment_manifest["preprocessing"]["filter_method"] == "first_order"
+    assert deployment_manifest["preprocessing"]["first_order_alpha"] == alpha
+
+    replay = web.frozen_replay_payload(
+        {
+            "run_id": trained["run_id"],
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "replay_start": history.time.iloc[130].isoformat(),
+            "replay_end": history.time.iloc[-1].isoformat(),
+        }
+    )
+    assert replay["summary"]["output_row_count"] > 0
 
 
 def _replay_artifacts(run_dir, marker):

@@ -770,7 +770,7 @@ def _stabilize_workbench_html(html: str) -> str:
     parameter_group = parameter_group.replace(
         '<div class="group">', '<div class="group training-configuration">', 1
     )
-    parameter_ids = ("sampleInterval", "filterMethod", "gapThreshold", "maxLag", "varianceThreshold")
+    parameter_ids = ("sampleInterval", "filterMethod", "firstOrderAlpha", "gapThreshold", "maxLag", "varianceThreshold")
     field_rows = {
         field_id: _row_containing_unique_field(parameter_group, field_id, field_id)
         for field_id in parameter_ids
@@ -787,7 +787,7 @@ def _stabilize_workbench_html(html: str) -> str:
     gap_row = parameter_group[slice(*field_rows["gapThreshold"])]
     common_rows = (
         f'        <div class="row">{_label_for_unique_field(parameter_group, "sampleInterval", "目标采样周期")}</div>\n'
-        f'        <div class="row">{_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}{_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}</div>\n'
+        f'        <div class="row">{_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}{_label_for_unique_field(parameter_group, "firstOrderAlpha", "一阶滤波 alpha")}{_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}</div>\n'
         f'        <div class="row">{_label_for_unique_field(parameter_group, "maxLag", "最大Lag")}</div>\n'
         f'        <div class="row">{_label_for_unique_field(parameter_group, "varianceThreshold", "累计解释率")}</div>\n'
         f'        {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'

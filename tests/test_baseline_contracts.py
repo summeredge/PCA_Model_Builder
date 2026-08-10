@@ -148,6 +148,7 @@ def test_cli_and_final_web_single_window_training_produce_the_same_model(
             "normal_end": history.time.iloc[119].isoformat(),
             "sample_interval_minutes": 5,
             "smoothing_window_minutes": 10,
+            "filter_method": "trailing_mean",
             "max_lag_minutes": 10,
             "lag_step_minutes": 5,
             "n_components": 2,

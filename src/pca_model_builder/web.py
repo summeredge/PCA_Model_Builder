@@ -1608,9 +1608,7 @@ def _freeze_deployment_payload_locked(payload: dict[str, Any], run_id: str) -> d
         raise ValueError("当前运行尚未生成已验证模型")
     if frozen_path.exists() or deployment_path.exists():
         raise ValueError("冻结或部署模型包已存在，拒绝覆盖")
-    _, validated_manifest = load_model_package(validated_path)
-    if validated_manifest.get("schema_version") >= 5:
-        raise ValueError("schema 5模型需等待deployment schema 2，当前不能导出部署包")
+    load_model_package(validated_path)
 
     temporary_frozen = run_dir / f".frozen-{uuid.uuid4().hex}.pcamodel"
     temporary_deployment = run_dir / f".deployment-{uuid.uuid4().hex}.pcadeploy"
@@ -1670,7 +1668,7 @@ def _frozen_replay_payload_locked(payload: dict[str, Any], run_id: str) -> dict[
         raise ValueError("当前运行尚未生成冻结模型")
     _, manifest = load_model_package(frozen_path)
     if (
-        manifest.get("schema_version") != 4
+        manifest.get("schema_version") not in {4, 5}
         or manifest.get("model_purpose") != "normal_state"
         or manifest.get("model_status") != "frozen"
     ):
@@ -1801,7 +1799,8 @@ def _preprocessing_config(payload: dict[str, Any]) -> PreprocessingConfig:
             "max_lag_minutes": payload.get("max_lag_minutes", 60),
             "lag_step_minutes": payload.get("lag_step_minutes", 5),
             "resampling_method": payload.get("resampling_method", "none"),
-            "filter_method": payload.get("filter_method", "trailing_mean"),
+            "filter_method": payload.get("filter_method", "none"),
+            "first_order_alpha": payload.get("first_order_alpha"),
             "gap_threshold_minutes": payload.get("gap_threshold_minutes"),
             "state_filters": payload.get("state_filters", []),
         }
@@ -2575,7 +2574,7 @@ INDEX_HTML = r"""<!doctype html>
         <h3>训练窗口</h3><div id="trainingWindows" class="table-wrap"><div class="empty">尚无已确认训练窗口。</div></div>
         <div class="help">只有此处的 training_windows 会参与质量检查和训练。</div>
         <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>
-        <div class="row"><label>滤波方法<select id="filterMethod"><option value="trailing_mean">尾随均值</option><option value="trailing_median">尾随中位数</option><option value="none">不滤波</option></select></label><label>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10"></label></div>
+        <div class="row"><label>滤波方法<select id="filterMethod"><option value="none" selected>不滤波</option><option value="first_order">一阶滤波</option><option value="trailing_mean">尾随均值</option></select></label><label>一阶滤波 alpha<input id="firstOrderAlpha" type="number" min="0" max="1" step="any" placeholder="仅一阶滤波需要" disabled></label><label>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10" disabled></label></div>
         <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
@@ -2838,7 +2837,7 @@ function invalidateQuality(reason) {
   el("excludeAllConstants").disabled=true; renderModelQualityStatus(); renderCurrentTagQuality();
   if(reason) setStatus(`${reason}，请重新执行建模质量检查。`,"warning");
 }
-function commonPayload() { const gap=el("gapThreshold").value; return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),resampling_method:el("resamplingMethod").value,filter_method:el("filterMethod").value,smoothing_window_minutes:numberValue("smoothingWindow"),gap_threshold_minutes:gap===""?null:Number(gap),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
+function commonPayload() { const gap=el("gapThreshold").value, filterMethod=el("filterMethod").value, alpha=el("firstOrderAlpha").value; if(filterMethod==="first_order"&&(!Number.isFinite(Number(alpha))||!(Number(alpha)>0&&Number(alpha)<=1))) throw new Error("一阶滤波 alpha 必须大于 0 且不超过 1。"); return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),resampling_method:el("resamplingMethod").value,filter_method:filterMethod,first_order_alpha:filterMethod==="first_order"?Number(alpha):null,smoothing_window_minutes:filterMethod==="trailing_mean"?numberValue("smoothingWindow"):0,gap_threshold_minutes:gap===""?null:Number(gap),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep")}; }
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function trainingWindowsPayload() { return state.trainingWindows; }
 function updateQualityButtonAvailability() { el("qualityButton").disabled=!state.inspection||!state.trainingWindows.some(window=>window.enabled); }
@@ -3043,8 +3042,10 @@ el("clearAllTags").addEventListener("click",()=>{ state.selectedModelTags.clear(
 el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.showProblems; el("showProblemTags").textContent=state.showProblems?"显示全部Tag":"只看问题Tag"; renderTagList(); });
 el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
 document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".inner-tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".inner-panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.inner)); }));
-["sampleInterval","resamplingMethod","filterMethod","smoothingWindow","gapThreshold","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>invalidateQuality("预处理参数已修改")));
-el("filterMethod").addEventListener("change",()=>{el("smoothingWindow").disabled=el("filterMethod").value==="none";});
+["sampleInterval","resamplingMethod","filterMethod","firstOrderAlpha","smoothingWindow","gapThreshold","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>invalidateQuality("预处理参数已修改")));
+function syncFilterControls() { const filterMethod=el("filterMethod").value; el("firstOrderAlpha").disabled=filterMethod!=="first_order"; el("firstOrderAlpha").required=filterMethod==="first_order"; el("smoothingWindow").disabled=filterMethod!=="trailing_mean"; }
+el("filterMethod").addEventListener("change",syncFilterControls);
+syncFilterControls();
 el("addManualCandidate").addEventListener("click",()=>addCandidateWindow("manual",el("candidateStart").value,el("candidateEnd").value,null,el("candidateComment").value.trim()));
 
 el("tagConfigFile").addEventListener("change",()=>{ el("importConfigButton").disabled=!el("tagConfigFile").files[0]||!state.fileId; });
