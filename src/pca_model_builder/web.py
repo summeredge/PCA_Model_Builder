@@ -1433,9 +1433,6 @@ def _load_upload(
             requested_columns,
         )
     except DataSessionStageError as error:
-        if path.suffix.lower() == ".txt":
-            path.unlink(missing_ok=True)
-            DATA_SESSIONS.remove_dataset(file_id)
         raise WebStageError(error.stage, error) from error
 
 

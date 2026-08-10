@@ -262,22 +262,29 @@ def test_upload_rejects_invalid_txt_and_removes_partial_file(tmp_path, monkeypat
     assert not list(web.UPLOADS_DIR.glob("*.txt"))
 
 
-def test_txt_timestamp_parse_error_removes_invalid_upload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("incorrect_timestamp", ["MISSING_TIME", "AI450006.PV"])
+def test_txt_timestamp_request_error_keeps_upload_for_retry(
+    tmp_path, monkeypatch, incorrect_timestamp
+):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
-    uploaded = web.save_upload(
-        "invalid-time.txt",
-        b"TIME\tA\tB\n2026-04-24 12:00\t1\t2\n",
-    )
+    uploaded = web.save_upload("U400PH.txt", TXT_FIXTURE.read_bytes())
 
     rejected, status = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {"file_id": uploaded["file_id"], "timestamp_column": incorrect_timestamp},
+    )
+    retried, retry_status = _post_response(
         web._Handler,
         "/api/inspect",
         {"file_id": uploaded["file_id"], "timestamp_column": "TIME"},
     )
 
     assert status == 400
-    assert rejected == {"error": "时间列包含无法解析的值", "stage": "parsing"}
-    assert not (web.UPLOADS_DIR / f'{uploaded["file_id"]}.txt').exists()
+    assert rejected["stage"] == "parsing"
+    assert (web.UPLOADS_DIR / f'{uploaded["file_id"]}.txt').is_file()
+    assert retry_status == 200
+    assert retried["columns"][0] == "TIME"
 
 
 def test_upload_rejects_unsupported_files_and_cleans_invalid_xlsx(tmp_path, monkeypatch):
