@@ -213,3 +213,20 @@ def test_frozen_replay_state_filter_can_keep_some_or_no_rows(tmp_path):
     assert empty.summary["state_filter_excluded_rows"] == len(history.loc[bounds[0]:bounds[1]])
     assert empty.summary["maximum_t2"] is None
     assert empty.summary["maximum_spe"] is None
+
+
+def test_schema5_replay_does_not_count_invalid_rows_as_state_filter_exclusions(tmp_path):
+    index = pd.date_range("2026-01-01", periods=120, freq="5min")
+    history = pd.DataFrame(
+        np.random.default_rng(917).normal(size=(120, 3)), index=index, columns=["A", "B", "C"]
+    )
+    frozen = _frozen_model(
+        tmp_path, history, filter_method="none", schema_version=5
+    )
+    replay_input = history.copy()
+    replay_input.loc[index[100], "A"] = np.nan
+
+    replay = replay_frozen_model(frozen, replay_input, index[90], index[110])
+
+    assert replay.summary["preprocessing_summary"]["input_invalid_loss"] == 1
+    assert replay.summary["state_filter_excluded_rows"] == 0

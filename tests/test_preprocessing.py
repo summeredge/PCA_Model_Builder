@@ -255,6 +255,34 @@ def test_first_order_filter_resets_after_state_filter_boundary():
     assert result.filtered["A"].tolist() == [0.0, 5.0, 200.0]
 
 
+def test_state_filter_boundary_overrides_gap_tolerance_for_filter_and_lag():
+    index = pd.date_range("2026-01-01", periods=4, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame(
+            {"A": [0.0, 10.0, 100.0, 200.0], "STATE": [1, 1, 0, 1]},
+            index=index,
+        ),
+        ["A"],
+        PreprocessingConfig(
+            5,
+            0,
+            5,
+            5,
+            filter_method="first_order",
+            first_order_alpha=0.5,
+            gap_threshold_minutes=10,
+            state_filters=(StateFilter("STATE", minimum=1),),
+        ),
+        validate_quality=False,
+        include_intermediates=True,
+    )
+
+    assert result.filtered.loc[index[3], "A"] == 200.0
+    assert result.final_segment_ids.loc[index[1]] != result.final_segment_ids.loc[index[3]]
+    assert result.lag_warmup_mask.loc[index[3]]
+    assert result.dynamic.index.tolist() == [index[1]]
+
+
 def test_trailing_filter_resets_after_state_filter_boundary():
     index = pd.date_range("2026-01-01", periods=4, freq="5min")
     result = preprocess_window(

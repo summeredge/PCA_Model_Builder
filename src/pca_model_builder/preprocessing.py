@@ -813,6 +813,7 @@ def _preprocess_window_schema5(
         state_filtered.index,
         post_invalid_segments.reindex(state_filtered.index),
         config,
+        source_index=usable_frame.index,
     )
     filtered = (
         state_filtered.groupby(final_segments, sort=False).transform(
@@ -911,8 +912,10 @@ def _resegment_remaining(
     index: pd.DatetimeIndex,
     raw_segments: pd.Series,
     config: PreprocessingConfig,
+    *,
+    source_index: pd.DatetimeIndex | None = None,
 ) -> pd.Series:
-    """Split retained rows at source physical boundaries and newly created gaps."""
+    """Split retained rows at physical boundaries and deleted-row discontinuities."""
     if not len(index):
         return pd.Series(dtype=int, index=index)
     source = raw_segments.reindex(index)
@@ -922,6 +925,13 @@ def _resegment_remaining(
         minutes=config.gap_threshold_minutes or config.sample_interval_minutes
     )
     breaks = source.ne(source.shift()) | index.to_series().diff().gt(threshold)
+    if source_index is not None:
+        positions = source_index.get_indexer(index)
+        if (positions < 0).any():
+            raise ValueError("source timestamps must cover retained timestamps")
+        breaks |= pd.Series(
+            np.r_[False, np.diff(positions) > 1], index=index
+        )
     return (breaks.cumsum().astype(int) - 1).set_axis(index)
 
 

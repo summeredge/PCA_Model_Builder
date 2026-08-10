@@ -30,8 +30,8 @@
     "expected_dynamic_features.csv": "d95344450ffc0704e34e3212b0bf0ceb7224050a18e5a9ba7b32946e961dd8d6",
     "expected_scores.csv": "34c64a11d25850875c1e98206782174fcb18190fab08c3ecaf11e4a8f01ea2e6",
     "expected_contributions.json": "d5b4fedb0eba411e60fc6f3fe6ba63fc5e15806dcc5d387b4af27d83319b5274",
-    "expected_summary.json": "7b3cd84d6869ace785207626a5da5cf192166e4222f736dd6eb165de4ded45c9",
-    "fixture_manifest.json": "a34774d8a442e59380d9df79f341c05986dae29de79a0ad4ad4f8859c7daece3"
+    "expected_summary.json": "c91ea04ba9d0976076faecebe9cd0f203607a7d6839789f56ed52dff9b8d775f",
+    "fixture_manifest.json": "05665d314e85b4c0addc4b3d0a6eee2d814d47cf859fcfb41165c6c797a2f6e5"
   },
-  "manifest_sha256": "a34774d8a442e59380d9df79f341c05986dae29de79a0ad4ad4f8859c7daece3"
+  "manifest_sha256": "05665d314e85b4c0addc4b3d0a6eee2d814d47cf859fcfb41165c6c797a2f6e5"
 }

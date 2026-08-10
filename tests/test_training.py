@@ -351,6 +351,12 @@ def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():
     assert frame.time.iloc[12] not in result.dynamic.index
     assert result.window_summaries[0]["state_filter_output_rows"] == 16
     assert result.window_summaries[0]["first_order_alpha"] == 0.5
+    segments = result.window_summaries[0]["segments"]
+    assert [segment["state_filter_input_rows"] for segment in segments] == [20]
+    assert [segment["state_filter_output_rows"] for segment in segments] == [16]
+    assert [segment["state_filter_loss"] for segment in segments] == [4]
+    assert sum(segment["state_filter_input_rows"] for segment in segments) == result.window_summaries[0]["state_filter_input_rows"]
+    assert sum(segment["state_filter_output_rows"] for segment in segments) == result.window_summaries[0]["state_filter_output_rows"]
 
 
 def test_training_resampling_keeps_only_complete_window_bins():

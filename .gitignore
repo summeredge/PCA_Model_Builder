@@ -7,6 +7,7 @@ dist/
 *.egg-info/
 *.pcamodel
 !golden_vectors/v1/frozen_model.pcamodel
+!golden_vectors/v2/frozen_model.pcamodel
 validation_scores.csv
 validation_report.json
 validation_contributions.json

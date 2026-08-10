@@ -110,7 +110,6 @@ def build_training_matrix(
                 _window_quality_error(window["id"], error.report)
             ) from error
         assert processed.resampled is not None
-        assert processed.filtered is not None
         assert processed.state_filtered is not None
         dynamic = processed.dynamic
         resampled_segment_ids = processed.segment_ids
@@ -121,9 +120,6 @@ def build_training_matrix(
             resampled_segment = processed.resampled.loc[resampled_mask]
             retained_index = processed.post_invalid_segment_ids.index[
                 resampled_segment_ids.reindex(processed.post_invalid_segment_ids.index).eq(segment_id)
-            ]
-            filtered_segment = processed.filtered.loc[
-                processed.filtered.index.intersection(retained_index)
             ]
             state_segment = processed.state_filtered.loc[
                 processed.state_filtered.index.intersection(retained_index)
@@ -174,9 +170,9 @@ def build_training_matrix(
                         .fillna(False)
                         .sum()
                     ),
-                    "state_filter_input_rows": len(filtered_segment),
+                    "state_filter_input_rows": len(retained_index),
                     "state_filter_output_rows": len(state_segment),
-                    "state_filter_loss": len(filtered_segment) - len(state_segment),
+                    "state_filter_loss": len(retained_index) - len(state_segment),
                     "lag_warmup_loss": int(
                         processed.lag_warmup_mask.reindex(state_segment.index)
                         .fillna(False)

@@ -15,7 +15,7 @@
     "not_scored": 1,
     "abnormal": 4
   },
-  "state_filter_excluded_rows": 1,
+  "state_filter_excluded_rows": 0,
   "t2_exceedance_95_count": 0,
   "t2_exceedance_99_count": 0,
   "spe_exceedance_95_count": 4,

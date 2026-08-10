@@ -118,10 +118,17 @@ def replay_frozen_model(
     scores["status"] = scores["overall_status"]
 
     contributions = _contribution_records(model, manifest, processed, scores)
-    replay_resampled = processed.resampled.loc[
-        processed.resampled.index.to_series().between(start, end, inclusive="both")
+    state_filter_input_index = (
+        processed.post_invalid_segment_ids.index
+        if semantics == "schema5"
+        else processed.resampled.index
+    )
+    state_filter_input = state_filter_input_index[
+        state_filter_input_index.to_series().between(
+            start, end, inclusive="both"
+        )
     ]
-    state_filter_excluded = len(replay_resampled) - len(scores)
+    state_filter_excluded = len(state_filter_input) - len(scores)
     valid_scores = scores.loc[scores["score_valid"]]
     summary = {
         "model_id": manifest["model_id"],
