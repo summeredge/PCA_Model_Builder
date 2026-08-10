@@ -48,6 +48,7 @@ class DataLoadResult:
 class _CachedDatasetMetadata:
     public: DataSessionMetadata
     parsed_timestamp_series: pd.Series
+    read_key: str
 
 
 class DataSessionStageError(ValueError):
@@ -62,7 +63,7 @@ _ColumnCacheKey = tuple[
 
 
 class DataSessionCache:
-    """Bounded, process-local CSV metadata and whole-column cache."""
+    """Bounded, process-local table metadata and whole-column cache."""
 
     def __init__(
         self,
@@ -127,15 +128,16 @@ class DataSessionCache:
         path = Path(source_path)
         with self._lock:
             fingerprint = self._fingerprint(path)
+            read_key = self._read_key(path, encoding)
             self._invalidate_changed_dataset(dataset_id, path, fingerprint)
-            key = (dataset_id, encoding, timestamp_column)
+            key = (dataset_id, read_key, timestamp_column)
             cached_metadata = self._metadata.get(key)
             if cached_metadata is not None:
                 self._touch_dataset(dataset_id)
                 return cached_metadata.public, True
-            frame = self._read_csv(path, encoding=encoding)
+            frame = self._read_table(path, encoding)
             cached_metadata = self._parse_metadata(
-                dataset_id, path, fingerprint, encoding, timestamp_column, frame
+                dataset_id, path, fingerprint, encoding, timestamp_column, frame, read_key
             )
             self._store_metadata(cached_metadata)
             return cached_metadata.public, False
@@ -151,14 +153,15 @@ class DataSessionCache:
         path = Path(source_path)
         with self._lock:
             fingerprint = self._fingerprint(path)
+            read_key = self._read_key(path, encoding)
             self._invalidate_changed_dataset(dataset_id, path, fingerprint)
-            metadata_key = (dataset_id, encoding, timestamp_column)
+            metadata_key = (dataset_id, read_key, timestamp_column)
             cached_metadata = self._metadata.get(metadata_key)
             metadata_hit = cached_metadata is not None
             metadata_cached = metadata_hit
             initial_frame: pd.DataFrame | None = None
             if cached_metadata is None:
-                initial_frame = self._read_csv(path, encoding=encoding)
+                initial_frame = self._read_table(path, encoding)
                 cached_metadata = self._parse_metadata(
                     dataset_id,
                     path,
@@ -166,6 +169,7 @@ class DataSessionCache:
                     encoding,
                     timestamp_column,
                     initial_frame,
+                    read_key,
                 )
                 metadata_cached = self._store_metadata(cached_metadata)
 
@@ -174,7 +178,7 @@ class DataSessionCache:
             normalized = tuple(sorted(requested))
             cache_key = (
                 dataset_id,
-                encoding,
+                read_key,
                 timestamp_column,
                 fingerprint,
                 normalized,
@@ -200,7 +204,7 @@ class DataSessionCache:
                 full_columns = tuple(sorted(metadata.column_names))
                 full_key = (
                     dataset_id,
-                    encoding,
+                    read_key,
                     timestamp_column,
                     fingerprint,
                     full_columns,
@@ -209,7 +213,7 @@ class DataSessionCache:
                     self._store_column(full_key, initial_frame)
                 frame = initial_frame.loc[:, requested].copy(deep=True)
             else:
-                frame = self._read_csv(path, encoding=encoding, usecols=requested)
+                frame = self._read_table(path, encoding, usecols=requested)
                 frame[timestamp_column] = (
                     cached_metadata.parsed_timestamp_series.to_numpy(copy=False)
                 )
@@ -228,11 +232,31 @@ class DataSessionCache:
             )
 
     @staticmethod
-    def _read_csv(path: Path, **kwargs: object) -> pd.DataFrame:
+    def _read_table(
+        path: Path, encoding: str, usecols: Sequence[str] | None = None
+    ) -> pd.DataFrame:
         try:
-            return pd.read_csv(path, **kwargs)
+            if path.suffix.lower() == ".csv":
+                kwargs: dict[str, object] = {"encoding": encoding}
+                if usecols is not None:
+                    kwargs["usecols"] = list(usecols)
+                return pd.read_csv(path, **kwargs)
+            if path.suffix.lower() == ".xlsx":
+                kwargs = {"sheet_name": 0, "engine": "openpyxl"}
+                if usecols is not None:
+                    kwargs["usecols"] = list(usecols)
+                return pd.read_excel(path, **kwargs)
+            raise ValueError("仅支持 CSV 或 XLSX 文件")
         except Exception as error:
             raise DataSessionStageError("loading", error) from error
+
+    @staticmethod
+    def _read_key(path: Path, encoding: str) -> str:
+        if path.suffix.lower() == ".csv":
+            return f"csv:{encoding}"
+        if path.suffix.lower() == ".xlsx":
+            return "xlsx:sheet=0:header=0"
+        raise DataSessionStageError("loading", ValueError("仅支持 CSV 或 XLSX 文件"))
 
     @staticmethod
     def _fingerprint(path: Path) -> FileFingerprint:
@@ -259,7 +283,7 @@ class DataSessionCache:
 
     def _store_metadata(self, metadata: _CachedDatasetMetadata) -> bool:
         public = metadata.public
-        key = (public.dataset_id, public.encoding, public.timestamp_column)
+        key = (public.dataset_id, metadata.read_key, public.timestamp_column)
         size = int(
             metadata.parsed_timestamp_series.memory_usage(index=True, deep=True)
         )
@@ -351,6 +375,7 @@ class DataSessionCache:
         encoding: str,
         timestamp_column: str,
         frame: pd.DataFrame,
+        read_key: str,
     ) -> _CachedDatasetMetadata:
         try:
             if timestamp_column not in frame.columns:
@@ -361,6 +386,8 @@ class DataSessionCache:
             candidates = []
             for column in frame.columns:
                 if column == timestamp_column:
+                    continue
+                if pd.api.types.is_datetime64_any_dtype(frame[column]):
                     continue
                 original_non_null = int(frame[column].notna().sum())
                 if original_non_null == 0:
@@ -389,7 +416,9 @@ class DataSessionCache:
                 time_end=unique_sorted[-1] if len(unique_sorted) else None,
                 inferred_sample_interval=inferred,
             )
-            return _CachedDatasetMetadata(public, parsed.reset_index(drop=True))
+            return _CachedDatasetMetadata(
+                public, parsed.reset_index(drop=True), read_key
+            )
         except Exception as error:
             if isinstance(error, DataSessionStageError):
                 raise

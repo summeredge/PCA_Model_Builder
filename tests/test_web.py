@@ -40,6 +40,12 @@ def _history_frame() -> pd.DataFrame:
     return frame
 
 
+def _xlsx_bytes(frame: pd.DataFrame) -> bytes:
+    content = BytesIO()
+    frame.to_excel(content, index=False)
+    return content.getvalue()
+
+
 def _post_response(handler_class, path: str, payload: dict) -> tuple[dict, int]:
     captured = {}
     handler = object.__new__(handler_class)
@@ -162,6 +168,59 @@ def test_upload_csv_read_error_is_explicit_and_removes_partial_file(tmp_path, mo
         web.save_upload("invalid.csv", b"\xff\xfe\xff")
 
     assert not list(web.UPLOADS_DIR.glob("*.csv"))
+
+
+def test_upload_accepts_xlsx_and_inspects_raw_data_without_preprocessing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    source = pd.DataFrame(
+        {
+            "time": pd.to_datetime(
+                ["2026-01-01 00:00", "2026-01-01 00:05", "2026-01-01 01:00"]
+            ),
+            "A": [1.0, 2.0, 3.0],
+            "B": [4.0, 5.0, 6.0],
+        }
+    )
+    observed = []
+    original_inspect = web.inspect_data_quality
+
+    def record_inspection(frame, timestamp_column, numeric_columns):
+        observed.append(frame.copy(deep=True))
+        return original_inspect(frame, timestamp_column, numeric_columns)
+
+    monkeypatch.setattr(web, "inspect_data_quality", record_inspection)
+    monkeypatch.setattr(
+        web,
+        "preprocess_window",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
+    )
+    uploaded = web.save_upload("history.xlsx", _xlsx_bytes(source))
+    inspected, status = _post_response(
+        web._Handler,
+        "/api/inspect",
+        {"file_id": uploaded["file_id"], "timestamp_column": "time"},
+    )
+
+    assert status == 200
+    assert uploaded["encoding"] == "xlsx"
+    assert (web.UPLOADS_DIR / f'{uploaded["file_id"]}.xlsx').is_file()
+    assert inspected["rows"] == len(source)
+    assert inspected["columns"] == ["time", "A", "B"]
+    assert list(observed[0].columns) == ["time", "A", "B"]
+    assert observed[0]["A"].tolist() == source["A"].tolist()
+
+
+def test_upload_rejects_unsupported_files_and_cleans_invalid_xlsx(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+
+    with pytest.raises(ValueError, match="CSV 或 XLSX"):
+        web.save_upload("history.txt", b"time,A\n2026-01-01,1\n")
+    with pytest.raises(ValueError, match="XLSX读取失败："):
+        web.save_upload("invalid.xlsx", b"not an xlsx")
+
+    assert not list(web.UPLOADS_DIR.glob("*.xlsx"))
 
 
 def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls():

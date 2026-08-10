@@ -70,3 +70,18 @@ Not testable as a product regression.
 
 ### 元数据
 - Reproducible: yes
+
+## [ERR-20260810-001] XLSX datetime columns became numeric candidates
+
+**Priority**: medium
+**Status**: resolved
+**Area**: data loading
+
+### 摘要
+`read_excel` materializes non-selected datetime columns as datetime dtypes, which `pd.to_numeric` accepts unlike the equivalent CSV strings.
+
+### 建议修复
+Exclude datetime dtypes before numeric-candidate detection and cover equivalent CSV/XLSX metadata in a regression test.
+
+### 元数据
+- Reproducible: yes

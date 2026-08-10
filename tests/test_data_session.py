@@ -24,6 +24,80 @@ def _write_csv(path: Path, offset: float = 0.0) -> pd.DataFrame:
     return frame
 
 
+def _write_xlsx(path: Path, offset: float = 0.0) -> pd.DataFrame:
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=4, freq="5min"),
+            "alternate_time": pd.date_range("2026-02-01", periods=4, freq="10min"),
+            "A": [1.0 + offset, 2.0, 3.0, 4.0],
+            "B": [5.0, 6.0, 7.0, 8.0],
+            "label": ["x", "x", "y", "y"],
+        }
+    )
+    frame.to_excel(path, index=False)
+    return frame
+
+
+def test_csv_encodings_and_xlsx_share_metadata_and_column_loading(tmp_path: Path) -> None:
+    csv_path = tmp_path / "history.csv"
+    xlsx_path = tmp_path / "history.xlsx"
+    expected = _write_csv(csv_path)
+    with pd.ExcelWriter(xlsx_path) as writer:
+        expected.to_excel(writer, sheet_name="history", index=False)
+        pd.DataFrame({"not_history": [1, 2, 3, 4]}).to_excel(
+            writer, sheet_name="other", index=False
+        )
+    gb_path = tmp_path / "gb18030.csv"
+    expected.to_csv(gb_path, index=False, encoding="gb18030")
+    cache = DataSessionCache()
+
+    csv_metadata, _ = cache.get_metadata("csv", csv_path, "utf-8-sig", "time")
+    xlsx_metadata, _ = cache.get_metadata("xlsx", xlsx_path, "xlsx", "time")
+    gb = cache.load_columns("gb", gb_path, "gb18030", "time", ["B", "A"])
+    csv = cache.load_columns("csv", csv_path, "utf-8-sig", "time", ["B", "A"])
+    xlsx = cache.load_columns("xlsx", xlsx_path, "xlsx", "time", ["B", "A"])
+
+    assert csv_metadata.column_names == xlsx_metadata.column_names
+    assert csv_metadata.numeric_candidate_columns == xlsx_metadata.numeric_candidate_columns
+    assert csv_metadata.time_start == xlsx_metadata.time_start
+    assert csv_metadata.time_end == xlsx_metadata.time_end
+    assert csv_metadata.inferred_sample_interval == xlsx_metadata.inferred_sample_interval
+    assert list(csv.frame.columns) == ["time", "B", "A"]
+    pd.testing.assert_frame_equal(csv.frame, xlsx.frame, check_dtype=False)
+    pd.testing.assert_frame_equal(csv.frame, gb.frame, check_dtype=False)
+
+
+def test_xlsx_timestamp_errors_are_parsing_failures(tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing.xlsx"
+    invalid_path = tmp_path / "invalid.xlsx"
+    pd.DataFrame({"A": [1.0, 2.0]}).to_excel(missing_path, index=False)
+    pd.DataFrame({"time": ["invalid", "2026-01-01"], "A": [1.0, 2.0]}).to_excel(
+        invalid_path, index=False
+    )
+    cache = DataSessionCache()
+
+    with pytest.raises(DataSessionStageError, match="找不到时间列：time") as missing:
+        cache.get_metadata("missing", missing_path, "xlsx", "time")
+    with pytest.raises(DataSessionStageError, match="时间列包含无法解析的值") as invalid:
+        cache.get_metadata("invalid", invalid_path, "xlsx", "time")
+
+    assert missing.value.stage == "parsing"
+    assert invalid.value.stage == "parsing"
+
+
+def test_xlsx_file_change_invalidates_cached_columns(tmp_path: Path) -> None:
+    path = tmp_path / "history.xlsx"
+    _write_xlsx(path)
+    cache = DataSessionCache()
+    first = cache.load_columns("dataset-1", path, "xlsx", "time", ["A"])
+    _write_xlsx(path, offset=100.0)
+    changed = cache.load_columns("dataset-1", path, "xlsx", "time", ["A"])
+
+    assert not first.cache_hit
+    assert not changed.cache_hit
+    assert changed.frame.loc[0, "A"] == 101.0
+
+
 def test_metadata_cache_hits_and_keeps_timestamp_columns_separate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
