@@ -1240,12 +1240,33 @@ def test_final_web_quality_tag_selector_survives_four_column_renderer_override()
 
     assert 'id="qualityTagSelect"' in html
     assert "state.quality.tags" in renderer
-    assert "select.disabled = !tags.length;" in renderer
-    assert "state.selectedTag = tags[0].tag;" in renderer
+    assert "select.disabled = !filteredTags.length;" in renderer
+    assert "state.selectedTag = filteredTags[0].tag;" in renderer
     assert "select.value = state.selectedTag;" in renderer
     assert 'class="quality-profile-grid"' in renderer
     assert "没有可查看的建模 Tag。" in renderer
     assert "state.selectedTag = value;\n  renderCurrentTagQuality();" in html
+
+
+def test_final_web_quality_tag_filter_and_compact_profile_tables():
+    html = web_model_results.INDEX_HTML
+    renderer = html.split('id="qualityProfileGridScript">', 1)[1].split(
+        "</script>", 1
+    )[0]
+
+    assert 'filter.id = "qualityTagFilter";' in renderer
+    assert "state.quality.tags" in renderer
+    assert "String(item.tag).toLowerCase().includes" in renderer
+    assert 'filter.addEventListener("input", () => window.renderCurrentTagQuality());' in renderer
+    assert "filter.value = \"\";" in renderer
+    assert "filteredTags.some((item) => item.tag === state.selectedTag)" in renderer
+    assert 'option.textContent = "无匹配 Tag";' in renderer
+    assert "function qualityProfileTable(title, profile)" in renderer
+    assert "for (let index = 0; index < fields.length; index += 2)" in renderer
+    assert '"<th></th><td></td>"' in renderer
+    assert 'class="quality-profile-table"' in renderer
+    assert ".quality-profile-table th:nth-child(odd)" in html
+    assert ".quality-profile-table td:nth-child(even)" in html
 
 
 def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):

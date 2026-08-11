@@ -11,19 +11,38 @@ _QUALITY_GRID_CSS = r"""
   .quality-profile-grid {
     display:grid;
     grid-template-columns:minmax(0,1fr) minmax(0,1fr);
-    gap:12px;
+    gap:8px;
     align-items:start;
   }
+  .quality-tag-controls {
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    align-items:end;
+    margin:0 0 4px;
+  }
+  .quality-tag-controls label { min-width:180px; }
   .quality-profile-section { min-width:0; }
-  .quality-profile-section h4 { margin:8px 0; }
+  .quality-profile-section h4 { margin:6px 0; }
   .quality-profile-section .table-wrap {
     max-height:none;
     overflow:visible;
   }
-  .quality-profile-section table { table-layout:fixed; }
-  .quality-profile-section th,
-  .quality-profile-section td { width:50%; }
-  .quality-profile-section td {
+  .quality-profile-section .quality-profile-table {
+    width:100%;
+    table-layout:fixed;
+  }
+  .quality-profile-section .quality-profile-table th,
+  .quality-profile-section .quality-profile-table td {
+    width:auto;
+    padding:5px 7px;
+  }
+  .quality-profile-section .quality-profile-table th:nth-child(odd) {
+    width:24%;
+    white-space:nowrap;
+  }
+  .quality-profile-section .quality-profile-table td:nth-child(even) {
+    width:26%;
     text-align:right;
     font-variant-numeric:tabular-nums;
   }
@@ -37,26 +56,76 @@ _QUALITY_GRID_CSS = r"""
 _QUALITY_GRID_SCRIPT = r"""
 <script id="qualityProfileGridScript">
 (() => {
+  const fields = [["sample_count","样本数"],["valid_count","有效数"],["missing_count","缺失数"],["missing_rate","缺失率"],["non_numeric_count","非数值数"],["non_finite_count","非有限值数"],["unique_count","唯一值"],["minimum","最小值"],["maximum","最大值"],["mean","均值"],["median","中位数"],["standard_deviation","标准差"],["p01","P1"],["p05","P5"],["p95","P95"],["p99","P99"],["engineering_range_outside_count","工程范围越界"],["normal_range_outside_count","正常范围外"],["alarm_range_outside_count","报警范围外"]];
+  let previousQuality = null;
+
+  function qualityProfileTable(title, profile) {
+    const rows = [];
+    for (let index = 0; index < fields.length; index += 2) {
+      const first = fields[index];
+      const second = fields[index + 1];
+      rows.push(`<tr><th>${first[1]}</th><td>${formatStat(first[0], profile[first[0]])}</td>${second ? `<th>${second[1]}</th><td>${formatStat(second[0], profile[second[0]])}</td>` : "<th></th><td></td>"}</tr>`);
+    }
+    return `<h4>${title}</h4><div class="table-wrap"><table class="quality-profile-table"><tbody>${rows.join("")}</tbody></table></div>`;
+  }
+
+  function addTagFilter(select) {
+    const tagLabel = select.closest("label");
+    if (!tagLabel || el("qualityTagFilter")) return;
+    const controls = document.createElement("div");
+    controls.className = "quality-tag-controls";
+    const filterLabel = document.createElement("label");
+    filterLabel.textContent = "筛选 Tag：";
+    const filter = document.createElement("input");
+    filter.id = "qualityTagFilter";
+    filter.type = "text";
+    filter.placeholder = "输入位号筛选";
+    filter.addEventListener("input", () => window.renderCurrentTagQuality());
+    filterLabel.append(filter);
+    tagLabel.before(controls);
+    controls.append(filterLabel, tagLabel);
+  }
+
   window.renderCurrentTagQuality = function renderCurrentTagQualityFourColumns() {
     const container = el("currentTagQuality");
     const select = el("qualityTagSelect");
     if (!container) return;
+    if (select) addTagFilter(select);
+    const filter = el("qualityTagFilter");
     const tags = state.quality ? state.quality.tags : [];
+    if (filter && state.quality !== previousQuality) {
+      filter.value = "";
+      previousQuality = state.quality;
+    }
+    const filteredTags = tags.filter((item) =>
+      String(item.tag).toLowerCase().includes((filter?.value || "").trim().toLowerCase())
+    );
     if (select) {
       select.replaceChildren();
-      select.disabled = !tags.length;
-      if (tags.length) {
-        if (!tags.some((item) => item.tag === state.selectedTag)) {
-          state.selectedTag = tags[0].tag;
+      select.disabled = !filteredTags.length;
+      if (filteredTags.length) {
+        if (!filteredTags.some((item) => item.tag === state.selectedTag)) {
+          state.selectedTag = filteredTags[0].tag;
         }
-        tags.forEach((item) => {
+        filteredTags.forEach((item) => {
           const option = document.createElement("option");
           option.value = item.tag;
           option.textContent = item.tag;
           select.append(option);
         });
         select.value = state.selectedTag;
+      } else if (tags.length) {
+        const option = document.createElement("option");
+        option.textContent = "无匹配 Tag";
+        option.disabled = true;
+        option.selected = true;
+        select.append(option);
       }
+    }
+    if (state.quality && tags.length && !filteredTags.length) {
+      container.className = "empty";
+      container.textContent = "未找到匹配的 Tag。";
+      return;
     }
     const item = state.selectedTag ? qualityFor(state.selectedTag) : null;
     if (!state.quality || !item) {
