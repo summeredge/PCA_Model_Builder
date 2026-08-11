@@ -48,6 +48,26 @@ def test_quality_report_detects_irregular_sampling_missing_and_range_violation()
     assert next(
         issue for issue in report.issues if issue.code == "engineering_range"
     ).tag == "T1"
+    assert next(
+        issue for issue in report.issues if issue.code == "engineering_range"
+    ).severity == "warning"
+
+
+def test_engineering_range_counts_only_finite_values():
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=3, freq="5min"),
+            "T1": [20.0, float("inf"), float("-inf")],
+        }
+    )
+
+    report = inspect_data_quality(
+        frame, "time", ["T1"], engineering_ranges={"T1": (0.0, 10.0)}
+    )
+
+    engineering = next(issue for issue in report.issues if issue.code == "engineering_range")
+    assert engineering.count == 1
+    assert engineering.severity == "warning"
 
 
 def test_quality_report_allows_physical_gap_on_sampling_grid():

@@ -101,6 +101,7 @@ def build_training_matrix(
                 include_intermediates=True,
                 include_variability=False,
                 preserve_columns=reference_columns,
+                exclude_engineering_range=True,
                 # Training windows are isolated: never complete a boundary bucket
                 # with samples outside the engineer-selected window.
                 resampling_window=(start, end),
@@ -188,6 +189,11 @@ def build_training_matrix(
                         .fillna(False)
                         .sum()
                     ),
+                    "engineering_range_loss": int(
+                        processed.engineering_range_mask.reindex(resampled_segment.index)
+                        .fillna(False)
+                        .sum()
+                    ),
                     "effective_samples": effective_samples,
                     "smoothing_lag_loss": filter_loss + int(
                         processed.lag_warmup_mask.reindex(state_segment.index)
@@ -242,6 +248,8 @@ def build_training_matrix(
                 "lag_warmup_loss": preprocessing_summary.lag_warmup_loss,
                 "lag_context_invalid_loss": preprocessing_summary.lag_context_invalid_loss,
                 "input_invalid_loss": preprocessing_summary.input_invalid_loss,
+                "engineering_range_loss": int(processed.engineering_range_mask.sum()),
+                "engineering_range_loss_by_tag": dict(processed.engineering_range_loss_by_tag),
                 "effective_samples": effective_samples,
                 "smoothing_lag_loss": (
                     preprocessing_summary.filter_warmup_loss

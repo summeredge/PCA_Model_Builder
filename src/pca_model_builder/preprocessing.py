@@ -198,6 +198,8 @@ class PreprocessingResult:
     lag_warmup_mask: pd.Series
     lag_context_invalid_mask: pd.Series
     input_invalid_mask: pd.Series
+    engineering_range_mask: pd.Series
+    engineering_range_loss_by_tag: Mapping[str, int]
     dynamic_valid_mask: pd.Series
     partial_resampling_bin_loss_by_segment: Mapping[int, int]
     partial_resampling_row_loss_by_segment: Mapping[int, int]
@@ -450,6 +452,7 @@ def preprocess_window(
     preserve_columns: Sequence[str] = (),
     resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
     allow_empty_state_filter: bool = False,
+    exclude_engineering_range: bool = False,
     preprocessing_semantics: str = "schema5",
 ) -> PreprocessingResult:
     """Execute the single causal preprocessing contract for one independent window."""
@@ -465,6 +468,7 @@ def preprocess_window(
             preserve_columns=preserve_columns,
             resampling_window=resampling_window,
             allow_empty_state_filter=allow_empty_state_filter,
+            exclude_engineering_range=exclude_engineering_range,
         )
     if preprocessing_semantics != "legacy":
         raise ValueError("unsupported preprocessing semantics")
@@ -568,7 +572,10 @@ def _preprocess_window_legacy(
             expected_interval_minutes=config.sample_interval_minutes,
             include_variability=include_variability,
         )
-        if validate_quality and not report.can_train:
+        if validate_quality and (
+            not report.can_train
+            or any(issue.code == "engineering_range" for issue in report.issues)
+        ):
             raise PreprocessingQualityError(report)
 
     numeric_resampled = resampled.apply(pd.to_numeric, errors="coerce")
@@ -698,6 +705,8 @@ def _preprocess_window_legacy(
         lag_warmup_mask=lag_warmup_mask,
         lag_context_invalid_mask=lag_context_invalid_mask,
         input_invalid_mask=input_invalid_mask,
+        engineering_range_mask=pd.Series(False, index=resampled.index),
+        engineering_range_loss_by_tag={},
         dynamic_valid_mask=dynamic_valid_mask,
         partial_resampling_bin_loss_by_segment=partial_bin_loss_by_segment,
         partial_resampling_row_loss_by_segment=partial_row_loss_by_segment,
@@ -720,6 +729,7 @@ def _preprocess_window_schema5(
     preserve_columns: Sequence[str] = (),
     resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
     allow_empty_state_filter: bool = False,
+    exclude_engineering_range: bool = False,
 ) -> PreprocessingResult:
     """Schema 5: discard invalid resampled inputs before segment-local filtering."""
     _validate_index(frame.index)
@@ -793,9 +803,24 @@ def _preprocess_window_schema5(
     )
     # Empty buckets are a distinct resampling loss, never an input-invalid loss.
     input_invalid_mask = ~empty_bin_mask & ~input_valid
-    usable = input_valid & ~empty_bin_mask
+    engineering_range_mask = pd.Series(False, index=resampled.index)
+    engineering_range_loss_by_tag: dict[str, int] = {}
+    if exclude_engineering_range:
+        for tag, (lower, upper) in (engineering_ranges or {}).items():
+            if tag not in tag_columns:
+                continue
+            values = numeric_resampled[tag]
+            outside = np.isfinite(values) & ((values < lower) | (values > upper))
+            engineering_range_loss_by_tag[tag] = int(outside.sum())
+            engineering_range_mask |= outside
+    usable = input_valid & ~empty_bin_mask & ~engineering_range_mask
     usable_frame = numeric_resampled.loc[usable]
-    if len(resampled) != int(empty_bin_mask.sum()) + int(input_invalid_mask.sum()) + len(usable_frame):
+    if len(resampled) != (
+        int(empty_bin_mask.sum())
+        + int(input_invalid_mask.sum())
+        + int(engineering_range_mask.sum())
+        + len(usable_frame)
+    ):
         raise ValueError("resampled preprocessing losses do not close")
     usable_raw_segments = resampled_segments.loc[usable]
     post_invalid_segments = _resegment_remaining(
@@ -898,6 +923,8 @@ def _preprocess_window_schema5(
         lag_warmup_mask=lag_warmup_mask,
         lag_context_invalid_mask=lag_context_invalid_mask,
         input_invalid_mask=input_invalid_mask,
+        engineering_range_mask=engineering_range_mask,
+        engineering_range_loss_by_tag=engineering_range_loss_by_tag,
         dynamic_valid_mask=dynamic_valid_mask,
         partial_resampling_bin_loss_by_segment=partial_bin_loss_by_segment,
         partial_resampling_row_loss_by_segment=partial_row_loss_by_segment,

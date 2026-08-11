@@ -280,12 +280,14 @@ def inspect_data_quality(
 
         if tag in engineering_ranges:
             lower, upper = engineering_ranges[tag]
-            outside_count = int(((numeric < lower) | (numeric > upper)).sum())
+            outside_count = int(
+                (np.isfinite(numeric) & ((numeric < lower) | (numeric > upper))).sum()
+            )
             if outside_count:
                 issues.append(
                     QualityIssue(
                         "engineering_range",
-                        "error",
+                        "warning",
                         f"{tag} contains values outside its engineering range.",
                         outside_count,
                         tag,

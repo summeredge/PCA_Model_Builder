@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import inspect
 
 from pca_model_builder.preprocessing import PreprocessingConfig, StateFilter
+from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.validation import (
     _read_validation_scores,
     _combined_exceedance_events,
@@ -161,6 +162,36 @@ def test_validation_lag_does_not_cross_state_filter_break():
 
     with pytest.raises(ValueError, match="insufficient"):
         build_validation_matrix(frame, ["A", "B"], config, index[5], index[8])
+
+
+def test_known_abnormal_validation_scores_engineering_range_values():
+    index = pd.date_range("2026-01-01", periods=90, freq="5min")
+    frame = pd.DataFrame(
+        np.random.default_rng(91).normal(size=(90, 3)), index=index, columns=["A", "B", "C"]
+    )
+    config = PreprocessingConfig(5, 0, 0, 5, filter_method="none")
+    training_dynamic = frame.loc[:index[49]].rename(
+        columns={tag: f"{tag}__lag_000min" for tag in frame.columns}
+    )
+    model = fit_dpca(training_dynamic, n_components=2)
+    frame.loc[index[60]:index[70], "A"] = 1000.0
+    windows = [{
+        "id": "known-001", "type": "known_abnormal", "start": index[60].isoformat(),
+        "end": index[70].isoformat(), "enabled": True, "comment": "range event",
+    }]
+
+    result = validate_model_windows(
+        model,
+        frame,
+        ["A", "B", "C"],
+        config,
+        [(index[0], index[49])],
+        windows,
+        {"A": {"engineering_min": -10.0, "engineering_max": 10.0}},
+    )
+
+    assert result["known_abnormal_complete"] is True
+    assert result["window_summaries"][0]["scored_rows"] == 11
 
 
 def test_typed_validation_windows_reject_overlap_and_preserve_types():

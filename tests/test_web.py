@@ -1546,24 +1546,7 @@ def test_state_exploration_uses_model_tag_engineering_ranges_only(tmp_path, monk
         },
     }
 
-    with pytest.raises(ValueError, match=r"engineering_range\(\d+\)"):
-        web.state_exploration_payload(payload)
-    with pytest.raises(ValueError, match=r"engineering_range\(\d+\)"):
-        web.train_payload(
-            {
-                **payload,
-                "normal_start": payload["exploration_start"],
-                "normal_end": payload["exploration_end"],
-                "model_name": "range-check",
-            }
-        )
-
-    result = web.state_exploration_payload(
-        {
-            **payload,
-            "tag_configs": {"LOAD": {"role": "state_filter"}},
-        }
-    )
+    result = web.state_exploration_payload(payload)
 
     assert result["preprocessing_summary"]["dynamic_feature_count"] == 3
 
@@ -2680,34 +2663,36 @@ def test_upload_detects_gb18030_header(tmp_path, monkeypatch):
     assert uploaded["columns"] == ["时间", "温度", "压力"]
 
 
-def test_web_training_blocks_values_outside_configured_engineering_range(
+def test_web_training_excludes_values_outside_configured_engineering_range(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
-    uploaded = web.save_upload(
-        "history.csv", _history_frame().to_csv(index=False).encode("utf-8-sig")
+    history = _history_frame()
+    history.loc[60, "A"] = 1000.0
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+
+    result = web.train_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": ["A", "B", "C"],
+            "tag_configs": {
+                "A": {"engineering_min": -10.0, "engineering_max": 10.0},
+                "B": {},
+                "C": {},
+            },
+            "normal_start": "2026-01-01T00:00:00",
+            "normal_end": "2026-01-01T09:55:00",
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 10,
+            "max_lag_minutes": 10,
+            "lag_step_minutes": 5,
+            "model_name": "UNIT_DPCA_V1",
+        }
     )
 
-    with pytest.raises(ValueError, match=r"engineering_range\(\d+\)"):
-        web.train_payload(
-            {
-                "file_id": uploaded["file_id"],
-                "timestamp_column": "time",
-                "tags": ["A", "B"],
-                "tag_configs": {
-                    "A": {"engineering_min": -0.1, "engineering_max": 0.1},
-                    "B": {},
-                },
-                "normal_start": "2026-01-01T00:00:00",
-                "normal_end": "2026-01-01T09:55:00",
-                "sample_interval_minutes": 5,
-                "smoothing_window_minutes": 10,
-                "max_lag_minutes": 10,
-                "lag_step_minutes": 5,
-                "model_name": "UNIT_DPCA_V1",
-            }
-        )
+    assert result["training_window_summary"][0]["engineering_range_loss"] == 1
 
 
 def test_web_training_and_clustering_allow_physical_time_gap(tmp_path, monkeypatch):

@@ -255,7 +255,6 @@ def test_training_reports_global_near_constant_feature_without_window_blocking()
 @pytest.mark.parametrize(
     ("mutate", "code"),
     [
-        (lambda frame: frame.__setitem__("A", [1.0] * 60 + [1000.0] + [2.0] * 59), "engineering_range"),
         (lambda frame: frame.__setitem__("time", list(frame.time.iloc[:60]) + [frame.time.iloc[61]] + list(frame.time.iloc[61:])), "duplicate_timestamp"),
         (lambda frame: frame.__setitem__("time", list(frame.time.iloc[:60]) + [frame.time.iloc[60] + pd.Timedelta(minutes=2)] + list(frame.time.iloc[61:])), "irregular_sampling"),
     ],
@@ -273,6 +272,31 @@ def test_training_keeps_per_window_safety_checks(mutate, code):
             _two_windows(frame),
             {"A": (-100.0, 100.0)},
         )
+
+
+def test_training_excludes_engineering_range_rows_and_restarts_lag_history():
+    frame = _multistate_frame()
+    outlier_position = 61
+    frame.loc[outlier_position, "A"] = 1000.0
+    config = PreprocessingConfig(5, 0, 5, 5, filter_method="none")
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        config,
+        _two_windows(frame),
+        {"A": (-100.0, 100.0)},
+    )
+
+    summary = result.window_summaries[1]
+    assert frame.loc[outlier_position, "A"] == 1000.0
+    assert summary["engineering_range_loss"] == 1
+    assert summary["engineering_range_loss_by_tag"] == {"A": 1}
+    assert summary["input_invalid_loss"] == 0
+    assert frame.time.iloc[outlier_position] not in result.dynamic.index
+    assert frame.time.iloc[outlier_position + 1] not in result.dynamic.index
+    assert result.dynamic.loc[frame.time.iloc[outlier_position + 2], "A__lag_005min"] == 20.0
 
 
 def test_training_resamples_each_window_and_records_preprocessing_summary():

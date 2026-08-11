@@ -187,6 +187,29 @@ def test_candidate_comparison_reports_parameter_differences_and_source_limit(
     assert baseline.stat().st_mtime_ns == before[1]
 
 
+def test_candidate_comparison_reports_first_order_alpha_and_gap_threshold(
+    tmp_path: Path,
+) -> None:
+    runs = tmp_path / "runs"
+    _save_candidate(
+        runs, "a" * 32, filter_method="first_order", first_order_alpha=0.2,
+        gap_threshold_minutes=5,
+    )
+    _save_candidate(
+        runs, "b" * 32, filter_method="first_order", first_order_alpha=0.6,
+        gap_threshold_minutes=10,
+    )
+
+    comparison = compare_candidate_runs(["a" * 32, "b" * 32], runs)
+
+    differences = comparison["parameter_differences"][0]["differences"]
+    assert differences["first_order_alpha"] == {"baseline": 0.2, "value": 0.6}
+    assert differences["gap_threshold_minutes"] == {"baseline": 5, "value": 10}
+    preprocessing = comparison["diagnostics"][0]["preprocessing"]
+    assert preprocessing["first_order_alpha"] == 0.2
+    assert preprocessing["gap_threshold_minutes"] == 5
+
+
 @pytest.mark.parametrize(
     ("changes", "reason"),
     [

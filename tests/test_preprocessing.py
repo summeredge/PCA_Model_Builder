@@ -239,6 +239,29 @@ def test_first_order_filter_uses_alpha_and_resets_after_invalid_row_deletion():
         PreprocessingConfig(filter_method="first_order")
 
 
+def test_engineering_range_exclusion_preserves_values_and_restarts_filter_and_lag():
+    index = pd.date_range("2026-01-01", periods=6, freq="5min")
+    frame = pd.DataFrame({"A": [0.0, 10.0, 1000.0, 100.0, 110.0, 120.0]}, index=index)
+    result = preprocess_window(
+        frame,
+        ["A"],
+        PreprocessingConfig(5, 10, 5, 5, filter_method="trailing_mean"),
+        {"A": (-100.0, 200.0)},
+        exclude_engineering_range=True,
+        include_intermediates=True,
+    )
+
+    assert frame.loc[index[2], "A"] == 1000.0
+    assert result.resampled.loc[index[2], "A"] == 1000.0
+    assert result.engineering_range_mask.loc[index[2]]
+    assert result.engineering_range_mask.sum() == 1
+    assert result.engineering_range_loss_by_tag == {"A": 1}
+    assert result.summary.input_invalid_loss == 0
+    assert result.dynamic.index.tolist() == [index[5]]
+    assert result.dynamic.loc[index[5], "A__lag_000min"] == 115.0
+    assert result.dynamic.loc[index[5], "A__lag_005min"] == 105.0
+
+
 def test_first_order_filter_resets_after_state_filter_boundary():
     index = pd.date_range("2026-01-01", periods=4, freq="5min")
     result = preprocess_window(
