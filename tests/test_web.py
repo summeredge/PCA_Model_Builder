@@ -830,6 +830,23 @@ def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     assert "滤波未启用" in preview_source
 
 
+def test_web_preprocessing_preview_svg_rejects_nulls_and_uses_real_y_span():
+    svg_source = web.INDEX_HTML.split("function preprocessingPreviewSvg", 1)[1].split(
+        'el("trendZoom")', 1
+    )[0]
+
+    assert "if(value===null||value===undefined" in svg_source
+    assert "const converted=Number(value)" in svg_source
+    assert "return value===null?[]:[value]" in svg_source
+    assert "value=numericValue(row[tag])" in svg_source
+    assert "row.physical_gap_start||!valid" in svg_source
+    assert "Math.max(1,maximum-minimum)" not in svg_source
+    assert "hasUsableSpan?dataSpan" in svg_source
+    assert "Number.EPSILON" in svg_source
+    assert "yMinimum=hasUsableSpan?minimum:minimum-ySpan/2" in svg_source
+    assert "y(minimum).toFixed(1)" in svg_source
+
+
 def test_web_preprocessing_config_defaults_to_none():
     config = web._preprocessing_config({})
 
