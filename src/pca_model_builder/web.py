@@ -150,6 +150,32 @@ def error_payload(error: Exception) -> dict[str, str]:
     return {"error": str(error), "stage": stage}
 
 
+def _difference_noise_score(series: pd.Series) -> float | None:
+    values = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+    if len(values) < 2:
+        return None
+    finite = np.isfinite(values)
+    differences = np.diff(values)
+    differences = differences[finite[:-1] & finite[1:]]
+    if not len(differences):
+        return None
+    score = float(np.std(differences, ddof=0))
+    return score if np.isfinite(score) else None
+
+
+def _stable_high_noise_tags(
+    frame: pd.DataFrame,
+    columns: Sequence[str],
+    limit: int = 5,
+) -> list[str]:
+    ranked = []
+    for order, column in enumerate(columns):
+        score = _difference_noise_score(frame[column])
+        ranked.append((np.inf if score is None else -score, order, column))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [column for _, _, column in ranked[: max(0, limit)]]
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = DEFAULT_PORT,
@@ -610,17 +636,23 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
     raw_tags = payload.get("tags")
-    if not isinstance(raw_tags, list) or not raw_tags:
-        raise ValueError("预处理预览Tag必须是非空列表")
+    if not isinstance(raw_tags, list):
+        raise ValueError("预处理预览Tag必须是列表")
     tags = [str(tag).strip() for tag in raw_tags if str(tag).strip()]
-    if len(tags) != len(set(tags)):
+    auto_select = not tags
+    if not auto_select and len(tags) != len(set(tags)):
         raise ValueError("预处理预览Tag不能重复")
-    if len(tags) > 8:
+    if not auto_select and len(tags) > 8:
         raise ValueError("预处理预览一次最多选择8个Tag")
     config = _preprocessing_config(payload)
     state_columns = [condition.column for condition in config.state_filters]
+    if auto_select:
+        metadata, _ = _upload_metadata(payload, timestamp_column)
+        requested_columns = [*metadata.numeric_candidate_columns, *state_columns]
+    else:
+        requested_columns = [*tags, *state_columns]
     loaded = _load_required_upload(
-        payload, [*tags, *state_columns], "找不到预处理列："
+        payload, requested_columns, "找不到预处理列："
     )
     selected = _select_window(
         loaded.frame,
@@ -628,6 +660,12 @@ def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
         _required_text(payload, "start"),
         _required_text(payload, "end"),
     )
+    if auto_select:
+        tags = _stable_high_noise_tags(
+            selected, loaded.metadata.numeric_candidate_columns
+        )
+        if not tags:
+            raise ValueError("预处理预览没有可用数值Tag")
     indexed = _indexed_tags(
         selected, timestamp_column, [*tags, *state_columns]
     )
@@ -2612,7 +2650,7 @@ INDEX_HTML = r"""<!doctype html>
         <h3>训练窗口</h3><div id="trainingWindows" class="table-wrap"><div class="empty">尚无已确认训练窗口。</div></div>
         <div class="help">只有此处的 training_windows 会参与质量检查和训练。</div>
         <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>
-        <div class="row"><label>滤波方法<select id="filterMethod"><option value="none" selected>不滤波</option><option value="first_order">一阶滤波</option><option value="trailing_mean">尾随均值</option></select></label><label hidden>一阶滤波 alpha<input id="firstOrderAlpha" type="number" min="0" max="1" step="any" placeholder="例如 0.2" disabled></label><label hidden>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10" disabled></label></div>
+        <div class="row"><label>滤波方法<select id="filterMethod"><option value="none" selected>不滤波</option><option value="first_order">一阶低通滤波</option><option value="trailing_mean">移动平均</option></select></label><label hidden>一阶滤波 alpha<input id="firstOrderAlpha" type="number" min="0" max="1" step="any" placeholder="例如 0.2" disabled></label><label hidden>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10" disabled></label></div>
         <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
@@ -2727,7 +2765,7 @@ INDEX_HTML = r"""<!doctype html>
           <div><label>显示<select id="trendMode"><option value="raw">原始值</option><option value="smoothed">因果滤波值</option><option value="both" selected>原始值和因果滤波值</option></select></label><label>缩放<input id="trendZoom" type="range" min="1" max="5" value="1"></label><button id="trendButton" class="secondary" disabled>浏览趋势</button></div>
         </div>
         <div class="actions"><button id="trendToAnalysis" class="secondary">将当前窗口设为分析期</button><button id="trendToReference" class="secondary">加入候选窗口</button><label>直方图范围<select id="histogramScope"><option value="current">当前窗口</option><option value="reference">参考期</option></select></label></div>
-        <div id="trendChart" class="trend-chart"><div class="empty">选择Tag和时间范围后浏览原始值、尾随平滑、缺口及工程范围。</div></div>
+        <div id="trendChart" class="trend-chart"><div class="empty">选择Tag和时间范围后浏览原始值、移动平均、缺口及工程范围。</div></div>
         <div id="trendStats" class="table-wrap"></div>
         <div id="trendHistogram" class="chart"></div>
       </div>
@@ -3166,23 +3204,36 @@ el("trendButton").addEventListener("click",async()=>{
 });
 el("preprocessingPreviewButton").addEventListener("click",async()=>{
   const alphaError=firstOrderAlphaError(); if(alphaError) { state.preprocessingPreview=null; state.preprocessingPreviewTag=null; el("preprocessingPreview").className="status error"; el("preprocessingPreview").textContent=alphaError; return; }
-  const tags=[...el("trendTags").selectedOptions].map(option=>option.value); if(!tags.length||tags.length>8){setStatus("预处理预览请选择1至8个Tag。","warning");return;}
   const button=el("preprocessingPreviewButton"); setBusy(button,true,"预览中…");
-  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value})}); state.preprocessingPreview={data,tags}; if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]; renderPreprocessingPreview(); setStatus("预处理预览已更新；显示抽样不会进入训练。","success"); }
+  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags:[],start:el("trendStart").value,end:el("trendEnd").value})}); const tags=preprocessingPreviewTags(data); if(!tags.length){setStatus("当前窗口没有可用于预览的数值Tag。","warning");return;} state.preprocessingPreview={data,tags}; if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]; renderPreprocessingPreview(); setStatus("预处理预览已更新；显示抽样不会进入训练。","success"); }
   catch(error){setStatus(error.message,"error");} finally {setBusy(button,false);}
 });
+function preprocessingPreviewTags(data) {
+  const ignored=new Set(["timestamp","physical_gap_start","gap_start"]);
+  for(const rows of [data.raw,data.resampled,data.filtered]) {
+    const row=rows?.[0]; if(row) return Object.keys(row).filter(tag=>!ignored.has(tag)).slice(0,5);
+  }
+  return [];
+}
 function renderPreprocessingPreview(){
   const preview=state.preprocessingPreview; if(!preview) return;
   const {data,tags}=preview;
   const tag=tags.includes(state.preprocessingPreviewTag)?state.preprocessingPreviewTag:tags[0]; state.preprocessingPreviewTag=tag;
   const s=data.summary; const resampledLabel=s.resampling_method==="none"?"未重采样输入":"重采样后";
   const summary=`源数据 ${s.source_row_count}；${resampledLabel} ${s.resampled_row_count}；正常聚合减少 ${s.resampling_row_reduction??"—"}；部分桶删除 ${s.partial_resampling_bin_loss??"—"}；部分桶原始行删除 ${s.partial_resampling_row_loss??"—"}；物理段 ${s.raw_segment_count}；原始缺口 ${s.raw_gap_count}；空桶 ${s.empty_bin_count}；滤波结构预热 ${s.filter_warmup_loss}；滤波上下文无效 ${s.filter_context_invalid_loss??"—"}；状态过滤损失 ${s.state_filter_input_rows-s.state_filter_output_rows}；Lag结构预热 ${s.lag_warmup_loss}；Lag上下文无效 ${s.lag_context_invalid_loss}；当前输入无效 ${s.input_invalid_loss??"—"}；最终动态样本 ${s.final_dynamic_row_count}；动态特征 ${s.dynamic_feature_count}`;
-  const selector=`<label>查看 Tag：<select id="preprocessingPreviewTagSelect">${tags.map(value=>`<option value="${escapeHtml(value)}"${value===tag?" selected":""}>${escapeHtml(value)}</option>`).join("")}</select></label>`;
-  el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${selector}<div class="legend"><span><i class="swatch" style="background:#176b87"></i>原始数据</span><span><i class="swatch" style="background:#d97706"></i>${s.resampling_method==="none"?"重采样未启用（与原始数据相同）":"重采样数据"}</span><span><i class="swatch" style="background:#16845b"></i>${s.filter_method==="none"?"滤波未启用（与重采样数据相同）":"因果滤波数据"}</span></div><div class="preprocessing-preview-chart">${preprocessingPreviewSvg(data,tag)}</div>`;
+  const selector=`<div class="help preprocessing-preview-note">当前显示自动筛选的高噪声代表变量，用于评估预处理效果。</div><label>查看高噪声代表 Tag:<select id="preprocessingPreviewTagSelect">${tags.map(value=>`<option value="${escapeHtml(value)}"${value===tag?" selected":""}>${escapeHtml(value)}</option>`).join("")}</select></label>`;
+  const legend=preprocessingPreviewStages(data).map(([,color,label])=>`<span><i class="swatch" style="background:${color}"></i>${label}</span>`).join("");
+  el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${selector}<div class="legend">${legend}</div><div class="preprocessing-preview-chart">${preprocessingPreviewSvg(data,tag)}</div>`;
   el("preprocessingPreviewTagSelect").addEventListener("change",event=>{ state.preprocessingPreviewTag=event.target.value; renderPreprocessingPreview(); });
 }
+function preprocessingPreviewStages(data) {
+  const summary=data.summary||{}; const stages=[["raw","#176b87","原始数据"]];
+  if(summary.resampling_method!=="none") stages.push(["resampled","#d97706","重采样后数据"]);
+  if(summary.filter_method!=="none") stages.push(["filtered","#16845b",summary.resampling_method!=="none"?"滤波后数据":summary.filter_method==="first_order"?"一阶低通滤波后数据":"移动平均后数据"]);
+  return stages;
+}
 function preprocessingPreviewSvg(data,tag) {
-  const stages=[["raw","#176b87","原始数据"],["resampled","#d97706","重采样数据"],["filtered","#16845b","因果滤波数据"]];
+  const stages=preprocessingPreviewStages(data);
   const rows=stages.flatMap(([stage])=>data[stage]); const datedRows=rows.map(row=>({...row,time:Date.parse(row.timestamp)})).filter(row=>Number.isFinite(row.time));
   const numericValue=value=>{ if(value===null||value===undefined||(typeof value==="string"&&!value.trim())) return null; const converted=Number(value); return Number.isFinite(converted)?converted:null; };
   const values=datedRows.flatMap(row=>{ const value=numericValue(row[tag]); return value===null?[]:[value]; }); if(!datedRows.length||!values.length) return '<div class="empty">当前 Tag 没有可绘制的有效抽样数据。</div>';

@@ -242,12 +242,14 @@ def test_training_parameters_split_common_and_advanced_fields() -> None:
         "firstOrderAlpha",
         "smoothingWindow",
         "maxLag",
+        "lagStep",
         "varianceThreshold",
+        "components",
         "modelName",
     ):
         assert f'id="{field_id}"' in common_source
         assert f'id="{field_id}"' not in advanced_source
-    for field_id in ("resamplingMethod", "gapThreshold", "lagStep", "components"):
+    for field_id in ("resamplingMethod", "gapThreshold"):
         assert f'id="{field_id}"' in advanced_source
         assert f'id="{field_id}"' not in common_source
     for field_id in (
@@ -402,9 +404,10 @@ def test_workbench_parameter_rows_allow_nonsemantic_div_attributes() -> None:
     common_source = html[config_start:advanced_start]
     advanced_source = html[advanced_start:advanced_end]
 
-    for field_id in ("sampleInterval", "filterMethod", "firstOrderAlpha", "smoothingWindow", "maxLag", "varianceThreshold", "modelName"):
+    for field_id in ("sampleInterval", "filterMethod", "firstOrderAlpha", "smoothingWindow", "maxLag", "lagStep", "varianceThreshold", "components", "modelName"):
         assert f'id="{field_id}"' in common_source
-    for field_id in ("resamplingMethod", "gapThreshold", "lagStep", "components"):
+        assert f'id="{field_id}"' not in advanced_source
+    for field_id in ("resamplingMethod", "gapThreshold"):
         assert f'id="{field_id}"' in advanced_source
     for field_id in (
         "sampleInterval", "resamplingMethod", "filterMethod", "firstOrderAlpha", "smoothingWindow", "gapThreshold",

@@ -292,6 +292,7 @@ def test_inspect_payload_profiles_all_original_columns_and_range_hints(
     profiles = {profile["tag"]: profile for profile in inspected["column_profiles"]}
 
     assert "TEXT" not in inspected["numeric_columns"]
+    assert "preview_tags" not in inspected
     assert set(profiles) == {"A", "B", "MIX", "CONST", "EMPTY", "TEXT"}
     assert profiles["MIX"] | {"suggestion": None} == {
         "tag": "MIX",
@@ -391,6 +392,74 @@ def test_inspect_payload_with_no_numeric_candidates_still_returns_profiles(
     assert profiles["EMPTY"]["suggestion"]["reason"] == "all_empty"
     assert profiles["TEXT"]["suggestion"]["reason"] == "no_finite_numeric_values"
     assert inspected["modeling_tag_hint"]["candidate_count"] == 0
+
+
+def test_high_noise_preview_tags_are_stable_and_handle_invalid_sequences():
+    frame = pd.DataFrame(
+        {
+            "A": [0.0, 1.0, 2.0, 3.0],
+            "B": [0.0, 10.0, 0.0, 10.0],
+            "C": [0.0, 10.0, 0.0, 10.0],
+            "D": [0.0, np.nan, 0.0, np.inf],
+            "E": [1.0, np.nan, np.nan, np.nan],
+            "F": [0.0, 2.0, 4.0, 6.0],
+        }
+    )
+
+    assert web._difference_noise_score(frame["E"]) is None
+    assert web._difference_noise_score(frame["D"]) is None
+    assert web._stable_high_noise_tags(frame, list(frame.columns)) == [
+        "B",
+        "C",
+        "A",
+        "F",
+        "D",
+    ]
+
+
+def test_preprocessing_preview_empty_tags_auto_selects_stable_top_five(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=4, freq="5min"),
+            "A": [0.0, 1.0, 2.0, 3.0],
+            "B": [0.0, 10.0, 0.0, 10.0],
+            "C": [0.0, 10.0, 0.0, 10.0],
+            "D": [0.0, np.nan, 0.0, np.inf],
+            "E": [1.0, np.nan, np.nan, np.nan],
+            "F": [0.0, 2.0, 4.0, 6.0],
+        }
+    )
+    uploaded = web.save_upload(
+        "preview-top-five.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+
+    result = web.preprocessing_preview_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": [],
+            "start": frame.time.iloc[0].isoformat(),
+            "end": frame.time.iloc[-1].isoformat(),
+            "sample_interval_minutes": 5,
+            "filter_method": "none",
+            "max_lag_minutes": 0,
+            "lag_step_minutes": 5,
+        }
+    )
+
+    assert list(result["raw"][0]) == [
+        "timestamp",
+        "physical_gap_start",
+        "gap_start",
+        "B",
+        "C",
+        "A",
+        "F",
+        "D",
+    ]
 
 
 def test_upload_rejects_invalid_txt_and_removes_partial_file(tmp_path, monkeypatch):
@@ -804,12 +873,16 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
     assert "/api/preprocessing-preview" in html
     assert "查看抽样数据明细" not in html
     assert "preprocessing-preview-details" not in html
-    for label in ("原始数据", "重采样数据", "因果滤波数据"):
+    for label in ("原始数据", "重采样后数据", "一阶低通滤波后数据", "移动平均后数据", "滤波后数据"):
         assert label in html
+    assert '<option value="first_order">一阶低通滤波</option>' in html
 
 
 def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     html = web_model_results.INDEX_HTML
+    training = html.split('class="training-parameter-grid"', 1)[1].split(
+        '<details class="advanced-parameters">', 1
+    )[0]
     advanced = html.split('<details class="advanced-parameters">', 1)[1].split(
         "</details>", 1
     )[0]
@@ -817,6 +890,14 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     assert 'class="training-parameter-grid"' in html
     assert "grid-template-columns:repeat(3,minmax(0,1fr))" in html
     assert "@media (max-width:1100px)" in html
+    for field_id in ("lagStep", "components"):
+        assert f'id="{field_id}"' in training
+        assert f'id="{field_id}"' not in advanced
+        assert html.count(f'id="{field_id}"') == 1
+    assert training.index('id="maxLag"') < training.index('id="lagStep"') < training.index(
+        'id="varianceThreshold"'
+    ) < training.index('id="components"') < training.index('id="modelName"')
+    assert 'class="model-name-field"' in training
     assert advanced.index('id="resamplingMethod"') < advanced.index(
         'id="gapThreshold"'
     ) < advanced.index('id="preprocessingPreviewButton"') < advanced.index(
@@ -843,6 +924,7 @@ def test_web_preprocessing_preview_validates_first_order_alpha_locally():
     assert 'const alphaError=firstOrderAlphaError();' in preview_handler
     assert 'el("preprocessingPreview").className="status error"' in preview_handler
     assert 'el("preprocessingPreview").textContent=alphaError' in preview_handler
+    assert "tags:[]" in preview_handler
     assert preview_handler.index('const alphaError=firstOrderAlphaError();') < preview_handler.index(
         'api("/api/preprocessing-preview"'
     )
@@ -858,6 +940,7 @@ def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     assert "preprocessingPreview:null, preprocessingPreviewTag:null" in html
     assert "state.preprocessingPreview=null; state.preprocessingPreviewTag=null" in html
     assert "preprocessingPreviewSvg(data,tag)" in preview_source
+    assert "function preprocessingPreviewTags(data)" in html
     assert "Date.parse(row.timestamp)" in preview_source
     assert "row.physical_gap_start||!valid" in preview_source
     assert "Number.isFinite(value)" in preview_source
@@ -867,10 +950,20 @@ def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     assert "if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]" in html
     assert "state.preprocessingPreviewTag=event.target.value; renderPreprocessingPreview();" in preview_source
     assert "/api/preprocessing-preview" not in preview_source
-    assert '[["raw","#176b87","原始数据"],["resampled","#d97706","重采样数据"],["filtered","#16845b","因果滤波数据"]]' in preview_source
+    assert "function preprocessingPreviewStages(data)" in html
+    assert 'if(summary.resampling_method!=="none")' in preview_source
+    assert 'if(summary.filter_method!=="none")' in preview_source
+    assert "一阶低通滤波后数据" in preview_source
+    assert "移动平均后数据" in preview_source
+    assert "滤波后数据" in preview_source
+    assert 'summary.resampling_method!=="none"?"滤波后数据"' in preview_source
+    assert "const stages=preprocessingPreviewStages(data)" in preview_source
     assert "Lag" not in html.split("function preprocessingPreviewSvg", 1)[1].split('el("trendZoom")', 1)[0]
-    assert "重采样未启用" in preview_source
-    assert "滤波未启用" in preview_source
+    assert "重采样未启用" not in preview_source
+    assert "滤波未启用" not in preview_source
+    assert "查看高噪声代表 Tag:" in preview_source
+    assert "当前显示自动筛选的高噪声代表变量，用于评估预处理效果。" in preview_source
+    assert "width:300px" in web_model_results.INDEX_HTML
 
 
 def test_web_preprocessing_preview_svg_rejects_nulls_and_uses_real_y_span():

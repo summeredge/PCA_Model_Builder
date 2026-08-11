@@ -409,13 +409,20 @@ _WORKBENCH_UI_STYLE = r"""
     gap:10px 12px;
   }
   .training-parameter-grid > label,
-  .filter-parameter-control { min-width:0; }
+  .filter-parameter-control,
+  .model-name-field { min-width:0; }
   .filter-parameter-control > label { min-width:0; }
+  .model-name-field { grid-column:span 2; }
   .advanced-preprocessing-row { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .preprocessing-preview-controls { margin-top:10px; }
   .preprocessing-preview-area,
   .preprocessing-preview-area #preprocessingPreview { width:100%; min-width:0; }
   .preprocessing-preview-area #preprocessingPreview { margin-top:10px; }
+  .preprocessing-preview-area #preprocessingPreviewTagSelect {
+    width:300px;
+    min-width:250px;
+    max-width:350px;
+  }
   .operation-log {
     display:grid;
     gap:5px;
@@ -814,8 +821,12 @@ def _stabilize_workbench_html(html: str) -> str:
         f'            {_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}\n'
         '          </div>\n'
         f'          {_label_for_unique_field(parameter_group, "maxLag", "最大Lag")}\n'
+        f'          {_label_for_unique_field(parameter_group, "lagStep", "Lag步长")}\n'
         f'          {_label_for_unique_field(parameter_group, "varianceThreshold", "累计解释率")}\n'
-        f'          {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
+        f'          {_label_for_unique_field(parameter_group, "components", "主元数")}\n'
+        '          <div class="model-name-field">\n'
+        f'            {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
+        '          </div>\n'
         '        </div>\n'
     )
     advanced_rows = (
@@ -825,8 +836,6 @@ def _stabilize_workbench_html(html: str) -> str:
         f'          <div class="row advanced-preprocessing-row">{_label_for_unique_field(parameter_group, "resamplingMethod", "重采样方法")}{_label_for_unique_field(parameter_group, "gapThreshold", "物理缺口阈值")}</div>\n'
         + f'          <div class="preprocessing-preview-controls">{_element_with_unique_id(parameter_group, "preprocessingPreviewButton", "button", "预处理预览按钮")}</div>\n'
         + f'          <div class="preprocessing-preview-area">{_element_with_unique_id(parameter_group, "preprocessingPreview", "div", "预处理预览区域")}</div>\n'
-        + f'          <div class="row">{_label_for_unique_field(parameter_group, "lagStep", "Lag步长")}</div>\n'
-        + f'          <div class="row">{_label_for_unique_field(parameter_group, "components", "主元数")}</div>\n'
         + '        </details>\n'
     )
     parameter_group = parameter_group[: field_rows["sampleInterval"][0]] + common_rows + advanced_rows + parameter_group[quality_start:]
