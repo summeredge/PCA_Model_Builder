@@ -63,6 +63,13 @@ def test_missing_values_are_not_converted_to_zero_by_frontend_contract() -> None
     assert not re.search(r"(?<![A-Za-z])Number\(row\[`\$\{yTag\}__raw`\]\)", html)
 
 
+def test_trend_selection_fill_is_consistent_before_and_after_drag() -> None:
+    html = web_dataproject.INDEX_HTML
+
+    assert '<rect y="0" height="0" fill="#176b87" fill-opacity=".18"/>' in html
+    assert 'height="${height-pad.top-pad.bottom}" fill="#176b87" fill-opacity=".18"/><line data-trend-selection-edge' in html
+
+
 def test_cli_serve_uses_dataproject_web_entry() -> None:
     source = inspect.getsource(cli._serve)
 
