@@ -289,6 +289,41 @@ def test_engineering_range_exclusion_forces_first_order_boundary_despite_gap_tol
     assert result.dynamic.loc[index[4], "A__lag_005min"] == 100.0
 
 
+@pytest.mark.parametrize("method", ("mean", "median", "last"))
+def test_resampling_does_not_hide_engineering_range_exclusion(method):
+    index = pd.date_range("2026-01-01", periods=16, freq="1min")
+    frame = pd.DataFrame(
+        {"A": [1.0, 1000.0, 0.0, 0.0, 0.0, 0.0, *([2.0] * 5), *([3.0] * 5)]},
+        index=index,
+    )
+    result = preprocess_window(
+        frame,
+        ["A"],
+        PreprocessingConfig(
+            5,
+            0,
+            5,
+            5,
+            resampling_method=method,
+            filter_method="none",
+            gap_threshold_minutes=10,
+        ),
+        {"A": (-10.0, 500.0)},
+        exclude_engineering_range=True,
+        include_intermediates=True,
+    )
+
+    contaminated = pd.Timestamp("2026-01-01 00:05")
+    first_valid_after = pd.Timestamp("2026-01-01 00:10")
+    assert result.resampled.loc[contaminated, "A"] <= 500.0
+    assert result.engineering_range_mask.loc[contaminated]
+    assert result.engineering_range_loss_by_tag == {"A": 1}
+    assert result.post_invalid_segment_ids.loc[index[0]] != result.post_invalid_segment_ids.loc[first_valid_after]
+    assert result.lag_warmup_mask.loc[first_valid_after]
+    assert result.dynamic.index.tolist() == [pd.Timestamp("2026-01-01 00:15")]
+    assert result.dynamic.loc[pd.Timestamp("2026-01-01 00:15"), "A__lag_005min"] == 2.0
+
+
 def test_invalid_rows_take_priority_over_engineering_range_exclusion():
     index = pd.date_range("2026-01-01", periods=3, freq="5min")
     result = preprocess_window(

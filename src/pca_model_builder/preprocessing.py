@@ -363,8 +363,7 @@ def _resample_segment_data(
         raise ValueError("resampling numeric conversion mode is invalid")
     numeric = frame.apply(pd.to_numeric, errors=numeric_errors)
     rule = f"{sample_interval_minutes}min"
-    kwargs = {"origin": "epoch", "closed": "right", "label": "right"}
-    resampler = numeric.resample(rule, **kwargs)
+    resampler = numeric.resample(rule, **_resampling_kwargs())
     counts = resampler.size()
     if method == "mean":
         result = resampler.mean()
@@ -375,6 +374,33 @@ def _resample_segment_data(
             lambda values: values.iloc[-1] if len(values) else np.nan
         )
     return result, counts
+
+
+def _resampling_kwargs() -> dict[str, str]:
+    return {"origin": "epoch", "closed": "right", "label": "right"}
+
+
+def _engineering_range_bucket_mask(
+    frame: pd.DataFrame,
+    tag_columns: Sequence[str],
+    engineering_ranges: Mapping[str, tuple[float, float]] | None,
+    method: str,
+    sample_interval_minutes: int,
+) -> pd.DataFrame:
+    """Mark resampling buckets containing a finite engineering-range violation."""
+    mask = pd.DataFrame(False, index=frame.index, columns=tag_columns)
+    numeric = frame.loc[:, tag_columns].apply(pd.to_numeric, errors="coerce")
+    for tag, (lower, upper) in (engineering_ranges or {}).items():
+        if tag in mask:
+            values = numeric[tag]
+            mask[tag] = np.isfinite(values) & ((values < lower) | (values > upper))
+    if method == "none" or frame.empty:
+        return mask
+    return (
+        mask.resample(f"{sample_interval_minutes}min", **_resampling_kwargs())
+        .max()
+        .astype(bool)
+    )
 
 
 def filter_window_rows(config: PreprocessingConfig) -> int:
@@ -744,6 +770,7 @@ def _preprocess_window_schema5(
     resampled_parts: list[pd.DataFrame] = []
     segment_parts: list[pd.Series] = []
     empty_parts: list[pd.Series] = []
+    engineering_parts: list[pd.DataFrame] = []
     partial_bin_loss_by_segment: dict[int, int] = {}
     partial_row_loss_by_segment: dict[int, int] = {}
     source_rows_in_complete_bins = 0
@@ -756,6 +783,13 @@ def _preprocess_window_schema5(
             config.sample_interval_minutes,
             numeric_errors="coerce",
         )
+        engineering = _engineering_range_bucket_mask(
+            segment,
+            tag_columns,
+            engineering_ranges,
+            config.resampling_method,
+            config.sample_interval_minutes,
+        )
         partial_loss = 0
         if resampling_window is not None and config.resampling_method != "none":
             start, end = resampling_window
@@ -764,6 +798,7 @@ def _preprocess_window_schema5(
             partial_loss = int((~complete).sum())
             partial_row_loss_by_segment[int(segment_id)] = int(counts.loc[~complete].sum())
             resampled, counts = resampled.loc[complete], counts.loc[complete]
+            engineering = engineering.loc[complete]
         else:
             partial_row_loss_by_segment[int(segment_id)] = 0
         partial_bin_loss_by_segment[int(segment_id)] = partial_loss
@@ -773,10 +808,14 @@ def _preprocess_window_schema5(
         resampled_parts.append(resampled)
         segment_parts.append(pd.Series(segment_id, index=resampled.index))
         empty_parts.append(counts.eq(0))
+        engineering_parts.append(engineering)
 
     resampled = pd.concat(resampled_parts).sort_index() if resampled_parts else raw.iloc[0:0]
     resampled_segments = pd.concat(segment_parts).reindex(resampled.index).astype(int)
     empty_bin_mask = pd.concat(empty_parts).reindex(resampled.index).astype(bool)
+    raw_engineering_mask = pd.concat(engineering_parts).reindex(
+        resampled.index, fill_value=False
+    )
     if resampled.index.has_duplicates:
         raise ValueError("resampling produced duplicate timestamps across segments")
     if not resampled.empty and validate_quality:
@@ -810,12 +849,7 @@ def _preprocess_window_schema5(
         for tag, (lower, upper) in (engineering_ranges or {}).items():
             if tag not in tag_columns:
                 continue
-            values = numeric_resampled[tag]
-            outside = (
-                engineering_eligible
-                & np.isfinite(values)
-                & ((values < lower) | (values > upper))
-            )
+            outside = engineering_eligible & raw_engineering_mask[tag]
             engineering_range_loss_by_tag[tag] = int(outside.sum())
             engineering_range_mask |= outside
     usable = input_valid & ~empty_bin_mask & ~engineering_range_mask

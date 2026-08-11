@@ -2099,7 +2099,56 @@ def test_candidate_confirmation_keeps_legacy_id_without_intersecting_exclusions(
                     ],
                 },
             }
-        )
+    )
+
+
+def test_web_quality_keeps_exploratory_available_when_normal_range_exclusion_is_empty(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    timestamps = pd.date_range("2026-01-01 00:01", periods=30, freq="1min")
+    values = np.zeros((30, 3))
+    values[[0, 5, 10, 15, 20, 25]] = np.array(
+        [[20.0, 25.0, 30.0], [30.0, 20.0, 35.0], [25.0, 40.0, 20.0],
+         [45.0, 25.0, 35.0], [30.0, 45.0, 25.0], [40.0, 30.0, 45.0]]
+    )
+    frame = pd.DataFrame(values, columns=["A", "B", "C"])
+    frame.insert(0, "time", timestamps)
+    uploaded = web.save_upload(
+        "range-only-variation.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": "2026-01-01T00:00:00",
+        "normal_end": "2026-01-01T00:30:00",
+        "sample_interval_minutes": 5,
+        "resampling_method": "mean",
+        "smoothing_window_minutes": 0,
+        "filter_method": "none",
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "n_components": 2,
+        "tag_configs": {
+            tag: {"engineering_min": -10.0, "engineering_max": 10.0}
+            for tag in ("A", "B", "C")
+        },
+    }
+
+    quality = web.quality_payload(payload)
+
+    assert not quality["can_train"]
+    assert not quality["training_readiness"]["normal_state"]["can_train"]
+    assert quality["training_readiness"]["exploratory"]["can_train"]
+    exploratory = web.train_payload(
+        {**payload, "model_purpose": "exploratory", "model_name": "RANGE_DRAFT"}
+    )
+    assert exploratory["model_status"] == "draft"
+    assert exploratory["training_window_summary"][0]["engineering_range_loss"] == 0
+    assert 'el("trainButton").disabled=!readiness.normal_state.can_train' in web.INDEX_HTML
+    assert 'el("trainExploratoryButton").disabled=!readiness.exploratory.can_train' in web.INDEX_HTML
 
 
 def test_web_quality_uses_all_enabled_candidate_windows(tmp_path, monkeypatch):
@@ -2149,6 +2198,8 @@ def test_web_quality_uses_all_enabled_candidate_windows(tmp_path, monkeypatch):
     ]
     assert all(item["status"] == "used" for item in result["training_window_summary"])
     assert all(item["effective_samples"] > 0 for item in result["training_window_summary"])
+    assert result["training_readiness"]["normal_state"]["can_train"]
+    assert result["training_readiness"]["exploratory"]["can_train"]
 
 
 def test_training_windows_api_preserves_candidate_sources_and_disabled_state():

@@ -519,7 +519,7 @@ def test_model_quality_status_tracks_check_and_configuration_changes() -> None:
         assert label in html
     assert 'state.qualityStatus="checking"' in html
     assert 'el("trainButton").disabled=true' in html
-    assert 'state.qualityStatus=data.can_train?"passed":"issues"' in html
+    assert 'state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"' in html
     assert 'state.qualityStatus="failed"' in html
     assert 'state.qualityStatus=reason&&checked?"changed":"unchecked"' in html
 

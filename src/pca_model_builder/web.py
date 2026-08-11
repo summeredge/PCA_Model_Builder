@@ -67,7 +67,7 @@ from .tag_config_io import (
     parse_tag_config_workbook,
 )
 from .tag_profile import model_quality_payload, profile_tag
-from .training import build_training_matrix
+from .training import _validate_dynamic_matrix, build_training_matrix
 from .trend import downsample_trend, trend_payload_data
 from .validation import (
     build_validation_evidence,
@@ -412,7 +412,7 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
     config = _preprocessing_config(payload)
-    training_result = _build_training_matrix_with_stage(
+    normal_training = _build_training_matrix_with_stage(
         parsed,
         timestamp_column,
         tags,
@@ -424,45 +424,45 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
         exclude_engineering_range=True,
         validate_dynamic=False,
     )
+    exploratory_training = _build_training_matrix_with_stage(
+        parsed,
+        timestamp_column,
+        tags,
+        config,
+        training_windows_from_payload(payload),
+        engineering_ranges(
+            normalize_tag_configs(tags, {tag: registry[tag] for tag in tags})
+        ),
+        exclude_engineering_range=False,
+        validate_dynamic=False,
+    )
     with _web_stage("quality_check"):
         result = model_quality_payload(
             parsed,
-            training_result.reference,
+            exploratory_training.reference,
             timestamp_column,
             tags,
             registry,
             config.sample_interval_minutes,
         )
-        if result["can_train"] and training_result.dynamic.empty:
-            result["time_issues"].append(
-                {
-                    "code": "dynamic_matrix_empty",
-                    "severity": "error",
-                    "message": "平滑和Lag预热后没有有效动态样本。",
-                    "count": 0,
-                    "tag": None,
-                    "details": {},
-                }
-            )
-            result["can_train"] = False
-        elif result["can_train"] and np.linalg.matrix_rank(
-            training_result.dynamic.to_numpy(dtype=float)
-        ) < 3:
-            result["time_issues"].append(
-                {
-                    "code": "insufficient_effective_rank",
-                    "severity": "error",
-                    "message": "有效秩不足3，无法同时建立PC1/PC2和SPE残差空间。",
-                    "count": len(training_result.dynamic),
-                    "tag": None,
-                    "details": {},
-                }
-            )
-            result["can_train"] = False
-    result["training_window_summary"] = training_result.window_summaries
-    result["training_quality_warnings"] = training_result.global_quality_warnings
+        shared_can_train = result["can_train"]
+        readiness = {
+            purpose: _training_readiness(training.dynamic)
+            for purpose, training in {
+                "normal_state": normal_training,
+                "exploratory": exploratory_training,
+            }.items()
+        }
+        for item in readiness.values():
+            item["can_train"] = shared_can_train and item["issue"] is None
+        result["training_readiness"] = readiness
+        result["can_train"] = readiness["normal_state"]["can_train"]
+        if readiness["normal_state"]["issue"] is not None:
+            result["time_issues"].append(readiness["normal_state"]["issue"])
+    result["training_window_summary"] = normal_training.window_summaries
+    result["training_quality_warnings"] = normal_training.global_quality_warnings
     return _with_data_usage(
-        result, loaded, len(training_result.reference), len(training_result.reference)
+        result, loaded, len(normal_training.reference), len(normal_training.reference)
     )
 
 
@@ -1473,6 +1473,31 @@ def _build_training_matrix_with_stage(*args: Any, **kwargs: Any) -> Any:
             else "preprocessing"
         )
         raise WebStageError(stage, error) from error
+
+
+def _training_readiness(dynamic: pd.DataFrame) -> dict[str, Any]:
+    try:
+        _validate_dynamic_matrix(dynamic)
+    except ValueError as error:
+        message = str(error)
+        return {
+            "can_train": False,
+            "issue": {
+                "code": (
+                    "dynamic_matrix_empty"
+                    if dynamic.empty
+                    else "insufficient_effective_rank"
+                    if "有效秩不足" in message
+                    else "dynamic_matrix_invalid"
+                ),
+                "severity": "error",
+                "message": message,
+                "count": len(dynamic),
+                "tag": None,
+                "details": {},
+            },
+        }
+    return {"can_train": True, "issue": None}
 
 
 def _load_required_upload(
@@ -3083,9 +3108,9 @@ el("qualityButton").addEventListener("click",async()=>{
   const button=el("qualityButton"); state.quality=null; state.qualityStatus="checking"; state.qualityError=""; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("qualitySummary").innerHTML=""; el("qualityIssues").className="empty"; el("qualityIssues").textContent="正在执行建模质量检查。"; el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); renderModelQualityStatus(); setBusy(button,true,"检查中…");
   try {
     const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
-    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); state.quality=data; state.qualityStatus=data.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!data.can_train; el("trainExploratoryButton").disabled=!data.can_train;
+    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
     globalThis.showWorkflowStage?.("modelPanel");
-    setStatus(data.can_train?"建模质量检查通过，可以训练草稿模型。":"建模质量检查发现问题，请排除问题 Tag 或调整训练窗口后重新检查。",data.can_train?"success":"error");
+    setStatus(readiness.normal_state.can_train&&readiness.exploratory.can_train?"建模质量检查通过，可以训练两类模型。":readiness.exploratory.can_train?"探索模型可训练；正常状态候选受当前工程量程排除影响不可训练。":"建模质量检查发现问题，请排除问题 Tag 或调整训练窗口后重新检查。",readiness.exploratory.can_train?"success":"error");
   } catch(error) { state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
   finally { setBusy(button,false,""); }
 });
@@ -3188,7 +3213,7 @@ el("clusterButton").addEventListener("click", async () => {
 });
 
 async function trainModel(modelPurpose) {
-  if(!state.quality?.can_train) { setStatus("训练前必须重新执行并通过建模质量检查。","error"); return; }
+  const readiness=state.quality?.training_readiness?.[modelPurpose]||{can_train:state.quality?.can_train}; if(!readiness.can_train) { setStatus("训练前必须重新执行并通过对应模型用途的建模质量检查。","error"); return; }
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   try {
@@ -3267,7 +3292,8 @@ function renderCurrentTagQuality() {
   container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(role))} · ${escapeHtml(displayUiValue(item.status))}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
 }
 function renderQuality(data) {
-  el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("训练条件",data.can_train?"通过":"未通过");
+  const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}};
+  el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("正常状态训练",readiness.normal_state.can_train?"通过":"未通过")+metric("探索训练",readiness.exploratory.can_train?"通过":"未通过");
   const container=el("qualityIssues"); container.className=""; container.replaceChildren();
   data.time_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; container.append(card); });
   const problemTags=data.tags.filter(item=>item.status!=="usable"); problemTags.forEach(item=>{
