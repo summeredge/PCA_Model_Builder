@@ -1231,6 +1231,23 @@ def test_web_quality_tag_selector_uses_quality_results_and_rerenders_details():
     assert "function renderCurrentTagQuality()" in html
 
 
+def test_final_web_quality_tag_selector_survives_four_column_renderer_override():
+    html = web_model_results.INDEX_HTML
+    renderer = html.split(
+        "window.renderCurrentTagQuality = function renderCurrentTagQualityFourColumns()",
+        1,
+    )[1].split("  };", 1)[0]
+
+    assert 'id="qualityTagSelect"' in html
+    assert "state.quality.tags" in renderer
+    assert "select.disabled = !tags.length;" in renderer
+    assert "state.selectedTag = tags[0].tag;" in renderer
+    assert "select.value = state.selectedTag;" in renderer
+    assert 'class="quality-profile-grid"' in renderer
+    assert "没有可查看的建模 Tag。" in renderer
+    assert "state.selectedTag = value;\n  renderCurrentTagQuality();" in html
+
+
 def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     from pca_model_builder import data_session
 

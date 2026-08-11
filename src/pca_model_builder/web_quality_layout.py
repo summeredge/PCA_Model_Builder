@@ -39,11 +39,31 @@ _QUALITY_GRID_SCRIPT = r"""
 (() => {
   window.renderCurrentTagQuality = function renderCurrentTagQualityFourColumns() {
     const container = el("currentTagQuality");
+    const select = el("qualityTagSelect");
     if (!container) return;
+    const tags = state.quality ? state.quality.tags : [];
+    if (select) {
+      select.replaceChildren();
+      select.disabled = !tags.length;
+      if (tags.length) {
+        if (!tags.some((item) => item.tag === state.selectedTag)) {
+          state.selectedTag = tags[0].tag;
+        }
+        tags.forEach((item) => {
+          const option = document.createElement("option");
+          option.value = item.tag;
+          option.textContent = item.tag;
+          select.append(option);
+        });
+        select.value = state.selectedTag;
+      }
+    }
     const item = state.selectedTag ? qualityFor(state.selectedTag) : null;
     if (!state.quality || !item) {
       container.className = "empty";
-      container.textContent = state.qualityStatus === "changed"
+      container.textContent = state.quality && !tags.length
+        ? "没有可查看的建模 Tag。"
+        : state.qualityStatus === "changed"
         ? "配置已变更，请重新执行建模质量检查。"
         : state.qualityStatus === "checking"
         ? "正在执行建模质量检查。"
