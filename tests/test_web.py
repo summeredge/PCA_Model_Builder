@@ -806,6 +806,30 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
         assert label in html
 
 
+def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
+    html = web.INDEX_HTML
+    preview_source = html.split("function renderPreprocessingPreview()", 1)[1].split(
+        'el("trendZoom")', 1
+    )[0]
+
+    assert 'id="preprocessingPreviewTagSelect"' in preview_source
+    assert "preprocessingPreview:null, preprocessingPreviewTag:null" in html
+    assert "state.preprocessingPreview=null; state.preprocessingPreviewTag=null" in html
+    assert "preprocessingPreviewSvg(data,tag)" in preview_source
+    assert "Date.parse(row.timestamp)" in preview_source
+    assert "row.physical_gap_start||!valid" in preview_source
+    assert "Number.isFinite(value)" in preview_source
+    assert '<details class="preprocessing-preview-details"><summary>查看抽样数据明细</summary>' in preview_source
+    assert 'data[stage].slice(0,12)' not in preview_source
+    assert "if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]" in html
+    assert "state.preprocessingPreviewTag=event.target.value; renderPreprocessingPreview();" in preview_source
+    assert "/api/preprocessing-preview" not in preview_source
+    assert '[["raw","#176b87","原始数据"],["resampled","#d97706","重采样数据"],["filtered","#16845b","因果滤波数据"]]' in preview_source
+    assert "Lag" not in html.split("function preprocessingPreviewSvg", 1)[1].split('el("trendZoom")', 1)[0]
+    assert "重采样未启用" in preview_source
+    assert "滤波未启用" in preview_source
+
+
 def test_web_preprocessing_config_defaults_to_none():
     config = web._preprocessing_config({})
 

@@ -2557,6 +2557,10 @@ INDEX_HTML = r"""<!doctype html>
     .variance-bar span { position:absolute; top:-18px; width:100%; text-align:center; font-size:10px; color:var(--muted); }
     .legend { display:flex; gap:14px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
     .swatch { width:18px; height:3px; display:inline-block; vertical-align:middle; margin-right:5px; }
+    .preprocessing-preview-chart { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
+    .preprocessing-preview-chart svg { display:block; width:100%; height:auto; }
+    .preprocessing-preview-details summary { cursor:pointer; color:var(--muted); font-size:13px; }
+    .preprocessing-preview-details[open] summary { margin-bottom:9px; }
     .table-wrap { overflow:auto; max-height:360px; border:1px solid var(--line); border-radius:7px; }
     table { width:100%; border-collapse:collapse; font-size:12px; }
     th, td { padding:8px 9px; border-bottom:1px solid var(--line-soft); text-align:left; }
@@ -2815,7 +2819,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -3056,7 +3060,7 @@ el("uploadButton").addEventListener("click", async () => {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`文件信息：${data.filename}（${Math.ceil(data.size_bytes/1024)} KB），已读取 ${data.columns.length} 个列名。请选择时间列，下一步：正在检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -3164,15 +3168,29 @@ el("trendButton").addEventListener("click",async()=>{
 el("preprocessingPreviewButton").addEventListener("click",async()=>{
   const tags=[...el("trendTags").selectedOptions].map(option=>option.value); if(!tags.length||tags.length>8){setStatus("预处理预览请选择1至8个Tag。","warning");return;}
   const button=el("preprocessingPreviewButton"); setBusy(button,true,"预览中…");
-  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value})}); renderPreprocessingPreview(data,tags); setStatus("预处理预览已更新；显示抽样不会进入训练。","success"); }
+  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags,start:el("trendStart").value,end:el("trendEnd").value})}); state.preprocessingPreview={data,tags}; if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]; renderPreprocessingPreview(); setStatus("预处理预览已更新；显示抽样不会进入训练。","success"); }
   catch(error){setStatus(error.message,"error");} finally {setBusy(button,false);}
 });
-function renderPreprocessingPreview(data,tags){
+function renderPreprocessingPreview(){
+  const preview=state.preprocessingPreview; if(!preview) return;
+  const {data,tags}=preview;
+  const tag=tags.includes(state.preprocessingPreviewTag)?state.preprocessingPreviewTag:tags[0]; state.preprocessingPreviewTag=tag;
   const s=data.summary; const resampledLabel=s.resampling_method==="none"?"未重采样输入":"重采样后";
   const summary=`源数据 ${s.source_row_count}；${resampledLabel} ${s.resampled_row_count}；正常聚合减少 ${s.resampling_row_reduction??"—"}；部分桶删除 ${s.partial_resampling_bin_loss??"—"}；部分桶原始行删除 ${s.partial_resampling_row_loss??"—"}；物理段 ${s.raw_segment_count}；原始缺口 ${s.raw_gap_count}；空桶 ${s.empty_bin_count}；滤波结构预热 ${s.filter_warmup_loss}；滤波上下文无效 ${s.filter_context_invalid_loss??"—"}；状态过滤损失 ${s.state_filter_input_rows-s.state_filter_output_rows}；Lag结构预热 ${s.lag_warmup_loss}；Lag上下文无效 ${s.lag_context_invalid_loss}；当前输入无效 ${s.input_invalid_loss??"—"}；最终动态样本 ${s.final_dynamic_row_count}；动态特征 ${s.dynamic_feature_count}`;
   const labels={raw:"原始数据",resampled:"重采样数据",filtered:"因果滤波数据"};
-  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage].slice(0,12); const head=`<tr><th>时间</th>${tags.map(tag=>`<th>${escapeHtml(tag)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(displayTime(row.timestamp,19))}${row.physical_gap_start?"（物理缺口后）":""}</td>${tags.map(tag=>`<td>${row[tag]===null?"缺失":escapeHtml(String(row[tag]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}${body}</table></div>`;}).join("");
-  el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${tables}`;
+  const selector=`<label>查看 Tag：<select id="preprocessingPreviewTagSelect">${tags.map(value=>`<option value="${escapeHtml(value)}"${value===tag?" selected":""}>${escapeHtml(value)}</option>`).join("")}</select></label>`;
+  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage]; const head=`<tr><th>时间</th>${tags.map(value=>`<th>${escapeHtml(value)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(displayTime(row.timestamp,19))}${row.physical_gap_start?"（物理缺口后）":""}</td>${tags.map(value=>`<td>${row[value]===null?"缺失":escapeHtml(String(row[value]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}<tbody>${body}</tbody></table></div>`;}).join("");
+  el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${selector}<div class="legend"><span><i class="swatch" style="background:#176b87"></i>原始数据</span><span><i class="swatch" style="background:#d97706"></i>${s.resampling_method==="none"?"重采样未启用（与原始数据相同）":"重采样数据"}</span><span><i class="swatch" style="background:#16845b"></i>${s.filter_method==="none"?"滤波未启用（与重采样数据相同）":"因果滤波数据"}</span></div><div class="preprocessing-preview-chart">${preprocessingPreviewSvg(data,tag)}</div><details class="preprocessing-preview-details"><summary>查看抽样数据明细</summary>${tables}</details>`;
+  el("preprocessingPreviewTagSelect").addEventListener("change",event=>{ state.preprocessingPreviewTag=event.target.value; renderPreprocessingPreview(); });
+}
+function preprocessingPreviewSvg(data,tag) {
+  const stages=[["raw","#176b87","原始数据"],["resampled","#d97706","重采样数据"],["filtered","#16845b","因果滤波数据"]];
+  const rows=stages.flatMap(([stage])=>data[stage]); const datedRows=rows.map(row=>({...row,time:Date.parse(row.timestamp)})).filter(row=>Number.isFinite(row.time));
+  const values=datedRows.map(row=>Number(row[tag])).filter(Number.isFinite); if(!datedRows.length||!values.length) return '<div class="empty">当前 Tag 没有可绘制的有效抽样数据。</div>';
+  const width=760,height=260,pad={l:52,r:18,t:18,b:38},start=Math.min(...datedRows.map(row=>row.time)),end=Math.max(...datedRows.map(row=>row.time)),startRow=datedRows.find(row=>row.time===start),endRow=datedRows.find(row=>row.time===end),minimum=Math.min(...values),maximum=Math.max(...values),xSpan=Math.max(1,end-start),ySpan=Math.max(1,maximum-minimum),x=time=>pad.l+(time-start)/xSpan*(width-pad.l-pad.r),y=value=>height-pad.b-(value-minimum)/ySpan*(height-pad.t-pad.b);
+  const paths=stages.map(([stage,color,label])=>{ const segments=[],current=[]; data[stage].forEach(row=>{ const time=Date.parse(row.timestamp),value=Number(row[tag]),valid=Number.isFinite(time)&&Number.isFinite(value); if(row.physical_gap_start||!valid) { if(current.length) segments.push(current.splice(0)); if(!valid) return; } current.push(`${x(time).toFixed(1)},${y(value).toFixed(1)}`); }); if(current.length) segments.push(current); return segments.map(points=>`<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.8"><title>${label}</title></polyline>`).join(""); }).join("");
+  const gaps=[...new Set(datedRows.filter(row=>row.physical_gap_start).map(row=>row.time))].map(time=>`<line x1="${x(time).toFixed(1)}" x2="${x(time).toFixed(1)}" y1="${pad.t}" y2="${height-pad.b}" stroke="#cf3f36" stroke-dasharray="3 3"><title>物理时间缺口</title></line>`).join("");
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(tag)}预处理趋势对比"><line x1="${pad.l}" x2="${width-pad.r}" y1="${height-pad.b}" y2="${height-pad.b}" stroke="#94a3b8"/><line x1="${pad.l}" x2="${pad.l}" y1="${pad.t}" y2="${height-pad.b}" stroke="#94a3b8"/>${gaps}${paths}<text x="4" y="${pad.t+4}" font-size="10">${maximum.toPrecision(5)}</text><text x="4" y="${height-pad.b}" font-size="10">${minimum.toPrecision(5)}</text><text x="${pad.l}" y="${height-10}" font-size="10">${escapeHtml(displayTime(startRow.timestamp,19))}</text><text x="${width-pad.r}" y="${height-10}" text-anchor="end" font-size="10">${escapeHtml(displayTime(endRow.timestamp,19))}</text></svg>`;
 }
 el("trendZoom").addEventListener("input",()=>{ el("trendChart").querySelectorAll("svg").forEach(svg=>svg.style.width=`${760*Number(el("trendZoom").value)}px`); });
 el("trendToAnalysis").addEventListener("click",()=>{ el("analysisStart").value=el("trendStart").value; el("analysisEnd").value=el("trendEnd").value; setStatus("当前趋势窗口已设置为分析期。","success"); });
