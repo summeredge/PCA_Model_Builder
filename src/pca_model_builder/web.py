@@ -2621,6 +2621,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="modelQualityResults">
           <div id="qualitySummary" class="metrics"></div>
           <h3>当前 Tag 建模质量详情</h3>
+          <label>查看 Tag：<select id="qualityTagSelect" disabled></select></label>
           <div id="currentTagQuality" class="empty">尚未执行建模质量检查。</div>
           <h3>建模质量问题</h3>
           <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量 Tag</button></div>
@@ -3131,11 +3132,17 @@ el("qualityButton").addEventListener("click",async()=>{
   const button=el("qualityButton"); state.quality=null; state.qualityStatus="checking"; state.qualityError=""; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("qualitySummary").innerHTML=""; el("qualityIssues").className="empty"; el("qualityIssues").textContent="正在执行建模质量检查。"; el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); renderModelQualityStatus(); setBusy(button,true,"检查中…");
   try {
     const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
-    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
+    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; if(!data.tags.some(item=>item.tag===state.selectedTag)) state.selectedTag=data.tags[0]?.tag||null; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
     globalThis.showWorkflowStage?.("modelPanel");
     setStatus(readiness.normal_state.can_train&&readiness.exploratory.can_train?"建模质量检查通过，可以训练两类模型。":readiness.exploratory.can_train?"探索模型可训练；正常状态候选受当前工程量程排除影响不可训练。":"建模质量检查发现问题，请排除问题 Tag 或调整训练窗口后重新检查。",readiness.exploratory.can_train?"success":"error");
   } catch(error) { state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
   finally { setBusy(button,false,""); }
+});
+
+el("qualityTagSelect").addEventListener("change",()=>{
+  const value=el("qualityTagSelect").value;
+  state.selectedTag = value;
+  renderCurrentTagQuality();
 });
 
 el("trendPreset").addEventListener("change",()=>{
@@ -3308,9 +3315,18 @@ function qualityProfileTable(title,profile) {
   return `<h4>${title}</h4><div class="table-wrap"><table><tbody>${fields.map(([key,label])=>`<tr><th>${label}</th><td>${formatStat(key,profile[key])}</td></tr>`).join("")}</tbody></table></div>`;
 }
 function renderCurrentTagQuality() {
-  const container=el("currentTagQuality"); if(!container) return;
+  const container=el("currentTagQuality"), select=el("qualityTagSelect"); if(!container) return;
+  const tags=state.quality ? state.quality.tags : [];
+  if(select) {
+    select.replaceChildren(); select.disabled=!tags.length;
+    if(tags.length) {
+      if(!tags.some(item=>item.tag===state.selectedTag)) state.selectedTag=tags[0].tag;
+      tags.forEach(item=>{ const option=document.createElement("option"); option.value=item.tag; option.textContent=item.tag; select.append(option); });
+      select.value=state.selectedTag;
+    }
+  }
   const item=state.selectedTag?qualityFor(state.selectedTag):null;
-  if(!state.quality||!item) { container.className="empty"; container.textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":state.qualityStatus==="checking"?"正在执行建模质量检查。":"尚未执行建模质量检查。"; return; }
+  if(!state.quality||!item) { container.className="empty"; container.textContent=state.quality&&!tags.length?"没有可查看的建模 Tag。":state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":state.qualityStatus==="checking"?"正在执行建模质量检查。":"尚未执行建模质量检查。"; return; }
   const role=state.registry[item.tag]?.role||item.role; const issueHtml=item.issues.length?item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join(""):"<li>无质量问题</li>";
   container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(role))} · ${escapeHtml(displayUiValue(item.status))}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
 }

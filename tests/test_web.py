@@ -1220,6 +1220,17 @@ def test_web_quality_tab_shows_selected_tag_and_trend_axis_uses_payload_limits()
     assert "data.warnings" in html
 
 
+def test_web_quality_tag_selector_uses_quality_results_and_rerenders_details():
+    html = web.INDEX_HTML
+
+    assert 'id="qualityTagSelect"' in html
+    assert "state.quality.tags" in html
+    assert "state.selectedTag = value;\n  renderCurrentTagQuality();" in html
+    assert 'data.tags.filter(item=>item.status!=="usable")' in html
+    assert 'metric("可直接使用",data.summary.usable)' in html
+    assert "function renderCurrentTagQuality()" in html
+
+
 def test_web_service_trains_and_validates_uploaded_csv(tmp_path, monkeypatch):
     from pca_model_builder import data_session
 
