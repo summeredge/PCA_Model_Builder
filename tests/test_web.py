@@ -605,6 +605,26 @@ def test_final_web_page_exposes_state_exploration_workbench():
     assert "selectedExplorationCandidateRows" in html
 
 
+def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
+    html = web.INDEX_HTML
+    timeline = html.split("function renderExplorationTimeline(rows,candidates)", 1)[1].split(
+        "function explorationTimelineDetails", 1
+    )[0]
+
+    assert "const EXPLORATION_CLUSTER_PALETTE" in html
+    assert "function explorationClusterColor(clusterId)" in html
+    assert "explorationClusterColor(row.cluster_id)" in html
+    assert "renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[])" in html
+    assert '<svg viewBox="0 0 ${width} ${height}"' in timeline
+    assert "next.break_before||next.segment_id!==row.segment_id" in timeline
+    assert "物理连续段断点" in timeline
+    assert "候选窗口" in timeline
+    assert "candidate.candidate_id" in timeline
+    assert "显示点之间的时间跨度可能来自抽样" in timeline
+    assert "explorationTimelineDetails(ordered)" in timeline
+    assert '<details><summary>查看显示抽样点明细</summary>' in html
+
+
 def test_final_web_compacts_basic_inspection_time_range_into_two_lines():
     html = web_model_results.INDEX_HTML
 

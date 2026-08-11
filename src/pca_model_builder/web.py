@@ -2560,8 +2560,12 @@ INDEX_HTML = r"""<!doctype html>
     .download { color:#fff; background:var(--green); padding:8px 11px; border-radius:6px; text-decoration:none; font-size:13px; }
      .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
      .exploration-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
-     .exploration-timeline { max-height:300px; overflow:auto; border:1px solid var(--line); border-radius:7px; }
-     .exploration-timeline table { min-width:520px; }
+     .exploration-timeline { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
+     .exploration-timeline svg { display:block; width:100%; height:auto; min-height:190px; }
+     .exploration-timeline details { border-top:1px solid var(--line-soft); }
+     .exploration-timeline summary { cursor:pointer; padding:9px 10px; color:var(--muted); font-size:12px; }
+     .exploration-timeline .timeline-note { margin:0; padding:9px 10px; color:var(--muted); font-size:12px; line-height:1.45; }
+     .exploration-timeline .timeline-detail { max-height:220px; overflow:auto; }
      .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
      @media (max-width:1050px) { main { grid-template-columns:1fr; } }
      @media (max-width:760px) { .chart-grid,.validation-box,.exploration-controls,.trend-controls { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
@@ -2986,12 +2990,14 @@ function stateExplorationPayload() {
 }
 function explorationClusterNumber(clusterId) { const match=String(clusterId).match(/(\d+)$/); return match?Number(match[1]):1; }
 function explorationNumber(value,digits=2) { return value===null||value===undefined||!Number.isFinite(Number(value))?"—":Number(value).toFixed(digits); }
+const EXPLORATION_CLUSTER_PALETTE=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
+function explorationClusterColor(clusterId) { return EXPLORATION_CLUSTER_PALETTE[(explorationClusterNumber(clusterId)-1)%EXPLORATION_CLUSTER_PALETTE.length]; }
 function renderStateExploration(data) {
   el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
   el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("显示点数",`${data.returned_point_count}/${data.full_point_count}`);
   const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
-  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationTimeline(data.cluster_series||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[]);
+  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[]);
 }
 function renderExplorationLossSummary(losses) {
   const fields=[["empty_bin_count","空桶"],["input_invalid_loss","输入无效"],["filter_warmup_loss","滤波预热"],["filter_context_invalid_loss","滤波上下文无效"],["lag_warmup_loss","Lag预热"],["lag_context_invalid_loss","Lag上下文无效"],["state_filter_loss","状态过滤损失"]];
@@ -2999,17 +3005,29 @@ function renderExplorationLossSummary(losses) {
 }
 function renderExplorationPcChart(data) {
   const rows=data.cluster_series||[]; const container=el("explorationPcChart"); if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
-  const palette=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
   const width=760,height=260,pad=34; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad),y=value=>height/2-value/maxY*(height/2-pad);
-  const points=rows.map(row=>{const number=explorationClusterNumber(row.cluster_id);return `<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="3" fill="${palette[(number-1)%palette.length]}" fill-opacity=".75"><title>${escapeHtml(displayTime(row.timestamp,19))} · ${escapeHtml(row.cluster_id)}</title></circle>`;}).join("");
-  const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>{const number=explorationClusterNumber(cluster);const cx=x(Number(center[0])),cy=y(Number(center[1])),color=palette[(number-1)%palette.length];return `<g stroke="${color}" stroke-width="2"><line x1="${cx-7}" x2="${cx+7}" y1="${cy}" y2="${cy}"/><line x1="${cx}" x2="${cx}" y1="${cy-7}" y2="${cy+7}"/><title>${escapeHtml(cluster)} 中心</title></g>`;}).join("");
-  const legend=[...new Set(rows.map(row=>row.cluster_id))].map(cluster=>{const number=explorationClusterNumber(cluster);return `<text x="${pad+(number-1)*88}" y="16" fill="${palette[(number-1)%palette.length]}" font-size="10">● ${escapeHtml(cluster)}</text>`;}).join("");
+  const points=rows.map(row=>`<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="3" fill="${explorationClusterColor(row.cluster_id)}" fill-opacity=".75"><title>${escapeHtml(displayTime(row.timestamp,19))} · ${escapeHtml(row.cluster_id)}</title></circle>`).join("");
+  const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>{const cx=x(Number(center[0])),cy=y(Number(center[1])),color=explorationClusterColor(cluster);return `<g stroke="${color}" stroke-width="2"><line x1="${cx-7}" x2="${cx+7}" y1="${cy}" y2="${cy}"/><line x1="${cx}" x2="${cx}" y1="${cy-7}" y2="${cy+7}"/><title>${escapeHtml(cluster)} 中心</title></g>`;}).join("");
+  const legend=[...new Set(rows.map(row=>row.cluster_id))].map(cluster=>{const number=explorationClusterNumber(cluster);return `<text x="${pad+(number-1)*88}" y="16" fill="${explorationClusterColor(cluster)}" font-size="10">● ${escapeHtml(cluster)}</text>`;}).join("");
   container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
 }
-function renderExplorationTimeline(rows) {
-  const container=el("explorationTimeline"); if(!rows.length){container.innerHTML='<div class="empty">暂无显示序列。</div>';return;}
-  const body=rows.map(row=>`<tr class="${row.break_before?"exploration-break":""}"><td>${escapeHtml(displayTime(row.timestamp,19))}${row.break_before?" · 断点":""}</td><td>${escapeHtml(row.cluster_id)}</td><td>${row.segment_id}</td></tr>`).join("");
-  container.innerHTML=`<table><thead><tr><th>timestamp</th><th>cluster_id</th><th>segment_id</th></tr></thead><tbody>${body}</tbody></table>`;
+function explorationTimelineTick(value) { const time=new Date(value); return `${String(time.getMonth()+1).padStart(2,"0")}/${String(time.getDate()).padStart(2,"0")} ${String(time.getHours()).padStart(2,"0")}:${String(time.getMinutes()).padStart(2,"0")}`; }
+function renderExplorationTimeline(rows,candidates) {
+  const container=el("explorationTimeline"); const ordered=rows.map(row=>({...row,time:new Date(row.timestamp)})).filter(row=>Number.isFinite(row.time.getTime())).sort((left,right)=>left.time-right.time);
+  if(!ordered.length){container.innerHTML='<div class="empty">暂无显示序列。</div>';return;}
+  const first=ordered[0].time.getTime(),last=ordered[ordered.length-1].time.getTime();
+  if(first===last){container.innerHTML=`<div class="empty">仅有一个显示点，无法推断状态持续时间。</div><p class="timeline-note">时间轴基于状态探索显示序列；聚类计算仍使用全部有效样本。</p>${explorationTimelineDetails(ordered)}`;return;}
+  const width=760,height=188,left=94,right=18,statusTop=34,statusHeight=36,candidateTop=92,candidateHeight=16,axisY=136;
+  const x=value=>left+(new Date(value).getTime()-first)/(last-first)*(width-left-right);
+  const blocks=[]; const breaks=[];
+  ordered.slice(0,-1).forEach((row,index)=>{const next=ordered[index+1]; const segmentBreak=next.break_before||next.segment_id!==row.segment_id; if(segmentBreak){breaks.push(`<line x1="${x(next.timestamp).toFixed(2)}" x2="${x(next.timestamp).toFixed(2)}" y1="${statusTop-5}" y2="${statusTop+statusHeight+5}" stroke="#64748b" stroke-dasharray="3 2"><title>物理连续段断点</title></line>`);return;} const start=x(row.timestamp),end=x(next.timestamp); if(end>start) blocks.push(`<rect x="${start.toFixed(2)}" y="${statusTop}" width="${(end-start).toFixed(2)}" height="${statusHeight}" fill="${explorationClusterColor(row.cluster_id)}"><title>${escapeHtml(row.cluster_id)}&#10;开始时间：${escapeHtml(displayTime(row.timestamp,19))}&#10;结束时间：${escapeHtml(displayTime(next.timestamp,19))}</title></rect>`);});
+  const windows=(candidates||[]).map(candidate=>{const start=Math.max(first,new Date(candidate.start).getTime()),end=Math.min(last,new Date(candidate.end).getTime()); if(!Number.isFinite(start)||!Number.isFinite(end)||end<start) return ""; const windowX=left+(start-first)/(last-first)*(width-left-right),windowWidth=Math.max(1,(end-start)/(last-first)*(width-left-right)); return `<rect x="${windowX.toFixed(2)}" y="${candidateTop}" width="${windowWidth.toFixed(2)}" height="${candidateHeight}" fill="${explorationClusterColor(candidate.cluster_id)}" fill-opacity=".35" stroke="${explorationClusterColor(candidate.cluster_id)}" stroke-width="1.5"><title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(candidate.cluster_id)}&#10;开始时间：${escapeHtml(displayTime(candidate.start,19))}&#10;结束时间：${escapeHtml(displayTime(candidate.end,19))}</title></rect>`;}).join("");
+  const ticks=Array.from({length:4},(_,index)=>first+(last-first)*index/3).map(value=>`<g><line x1="${(left+(value-first)/(last-first)*(width-left-right)).toFixed(2)}" x2="${(left+(value-first)/(last-first)*(width-left-right)).toFixed(2)}" y1="${axisY}" y2="${axisY+4}" stroke="#94a3b8"/><text x="${(left+(value-first)/(last-first)*(width-left-right)).toFixed(2)}" y="${axisY+17}" text-anchor="middle" fill="#5f6c7b" font-size="10">${escapeHtml(explorationTimelineTick(value))}</text></g>`).join("");
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster 状态时间轴"><text x="8" y="${statusTop+14}" fill="#334155" font-size="11">Cluster 状态</text><text x="8" y="${candidateTop+12}" fill="#334155" font-size="11">候选窗口</text><line x1="${left}" x2="${width-right}" y1="${axisY}" y2="${axisY}" stroke="#94a3b8"/>${blocks.join("")}${breaks.join("")}${windows}${ticks}</svg><p class="timeline-note">时间轴基于状态探索显示序列；聚类计算仍使用全部有效样本。显示点之间的时间跨度可能来自抽样；空白/断点表示物理连续段中断，不代表 Cluster。</p>${explorationTimelineDetails(ordered)}`;
+}
+function explorationTimelineDetails(rows) {
+  const body=rows.map(row=>`<tr><td>${escapeHtml(displayTime(row.timestamp,19))}${row.break_before?" · 断点":""}</td><td>${escapeHtml(row.cluster_id)}</td><td>${escapeHtml(String(row.segment_id))}</td></tr>`).join("");
+  return `<details><summary>查看显示抽样点明细</summary><div class="timeline-detail"><table><thead><tr><th>时间</th><th>Cluster</th><th>数据段</th></tr></thead><tbody>${body}</tbody></table></div></details>`;
 }
 function renderExplorationClusterTable(summaries) {
   const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); [item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.candidate_count].forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
