@@ -806,6 +806,46 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
         assert label in html
 
 
+def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
+    html = web_model_results.INDEX_HTML
+    advanced = html.split('<details class="advanced-parameters">', 1)[1].split(
+        "</details>", 1
+    )[0]
+
+    assert 'class="training-parameter-grid"' in html
+    assert "grid-template-columns:repeat(3,minmax(0,1fr))" in html
+    assert "@media (max-width:1100px)" in html
+    assert advanced.index('id="resamplingMethod"') < advanced.index(
+        'id="gapThreshold"'
+    ) < advanced.index('id="preprocessingPreviewButton"') < advanced.index(
+        'id="preprocessingPreview"'
+    )
+    assert 'class="row advanced-preprocessing-row"' in advanced
+    assert 'class="preprocessing-preview-area"' in advanced
+    assert advanced.count('id="preprocessingPreviewButton"') == 1
+    assert advanced.count('id="preprocessingPreview"') == 1
+    assert html.count('id="resamplingMethod"') == 1
+    assert html.count('id="gapThreshold"') == 1
+
+
+def test_web_preprocessing_preview_validates_first_order_alpha_locally():
+    html = web.INDEX_HTML
+    preview_handler = html.split(
+        'el("preprocessingPreviewButton").addEventListener("click",async()=>{', 1
+    )[1].split("function renderPreprocessingPreview()", 1)[0]
+
+    assert 'placeholder="例如 0.2"' in html
+    assert 'function firstOrderAlphaError()' in html
+    assert 'el("firstOrderAlpha").closest("label").hidden=!firstOrder' in html
+    assert 'el("smoothingWindow").closest("label").hidden=!trailingMean' in html
+    assert 'const alphaError=firstOrderAlphaError();' in preview_handler
+    assert 'el("preprocessingPreview").className="status error"' in preview_handler
+    assert 'el("preprocessingPreview").textContent=alphaError' in preview_handler
+    assert preview_handler.index('const alphaError=firstOrderAlphaError();') < preview_handler.index(
+        'api("/api/preprocessing-preview"'
+    )
+
+
 def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     html = web.INDEX_HTML
     preview_source = html.split("function renderPreprocessingPreview()", 1)[1].split(

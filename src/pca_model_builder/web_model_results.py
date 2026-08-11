@@ -403,6 +403,19 @@ _WORKBENCH_UI_STYLE = r"""
   }
   .advanced-parameters[open] > summary { margin-bottom:12px; }
   .advanced-parameters > .row { margin-top:10px; }
+  .training-parameter-grid {
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    gap:10px 12px;
+  }
+  .training-parameter-grid > label,
+  .filter-parameter-control { min-width:0; }
+  .filter-parameter-control > label { min-width:0; }
+  .advanced-preprocessing-row { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .preprocessing-preview-controls { margin-top:10px; }
+  .preprocessing-preview-area,
+  .preprocessing-preview-area #preprocessingPreview { width:100%; min-width:0; }
+  .preprocessing-preview-area #preprocessingPreview { margin-top:10px; }
   .operation-log {
     display:grid;
     gap:5px;
@@ -460,6 +473,9 @@ _WORKBENCH_UI_STYLE = r"""
     .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .metric strong { font-size:22px; }
     .table-wrap { max-width:100%; }
+  }
+  @media (max-width:1100px) {
+    .training-parameter-grid { grid-template-columns:minmax(0,1fr); }
   }
 </style>
 """
@@ -789,20 +805,26 @@ def _stabilize_workbench_html(html: str) -> str:
     )
     if quality_start == -1:
         raise ValueError("无法固定Web工作台结构：建模质量检查标题")
-    gap_row = parameter_group[slice(*field_rows["gapThreshold"])]
     common_rows = (
-        f'        <div class="row">{_label_for_unique_field(parameter_group, "sampleInterval", "目标采样周期")}</div>\n'
-        f'        <div class="row">{_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}{_label_for_unique_field(parameter_group, "firstOrderAlpha", "一阶滤波 alpha")}{_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}</div>\n'
-        f'        <div class="row">{_label_for_unique_field(parameter_group, "maxLag", "最大Lag")}</div>\n'
-        f'        <div class="row">{_label_for_unique_field(parameter_group, "varianceThreshold", "累计解释率")}</div>\n'
-        f'        {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
+        '        <div class="training-parameter-grid">\n'
+        f'          {_label_for_unique_field(parameter_group, "sampleInterval", "目标采样周期")}\n'
+        f'          {_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}\n'
+        '          <div class="filter-parameter-control">\n'
+        f'            {_label_for_unique_field(parameter_group, "firstOrderAlpha", "一阶滤波 alpha")}\n'
+        f'            {_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}\n'
+        '          </div>\n'
+        f'          {_label_for_unique_field(parameter_group, "maxLag", "最大Lag")}\n'
+        f'          {_label_for_unique_field(parameter_group, "varianceThreshold", "累计解释率")}\n'
+        f'          {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
+        '        </div>\n'
     )
     advanced_rows = (
         '        <details class="advanced-parameters">\n'
         '          <summary>高级预处理与 DPCA 参数</summary>\n'
         '          <div class="help">执行顺序保持为时间检查、缺口识别、重采样、数据检查、因果滤波、Lag 扩展和标准化。</div>\n'
-        f'          <div class="row">{_label_for_unique_field(parameter_group, "resamplingMethod", "重采样方法")}</div>\n'
-        + gap_row.replace('        ', '          ', 1)
+        f'          <div class="row advanced-preprocessing-row">{_label_for_unique_field(parameter_group, "resamplingMethod", "重采样方法")}{_label_for_unique_field(parameter_group, "gapThreshold", "物理缺口阈值")}</div>\n'
+        + f'          <div class="preprocessing-preview-controls">{_element_with_unique_id(parameter_group, "preprocessingPreviewButton", "button", "预处理预览按钮")}</div>\n'
+        + f'          <div class="preprocessing-preview-area">{_element_with_unique_id(parameter_group, "preprocessingPreview", "div", "预处理预览区域")}</div>\n'
         + f'          <div class="row">{_label_for_unique_field(parameter_group, "lagStep", "Lag步长")}</div>\n'
         + f'          <div class="row">{_label_for_unique_field(parameter_group, "components", "主元数")}</div>\n'
         + '        </details>\n'
