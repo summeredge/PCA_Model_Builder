@@ -221,6 +221,7 @@ def _train(args: argparse.Namespace) -> dict[str, Any]:
         config,
         training_windows,
         engineering_ranges(tag_configs),
+        exclude_engineering_range=args.model_purpose == "normal_state",
     )
     dynamic = training_result.dynamic
     model = fit_dpca(

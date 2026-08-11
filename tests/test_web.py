@@ -1355,6 +1355,7 @@ def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
     history = _history_frame()
+    history.loc[60, "A"] = 1000.0
     uploaded = web.save_upload(
         "history.csv", history.to_csv(index=False).encode("utf-8-sig")
     )
@@ -1370,6 +1371,7 @@ def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
         "max_lag_minutes": 10,
         "lag_step_minutes": 5,
         "model_name": "SEMANTICS_DPCA",
+        "tag_configs": {"A": {"engineering_min": -10.0, "engineering_max": 10.0}},
     }
     exploratory = web.train_payload(
         {**training, "model_purpose": "exploratory"}
@@ -1380,6 +1382,8 @@ def test_web_exploratory_model_clusters_saved_dpca_scores_and_cannot_validate(
     assert exploratory["model_status"] == "draft"
     assert candidate["model_purpose"] == "normal_state"
     assert candidate["model_status"] == "candidate"
+    assert exploratory["training_window_summary"][0]["engineering_range_loss"] == 0
+    assert candidate["training_window_summary"][0]["engineering_range_loss"] == 1
     with pytest.raises(ValueError, match="探索模型不能执行独立验证"):
         web.validate_payload({"run_id": exploratory["run_id"]})
     with pytest.raises(ValueError, match="聚类必须引用探索模型"):

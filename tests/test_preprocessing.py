@@ -245,7 +245,9 @@ def test_engineering_range_exclusion_preserves_values_and_restarts_filter_and_la
     result = preprocess_window(
         frame,
         ["A"],
-        PreprocessingConfig(5, 10, 5, 5, filter_method="trailing_mean"),
+        PreprocessingConfig(
+            5, 10, 5, 5, filter_method="trailing_mean", gap_threshold_minutes=10
+        ),
         {"A": (-100.0, 200.0)},
         exclude_engineering_range=True,
         include_intermediates=True,
@@ -260,6 +262,53 @@ def test_engineering_range_exclusion_preserves_values_and_restarts_filter_and_la
     assert result.dynamic.index.tolist() == [index[5]]
     assert result.dynamic.loc[index[5], "A__lag_000min"] == 115.0
     assert result.dynamic.loc[index[5], "A__lag_005min"] == 105.0
+
+
+def test_engineering_range_exclusion_forces_first_order_boundary_despite_gap_tolerance():
+    index = pd.date_range("2026-01-01", periods=6, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [0.0, 10.0, 1000.0, 100.0, 110.0, 120.0]}, index=index),
+        ["A"],
+        PreprocessingConfig(
+            5,
+            0,
+            5,
+            5,
+            filter_method="first_order",
+            first_order_alpha=0.5,
+            gap_threshold_minutes=10,
+        ),
+        {"A": (-100.0, 200.0)},
+        exclude_engineering_range=True,
+        include_intermediates=True,
+    )
+
+    assert result.post_invalid_segment_ids.loc[index[1]] != result.post_invalid_segment_ids.loc[index[3]]
+    assert result.filtered.loc[index[3], "A"] == 100.0
+    assert result.lag_warmup_mask.loc[index[3]]
+    assert result.dynamic.loc[index[4], "A__lag_005min"] == 100.0
+
+
+def test_invalid_rows_take_priority_over_engineering_range_exclusion():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    result = preprocess_window(
+        pd.DataFrame({"A": [1.0, np.nan, 3.0], "B": [1.0, 1000.0, 3.0]}, index=index),
+        ["A", "B"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+        {"B": (-100.0, 100.0)},
+        exclude_engineering_range=True,
+        include_intermediates=True,
+    )
+
+    assert result.summary.input_invalid_loss == 1
+    assert not result.engineering_range_mask.loc[index[1]]
+    assert result.engineering_range_loss_by_tag == {"B": 0}
+    assert len(result.resampled) == (
+        result.empty_bin_mask.sum()
+        + result.input_invalid_mask.sum()
+        + result.engineering_range_mask.sum()
+        + len(result.state_filtered)
+    )
 
 
 def test_first_order_filter_resets_after_state_filter_boundary():

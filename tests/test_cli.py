@@ -252,6 +252,36 @@ def test_cli_explicit_training_commands_preserve_model_semantics(
     assert manifest["model_status"] == model_status
 
 
+def test_cli_normal_training_excludes_engineering_range_but_exploratory_keeps_it(tmp_path):
+    rng = np.random.default_rng(812)
+    time = pd.date_range("2026-01-01", periods=100, freq="5min")
+    frame = pd.DataFrame(rng.normal(size=(100, 3)), columns=["A", "B", "C"])
+    frame.insert(0, "time", time)
+    frame.loc[50, "A"] = 1000.0
+    csv_path = tmp_path / "history.csv"
+    tag_config_path = tmp_path / "tags.json"
+    frame.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    tag_config_path.write_text(
+        json.dumps({"A": {"engineering_min": -10.0, "engineering_max": 10.0}}),
+        encoding="utf-8",
+    )
+
+    summaries = {}
+    for command in ("train-exploratory", "train-normal"):
+        output = tmp_path / f"{command}.pcamodel"
+        assert main([
+            command, "--csv", str(csv_path), "--timestamp", "time", "--tags", "A", "B", "C",
+            "--tag-config", str(tag_config_path), "--normal-start", time[0].isoformat(),
+            "--normal-end", time[-1].isoformat(), "--max-lag", "0", "--components", "2", "--model-name", command,
+            "--output", str(output),
+        ]) == 0
+        _, manifest = load_model_package(output)
+        summaries[command] = manifest["config"]["training_summary"][0]
+
+    assert summaries["train-exploratory"]["engineering_range_loss"] == 0
+    assert summaries["train-normal"]["engineering_range_loss"] == 1
+
+
 def test_cli_rejects_exploratory_model_validation_before_creating_outputs(
     tmp_path, capsys
 ):

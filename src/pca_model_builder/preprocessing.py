@@ -806,11 +806,16 @@ def _preprocess_window_schema5(
     engineering_range_mask = pd.Series(False, index=resampled.index)
     engineering_range_loss_by_tag: dict[str, int] = {}
     if exclude_engineering_range:
+        engineering_eligible = input_valid & ~empty_bin_mask
         for tag, (lower, upper) in (engineering_ranges or {}).items():
             if tag not in tag_columns:
                 continue
             values = numeric_resampled[tag]
-            outside = np.isfinite(values) & ((values < lower) | (values > upper))
+            outside = (
+                engineering_eligible
+                & np.isfinite(values)
+                & ((values < lower) | (values > upper))
+            )
             engineering_range_loss_by_tag[tag] = int(outside.sum())
             engineering_range_mask |= outside
     usable = input_valid & ~empty_bin_mask & ~engineering_range_mask
@@ -824,7 +829,10 @@ def _preprocess_window_schema5(
         raise ValueError("resampled preprocessing losses do not close")
     usable_raw_segments = resampled_segments.loc[usable]
     post_invalid_segments = _resegment_remaining(
-        usable_frame.index, usable_raw_segments, config
+        usable_frame.index,
+        usable_raw_segments,
+        config,
+        forced_boundary_mask=engineering_range_mask,
     )
 
     window_rows = filter_window_rows(config)
@@ -941,6 +949,7 @@ def _resegment_remaining(
     config: PreprocessingConfig,
     *,
     source_index: pd.DatetimeIndex | None = None,
+    forced_boundary_mask: pd.Series | None = None,
 ) -> pd.Series:
     """Split retained rows at physical boundaries and deleted-row discontinuities."""
     if not len(index):
@@ -952,6 +961,12 @@ def _resegment_remaining(
         minutes=config.gap_threshold_minutes or config.sample_interval_minutes
     )
     breaks = source.ne(source.shift()) | index.to_series().diff().gt(threshold)
+    if forced_boundary_mask is not None:
+        forced = forced_boundary_mask.fillna(False).astype(bool)
+        for timestamp in forced.index[forced.to_numpy(dtype=bool)]:
+            next_position = index.searchsorted(timestamp, side="right")
+            if next_position < len(index):
+                breaks.iloc[next_position] = True
     if source_index is not None:
         positions = source_index.get_indexer(index)
         if (positions < 0).any():

@@ -324,6 +324,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         config,
         training_windows,
         engineering_ranges(tag_configs),
+        exclude_engineering_range=model_purpose == "normal_state",
         reference_columns=excluded_tags,
     )
     with _web_stage("quality_check"):
@@ -420,6 +421,7 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
         engineering_ranges(
             normalize_tag_configs(tags, {tag: registry[tag] for tag in tags})
         ),
+        exclude_engineering_range=True,
         validate_dynamic=False,
     )
     with _web_stage("quality_check"):

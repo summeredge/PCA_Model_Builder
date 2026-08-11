@@ -33,6 +33,7 @@ def build_training_matrix(
     engineering_ranges: dict[str, tuple[float, float]] | None = None,
     validate_dynamic: bool = True,
     reference_columns: Sequence[str] = (),
+    exclude_engineering_range: bool = False,
 ) -> TrainingBuildResult:
     """Build each enabled window and physical segment independently."""
     windows = normalize_training_windows(training_windows)
@@ -101,7 +102,7 @@ def build_training_matrix(
                 include_intermediates=True,
                 include_variability=False,
                 preserve_columns=reference_columns,
-                exclude_engineering_range=True,
+                exclude_engineering_range=exclude_engineering_range,
                 # Training windows are isolated: never complete a boundary bucket
                 # with samples outside the engineer-selected window.
                 resampling_window=(start, end),

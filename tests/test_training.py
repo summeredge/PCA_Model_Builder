@@ -287,6 +287,7 @@ def test_training_excludes_engineering_range_rows_and_restarts_lag_history():
         config,
         _two_windows(frame),
         {"A": (-100.0, 100.0)},
+        exclude_engineering_range=True,
     )
 
     summary = result.window_summaries[1]
@@ -297,6 +298,24 @@ def test_training_excludes_engineering_range_rows_and_restarts_lag_history():
     assert frame.time.iloc[outlier_position] not in result.dynamic.index
     assert frame.time.iloc[outlier_position + 1] not in result.dynamic.index
     assert result.dynamic.loc[frame.time.iloc[outlier_position + 2], "A__lag_005min"] == 20.0
+
+
+def test_training_keeps_engineering_range_rows_without_normal_state_exclusion():
+    frame = _multistate_frame()
+    outlier_position = 61
+    frame.loc[outlier_position, "A"] = 1000.0
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+        _two_windows(frame),
+        {"A": (-100.0, 100.0)},
+    )
+
+    assert result.window_summaries[1]["engineering_range_loss"] == 0
+    assert result.dynamic.loc[frame.time.iloc[outlier_position], "A__lag_000min"] == 1000.0
 
 
 def test_training_resamples_each_window_and_records_preprocessing_summary():
