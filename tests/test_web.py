@@ -802,6 +802,8 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
     assert '<option value="none" selected>不滤波</option>' in html
     assert 'option value="trailing_median"' not in html
     assert "/api/preprocessing-preview" in html
+    assert "查看抽样数据明细" not in html
+    assert "preprocessing-preview-details" not in html
     for label in ("原始数据", "重采样数据", "因果滤波数据"):
         assert label in html
 
@@ -859,8 +861,9 @@ def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     assert "Date.parse(row.timestamp)" in preview_source
     assert "row.physical_gap_start||!valid" in preview_source
     assert "Number.isFinite(value)" in preview_source
-    assert '<details class="preprocessing-preview-details"><summary>查看抽样数据明细</summary>' in preview_source
-    assert 'data[stage].slice(0,12)' not in preview_source
+    assert "查看抽样数据明细" not in preview_source
+    assert "preprocessing-preview-details" not in html
+    assert 'const tables=["raw","resampled","filtered"]' not in preview_source
     assert "if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]" in html
     assert "state.preprocessingPreviewTag=event.target.value; renderPreprocessingPreview();" in preview_source
     assert "/api/preprocessing-preview" not in preview_source

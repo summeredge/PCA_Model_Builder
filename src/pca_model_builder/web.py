@@ -2559,8 +2559,6 @@ INDEX_HTML = r"""<!doctype html>
     .swatch { width:18px; height:3px; display:inline-block; vertical-align:middle; margin-right:5px; }
     .preprocessing-preview-chart { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
     .preprocessing-preview-chart svg { display:block; width:100%; height:auto; }
-    .preprocessing-preview-details summary { cursor:pointer; color:var(--muted); font-size:13px; }
-    .preprocessing-preview-details[open] summary { margin-bottom:9px; }
     .table-wrap { overflow:auto; max-height:360px; border:1px solid var(--line); border-radius:7px; }
     table { width:100%; border-collapse:collapse; font-size:12px; }
     th, td { padding:8px 9px; border-bottom:1px solid var(--line-soft); text-align:left; }
@@ -3179,10 +3177,8 @@ function renderPreprocessingPreview(){
   const tag=tags.includes(state.preprocessingPreviewTag)?state.preprocessingPreviewTag:tags[0]; state.preprocessingPreviewTag=tag;
   const s=data.summary; const resampledLabel=s.resampling_method==="none"?"未重采样输入":"重采样后";
   const summary=`源数据 ${s.source_row_count}；${resampledLabel} ${s.resampled_row_count}；正常聚合减少 ${s.resampling_row_reduction??"—"}；部分桶删除 ${s.partial_resampling_bin_loss??"—"}；部分桶原始行删除 ${s.partial_resampling_row_loss??"—"}；物理段 ${s.raw_segment_count}；原始缺口 ${s.raw_gap_count}；空桶 ${s.empty_bin_count}；滤波结构预热 ${s.filter_warmup_loss}；滤波上下文无效 ${s.filter_context_invalid_loss??"—"}；状态过滤损失 ${s.state_filter_input_rows-s.state_filter_output_rows}；Lag结构预热 ${s.lag_warmup_loss}；Lag上下文无效 ${s.lag_context_invalid_loss}；当前输入无效 ${s.input_invalid_loss??"—"}；最终动态样本 ${s.final_dynamic_row_count}；动态特征 ${s.dynamic_feature_count}`;
-  const labels={raw:"原始数据",resampled:"重采样数据",filtered:"因果滤波数据"};
   const selector=`<label>查看 Tag：<select id="preprocessingPreviewTagSelect">${tags.map(value=>`<option value="${escapeHtml(value)}"${value===tag?" selected":""}>${escapeHtml(value)}</option>`).join("")}</select></label>`;
-  const tables=["raw","resampled","filtered"].map(stage=>{const rows=data[stage]; const head=`<tr><th>时间</th>${tags.map(value=>`<th>${escapeHtml(value)}</th>`).join("")}</tr>`; const body=rows.map(row=>`<tr><td>${escapeHtml(displayTime(row.timestamp,19))}${row.physical_gap_start?"（物理缺口后）":""}</td>${tags.map(value=>`<td>${row[value]===null?"缺失":escapeHtml(String(row[value]))}</td>`).join("")}</tr>`).join(""); return `<h4>${labels[stage]}</h4><div class="table-wrap"><table>${head}<tbody>${body}</tbody></table></div>`;}).join("");
-  el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${selector}<div class="legend"><span><i class="swatch" style="background:#176b87"></i>原始数据</span><span><i class="swatch" style="background:#d97706"></i>${s.resampling_method==="none"?"重采样未启用（与原始数据相同）":"重采样数据"}</span><span><i class="swatch" style="background:#16845b"></i>${s.filter_method==="none"?"滤波未启用（与重采样数据相同）":"因果滤波数据"}</span></div><div class="preprocessing-preview-chart">${preprocessingPreviewSvg(data,tag)}</div><details class="preprocessing-preview-details"><summary>查看抽样数据明细</summary>${tables}</details>`;
+  el("preprocessingPreview").className=""; el("preprocessingPreview").innerHTML=`<p>${summary}</p>${selector}<div class="legend"><span><i class="swatch" style="background:#176b87"></i>原始数据</span><span><i class="swatch" style="background:#d97706"></i>${s.resampling_method==="none"?"重采样未启用（与原始数据相同）":"重采样数据"}</span><span><i class="swatch" style="background:#16845b"></i>${s.filter_method==="none"?"滤波未启用（与重采样数据相同）":"因果滤波数据"}</span></div><div class="preprocessing-preview-chart">${preprocessingPreviewSvg(data,tag)}</div>`;
   el("preprocessingPreviewTagSelect").addEventListener("change",event=>{ state.preprocessingPreviewTag=event.target.value; renderPreprocessingPreview(); });
 }
 function preprocessingPreviewSvg(data,tag) {
