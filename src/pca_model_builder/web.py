@@ -2503,7 +2503,7 @@ INDEX_HTML = r"""<!doctype html>
     .tag-options { display:grid; gap:5px; max-height:260px; overflow:auto; padding:8px; background:#fff; border:1px solid var(--line); border-radius:6px; }
     .tag-options label { display:flex; align-items:center; gap:6px; color:var(--text); overflow:hidden; }
     .tag-options input { width:auto; min-height:auto; }
-    .tag-options span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tag-options label span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .tag-row { display:grid !important; grid-template-columns:auto minmax(0,1fr) auto; cursor:pointer; padding:4px; border-radius:4px; }
     .tag-row.selected { background:var(--accent-soft); }
     .tag-state { font-size:11px; }

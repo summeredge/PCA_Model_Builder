@@ -1096,6 +1096,18 @@ def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
     ) in html
 
 
+def test_uploaded_tag_names_are_not_ellipsis_clipped_before_inspection():
+    html = web.INDEX_HTML
+    upload_source = html.split("function renderUploadedColumns(columns)", 1)[1].split(
+        "function renderBasicInspection(data)", 1
+    )[0]
+
+    assert ".tag-options label span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }" in html
+    assert ".tag-options span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }" not in html
+    assert 'row.className="tag-row"' in upload_source
+    assert 'badge.textContent="待检查"' in upload_source
+
+
 def test_web_unifies_confirmed_exclusions_and_keeps_raw_suggestions_manual():
     html = web.INDEX_HTML
     inspect_source = html.split(
