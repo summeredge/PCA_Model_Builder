@@ -1133,6 +1133,25 @@ def test_uploaded_tag_names_are_not_ellipsis_clipped_before_inspection():
     assert 'badge.textContent="待检查"' in upload_source
 
 
+def test_tag_list_reserves_name_and_quality_columns():
+    html = web.INDEX_HTML
+    render_source = html.split("function renderTagList()", 1)[1].split(
+        "function selectTag", 1
+    )[0]
+    upload_source = html.split("function renderUploadedColumns(columns)", 1)[1].split(
+        "function renderBasicInspection(data)", 1
+    )[0]
+
+    assert ".tag-row:not(.pending) > .tag-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }" in html
+    assert ".tag-row > .tag-state { min-width:max-content; white-space:nowrap; }" in html
+    assert 'name.className="tag-name"' in render_source
+    assert "name.title=tag" in render_source
+    assert 'row.classList.add("pending")' in upload_source
+    assert "name.title=column" in upload_source
+    assert "#tagOptions .tag-row.pending" in web_model_results.INDEX_HTML
+    assert "height:auto" in web_model_results.INDEX_HTML
+
+
 def test_web_unifies_confirmed_exclusions_and_keeps_raw_suggestions_manual():
     html = web.INDEX_HTML
     inspect_source = html.split(

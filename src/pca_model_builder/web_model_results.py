@@ -248,6 +248,11 @@ _APPLE_DESIGN_STYLE = r"""
     font-size:14px;
     line-height:20px;
   }
+  #tagOptions .tag-row.pending {
+    height:auto;
+    min-height:30px;
+    grid-template-columns:minmax(0,1fr) max-content;
+  }
   #tagOptions .tag-row input[type=checkbox] {
     width:16px;
     height:16px;

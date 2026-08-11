@@ -2505,6 +2505,11 @@ INDEX_HTML = r"""<!doctype html>
     .tag-options input { width:auto; min-height:auto; }
     .tag-options label span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .tag-row { display:grid !important; grid-template-columns:auto minmax(0,1fr) auto; cursor:pointer; padding:4px; border-radius:4px; }
+    .tag-row > .tag-name { min-width:0; }
+    .tag-row:not(.pending) > .tag-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tag-row > .tag-state { min-width:max-content; white-space:nowrap; }
+    .tag-row.pending { grid-template-columns:minmax(0,1fr) max-content; }
+    .tag-row.pending > .tag-name { white-space:normal; overflow-wrap:anywhere; }
     .tag-row.selected { background:var(--accent-soft); }
     .tag-state { font-size:11px; }
     .tag-state.usable { color:var(--normal); }
@@ -2837,7 +2842,7 @@ function renderTagList() {
     const row=document.createElement("div"); row.className=`tag-row ${state.selectedTag===tag?"selected":""}`; row.dataset.tag=tag;
     const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=state.selectedModelTags.has(tag)&&config.role==="continuous_input";
     input.addEventListener("change",()=>{ if(input.checked) state.selectedModelTags.add(tag); else state.selectedModelTags.delete(tag); invalidateQuality("建模Tag已修改"); selectTag(tag); });
-    const name=document.createElement("span"); name.textContent=tag;
+    const name=document.createElement("span"); name.className="tag-name"; name.title=tag; name.textContent=tag;
     const badge=document.createElement("span"); badge.className=`tag-state ${status}`; badge.textContent=config.role!=="continuous_input"?displayUiValue(config.role):displayUiValue(status);
     row.append(input,name,badge); row.addEventListener("click",event=>{ if(event.target!==input) selectTag(tag); }); list.append(row);
   });
@@ -2949,7 +2954,7 @@ function fillSelect(node, values, blankLabel=null) {
 }
 function renderUploadedColumns(columns) {
   const list=el("tagOptions"); list.replaceChildren(); const visible=columns.slice(0,200);
-  visible.forEach(column=>{ const row=document.createElement("div"); row.className="tag-row"; const name=document.createElement("span"); name.textContent=column; const badge=document.createElement("span"); badge.className="tag-state"; badge.textContent="待检查"; row.append(name,badge); list.append(row); });
+  visible.forEach(column=>{ const row=document.createElement("div"); row.className="tag-row"; row.classList.add("pending"); const name=document.createElement("span"); name.className="tag-name"; name.title=column; name.textContent=column; const badge=document.createElement("span"); badge.className="tag-state"; badge.textContent="待检查"; row.append(name,badge); list.append(row); });
   if(columns.length>visible.length) { const more=document.createElement("span"); more.className="help"; more.textContent=`其余 ${columns.length-visible.length} 个列将在检查数据后显示。`; list.append(more); }
 }
 function renderBasicInspection(data) {
