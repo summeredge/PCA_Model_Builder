@@ -623,6 +623,11 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "显示点之间的时间跨度可能来自抽样" in timeline
     assert "explorationTimelineDetails(ordered)" in timeline
     assert '<details><summary>查看显示抽样点明细</summary>' in html
+    assert '.map((value,index)=>`' in timeline
+    assert 'text-anchor="${index===0?"start":index===3?"end":"middle"}"' in timeline
+    assert 'index===0?"start"' in timeline
+    assert 'index===3?"end"' in timeline
+    assert ':"middle"' in timeline
 
 
 def test_final_web_compacts_basic_inspection_time_range_into_two_lines():
