@@ -35,7 +35,7 @@
     <div class="help">诊断用于辅助工程师选择模型结构，不能替代独立验证；不会自动评分、推荐、验证或改变模型状态。</div>
     <div id="singleModelDiagnostic" class="help">完成正常状态候选模型训练后显示结构诊断。</div>
     <div id="modelCandidateStatus" class="help" role="status" aria-live="polite">正在加载候选模型…</div>
-    <label class="secondary">选择 2—4 个已训练候选模型
+    <label class="secondary">选择已训练候选模型
       <select id="modelComparisonRuns" multiple size="5" aria-label="候选模型比较"></select>
     </label>
     <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button><button id="deleteModelsButton" class="danger" type="button">删除所选候选模型</button></div>

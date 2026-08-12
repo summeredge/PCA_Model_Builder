@@ -771,6 +771,8 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
     )
 
     assert 'src="/assets/model-results.js"' in html
+    assert "选择已训练候选模型" in source
+    assert "选择 2—4 个已训练候选模型" not in source
     for text in (
         "模型结构与参数比较",
         "不能替代独立验证",
