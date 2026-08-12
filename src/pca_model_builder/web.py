@@ -681,6 +681,7 @@ def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
     assert processed.resampled is not None
     assert processed.filtered is not None
     result = {
+        "preview_tags": tags,
         "summary": processed.summary.to_dict(),
         "raw": _preview_rows(
             processed.raw.loc[:, tags], processed.raw_segment_ids
@@ -3209,11 +3210,7 @@ el("preprocessingPreviewButton").addEventListener("click",async()=>{
   catch(error){setStatus(error.message,"error");} finally {setBusy(button,false);}
 });
 function preprocessingPreviewTags(data) {
-  const ignored=new Set(["timestamp","physical_gap_start","gap_start"]);
-  for(const rows of [data.raw,data.resampled,data.filtered]) {
-    const row=rows?.[0]; if(row) return Object.keys(row).filter(tag=>!ignored.has(tag)).slice(0,5);
-  }
-  return [];
+  return Array.isArray(data.preview_tags)?data.preview_tags:[];
 }
 function renderPreprocessingPreview(){
   const preview=state.preprocessingPreview; if(!preview) return;

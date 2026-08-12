@@ -420,8 +420,8 @@ _WORKBENCH_UI_STYLE = r"""
   .preprocessing-preview-area #preprocessingPreview { margin-top:10px; }
   .preprocessing-preview-area #preprocessingPreviewTagSelect {
     width:300px;
-    min-width:250px;
-    max-width:350px;
+    min-width:0;
+    max-width:100%;
   }
   .operation-log {
     display:grid;

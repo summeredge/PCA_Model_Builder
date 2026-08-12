@@ -450,6 +450,7 @@ def test_preprocessing_preview_empty_tags_auto_selects_stable_top_five(
         }
     )
 
+    assert result["preview_tags"] == ["B", "C", "A", "F", "D"]
     assert list(result["raw"][0]) == [
         "timestamp",
         "physical_gap_start",
@@ -460,6 +461,39 @@ def test_preprocessing_preview_empty_tags_auto_selects_stable_top_five(
         "F",
         "D",
     ]
+
+
+def test_preprocessing_preview_auto_select_returns_fewer_than_five_available_tags(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    frame = pd.DataFrame(
+        {
+            "time": pd.date_range("2026-01-01", periods=4, freq="5min"),
+            "A": [0.0, 1.0, 2.0, 3.0],
+            "B": [0.0, 10.0, 0.0, 10.0],
+            "C": [0.0, 2.0, 4.0, 6.0],
+        }
+    )
+    uploaded = web.save_upload(
+        "preview-three.csv", frame.to_csv(index=False).encode("utf-8-sig")
+    )
+
+    result = web.preprocessing_preview_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": [],
+            "start": frame.time.iloc[0].isoformat(),
+            "end": frame.time.iloc[-1].isoformat(),
+            "sample_interval_minutes": 5,
+            "filter_method": "none",
+            "max_lag_minutes": 0,
+            "lag_step_minutes": 5,
+        }
+    )
+
+    assert result["preview_tags"] == ["B", "A", "C"]
 
 
 def test_upload_rejects_invalid_txt_and_removes_partial_file(tmp_path, monkeypatch):
@@ -932,6 +966,9 @@ def test_web_preprocessing_preview_validates_first_order_alpha_locally():
 
 def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     html = web.INDEX_HTML
+    tag_source = html.split("function preprocessingPreviewTags(data)", 1)[1].split(
+        "function renderPreprocessingPreview()", 1
+    )[0]
     preview_source = html.split("function renderPreprocessingPreview()", 1)[1].split(
         'el("trendZoom")', 1
     )[0]
@@ -941,6 +978,9 @@ def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     assert "state.preprocessingPreview=null; state.preprocessingPreviewTag=null" in html
     assert "preprocessingPreviewSvg(data,tag)" in preview_source
     assert "function preprocessingPreviewTags(data)" in html
+    assert "data.preview_tags" in tag_source
+    assert "Object.keys(row)" not in tag_source
+    assert ".slice(0,5)" not in tag_source
     assert "Date.parse(row.timestamp)" in preview_source
     assert "row.physical_gap_start||!valid" in preview_source
     assert "Number.isFinite(value)" in preview_source
@@ -963,7 +1003,13 @@ def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     assert "滤波未启用" not in preview_source
     assert "查看高噪声代表 Tag:" in preview_source
     assert "当前显示自动筛选的高噪声代表变量，用于评估预处理效果。" in preview_source
-    assert "width:300px" in web_model_results.INDEX_HTML
+    preview_select_style = web_model_results.INDEX_HTML.split(
+        ".preprocessing-preview-area #preprocessingPreviewTagSelect", 1
+    )[1].split("}", 1)[0]
+    assert "width:300px" in preview_select_style
+    assert "min-width:0" in preview_select_style
+    assert "max-width:100%" in preview_select_style
+    assert "min-width:250px" not in preview_select_style
 
 
 def test_web_preprocessing_preview_svg_rejects_nulls_and_uses_real_y_span():
@@ -1039,6 +1085,7 @@ def test_preprocessing_preview_uses_unified_core_and_preserves_empty_bins(
     assert result["summary"]["source_row_count"] == 6
     assert result["summary"]["resampled_row_count"] == 4
     assert result["summary"]["empty_bin_count"] == 1
+    assert result["preview_tags"] == ["A", "B"]
     empty = next(row for row in result["resampled"] if row["timestamp"].endswith("00:10:00"))
     assert empty["A"] is None and empty["B"] is None
     assert result["data_usage"]["analysis_row_count"] == 6
