@@ -38,7 +38,7 @@
     <label class="secondary">选择 2—4 个已训练候选模型
       <select id="modelComparisonRuns" multiple size="5" aria-label="候选模型比较"></select>
     </label>
-    <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button></div>
+    <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button><button id="deleteModelsButton" class="danger" type="button">删除所选候选模型</button></div>
     <div id="modelComparisonResult" class="help">比较只读取已保存的正常状态候选模型包。</div>`;
   projectionGrid.insertAdjacentElement("afterend", diagnosticCard);
 
@@ -144,6 +144,10 @@
     const runIds = [...select.selectedOptions].map(option => option.value);
     const target = document.getElementById("modelComparisonResult");
     const button = document.getElementById("compareModelsButton");
+    if (runIds.length < 2 || runIds.length > 4) {
+      setUiMessage(target, "模型比较需要选择 2—4 个候选模型。", "warning");
+      return;
+    }
     setBusy(button, true, "比较中…");
     setUiMessage(target, "正在比较所选候选模型…", "info");
     try {
@@ -157,6 +161,47 @@
       renderComparison(data);
     } catch (error) {
       setUiMessage(target, `模型比较失败：${error.message}`, "error");
+    } finally {
+      setBusy(button, false);
+    }
+  });
+
+  document.getElementById("deleteModelsButton").addEventListener("click", async () => {
+    const select = document.getElementById("modelComparisonRuns");
+    const selected = [...select.selectedOptions];
+    const target = document.getElementById("modelCandidateStatus");
+    const button = document.getElementById("deleteModelsButton");
+    if (!selected.length) {
+      setUiMessage(target, "请先选择要删除的候选模型。", "warning");
+      return;
+    }
+    if (state.runId && selected.some(option => option.value === state.runId)) {
+      setUiMessage(target, "当前正在使用的候选模型不能删除。", "error");
+      return;
+    }
+    const protectedOption = selected.find(option => option.dataset.deletable !== "true");
+    if (protectedOption) {
+      setUiMessage(target, `所选候选模型不能删除：${protectedOption.dataset.blockReason || "已产生正式下游工件"}。`, "error");
+      return;
+    }
+    const names = selected.map(option => `${option.dataset.modelName || "候选模型"}（${option.value.slice(0, 8)}）`);
+    if (!window.confirm(`即将删除 ${selected.length} 个候选模型：${names.join("、")}。删除后不可恢复，是否继续？`)) return;
+    setBusy(button, true, "删除中…");
+    setUiMessage(target, `正在删除 ${selected.length} 个候选模型…`, "info");
+    try {
+      const response = await fetch("/api/model-candidates/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({run_ids: selected.map(option => option.value)}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "候选模型删除失败");
+      document.getElementById("modelComparisonResult").replaceChildren();
+      setUiMessage(document.getElementById("modelComparisonResult"), "比较结果已清空。", "empty");
+      await refreshCandidateOptions(state.runId);
+      setUiMessage(target, `已删除 ${data.deleted_run_ids.length} 个候选模型。`, "success");
+    } catch (error) {
+      setUiMessage(target, `候选模型删除失败：${error.message}`, "error");
     } finally {
       setBusy(button, false);
     }
@@ -177,7 +222,11 @@
       candidates.forEach(candidate => {
         const option = document.createElement("option");
         option.value = candidate.run_id;
-        option.textContent = `${candidate.model_name} · ${candidate.run_id.slice(0, 8)} · ${candidate.training_dynamic_samples} 样本`;
+        option.dataset.deletable = String(candidate.deletable !== false);
+        option.dataset.blockReason = candidate.deletion_block_reason || "";
+        option.dataset.modelName = candidate.model_name;
+        const stateLabel = candidate.deletion_block_reason?.includes("validated") ? " · 已验证" : candidate.deletion_block_reason?.includes("frozen") ? " · 已冻结" : candidate.deletion_block_reason?.includes("deployment") ? " · 已部署" : "";
+        option.textContent = `${candidate.model_name} · ${candidate.run_id.slice(0, 8)} · ${candidate.training_dynamic_samples} 样本${stateLabel}`;
         option.selected = candidate.run_id === currentRunId;
         select.append(option);
       });

@@ -891,6 +891,201 @@ def test_final_web_model_comparison_routes_only_read_saved_candidates(
     assert first_path.stat().st_mtime_ns == before[1]
 
 
+def test_final_web_deletes_candidate_run_directory_and_refreshes_list(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5,
+        "lag_step_minutes": 5,
+        "model_name": "delete-candidate",
+    }
+    first = web_model_results.train_payload(payload)
+    second = web_model_results.train_payload({**payload, "smoothing_window_minutes": 5})
+    first_dir = tmp_path / "runs" / first["run_id"]
+    second_dir = tmp_path / "runs" / second["run_id"]
+
+    candidates, list_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/model-candidates"
+    )
+    deleted, delete_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/model-candidates/delete",
+        {"run_ids": [first["run_id"]]},
+    )
+    refreshed, refreshed_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/model-candidates"
+    )
+
+    assert list_status == 200
+    assert all(item["deletable"] for item in candidates["candidates"])
+    assert delete_status == 200
+    assert deleted == {"deleted_run_ids": [first["run_id"]]}
+    assert not first_dir.exists()
+    assert second_dir.is_dir()
+    assert refreshed_status == 200
+    assert {item["run_id"] for item in refreshed["candidates"]} == {second["run_id"]}
+
+
+def test_final_web_candidate_deletion_validates_batch_before_deleting_any_run(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5,
+        "lag_step_minutes": 5,
+        "model_name": "protected-candidate",
+    }
+    deletable = web_model_results.train_payload(payload)
+    protected = web_model_results.train_payload(
+        {**payload, "smoothing_window_minutes": 5}
+    )
+    protected_dir = tmp_path / "runs" / protected["run_id"]
+    protected_artifacts = (
+        "validated_model.pcamodel",
+        "frozen_model.pcamodel",
+        "deployment_model.pcadeploy",
+    )
+
+    (protected_dir / protected_artifacts[0]).write_bytes(b"protected")
+    before, before_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/model-candidates"
+    )
+    rejected, rejected_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/model-candidates/delete",
+        {"run_ids": [deletable["run_id"], protected["run_id"]]},
+    )
+
+    assert before_status == 200
+    protected_item = next(
+        item for item in before["candidates"] if item["run_id"] == protected["run_id"]
+    )
+    assert protected_item["deletable"] is False
+    assert "validated_model.pcamodel" in protected_item["deletion_block_reason"]
+    assert rejected_status == 400
+    assert "正式下游工件" in rejected["error"]
+    assert (tmp_path / "runs" / deletable["run_id"]).is_dir()
+    assert protected_dir.is_dir()
+
+    (protected_dir / protected_artifacts[0]).unlink()
+    for artifact in protected_artifacts[1:]:
+        (protected_dir / artifact).write_bytes(b"protected")
+        rejected, rejected_status = _post_response(
+            web_model_results.ModelResultsHandler,
+            "/api/model-candidates/delete",
+            {"run_ids": [protected["run_id"]]},
+        )
+        assert rejected_status == 400
+        assert "正式下游工件" in rejected["error"]
+        assert protected_dir.is_dir()
+        (protected_dir / artifact).unlink()
+
+
+def test_final_web_candidate_deletion_rejects_invalid_lifecycle_corrupt_package_and_run_id(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5,
+        "lag_step_minutes": 5,
+        "model_name": "deletion-validation",
+    }
+    exploratory = web_model_results.train_payload(
+        {**payload, "model_purpose": "exploratory"}
+    )
+    candidate = web_model_results.train_payload(payload)
+    corrupt_id = "a" * 32
+    corrupt_dir = tmp_path / "runs" / corrupt_id
+    corrupt_dir.mkdir(parents=True)
+    (corrupt_dir / "model.pcamodel").write_bytes(b"not-a-model-package")
+
+    for run_id, expected in (
+        (exploratory["run_id"], "normal_state/candidate"),
+        (corrupt_id, "模型包损坏"),
+    ):
+        rejected, rejected_status = _post_response(
+            web_model_results.ModelResultsHandler,
+            "/api/model-candidates/delete",
+            {"run_ids": [run_id]},
+        )
+        assert rejected_status == 400
+        assert expected in rejected["error"]
+    rejected, rejected_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/model-candidates/delete",
+        {"run_ids": [candidate["run_id"], "../outside"]},
+    )
+
+    assert rejected_status == 400
+    assert "无效的 run_id" in rejected["error"]
+    assert (tmp_path / "runs" / candidate["run_id"]).is_dir()
+    assert corrupt_dir.is_dir()
+
+
+def test_final_web_candidate_deletion_frontend_guards_and_refreshes_comparison_state() -> None:
+    source = (PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (
+        'id="deleteModelsButton"',
+        "删除所选候选模型",
+        "/api/model-candidates/delete",
+        "当前正在使用的候选模型不能删除",
+        "deletion_block_reason",
+        "删除后不可恢复",
+        "refreshCandidateOptions(state.runId)",
+    ):
+        assert text in source
+    assert "模型比较需要选择 2—4 个候选模型。" in source
+    assert source.index("当前正在使用的候选模型不能删除") < source.index(
+        'fetch("/api/model-candidates/delete"'
+    )
+    assert source.index("所选候选模型不能删除") < source.index(
+        'fetch("/api/model-candidates/delete"'
+    )
+    assert source.index('document.getElementById("modelComparisonResult").replaceChildren()') < source.index(
+        "refreshCandidateOptions(state.runId)"
+    )
+
+
 def test_web_exposes_preprocessing_controls_and_preview_route():
     html = web_model_results.INDEX_HTML
     for element_id in (

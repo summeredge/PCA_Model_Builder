@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import re
+import shutil
 import threading
 from typing import Any, Sequence
 from urllib.parse import urlparse
@@ -17,6 +19,11 @@ from .model_diagnostics import compare_candidate_runs, model_structure_diagnosti
 _BASE_WEB = quality_app.app.base_web
 _TREND_APP = quality_app.app
 _ASSET_PATH = Path(__file__).with_name("model_results.js")
+_CANDIDATE_PROTECTED_ARTIFACTS = (
+    "validated_model.pcamodel",
+    "frozen_model.pcamodel",
+    "deployment_model.pcadeploy",
+)
 _SCATTER_SECTION = re.compile(
     r'\n    <section class="dp-scatter-section">.*?\n    </section>', re.DOTALL
 )
@@ -611,6 +618,7 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-energy-table th,
   #modelStructureComparison .model-energy-table td { padding-top:5px; padding-bottom:5px; }
   #modelStructureComparison #modelComparisonRuns { height:auto; min-height:0; }
+  #modelStructureComparison button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
   #modelStructureComparison .model-parameter-table { width:100%; max-width:100%; table-layout:fixed; }
   #modelStructureComparison .model-parameter-table th:first-child,
   #modelStructureComparison .model-parameter-table td:first-child { width:12em; }
@@ -1018,14 +1026,76 @@ def candidate_models_payload() -> dict[str, Any]:
             manifest["model_purpose"] == "normal_state"
             and manifest["model_status"] == "candidate"
         ):
+            protected_artifact = _candidate_deletion_block_reason(run_dir)
             candidates.append(
                 {
                     "run_id": run_dir.name,
                     "model_name": str(manifest["config"]["model_name"]),
                     "training_dynamic_samples": int(model.n_samples),
+                    "deletable": protected_artifact is None,
+                    "deletion_block_reason": (
+                        f"已存在{protected_artifact}"
+                        if protected_artifact
+                        else None
+                    ),
                 }
             )
     return {"candidates": candidates}
+
+
+def delete_candidate_models_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_ids = payload.get("run_ids")
+    if not isinstance(run_ids, list) or not run_ids:
+        raise ValueError("run_ids必须包含至少一个候选运行")
+    if any(not isinstance(run_id, str) for run_id in run_ids):
+        raise ValueError("run_id无效")
+    if len(run_ids) != len(set(run_ids)):
+        raise ValueError("run_ids不能重复")
+
+    validated_ids = [
+        _BASE_WEB._validated_id(run_id, "run_id") for run_id in run_ids
+    ]
+    checked: list[tuple[str, Path]] = []
+    with ExitStack() as locks:
+        for run_id in sorted(validated_ids):
+            locks.enter_context(_BASE_WEB._lifecycle_lock(run_id))
+        runs_dir = _BASE_WEB.RUNS_DIR.resolve()
+        for run_id in validated_ids:
+            run_dir = _BASE_WEB.RUNS_DIR / run_id
+            if run_dir.resolve().parent != runs_dir:
+                raise ValueError(f"候选模型运行记录路径无效：{run_id}")
+            model_path = run_dir / "model.pcamodel"
+            if not model_path.is_file():
+                raise ValueError(f"候选模型运行记录不存在：{run_id}")
+            if model_path.resolve().parent != run_dir.resolve():
+                raise ValueError(f"候选模型包路径无效：{run_id}")
+            try:
+                _, manifest = _BASE_WEB.load_model_package(model_path)
+            except ValueError as error:
+                raise ValueError(f"候选模型包损坏：{run_id}") from error
+            if (
+                manifest["model_purpose"] != "normal_state"
+                or manifest["model_status"] != "candidate"
+            ):
+                raise ValueError(f"仅允许删除normal_state/candidate模型：{run_id}")
+            if _candidate_deletion_block_reason(run_dir):
+                raise ValueError(f"模型存在正式下游工件，不能删除：{run_id}")
+            checked.append((run_id, run_dir))
+
+        for _, run_dir in checked:
+            shutil.rmtree(run_dir)
+    return {"deleted_run_ids": validated_ids}
+
+
+def _candidate_deletion_block_reason(run_dir: Path) -> str | None:
+    return next(
+        (
+            artifact
+            for artifact in _CANDIDATE_PROTECTED_ARTIFACTS
+            if (run_dir / artifact).exists()
+        ),
+        None,
+    )
 
 
 INDEX_HTML = apply_model_results_ui(quality_app.INDEX_HTML)
@@ -1055,6 +1125,7 @@ class ModelResultsHandler(_BASE_WEB._Handler):
             "/api/trend",
             "/api/model-diagnostics",
             "/api/model-comparison",
+            "/api/model-candidates/delete",
         }:
             super().do_POST()
             return
@@ -1067,6 +1138,8 @@ class ModelResultsHandler(_BASE_WEB._Handler):
                 if path == "/api/trend"
                 else model_diagnostic_payload(payload)
                 if path == "/api/model-diagnostics"
+                else delete_candidate_models_payload(payload)
+                if path == "/api/model-candidates/delete"
                 else compare_candidate_runs(payload.get("run_ids"), _BASE_WEB.RUNS_DIR)
             )
             self._send_json(result)
