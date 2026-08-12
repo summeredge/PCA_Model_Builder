@@ -618,14 +618,24 @@ _MODEL_RESULTS_STYLE = r"""
   .model-projection-grid #loadingChart svg { width:100%; height:420px; display:block; }
   #modelStructureComparison .model-variance-chart svg { display:block; width:100%; max-width:640px; height:auto; }
   #modelStructureComparison .model-variance-summary { display:flex; flex-wrap:wrap; gap:4px 14px; margin:0 0 10px; }
-  #modelStructureComparison .model-energy-table { width:min(100%,480px); max-width:100%; min-width:0; }
+  #modelStructureComparison .model-energy-grid {
+    display:grid;
+    grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);
+    gap:12px 16px;
+    align-items:start;
+    max-width:900px;
+  }
+  #modelStructureComparison .model-energy-table { width:100%; max-width:100%; min-width:0; }
   #modelStructureComparison .model-energy-table table { width:100%; table-layout:fixed; }
   #modelStructureComparison .model-energy-table th:first-child,
   #modelStructureComparison .model-energy-table td:first-child { text-align:left; overflow-wrap:anywhere; }
   #modelStructureComparison .model-energy-table th:nth-child(2),
   #modelStructureComparison .model-energy-table td:nth-child(2) { width:7.5em; text-align:right; white-space:nowrap; }
   #modelStructureComparison .model-energy-table th,
-  #modelStructureComparison .model-energy-table td { padding-top:5px; padding-bottom:5px; }
+  #modelStructureComparison .model-energy-table td { padding:5px 8px; }
+  #modelStructureComparison .lag-energy-table { width:min(100%,220px); }
+  #modelStructureComparison .lag-energy-table th:first-child,
+  #modelStructureComparison .lag-energy-table td:first-child { text-align:right; white-space:nowrap; }
   #modelStructureComparison #modelComparisonRuns { height:auto; min-height:0; }
   #modelStructureComparison button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
   #modelStructureComparison .model-parameter-table { width:100%; max-width:100%; table-layout:fixed; }
@@ -641,7 +651,10 @@ _MODEL_RESULTS_STYLE = r"""
     .model-projection-grid #scoreChart svg,
     .model-projection-grid #loadingChart svg { height:360px; }
   }
-  @media (max-width:520px) { #modelStructureComparison .model-energy-table { width:100%; } }
+  @media (max-width:760px) {
+    #modelStructureComparison .model-energy-grid { grid-template-columns:1fr; }
+    #modelStructureComparison .lag-energy-table { width:100%; }
+  }
 </style>
 """
 

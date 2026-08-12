@@ -800,14 +800,17 @@ def test_model_structure_diagnostic_labels_retained_components_and_energy_tables
     assert '"累计解释率（%）"' in source
     assert "x(point + 1)" in source
     assert "`保留 ${retained}`" in source
-    assert 'container.className = "model-energy-table"' in source
+    assert 'container.className = `model-energy-table ${key === "tag" ? "tag-energy-table" : "lag-energy-table"}`;' in source
+    assert 'container.className = "model-energy-grid"' in source
     assert "#modelStructureComparison .model-energy-table" in html
-    assert "width:min(100%,480px);" in html
+    assert "#modelStructureComparison .model-energy-grid" in html
+    assert "grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);" in html
+    assert "width:min(100%,220px);" in html
     assert "table-layout:fixed;" in html
     assert "overflow-wrap:anywhere;" in html
     assert "#modelStructureComparison .model-energy-table th:nth-child(2)," in html
     assert "text-align:right;" in html
-    assert "@media (max-width:520px)" in html
+    assert "@media (max-width:760px)" in html
 
 
 def test_model_comparison_layout_scopes_select_and_wraps_parameter_table_text() -> None:

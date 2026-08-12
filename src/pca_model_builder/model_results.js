@@ -247,8 +247,10 @@
     target.replaceChildren(
       diagnosticSummary(diagnostic),
       explainedVarianceChart([diagnostic]),
-      energyTable("原始Tag平方载荷能量（全部保留主元）", diagnostic.tag_loading_energy.retained_components, "tag"),
-      lagEnergyTable(diagnostic),
+      energyTablePair(
+        energyTable("原始Tag平方载荷能量（全部保留主元）", diagnostic.tag_loading_energy.retained_components, "tag"),
+        lagEnergyTable(diagnostic),
+      ),
     );
   }
 
@@ -266,8 +268,10 @@
       explainedVarianceChart(data.diagnostics),
       ...data.diagnostics.flatMap(diagnostic => [
         diagnosticSummary(diagnostic),
-        energyTable(`${diagnostic.model_name}：原始Tag平方载荷能量`, diagnostic.tag_loading_energy.retained_components, "tag"),
-        lagEnergyTable(diagnostic),
+        energyTablePair(
+          energyTable(`${diagnostic.model_name}：原始Tag平方载荷能量`, diagnostic.tag_loading_energy.retained_components, "tag"),
+          lagEnergyTable(diagnostic),
+        ),
       ]),
     );
   }
@@ -298,7 +302,7 @@
 
   function energyTable(title, rows, key) {
     const container = document.createElement("div");
-    container.className = "model-energy-table";
+    container.className = `model-energy-table ${key === "tag" ? "tag-energy-table" : "lag-energy-table"}`;
     const heading = document.createElement("h4");
     heading.textContent = title;
     const table = document.createElement("table");
@@ -311,6 +315,13 @@
     });
     table.append(body);
     container.append(heading, table);
+    return container;
+  }
+
+  function energyTablePair(tagTable, lagTable) {
+    const container = document.createElement("div");
+    container.className = "model-energy-grid";
+    container.append(tagTable, lagTable);
     return container;
   }
 
