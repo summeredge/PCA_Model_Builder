@@ -313,7 +313,16 @@ _APPLE_DESIGN_STYLE = r"""
   .status.warning, .notice { background:#fff8e1; color:#6f4e00; border-color:#f1c21b; }
   .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
   #modelPanel #modelQualityStatus,
-  #modelPanel #qualityButton { width:fit-content; justify-self:start; }
+  #modelPanel #qualityButton {
+    width:fit-content;
+    height:42px;
+    min-height:42px;
+    justify-self:start;
+  }
+  #modelPanel #modelQualityStatus {
+    display:inline-flex;
+    align-items:center;
+  }
   #modelPanel #modelQualityStatus { max-width:100%; }
   #modelPanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:6px; }

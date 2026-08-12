@@ -2657,8 +2657,8 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
         <h3>建模质量检查</h3>
-        <div id="modelQualityStatus" class="status info" role="status">未检查</div>
         <button id="qualityButton" class="secondary" disabled>执行建模质量检查</button>
+        <div id="modelQualityStatus" class="status info" role="status">未检查</div>
         <div id="modelQualityResults">
           <div id="qualitySummary" class="metrics"></div>
           <h3>当前 Tag 建模质量详情</h3>

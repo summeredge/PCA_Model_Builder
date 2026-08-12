@@ -204,3 +204,32 @@ Regression tests added for first-order and trailing filtering with state-filter 
 **Related Files**
 - src/pca_model_builder/preprocessing.py
 - src/pca_model_builder/training.py
+
+## 2026-08-12 - Default shell read timed out
+
+**Scope**
+Project
+
+**Area**
+tools
+
+**Failure**
+The first attempt to read a required skill file used the shell command's default timeout and ended before returning output.
+
+**Root Cause**
+The command did not provide an explicit timeout for a PowerShell file read in the restricted session.
+
+**Correction**
+Retry the read with an explicit 60-second timeout and continue using the returned instructions.
+
+**Prevention Rule**
+Use an explicit timeout for repository or environment file reads when the default tool timeout is uncertain.
+
+**Promotion Decision**
+Do not promote.
+
+**Test Decision**
+Not applicable.
+
+**Related Files**
+- C:/Users/shaoy/.agents/skills/karpathy-guidelines/SKILL.md

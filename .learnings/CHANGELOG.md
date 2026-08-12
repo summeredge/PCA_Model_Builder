@@ -10,4 +10,5 @@
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-003","summary":"Keep schema-specific resampling conversion explicit"}
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-004","summary":"Preserve indentation context in multi-file Python patches"}
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-005","summary":"Treat state-filter exclusions as causal segment boundaries"}
+{"ts":"2026-08-12T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260812-001","summary":"Use an explicit timeout for PowerShell skill-file reads"}
 ```

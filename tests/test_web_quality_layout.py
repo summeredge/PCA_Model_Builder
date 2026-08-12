@@ -490,7 +490,8 @@ def test_model_quality_check_is_in_the_model_training_stage() -> None:
     assert "执行建模质量检查" in model_source
     assert 'id="modelQualityStatus"' in model_source
     assert 'id="modelQualityResults"' in model_source
-    assert model_source.index('id="qualityButton"') < model_source.index('id="trainButton"')
+    assert model_source.index('id="qualityButton"') < model_source.index('id="modelQualityStatus"')
+    assert model_source.index('id="modelQualityStatus"') < model_source.index('id="trainButton"')
     assert "上传后基础数据检查" in html
     assert "此处仅展示整体历史数据的时间轴与原始逐列检查结果" in html
     assert "column_profiles" in html
@@ -503,7 +504,10 @@ def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     html = web_model_results.INDEX_HTML
 
     assert "#modelPanel #modelQualityStatus," in html
-    assert "#modelPanel #qualityButton { width:fit-content; justify-self:start; }" in html
+    assert "#modelPanel #qualityButton {" in html
+    assert "#modelPanel #modelQualityStatus {" in html
+    assert "height:42px;" in html
+    assert "min-height:42px;" in html
     assert "#modelPanel #modelQualityStatus { max-width:100%; }" in html
     assert "#modelPanel #currentTagQuality { max-width:1200px; }" in html
 
