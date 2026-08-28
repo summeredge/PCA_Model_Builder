@@ -1068,6 +1068,7 @@ def _exploration_series(
     full = series if full_series is None else full_series
     positions = full.index.get_indexer(series.index)
     expected = pd.Timedelta(minutes=interval)
+    has_target_status = "performance_target_met" in full.columns
     result = []
     for position, (timestamp, row) in zip(positions, series.iterrows(), strict=True):
         break_before = False
@@ -1086,6 +1087,11 @@ def _exploration_series(
                 "break_before": break_before,
             }
         )
+        if has_target_status:
+            target_status = full["performance_target_met"].iloc[position]
+            result[-1]["performance_target_met"] = (
+                None if target_status is None or pd.isna(target_status) else bool(target_status)
+            )
     return result
 
 
@@ -2750,7 +2756,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="chart-card"><h3>Cluster 时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
           </div>
           <h3>Cluster 摘要表</h3>
-          <div class="table-wrap"><table><thead><tr><th>Cluster ID</th><th>样本数</th><th>覆盖率</th><th>连续段数</th><th>覆盖时长</th><th>中心距离中位数</th><th>主元离散度</th><th>候选数量</th></tr></thead><tbody id="explorationClusterTable"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Cluster ID</th><th>样本数</th><th>覆盖率</th><th>连续段数</th><th>覆盖时长</th><th>中心距离中位数</th><th>主元离散度</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>候选数量</th></tr></thead><tbody id="explorationClusterTable"></tbody></table></div>
           <h3>Cluster 候选表</h3>
           <div id="explorationClusterCandidates" class="table-wrap"></div>
           <h3>性能候选表</h3>
@@ -3038,6 +3044,7 @@ function stateExplorationPayload() {
 }
 function explorationClusterNumber(clusterId) { const match=String(clusterId).match(/(\d+)$/); return match?Number(match[1]):1; }
 function explorationNumber(value,digits=2) { return value===null||value===undefined||!Number.isFinite(Number(value))?"—":Number(value).toFixed(digits); }
+function explorationPercent(value) { return value===null||value===undefined||!Number.isFinite(Number(value))?"—":`${(Number(value)*100).toFixed(1)}%`; }
 const EXPLORATION_CLUSTER_PALETTE=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
 function explorationClusterColor(clusterId) { return EXPLORATION_CLUSTER_PALETTE[(explorationClusterNumber(clusterId)-1)%EXPLORATION_CLUSTER_PALETTE.length]; }
 function renderStateExploration(data) {
@@ -3054,10 +3061,12 @@ function renderExplorationLossSummary(losses) {
 function renderExplorationPcChart(data) {
   const rows=data.cluster_series||[]; const container=el("explorationPcChart"); if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
   const width=760,height=260,pad=34; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad),y=value=>height/2-value/maxY*(height/2-pad);
-  const points=rows.map(row=>`<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="3" fill="${explorationClusterColor(row.cluster_id)}" fill-opacity=".75"><title>${escapeHtml(displayTime(row.timestamp,19))} · ${escapeHtml(row.cluster_id)}</title></circle>`).join("");
+  const targetRange=data.performance_config?.direction==="target_range";
+  const points=rows.map(row=>{const color=explorationClusterColor(row.cluster_id);const targetMet=targetRange&&row.performance_target_met===true;const title=`${escapeHtml(displayTime(row.timestamp,19))} · ${escapeHtml(row.cluster_id)}${targetMet?" · 性能达标":""}`;const marker=`<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="${targetMet?6:3}" fill="${color}" fill-opacity=".75"${targetMet?' stroke="#111827" stroke-width="2"':''}><title>${title}</title></circle>`;return marker;}).join("");
   const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>{const cx=x(Number(center[0])),cy=y(Number(center[1])),color=explorationClusterColor(cluster);return `<g stroke="${color}" stroke-width="2"><line x1="${cx-7}" x2="${cx+7}" y1="${cy}" y2="${cy}"/><line x1="${cx}" x2="${cx}" y1="${cy-7}" y2="${cy+7}"/><title>${escapeHtml(cluster)} 中心</title></g>`;}).join("");
   const legend=[...new Set(rows.map(row=>row.cluster_id))].map(cluster=>{const number=explorationClusterNumber(cluster);return `<text x="${pad+(number-1)*88}" y="16" fill="${explorationClusterColor(cluster)}" font-size="10">● ${escapeHtml(cluster)}</text>`;}).join("");
-  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
+  const targetLegend=targetRange?`<text x="${pad}" y="${height-8}" fill="#111827" font-size="10">◎ 性能达标</text>`:"";
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}${targetLegend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
 }
 function explorationTimelineTick(value) { const time=new Date(value); return `${String(time.getMonth()+1).padStart(2,"0")}/${String(time.getDate()).padStart(2,"0")} ${String(time.getHours()).padStart(2,"0")}:${String(time.getMinutes()).padStart(2,"0")}`; }
 function renderExplorationTimeline(rows,candidates) {
@@ -3078,7 +3087,7 @@ function explorationTimelineDetails(rows) {
   return `<details><summary>查看显示抽样点明细</summary><div class="timeline-detail"><table><thead><tr><th>时间</th><th>Cluster</th><th>数据段</th></tr></thead><tbody>${body}</tbody></table></div></details>`;
 }
 function renderExplorationClusterTable(summaries) {
-  const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); [item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.candidate_count].forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
+  const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); const values=[item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.performance_valid_count??"—",item.performance_target_count??"—",explorationPercent(item.performance_target_ratio),explorationNumber(item.performance_median,3),item.candidate_count]; values.forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
 }
 function renderExplorationCandidateTables(clusterCandidates,performanceCandidates,decisions) {
   const decisionById=Object.fromEntries(decisions.map(item=>[item.candidate_id,item]));

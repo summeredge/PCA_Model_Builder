@@ -11,4 +11,7 @@
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-004","summary":"Preserve indentation context in multi-file Python patches"}
 {"ts":"2026-08-10T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260810-005","summary":"Treat state-filter exclusions as causal segment boundaries"}
 {"ts":"2026-08-12T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260812-001","summary":"Use an explicit timeout for PowerShell skill-file reads"}
+{"ts":"2026-08-28T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260828-001","summary":"Avoid complex regex escaping in PowerShell node -e checks"}
+{"ts":"2026-08-28T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260828-002","summary":"Do not pass PowerShell-only flags to rg"}
+{"ts":"2026-08-28T00:00:00+08:00","action":"add","type":"error","id":"ERR-20260828-003","summary":"Use explicit temporary test dependencies when bundled Python lacks pytest"}
 ```

@@ -29,6 +29,9 @@ def test_state_exploration_is_draft_and_deterministic_with_display_limit():
     assert len(first["cluster_series_display"]) <= 12
     assert first["cluster_series"].index.is_unique
     assert sum(item["sample_count"] for item in first["cluster_summaries"]) == len(first["cluster_series"])
+    assert all(
+        "performance_valid_count" not in item for item in first["cluster_summaries"]
+    )
     assert all(item["source"] == "cluster" and item["comment"] == "" for item in first["cluster_candidates"])
     candidate_ids = {
         item["candidate_id"]
@@ -163,6 +166,138 @@ def test_performance_candidates_support_all_directions_and_do_not_cross_segments
     assert higher[0]["source"] == "performance"
     assert higher[0]["comment"] == ""
     assert higher[0]["associated_cluster_ids"] == ["cluster_001"]
+
+
+def test_target_range_candidates_prioritize_stability_before_start_time():
+    index = pd.date_range("2026-01-01", periods=8, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": np.zeros(8),
+            "pc2": np.zeros(8),
+            "pc3": [0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 0.0],
+            "cluster_id": ["cluster_001"] * 8,
+            "segment_id": [0] * 4 + [1] * 4,
+        },
+        index=index,
+    )
+    candidates = _performance_candidates(
+        points,
+        pd.Series([5.0] * 8, index=index),
+        PerformanceConfig(
+            "PERF",
+            "target_range",
+            target_min=4,
+            target_max=6,
+            minimum_duration_minutes=20,
+            candidate_count=2,
+        ),
+        5,
+        {"cluster_001": np.zeros(3)},
+        ("pc1", "pc2", "pc3"),
+    )
+
+    assert candidates[0]["start"] == index[4].isoformat()
+    assert candidates[1]["start"] == index[0].isoformat()
+    assert candidates[0]["stability_score"] > candidates[1]["stability_score"]
+    assert candidates[0]["performance_summary"]["target_ratio"] == 1.0
+    assert candidates[0]["performance_summary"]["mean_target_deviation"] == 0.0
+
+
+def test_target_range_candidates_do_not_prefer_lower_mean_when_fully_in_range():
+    index = pd.date_range("2026-01-01", periods=8, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": np.zeros(8),
+            "pc2": np.zeros(8),
+            "cluster_id": ["cluster_001"] * 8,
+            "segment_id": [0] * 4 + [1] * 4,
+        },
+        index=index,
+    )
+    candidates = _performance_candidates(
+        points,
+        pd.Series([6.0] * 4 + [4.0] * 4, index=index),
+        PerformanceConfig(
+            "PERF",
+            "target_range",
+            target_min=2,
+            target_max=8,
+            minimum_duration_minutes=20,
+            candidate_count=2,
+        ),
+        5,
+        {"cluster_001": np.zeros(2)},
+        ("pc1", "pc2"),
+    )
+
+    assert [item["start"] for item in candidates] == [
+        index[0].isoformat(),
+        index[4].isoformat(),
+    ]
+
+
+def test_target_range_status_and_cluster_statistics_use_full_aligned_samples():
+    index = pd.date_range("2026-01-01", periods=36, freq="5min")
+    frame = pd.DataFrame(
+        {
+            "A": np.sin(np.linspace(0, 8, len(index))),
+            "B": np.cos(np.linspace(0, 8, len(index))),
+            "C": np.sin(np.linspace(0, 23, len(index))),
+            "D": np.sin(np.linspace(0, 8, len(index)))
+            + np.cos(np.linspace(0, 8, len(index)))
+            + np.sin(np.linspace(0, 23, len(index)))
+            + np.linspace(-0.001, 0.001, len(index)),
+            "PERF": np.tile([1.0, 2.0, 3.0, 4.0, 5.0, 2.0], 6),
+        },
+        index=index,
+    )
+    frame.loc[index[4], "PERF"] = np.nan
+    frame.loc[index[17], "PERF"] = np.inf
+    result = run_state_exploration(
+        frame,
+        ["A", "B", "C", "D"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+        ExplorationConfig(
+            cluster_count=2,
+            minimum_candidate_duration_minutes=10,
+            maximum_plot_points=8,
+        ),
+        performance_config=PerformanceConfig(
+            "PERF", "target_range", target_min=2, target_max=3
+        ),
+    )
+
+    full = result["cluster_series"]
+    finite = np.isfinite(frame["PERF"].to_numpy())
+    expected_target = finite & (frame["PERF"].to_numpy() >= 2) & (
+        frame["PERF"].to_numpy() <= 3
+    )
+    assert "performance_target_met" in full.columns
+    for position, timestamp in enumerate(full.index):
+        status = full.loc[timestamp, "performance_target_met"]
+        if not finite[position]:
+            assert status is None
+        else:
+            assert bool(status) is bool(expected_target[position])
+
+    display = result["cluster_series_display"]
+    for timestamp in display.index:
+        assert display.loc[timestamp, "performance_target_met"] == full.loc[
+            timestamp, "performance_target_met"
+        ]
+
+    summaries = result["cluster_summaries"]
+    assert sum(item["performance_valid_count"] for item in summaries) == int(finite.sum())
+    assert sum(item["performance_target_count"] for item in summaries) == int(
+        expected_target.sum()
+    )
+    for item in summaries:
+        valid_count = item["performance_valid_count"]
+        expected_ratio = (
+            item["performance_target_count"] / valid_count if valid_count else None
+        )
+        assert item["performance_target_ratio"] == expected_ratio
+        assert item["performance_median"] is not None
 
 
 @pytest.mark.parametrize(

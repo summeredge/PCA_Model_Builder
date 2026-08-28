@@ -154,6 +154,21 @@ def run_state_exploration(
         f"cluster_{cluster:03d}": center.copy()
         for cluster, center in clustered.centers.items()
     }
+    performance_values: pd.Series | None = None
+    if normalized_performance is not None:
+        performance_values = _performance_values(
+            indexed,
+            processed,
+            dynamic,
+            normalized_performance,
+            performance_series,
+        )
+        if normalized_performance.direction == "target_range":
+            points["performance_target_met"] = (
+                _target_range_status(performance_values, normalized_performance)
+                .reindex(points.index)
+                .to_numpy(dtype=object)
+            )
     candidates = _cluster_candidates(
         points,
         exploration_config,
@@ -169,19 +184,14 @@ def run_state_exploration(
         preprocessing_config.sample_interval_minutes,
         centers,
         clustered.pc_columns,
+        performance_values=performance_values,
+        performance_config=normalized_performance,
     )
     performance_candidates: list[dict[str, object]] = []
     if normalized_performance is not None:
-        values = _performance_values(
-            indexed,
-            processed,
-            dynamic,
-            normalized_performance,
-            performance_series,
-        )
         performance_candidates = _performance_candidates(
             points,
-            values,
+            performance_values,
             normalized_performance,
             preprocessing_config.sample_interval_minutes,
             centers,
@@ -289,6 +299,26 @@ def _performance_values(
     return values.astype(float).set_axis(dynamic.index)
 
 
+def _target_range_classification(
+    values: pd.Series, config: PerformanceConfig
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    numeric = values.to_numpy(dtype=float)
+    finite = np.isfinite(numeric)
+    within = finite & (numeric >= config.target_min) & (numeric <= config.target_max)
+    return numeric, finite, within
+
+
+def _target_range_status(
+    values: pd.Series, config: PerformanceConfig
+) -> pd.Series:
+    _, finite, within = _target_range_classification(values, config)
+    status = [
+        None if not is_finite else bool(is_within)
+        for is_finite, is_within in zip(finite, within, strict=True)
+    ]
+    return pd.Series(status, index=values.index, dtype=object)
+
+
 def _cluster_candidates(
     points: pd.DataFrame,
     config: ExplorationConfig,
@@ -364,6 +394,11 @@ def _performance_candidates(
         if "segment_id" in points.columns
         else None
     )
+    performance_distances = (
+        _performance_point_distances(points, centers, pc_columns)
+        if config.direction == "target_range"
+        else None
+    )
     ranked: list[tuple[tuple[object, ...], int, int]] = []
     position = 0
     while position < len(points):
@@ -428,7 +463,17 @@ def _performance_candidates(
                 deviation_cumulative[window_rows:]
                 - deviation_cumulative[:-window_rows]
             ) / window_rows
-            keys = zip(-target_ratios, mean_deviations, means, starts, strict=True)
+            assert performance_distances is not None
+            stability_scores = _window_stability_scores(
+                performance_distances[run_start:run_end], window_rows
+            )
+            keys = zip(
+                -target_ratios,
+                mean_deviations,
+                -stability_scores,
+                starts,
+                strict=True,
+            )
         ranked.extend(
             (tuple(key), int(key[-1]), int(key[-1] + window_rows))
             for key in keys
@@ -492,6 +537,25 @@ def _performance_summary(
     return summary
 
 
+def _target_range_statistics(
+    values: pd.Series, config: PerformanceConfig
+) -> dict[str, object]:
+    numeric, finite, within = _target_range_classification(values, config)
+    valid_values = numeric[finite]
+    valid_count = int(finite.sum())
+    target_count = int(within.sum())
+    return {
+        "performance_valid_count": valid_count,
+        "performance_target_count": target_count,
+        "performance_target_ratio": (
+            target_count / valid_count if valid_count else None
+        ),
+        "performance_median": (
+            float(np.median(valid_values)) if valid_count else None
+        ),
+    }
+
+
 def _summaries(
     points: pd.DataFrame,
     dynamic: pd.DataFrame,
@@ -500,6 +564,9 @@ def _summaries(
     interval: int,
     centers: Mapping[str, np.ndarray],
     pc_columns: Sequence[str],
+    *,
+    performance_values: pd.Series | None = None,
+    performance_config: PerformanceConfig | None = None,
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     runs = _contiguous_runs(points, interval, split_cluster=True)
@@ -525,26 +592,35 @@ def _summaries(
         cluster_runs = [
             run for run in runs if str(run["cluster_id"].iloc[0]) == cluster_id
         ]
-        result.append(
-            {
-                "cluster_id": cluster_id,
-                "sample_count": len(group),
-                "coverage_ratio": len(group) / len(points) if len(points) else 0.0,
-                "segment_count": len(cluster_runs),
-                "total_duration_minutes": int(
-                    sum(_coverage_duration_minutes(run, interval) for run in cluster_runs)
-                ),
-                "centroid_pc_scores": [float(value) for value in center],
-                "median_distance_to_centroid": float(np.median(distances)),
-                "pc_score_dispersion": float(np.std(distances, ddof=0)),
-                "start_timestamp": group.index[0].isoformat(),
-                "end_timestamp": group.index[-1].isoformat(),
-                "tag_statistics": tag_stats,
-                "candidate_count": sum(
-                    item["cluster_id"] == cluster_id for item in candidates
-                ),
-            }
-        )
+        summary: dict[str, object] = {
+            "cluster_id": cluster_id,
+            "sample_count": len(group),
+            "coverage_ratio": len(group) / len(points) if len(points) else 0.0,
+            "segment_count": len(cluster_runs),
+            "total_duration_minutes": int(
+                sum(_coverage_duration_minutes(run, interval) for run in cluster_runs)
+            ),
+            "centroid_pc_scores": [float(value) for value in center],
+            "median_distance_to_centroid": float(np.median(distances)),
+            "pc_score_dispersion": float(np.std(distances, ddof=0)),
+            "start_timestamp": group.index[0].isoformat(),
+            "end_timestamp": group.index[-1].isoformat(),
+            "tag_statistics": tag_stats,
+            "candidate_count": sum(
+                item["cluster_id"] == cluster_id for item in candidates
+            ),
+        }
+        if (
+            performance_values is not None
+            and performance_config is not None
+            and performance_config.direction == "target_range"
+        ):
+            summary.update(
+                _target_range_statistics(
+                    performance_values.reindex(group.index), performance_config
+                )
+            )
+        result.append(summary)
     return result
 
 
@@ -704,12 +780,46 @@ def _stability_score(
 ) -> float:
     cluster_id = str(run["cluster_id"].iloc[0])
     center = np.asarray(centers[cluster_id], dtype=float)
-    values = run.loc[:, list(pc_columns)].to_numpy(dtype=float)
+    values = _pc_score_values(run, pc_columns)
     distances = np.linalg.norm(values - center, axis=1)
+    return _robust_stability_score(distances)
+
+
+def _robust_stability_score(distances: np.ndarray) -> float:
     median = float(np.median(distances))
     robust_dispersion = float(np.median(np.abs(distances - median)))
     score = 1.0 / (1.0 + 1.4826 * robust_dispersion)
     return float(score) if np.isfinite(score) else 0.0
+
+
+def _performance_point_distances(
+    points: pd.DataFrame,
+    centers: Mapping[str, np.ndarray],
+    pc_columns: Sequence[str],
+) -> np.ndarray:
+    values = _pc_score_values(points, pc_columns)
+    point_centers = np.vstack(
+        [np.asarray(centers[str(cluster_id)], dtype=float) for cluster_id in points["cluster_id"]]
+    )
+    return np.linalg.norm(values - point_centers, axis=1)
+
+
+def _pc_score_values(
+    frame: pd.DataFrame, pc_columns: Sequence[str]
+) -> np.ndarray:
+    return np.column_stack(
+        [frame[column].to_numpy(dtype=float, copy=False) for column in pc_columns]
+    )
+
+
+def _window_stability_scores(distances: np.ndarray, window_rows: int) -> np.ndarray:
+    windows = np.lib.stride_tricks.sliding_window_view(distances, window_rows)
+    medians = np.median(windows, axis=1)
+    robust_dispersions = np.median(
+        np.abs(windows - medians[:, np.newaxis]), axis=1
+    )
+    scores = 1.0 / (1.0 + 1.4826 * robust_dispersions)
+    return np.where(np.isfinite(scores), scores, 0.0)
 
 
 def _performance_stability_score(
@@ -717,15 +827,12 @@ def _performance_stability_score(
     centers: Mapping[str, np.ndarray],
     pc_columns: Sequence[str],
 ) -> float:
-    values = run.loc[:, list(pc_columns)].to_numpy(dtype=float)
+    values = _pc_score_values(run, pc_columns)
     point_centers = np.vstack(
         [np.asarray(centers[str(cluster_id)], dtype=float) for cluster_id in run["cluster_id"]]
     )
     distances = np.linalg.norm(values - point_centers, axis=1)
-    median = float(np.median(distances))
-    robust_dispersion = float(np.median(np.abs(distances - median)))
-    score = 1.0 / (1.0 + 1.4826 * robust_dispersion)
-    return float(score) if np.isfinite(score) else 0.0
+    return _robust_stability_score(distances)
 
 
 def _display_points(points: pd.DataFrame, limit: int, interval: int = 5) -> pd.DataFrame:

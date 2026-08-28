@@ -116,6 +116,51 @@ Regression test updated.
 - src/pca_model_builder/model_io.py
 - src/pca_model_builder/web.py
 
+## [ERR-20260828-001] PowerShell 转义破坏了 Node 语法检查命令
+
+**Priority**: low
+**Status**: resolved
+**Area**: tools
+
+### 摘要
+通过 `node -e` 检查嵌入式 JavaScript 时，PowerShell 对正则表达式的反斜杠转义导致 Node 收到不完整的正则字面量。
+
+### 错误信息
+```text
+Unterminated regexp literal
+SyntaxError: Invalid regular expression flags
+```
+
+### 上下文
+- 任务：检查 `src/pca_model_builder/web.py` 中嵌入式状态探索脚本的语法。
+- 方式：在 PowerShell 命令行中使用 Node `-e` 和正则表达式提取 `<script>` 内容。
+
+### 建议修复
+避免在 PowerShell 命令行内嵌复杂正则转义；优先使用已覆盖语法的测试，或用明确的临时脚本/更简单的 Node 字符串扫描。
+
+### 元数据
+- Reproducible: yes
+
+## [ERR-20260828-002] 将 PowerShell 参数误传给 rg
+
+**Priority**: low
+**Status**: resolved
+**Area**: tools
+
+### 摘要
+调用 `rg` 时附加了 PowerShell 专用的 `-ErrorAction` 参数，导致 ripgrep 将其解析为编码选项并报错。
+
+### 错误信息
+```text
+rg: error parsing flag -E: grep config error: unknown encoding: rrorAction
+```
+
+### 建议修复
+区分 PowerShell 原生命令与外部工具参数；对 `rg` 直接使用其支持的选项，需要条件判断时在 PowerShell 外层处理。
+
+### 元数据
+- Reproducible: yes
+
 ## 2026-08-10 - Schema-specific resampling conversion was shared
 
 **Scope**
@@ -233,3 +278,25 @@ Not applicable.
 
 **Related Files**
 - C:/Users/shaoy/.agents/skills/karpathy-guidelines/SKILL.md
+
+## [ERR-20260828-003] 默认测试运行时缺少项目依赖
+
+**Priority**: medium
+**Status**: resolved
+**Area**: tests / tools
+
+### 摘要
+当前会话中的 `python` 和 `py` 命令不可用，bundled Python 也未包含 pytest、SciPy 和 scikit-learn。
+
+### 错误信息
+```text
+No module named pytest
+The term 'python' is not recognized
+No installed Python found!
+```
+
+### 建议修复
+优先使用会话配置的 bundled Python；若项目测试依赖未随运行时提供，在临时目录安装依赖并显式将其置于 `sys.path`，同时选择与项目现有 pandas 语义兼容的版本。
+
+### 元数据
+- Reproducible: yes

@@ -699,6 +699,10 @@ def test_final_web_page_exposes_state_exploration_workbench():
         "Cluster 时间轴",
         "Cluster 候选表",
         "性能候选表",
+        "性能有效样本",
+        "性能达标样本",
+        "性能达标率",
+        "性能中位数",
     ):
         assert label in html
     assert "自动正常 Cluster" not in html
@@ -731,6 +735,102 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert 'index===0?"start"' in timeline
     assert 'index===3?"end"' in timeline
     assert ':"middle"' in timeline
+    assert 'data.performance_config?.direction==="target_range"' in html
+    assert 'row.performance_target_met===true' in html
+    assert 'stroke="#111827"' in html
+    assert "◎ 性能达标" in html
+
+
+def test_exploration_series_uses_full_target_status_for_display_points():
+    index = pd.date_range("2026-01-01", periods=3, freq="5min")
+    full = pd.DataFrame(
+        {
+            "pc1": [0.0, 1.0, 2.0],
+            "pc2": [2.0, 1.0, 0.0],
+            "cluster_id": ["cluster_001"] * 3,
+            "segment_id": [0] * 3,
+            "performance_target_met": [True, False, None],
+        },
+        index=index,
+    )
+    display = full.iloc[[0, 2]].drop(columns="performance_target_met")
+
+    rows = web._exploration_series(display, full, 5)
+
+    assert [row["performance_target_met"] for row in rows] == [True, None]
+
+
+def test_state_exploration_target_range_exposes_full_status_and_cluster_metrics(
+    tmp_path, monkeypatch
+):
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    web.clear_state_exploration_cache()
+    history = _history_frame()
+    history["PERF"] = np.r_[np.full(90, 5.0), np.full(90, 1.0)]
+    uploaded = web.save_upload(
+        "exploration-target.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "exploration_start": history.time.iloc[0].isoformat(),
+        "exploration_end": history.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 0,
+        "filter_method": "none",
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "exploration_config": {
+            "cluster_count": 2,
+            "minimum_candidate_duration_minutes": 10,
+            "maximum_plot_points": 12,
+        },
+        "performance_config": {
+            "performance_tag": "PERF",
+            "direction": "target_range",
+            "target_min": 4.0,
+            "target_max": 6.0,
+            "minimum_duration_minutes": 10,
+            "candidate_count": 1,
+        },
+    }
+
+    result = web.state_exploration_payload(payload)
+    run_id = result["exploration_run_id"]
+    cached = web._state_exploration_run(run_id)
+
+    assert result["cluster_series"]
+    assert all("performance_target_met" in row for row in result["cluster_series"])
+    assert {row["performance_target_met"] for row in result["cluster_series"]} == {
+        True,
+        False,
+    }
+    assert all(
+        {
+            "performance_valid_count",
+            "performance_target_count",
+            "performance_target_ratio",
+            "performance_median",
+        }.issubset(summary)
+        for summary in result["cluster_summaries"]
+    )
+    assert sum(item["performance_valid_count"] for item in result["cluster_summaries"]) == 180
+    assert sum(item["performance_target_count"] for item in result["cluster_summaries"]) == 90
+
+    bounded, status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}/series?max_points=5"
+    )
+
+    assert status == 200
+    assert bounded["returned_point_count"] <= 5
+    for row in bounded["cluster_series"]:
+        assert row["performance_target_met"] == cached["cluster_series"].loc[
+            pd.Timestamp(row["timestamp"]), "performance_target_met"
+        ]
 
 
 def test_final_web_compacts_basic_inspection_time_range_into_two_lines():
@@ -1987,6 +2087,9 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
     assert result["data_usage"]["loaded_column_count"] == 5
     assert result["performance_candidates"]
     assert result["preprocessing_summary"]["dynamic_feature_count"] == 3
+    assert all(
+        "performance_target_met" not in row for row in result["cluster_series"]
+    )
     assert "cluster_series" not in _get_response(
         web._Handler, f"/api/state-exploration/{run_id}"
     )[0]
