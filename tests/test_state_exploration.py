@@ -10,6 +10,7 @@ from pca_model_builder.state_exploration import (
     _display_points,
     _performance_candidates,
     _summaries,
+    evaluate_preferred_region,
     run_state_exploration,
 )
 
@@ -44,6 +45,87 @@ def test_state_exploration_is_draft_and_deterministic_with_display_limit():
         and item["decided_at"] is None
         for item in first["candidate_decisions"]
     )
+
+
+def test_preferred_region_uses_union_of_ellipses_and_full_pc_space():
+    index = pd.date_range("2026-01-01", periods=5, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": [-1.0, 0.0, 1.0, 2.0, 3.0],
+            "pc2": [0.0] * 5,
+            "pc3": [0.0, 10.0, 0.0, 2.0, 3.0],
+            "cluster_id": ["cluster_001", "cluster_001", "cluster_002", "cluster_002", "cluster_002"],
+        },
+        index=index,
+    )
+    result = evaluate_preferred_region(
+        points,
+        [
+            {"center_pc1": 0.0, "center_pc2": 0.0, "radius_pc1": 1.1, "radius_pc2": 1.0},
+            {"center_pc1": 2.0, "center_pc2": 0.0, "radius_pc1": 1.1, "radius_pc2": 1.0},
+        ],
+        ("pc1", "pc2", "pc3"),
+        {"cluster_001": np.zeros(3), "cluster_002": np.zeros(3)},
+        performance_values=pd.Series([1.0, 2.0, np.inf, 4.0, np.nan], index=index),
+        performance_config={
+            "performance_tag": "PERF",
+            "direction": "target_range",
+            "target_min": 1.5,
+            "target_max": 4.5,
+        },
+    )
+
+    assert result["selected_sample_count"] == 5
+    assert result["full_valid_sample_count"] == 5
+    assert result["selected_sample_ratio"] == 1.0
+    assert [item["sample_count"] for item in result["cluster_counts"]] == [2, 3]
+    assert [item["share"] for item in result["cluster_counts"]] == [0.4, 0.6]
+    assert result["max_cluster_share"] == 0.6
+    assert result["performance_valid_count"] == 3
+    assert result["performance_target_count"] == 2
+    assert result["performance_target_ratio"] == 2 / 3
+    assert result["performance_median"] == 2.0
+
+    changed = points.copy()
+    changed["pc3"] = [0.0, 10.0, 0.0, 20.0, 3.0]
+    changed_result = evaluate_preferred_region(
+        changed,
+        result["ellipses"],
+        ("pc1", "pc2", "pc3"),
+        {"cluster_001": np.zeros(3), "cluster_002": np.zeros(3)},
+    )
+    assert changed_result["stability_score"] != result["stability_score"]
+
+
+def test_preferred_region_rejects_invalid_axes_and_empty_region():
+    points = pd.DataFrame(
+        {
+            "pc1": [0.0, 1.0],
+            "pc2": [0.0, 1.0],
+            "cluster_id": ["cluster_001", "cluster_001"],
+        }
+    )
+    centers = {"cluster_001": np.zeros(2)}
+
+    empty = evaluate_preferred_region(points, [], ("pc1", "pc2"), centers)
+    assert empty["selected_sample_count"] == 0
+    assert empty["selected_sample_ratio"] == 0.0
+    assert empty["stability_score"] is None
+
+    with pytest.raises(ValueError, match="半轴"):
+        evaluate_preferred_region(
+            points,
+            [{"center_pc1": 0, "center_pc2": 0, "radius_pc1": 0, "radius_pc2": 1}],
+            ("pc1", "pc2"),
+            centers,
+        )
+    with pytest.raises(ValueError, match="有限数字"):
+        evaluate_preferred_region(
+            points,
+            [{"center_pc1": np.inf, "center_pc2": 0, "radius_pc1": 1, "radius_pc2": 1}],
+            ("pc1", "pc2"),
+            centers,
+        )
 
 
 def test_cluster_metrics_use_the_complete_principal_component_space():

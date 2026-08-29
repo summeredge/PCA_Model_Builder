@@ -22,7 +22,11 @@ import numpy as np
 import pandas as pd
 
 from .clustering import cluster_model_scores, cluster_operating_states
-from .state_exploration import ExplorationConfig, run_state_exploration
+from .state_exploration import (
+    ExplorationConfig,
+    evaluate_preferred_region,
+    run_state_exploration,
+)
 from .compat import (
     MODEL_PURPOSES,
     training_windows_from_payload,
@@ -837,7 +841,11 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 "quality_check", ValueError(_format_quality_errors(error.report))
             ) from error
     run_id = str(exploration["exploration_run_id"])
-    response = {key: value for key, value in exploration.items() if key not in {"cluster_series", "cluster_series_display"}}
+    response = {
+        key: value
+        for key, value in exploration.items()
+        if key not in {"cluster_series", "cluster_series_display", "_performance_values"}
+    }
     response["cluster_series"] = _exploration_series(
         exploration["cluster_series_display"],
         exploration["cluster_series"],
@@ -886,8 +894,44 @@ def _exploration_summary_payload(run_id: str) -> dict[str, Any]:
     return {
         key: value
         for key, value in exploration.items()
-        if key not in {"cluster_series", "cluster_series_display"}
+        if key not in {"cluster_series", "cluster_series_display", "_performance_values"}
     }
+
+
+def state_exploration_preferred_region_payload(
+    run_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    provided_run_id = payload.get("exploration_run_id")
+    if provided_run_id not in (None, "") and str(provided_run_id) != run_id:
+        raise ValueError("exploration_run_id与当前状态探索运行不一致")
+    if "ellipses" not in payload:
+        raise ValueError("ellipses必须是列表")
+    with _STATE_EXPLORATION_LOCK:
+        try:
+            exploration = STATE_EXPLORATION_RUNS[run_id]
+        except KeyError as error:
+            raise StateExplorationNotFoundError("状态探索运行记录不存在") from error
+        evaluation = evaluate_preferred_region(
+            exploration["cluster_series"],
+            payload["ellipses"],
+            exploration["exploratory_model_summary"]["pc_columns"],
+            exploration["cluster_centers"],
+            performance_values=exploration.get("_performance_values"),
+            performance_config=exploration.get("performance_config"),
+        )
+        exploration["preferred_region"] = evaluation
+        STATE_EXPLORATION_RUNS.move_to_end(run_id)
+    return {
+        "exploration_run_id": run_id,
+        "preferred_region": evaluation,
+        **evaluation,
+    }
+
+
+def state_exploration_region_payload(
+    run_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    return state_exploration_preferred_region_payload(run_id, payload)
 
 
 def _state_exploration_candidates(exploration: dict[str, Any]) -> dict[str, dict[str, object]]:
@@ -2351,18 +2395,20 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
             state_action = re.fullmatch(
-                r"/api/state-exploration/([^/]+)/(decisions|training-windows)",
+                r"/api/state-exploration/([^/]+)/(decisions|training-windows|preferred-region|region)",
                 parsed.path,
             )
             if state_action is not None:
                 try:
                     run_id = _validated_id(state_action.group(1), "run_id")
                     payload = self._json_body()
-                    result = (
-                        state_exploration_decisions_payload(run_id, payload)
-                        if state_action.group(2) == "decisions"
-                        else state_exploration_training_windows_payload(run_id, payload)
-                    )
+                    action = state_action.group(2)
+                    if action == "decisions":
+                        result = state_exploration_decisions_payload(run_id, payload)
+                    elif action == "training-windows":
+                        result = state_exploration_training_windows_payload(run_id, payload)
+                    else:
+                        result = state_exploration_preferred_region_payload(run_id, payload)
                     self._send_json(result)
                 except StateExplorationNotFoundError as error:
                     self._send_json(error_payload(error), 404)
@@ -2612,6 +2658,8 @@ INDEX_HTML = r"""<!doctype html>
     .download { color:#fff; background:var(--green); padding:8px 11px; border-radius:6px; text-decoration:none; font-size:13px; }
      .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
      .exploration-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
+     .exploration-region-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+     .exploration-region-tools .active { background:var(--accent); color:#fff; }
      .exploration-timeline { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
      .exploration-timeline svg { display:block; width:100%; height:auto; min-height:190px; }
      .exploration-timeline details { border-top:1px solid var(--line-soft); }
@@ -2752,9 +2800,11 @@ INDEX_HTML = r"""<!doctype html>
           <h3>预处理损失摘要</h3>
           <div id="explorationLossSummary" class="table-wrap"></div>
           <div class="chart-grid">
-            <div class="chart-card"><h3>Cluster PC1 / PC2 与中心</h3><div id="explorationPcChart" class="chart"></div></div>
+            <div class="chart-card"><h3>Cluster PC1 / PC2 与中心</h3><div class="exploration-region-tools"><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div><div id="explorationPcChart" class="chart"></div></div>
             <div class="chart-card"><h3>Cluster 时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
           </div>
+          <h3>优选运行区域质量统计</h3>
+          <div id="explorationRegionSummary" class="table-wrap"><div class="empty">尚未定义优选运行区域。</div></div>
           <h3>Cluster 摘要表</h3>
           <div class="table-wrap"><table><thead><tr><th>Cluster ID</th><th>样本数</th><th>覆盖率</th><th>连续段数</th><th>覆盖时长</th><th>中心距离中位数</th><th>主元离散度</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>候选数量</th></tr></thead><tbody id="explorationClusterTable"></tbody></table></div>
           <h3>Cluster 候选表</h3>
@@ -2862,7 +2912,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -2992,7 +3042,7 @@ async function api(path, options={}) {
 }
 
 function ensureInspectionPageReady() {
-  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","excludedWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
+  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","excludedWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","explorationRegionSelect","explorationRegionDelete","explorationRegionClear","explorationRegionSummary","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
   const missing=ids.filter(id=>!el(id)); if(missing.length) throw new Error(`页面初始化不完整，缺少元素：${missing.join(", ")}`);
 }
 
@@ -3052,21 +3102,39 @@ function renderStateExploration(data) {
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
   el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("显示点数",`${data.returned_point_count}/${data.full_point_count}`);
   const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
-  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[]);
+  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationRegionSummary(data); renderExplorationRegionControls(); renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[]);
 }
 function renderExplorationLossSummary(losses) {
   const fields=[["empty_bin_count","空桶"],["input_invalid_loss","输入无效"],["filter_warmup_loss","滤波预热"],["filter_context_invalid_loss","滤波上下文无效"],["lag_warmup_loss","Lag预热"],["lag_context_invalid_loss","Lag上下文无效"],["state_filter_loss","状态过滤损失"]];
   el("explorationLossSummary").innerHTML=`<table><thead><tr>${fields.map(([,label])=>`<th>${label}</th>`).join("")}</tr></thead><tbody><tr>${fields.map(([key])=>`<td class="numeric">${losses[key]??0}</td>`).join("")}</tr></tbody></table>`;
 }
+function renderExplorationRegionSummary(data) {
+  const container=el("explorationRegionSummary"); if(!container) return;
+  const region=state.preferredRegion||data.preferred_region;
+  const ellipses=region?.ellipses||[];
+  if(!ellipses.length) { container.innerHTML='<div class="empty">尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。</div>'; return; }
+  const targetRange=data.performance_config?.direction==="target_range";
+  const clusters=(region.cluster_counts||[]).map(item=>`<tr><td>${escapeHtml(item.cluster_id)}</td><td class="numeric">${item.sample_count}</td><td class="numeric">${explorationPercent(item.share)}</td></tr>`).join("");
+  const performance=targetRange?metric("性能有效样本",region.performance_valid_count??"—")+metric("性能达标样本",region.performance_target_count??"—")+metric("性能达标率",explorationPercent(region.performance_target_ratio))+metric("性能中位数",explorationNumber(region.performance_median,3)):metric("性能评价","—");
+  container.innerHTML=`<div class="metrics">${metric("优选区域样本",region.selected_sample_count??0)}${metric("完整有效样本占比",explorationPercent(region.selected_sample_ratio))}${metric("最大 Cluster 占比",explorationPercent(region.max_cluster_share))}${metric("区域稳定性",explorationNumber(region.stability_score,4))}${performance}</div><div class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算。</div><table><thead><tr><th>Cluster</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table>`;
+}
+function renderExplorationRegionControls() {
+  const hasRun=Boolean(state.exploration?.exploration_run_id), ellipses=state.preferredRegion?.ellipses||[];
+  const select=el("explorationRegionSelect"), remove=el("explorationRegionDelete"), clear=el("explorationRegionClear"); if(!select||!remove||!clear) return;
+  select.disabled=!hasRun; remove.disabled=!hasRun||!ellipses.length; clear.disabled=!hasRun||!ellipses.length;
+  select.classList.toggle("active",state.preferredRegionDrawing); select.setAttribute("aria-pressed",String(state.preferredRegionDrawing));
+}
 function renderExplorationPcChart(data) {
   const rows=data.cluster_series||[]; const container=el("explorationPcChart"); if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
-  const width=760,height=260,pad=34; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad),y=value=>height/2-value/maxY*(height/2-pad);
+  const width=760,height=260,pad=34; const finiteRows=rows.filter(row=>Number.isFinite(Number(row.pc1))&&Number.isFinite(Number(row.pc2))); if(!finiteRows.length){container.innerHTML='<div class="empty">无可展示的有限 PC1/PC2 序列。</div>';return;} const xs=finiteRows.map(row=>Number(row.pc1)),ys=finiteRows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad),y=value=>height/2-value/maxY*(height/2-pad);
   const targetRange=data.performance_config?.direction==="target_range";
-  const points=rows.map(row=>{const color=explorationClusterColor(row.cluster_id);const targetMet=targetRange&&row.performance_target_met===true;const title=`${escapeHtml(displayTime(row.timestamp,19))} · ${escapeHtml(row.cluster_id)}${targetMet?" · 性能达标":""}`;const marker=`<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="${targetMet?6:3}" fill="${color}" fill-opacity=".75"${targetMet?' stroke="#111827" stroke-width="2"':''}><title>${title}</title></circle>`;return marker;}).join("");
+  const points=finiteRows.map(row=>{const color=explorationClusterColor(row.cluster_id);const targetMet=targetRange&&row.performance_target_met===true;const title=`${escapeHtml(displayTime(row.timestamp,19))} · ${escapeHtml(row.cluster_id)}${targetMet?" · 性能达标":""}`;const marker=`<circle cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="${targetMet?6:3}" fill="${color}" fill-opacity=".75"${targetMet?' stroke="#111827" stroke-width="2"':''}><title>${title}</title></circle>`;return marker;}).join("");
   const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>{const cx=x(Number(center[0])),cy=y(Number(center[1])),color=explorationClusterColor(cluster);return `<g stroke="${color}" stroke-width="2"><line x1="${cx-7}" x2="${cx+7}" y1="${cy}" y2="${cy}"/><line x1="${cx}" x2="${cx}" y1="${cy-7}" y2="${cy+7}"/><title>${escapeHtml(cluster)} 中心</title></g>`;}).join("");
   const legend=[...new Set(rows.map(row=>row.cluster_id))].map(cluster=>{const number=explorationClusterNumber(cluster);return `<text x="${pad+(number-1)*88}" y="16" fill="${explorationClusterColor(cluster)}" font-size="10">● ${escapeHtml(cluster)}</text>`;}).join("");
   const targetLegend=targetRange?`<text x="${pad}" y="${height-8}" fill="#111827" font-size="10">◎ 性能达标</text>`:"";
-  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}${targetLegend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
+  const region=state.preferredRegion||data.preferred_region||{}; const regionEllipses=(region.ellipses||[]).map((ellipse,index)=>{const cx=x(Number(ellipse.center_pc1)),cy=y(Number(ellipse.center_pc2)),rx=Math.abs(Number(ellipse.radius_pc1)/maxX*(width/2-pad)),ry=Math.abs(Number(ellipse.radius_pc2)/maxY*(height/2-pad));return `<ellipse data-preferred-region-ellipse="${index+1}" cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" rx="${rx.toFixed(2)}" ry="${ry.toFixed(2)}" fill="#176b87" fill-opacity=".08" stroke="#176b87" stroke-width="2" vector-effect="non-scaling-stroke"><title>优选运行区域椭圆 ${index+1}</title></ellipse>`;}).join("");
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}${targetLegend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${regionEllipses}${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
+  const svg=container.querySelector("svg"); if(!state.preferredRegionDrawing||!svg) return; svg.style.cursor="crosshair"; const svgPoint=event=>{const rect=svg.getBoundingClientRect(),scale=Math.min(rect.width/width,rect.height/height),offsetX=(rect.width-width*scale)/2,offsetY=(rect.height-height*scale)/2;return{x:Math.max(0,Math.min(width,(event.clientX-rect.left-offsetX)/Math.max(scale,1))),y:Math.max(0,Math.min(height,(event.clientY-rect.top-offsetY)/Math.max(scale,1)))};}; const setPreview=(start,end)=>{let preview=svg.querySelector("ellipse[data-preferred-region-preview]"); if(!preview){preview=document.createElementNS("http://www.w3.org/2000/svg","ellipse");preview.dataset.preferredRegionPreview="true";preview.setAttribute("fill","#176b87");preview.setAttribute("fill-opacity",".08");preview.setAttribute("stroke","#176b87");preview.setAttribute("stroke-width","2");preview.setAttribute("stroke-dasharray","5 3");preview.setAttribute("pointer-events","none");svg.append(preview);} preview.setAttribute("cx",((start.x+end.x)/2).toFixed(2));preview.setAttribute("cy",((start.y+end.y)/2).toFixed(2));preview.setAttribute("rx",(Math.abs(end.x-start.x)/2).toFixed(2));preview.setAttribute("ry",(Math.abs(end.y-start.y)/2).toFixed(2));}; let start=null; const finish=event=>{if(!start)return;const end=svgPoint(event);svg.querySelector("ellipse[data-preferred-region-preview]")?.remove();const firstPc={pc1:(start.x-width/2)/(width/2-pad)*maxX,pc2:(height/2-start.y)/(height/2-pad)*maxY},lastPc={pc1:(end.x-width/2)/(width/2-pad)*maxX,pc2:(height/2-end.y)/(height/2-pad)*maxY};start=null;const ellipse={center_pc1:(firstPc.pc1+lastPc.pc1)/2,center_pc2:(firstPc.pc2+lastPc.pc2)/2,radius_pc1:Math.abs(lastPc.pc1-firstPc.pc1)/2,radius_pc2:Math.abs(lastPc.pc2-firstPc.pc2)/2};if(ellipse.radius_pc1<=0||ellipse.radius_pc2<=0){setStatus("椭圆需要在 PC1 和 PC2 方向都有正宽度。","warning");return;} updateExplorationPreferredRegion([...(state.preferredRegion?.ellipses||[]),ellipse]);}; svg.addEventListener("mousedown",event=>{if(event.button!==0)return;start=svgPoint(event);event.preventDefault();}); svg.addEventListener("mousemove",event=>{if(start)setPreview(start,svgPoint(event));}); svg.addEventListener("mouseup",finish); svg.addEventListener("mouseleave",event=>{if(event.buttons===0){svg.querySelector("ellipse[data-preferred-region-preview]")?.remove();start=null;}});
 }
 function explorationTimelineTick(value) { const time=new Date(value); return `${String(time.getMonth()+1).padStart(2,"0")}/${String(time.getDate()).padStart(2,"0")} ${String(time.getHours()).padStart(2,"0")}:${String(time.getMinutes()).padStart(2,"0")}`; }
 function renderExplorationTimeline(rows,candidates) {
@@ -3098,6 +3166,21 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
   const performanceHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
   const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
   el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="10">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
+ }
+
+function resetExplorationRegion() { state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; renderExplorationRegionControls(); }
+async function updateExplorationPreferredRegion(ellipses) {
+  const runId=state.exploration?.exploration_run_id; if(!runId) return;
+  const previous=state.preferredRegion, request=++state.preferredRegionRequest;
+  state.preferredRegion={ellipses}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls();
+  try {
+    const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/preferred-region`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({exploration_run_id:runId,ellipses})});
+    if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
+    state.preferredRegion=data.preferred_region||data; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); setStatus(`优选运行区域已更新：${state.preferredRegion.selected_sample_count} 个完整样本。` ,"success");
+  } catch(error) {
+    if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
+    state.preferredRegion=previous; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); setStatus(error.message,"error");
+  }
 }
 
 el("uploadButton").addEventListener("click", async () => {
@@ -3107,7 +3190,7 @@ el("uploadButton").addEventListener("click", async () => {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; state.performance=null; state.trend=null; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; resetExplorationRegion(); state.performance=null; state.trend=null; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`文件信息：${data.filename}（${Math.ceil(data.size_bytes/1024)} KB），已读取 ${data.columns.length} 个列名。请选择时间列，下一步：正在检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -3124,7 +3207,7 @@ el("inspectButton").addEventListener("click", async () => {
     setStatus("正在检查数据…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:previousRegistry}),signal:controller.signal});
     ensureInspectionPageReady();
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; resetExplorationRegion(); state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.trend_default_start); el("trendEnd").value=localTime(data.trend_default_end);
@@ -3271,10 +3354,14 @@ el("stateExplorationButton").addEventListener("click", async () => {
   const button=el("stateExplorationButton"); setBusy(button,true,"探索中…"); setStatus("正在使用统一预处理构建完整状态空间并执行探索聚类。","info");
   try {
     const data=await api("/api/state-exploration/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(stateExplorationPayload())});
-    state.exploration=data; renderStateExploration(data); document.querySelector('[data-panel="stateExplorationPanel"]').click(); setStatus(`状态探索完成：${data.full_point_count} 个完整样本，返回 ${data.returned_point_count} 个显示点。候选仅供工程师比较。`,"success");
+    state.exploration=data; resetExplorationRegion(); renderStateExploration(data); document.querySelector('[data-panel="stateExplorationPanel"]').click(); setStatus(`状态探索完成：${data.full_point_count} 个完整样本，返回 ${data.returned_point_count} 个显示点。候选仅供工程师比较。`,"success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
+
+el("explorationRegionSelect").addEventListener("click",()=>{ if(!state.exploration) return; state.preferredRegionDrawing=!state.preferredRegionDrawing; renderExplorationRegionControls(); renderExplorationPcChart(state.exploration); setStatus(state.preferredRegionDrawing?"椭圆选择已开启：在 PC1/PC2 图中拖动绘制优选运行区域。":"椭圆选择已关闭。","info"); });
+el("explorationRegionDelete").addEventListener("click",()=>{ const ellipses=state.preferredRegion?.ellipses||[]; if(ellipses.length) updateExplorationPreferredRegion(ellipses.slice(0,-1)); });
+el("explorationRegionClear").addEventListener("click",()=>{ if((state.preferredRegion?.ellipses||[]).length) updateExplorationPreferredRegion([]); });
 
 function selectedExplorationCandidateRows() {
   return [...document.querySelectorAll(".exploration-candidate-select:checked")];

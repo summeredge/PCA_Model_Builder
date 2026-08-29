@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
@@ -217,6 +218,11 @@ def run_state_exploration(
         "performance_config": (
             asdict(normalized_performance)
             if normalized_performance is not None
+            else None
+        ),
+        "_performance_values": (
+            performance_values.reindex(points.index)
+            if performance_values is not None
             else None
         ),
         "preprocessing_summary": preprocessing_summary,
@@ -554,6 +560,146 @@ def _target_range_statistics(
             float(np.median(valid_values)) if valid_count else None
         ),
     }
+
+
+def evaluate_preferred_region(
+    points: pd.DataFrame,
+    ellipses: Sequence[Mapping[str, object]],
+    pc_columns: Sequence[str],
+    centers: Mapping[str, Sequence[float] | np.ndarray],
+    *,
+    performance_values: pd.Series | None = None,
+    performance_config: PerformanceConfig | Mapping[str, Any] | None = None,
+) -> dict[str, object]:
+    """Evaluate a PC1/PC2 ellipse union against complete exploration samples.
+
+    Ellipses define membership in the displayed PC1/PC2 plane, while stability
+    is calculated from every retained principal component in ``pc_columns``.
+    """
+    normalized_ellipses = _normalize_preferred_region_ellipses(ellipses)
+    columns = tuple(str(column) for column in pc_columns)
+    if "pc1" not in columns or "pc2" not in columns:
+        raise ValueError("状态探索至少需要保留 PC1 和 PC2")
+    missing_columns = [column for column in columns if column not in points.columns]
+    if missing_columns:
+        raise ValueError("状态探索样本缺少主元列：" + ", ".join(missing_columns))
+    if "cluster_id" not in points.columns:
+        raise ValueError("状态探索样本缺少 cluster_id")
+
+    values = _pc_score_values(points, columns)
+    finite = np.isfinite(values).all(axis=1)
+    selected = np.zeros(len(points), dtype=bool)
+    pc1 = values[:, columns.index("pc1")]
+    pc2 = values[:, columns.index("pc2")]
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        for ellipse in normalized_ellipses:
+            distance = (
+                ((pc1 - ellipse["center_pc1"]) / ellipse["radius_pc1"]) ** 2
+                + ((pc2 - ellipse["center_pc2"]) / ellipse["radius_pc2"]) ** 2
+            )
+            selected |= finite & (distance <= 1.0)
+
+    valid_count = int(finite.sum())
+    selected_count = int(selected.sum())
+    cluster_ids = sorted({str(value) for value in points["cluster_id"].dropna().unique()})
+    selected_cluster_counts = Counter(
+        str(value) for value in points.loc[selected, "cluster_id"]
+    )
+    cluster_counts = [
+        {
+            "cluster_id": cluster_id,
+            "sample_count": int(selected_cluster_counts.get(cluster_id, 0)),
+            "share": (
+                int(selected_cluster_counts.get(cluster_id, 0)) / selected_count
+                if selected_count
+                else 0.0
+            ),
+        }
+        for cluster_id in cluster_ids
+    ]
+    stability_score = None
+    if selected_count:
+        stability_score = _performance_stability_score(
+            points.loc[selected], centers, columns
+        )
+
+    statistics: dict[str, object] = {
+        "selected_sample_count": selected_count,
+        "full_valid_sample_count": valid_count,
+        "selected_sample_ratio": (
+            selected_count / valid_count if valid_count else 0.0
+        ),
+        "cluster_counts": cluster_counts,
+        "max_cluster_share": max(
+            (float(item["share"]) for item in cluster_counts), default=0.0
+        ),
+        "stability_score": stability_score,
+    }
+
+    normalized_performance = _normalize_performance_config(performance_config)
+    if (
+        normalized_performance is not None
+        and normalized_performance.direction == "target_range"
+        and performance_values is not None
+    ):
+        aligned_performance = pd.to_numeric(
+            performance_values.reindex(points.index), errors="coerce"
+        ).to_numpy(dtype=float)
+        selected_performance = aligned_performance[selected]
+        performance_finite = np.isfinite(selected_performance)
+        target = performance_finite & (
+            selected_performance >= normalized_performance.target_min
+        ) & (selected_performance <= normalized_performance.target_max)
+        performance_valid_count = int(performance_finite.sum())
+        performance_target_count = int(target.sum())
+        statistics.update(
+            {
+                "performance_valid_count": performance_valid_count,
+                "performance_target_count": performance_target_count,
+                "performance_target_ratio": (
+                    performance_target_count / performance_valid_count
+                    if performance_valid_count
+                    else None
+                ),
+                "performance_median": (
+                    float(np.median(selected_performance[performance_finite]))
+                    if performance_valid_count
+                    else None
+                ),
+            }
+        )
+
+    return {"ellipses": normalized_ellipses, **statistics}
+
+
+def _normalize_preferred_region_ellipses(
+    value: Sequence[Mapping[str, object]],
+) -> list[dict[str, float]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError("ellipses必须是列表")
+    normalized: list[dict[str, float]] = []
+    fields = ("center_pc1", "center_pc2", "radius_pc1", "radius_pc2")
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"第 {index + 1} 个椭圆参数必须是对象")
+        ellipse: dict[str, float] = {}
+        for field in fields:
+            if field not in item:
+                raise ValueError(f"第 {index + 1} 个椭圆缺少 {field}")
+            raw = item[field]
+            if (
+                not isinstance(raw, (int, float, np.number))
+                or isinstance(raw, (bool, np.bool_))
+            ):
+                raise ValueError(f"{field}必须是有限数字")
+            number = float(raw)
+            if not np.isfinite(number):
+                raise ValueError(f"{field}必须是有限数字")
+            ellipse[field] = number
+        if ellipse["radius_pc1"] <= 0 or ellipse["radius_pc2"] <= 0:
+            raise ValueError("椭圆半轴必须为正且有限")
+        normalized.append(ellipse)
+    return normalized
 
 
 def _summaries(

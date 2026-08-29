@@ -741,6 +741,141 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "◎ 性能达标" in html
 
 
+def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
+    html = web.INDEX_HTML
+    for element_id in (
+        'id="explorationRegionSelect"',
+        'id="explorationRegionDelete"',
+        'id="explorationRegionClear"',
+        'id="explorationRegionSummary"',
+    ):
+        assert element_id in html
+    for label in ("椭圆选择", "删除上一个", "清除区域", "优选运行区域质量统计"):
+        assert label in html
+    assert "preferred-region" in html
+    assert "center_pc1" in html
+    assert "radius_pc2" in html
+    assert "getBoundingClientRect" in html
+    assert "state.preferredRegionRequest" in html
+    assert "完整有效样本占比" in html
+    assert "区域稳定性" in html
+
+
+def test_preferred_region_api_uses_union_and_full_cached_series():
+    web.clear_state_exploration_cache()
+    run_id = "c" * 32
+    index = pd.date_range("2026-01-01", periods=5, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": [-1.0, 0.0, 1.0, 2.0, 3.0],
+            "pc2": [0.0] * 5,
+            "pc3": [0.0, 10.0, 0.0, 2.0, 3.0],
+            "cluster_id": ["cluster_001", "cluster_001", "cluster_002", "cluster_002", "cluster_002"],
+            "segment_id": [0] * 5,
+        },
+        index=index,
+    )
+    web._store_state_exploration_run(
+        run_id,
+        {
+            "exploratory_model_summary": {"pc_columns": ["pc1", "pc2", "pc3"]},
+            "cluster_centers": {
+                "cluster_001": [0.0, 0.0, 0.0],
+                "cluster_002": [0.0, 0.0, 0.0],
+            },
+            "performance_config": {
+                "performance_tag": "PERF",
+                "direction": "target_range",
+                "target_min": 1.5,
+                "target_max": 4.5,
+            },
+            "_performance_values": pd.Series(
+                [1.0, 2.0, np.inf, 4.0, np.nan], index=index
+            ),
+            "cluster_series": points,
+            "cluster_series_display": points.iloc[[0, 4]],
+            "cluster_candidates": [],
+            "performance_candidates": [],
+            "candidate_decisions": [],
+        },
+    )
+
+    payload = {
+        "exploration_run_id": run_id,
+        "ellipses": [
+            {
+                "center_pc1": 0.0,
+                "center_pc2": 0.0,
+                "radius_pc1": 1.1,
+                "radius_pc2": 1.0,
+            },
+            {
+                "center_pc1": 2.0,
+                "center_pc2": 0.0,
+                "radius_pc1": 1.1,
+                "radius_pc2": 1.0,
+            },
+        ],
+    }
+    result, status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/preferred-region",
+        payload,
+    )
+
+    assert status == 200
+    assert len(result["ellipses"]) == 2
+    assert result["selected_sample_count"] == 5
+    assert result["full_valid_sample_count"] == 5
+    assert result["cluster_counts"] == [
+        {"cluster_id": "cluster_001", "sample_count": 2, "share": 0.4},
+        {"cluster_id": "cluster_002", "sample_count": 3, "share": 0.6},
+    ]
+    assert result["performance_valid_count"] == 3
+    assert result["performance_target_count"] == 2
+    assert result["performance_target_ratio"] == 2 / 3
+    assert result["performance_median"] == 2.0
+    assert result["preferred_region"] == {
+        key: result[key]
+        for key in result["preferred_region"]
+        if key != "ellipses"
+    } | {"ellipses": result["ellipses"]}
+
+    summary, summary_status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}"
+    )
+    assert summary_status == 200
+    assert summary["preferred_region"]["selected_sample_count"] == 5
+    assert "_performance_values" not in summary
+
+    cleared, clear_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/region",
+        {"ellipses": []},
+    )
+    assert clear_status == 200
+    assert cleared["selected_sample_count"] == 0
+    assert cleared["ellipses"] == []
+
+    invalid, invalid_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/preferred-region",
+        {
+            "ellipses": [
+                {
+                    "center_pc1": 0,
+                    "center_pc2": 0,
+                    "radius_pc1": 0,
+                    "radius_pc2": 1,
+                }
+            ]
+        },
+    )
+    assert invalid_status == 400
+    assert "半轴" in invalid["error"]
+    assert "traceback" not in invalid["error"].lower()
+
+
 def test_exploration_series_uses_full_target_status_for_display_points():
     index = pd.date_range("2026-01-01", periods=3, freq="5min")
     full = pd.DataFrame(
@@ -820,6 +955,28 @@ def test_state_exploration_target_range_exposes_full_status_and_cluster_metrics(
     )
     assert sum(item["performance_valid_count"] for item in result["cluster_summaries"]) == 180
     assert sum(item["performance_target_count"] for item in result["cluster_summaries"]) == 90
+
+    region, region_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/preferred-region",
+        {
+            "exploration_run_id": run_id,
+            "ellipses": [
+                {
+                    "center_pc1": 0.0,
+                    "center_pc2": 0.0,
+                    "radius_pc1": 1_000_000.0,
+                    "radius_pc2": 1_000_000.0,
+                }
+            ],
+        },
+    )
+    assert region_status == 200
+    assert region["selected_sample_count"] == 180
+    assert region["performance_valid_count"] == 180
+    assert region["performance_target_count"] == 90
+    assert region["performance_target_ratio"] == 0.5
+    assert region["performance_median"] == 3.0
 
     bounded, status = _get_response(
         web._Handler, f"/api/state-exploration/{run_id}/series?max_points=5"
