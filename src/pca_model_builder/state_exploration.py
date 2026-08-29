@@ -244,6 +244,7 @@ def run_state_exploration(
         "cluster_summaries": summaries,
         "cluster_candidates": candidates,
         "performance_candidates": performance_candidates,
+        "preferred_region_candidates": [],
         "candidate_decisions": _candidate_decisions(
             [*candidates, *performance_candidates]
         ),
@@ -586,18 +587,9 @@ def evaluate_preferred_region(
     if "cluster_id" not in points.columns:
         raise ValueError("状态探索样本缺少 cluster_id")
 
-    values = _pc_score_values(points, columns)
-    finite = np.isfinite(values).all(axis=1)
-    selected = np.zeros(len(points), dtype=bool)
-    pc1 = values[:, columns.index("pc1")]
-    pc2 = values[:, columns.index("pc2")]
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        for ellipse in normalized_ellipses:
-            distance = (
-                ((pc1 - ellipse["center_pc1"]) / ellipse["radius_pc1"]) ** 2
-                + ((pc2 - ellipse["center_pc2"]) / ellipse["radius_pc2"]) ** 2
-            )
-            selected |= finite & (distance <= 1.0)
+    selected, finite = _preferred_region_selection_mask(
+        points, normalized_ellipses, columns
+    )
 
     valid_count = int(finite.sum())
     selected_count = int(selected.sum())
@@ -670,6 +662,128 @@ def evaluate_preferred_region(
         )
 
     return {"ellipses": normalized_ellipses, **statistics}
+
+
+def _preferred_region_selection_mask(
+    points: pd.DataFrame,
+    ellipses: Sequence[Mapping[str, float]],
+    pc_columns: Sequence[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    values = _pc_score_values(points, pc_columns)
+    finite = np.isfinite(values).all(axis=1)
+    selected = np.zeros(len(points), dtype=bool)
+    pc1 = values[:, pc_columns.index("pc1")]
+    pc2 = values[:, pc_columns.index("pc2")]
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        for ellipse in ellipses:
+            distance = (
+                ((pc1 - ellipse["center_pc1"]) / ellipse["radius_pc1"]) ** 2
+                + ((pc2 - ellipse["center_pc2"]) / ellipse["radius_pc2"]) ** 2
+            )
+            selected |= finite & (distance <= 1.0)
+    return selected, finite
+
+
+def _preferred_region_candidates(
+    points: pd.DataFrame,
+    ellipses: Sequence[Mapping[str, object]],
+    pc_columns: Sequence[str],
+    centers: Mapping[str, Sequence[float] | np.ndarray],
+    interval: int,
+    minimum_candidate_duration_minutes: int,
+    *,
+    performance_values: pd.Series | None = None,
+    performance_config: PerformanceConfig | Mapping[str, Any] | None = None,
+) -> list[dict[str, object]]:
+    """Build continuous candidate windows from a preferred ellipse union."""
+    normalized_ellipses = _normalize_preferred_region_ellipses(ellipses)
+    columns = tuple(str(column) for column in pc_columns)
+    if "pc1" not in columns or "pc2" not in columns:
+        raise ValueError("状态探索至少需要保留 PC1 和 PC2")
+    missing_columns = [column for column in columns if column not in points.columns]
+    if missing_columns:
+        raise ValueError("状态探索样本缺少主元列：" + ", ".join(missing_columns))
+    if "cluster_id" not in points.columns:
+        raise ValueError("状态探索样本缺少 cluster_id")
+    if interval <= 0:
+        raise ValueError("sample interval must be positive")
+    if minimum_candidate_duration_minutes <= 0:
+        raise ValueError("minimum candidate duration must be positive")
+
+    selected, _ = _preferred_region_selection_mask(
+        points, normalized_ellipses, columns
+    )
+    selected_points = points.loc[selected]
+    runs = _contiguous_runs(selected_points, interval, split_cluster=False)
+    eligible = [
+        run
+        for run in runs
+        if _coverage_duration_minutes(run, interval)
+        >= minimum_candidate_duration_minutes
+    ]
+    normalized_performance = _normalize_performance_config(performance_config)
+    aligned_performance = None
+    if performance_values is not None:
+        aligned_performance = pd.to_numeric(
+            performance_values.reindex(points.index), errors="coerce"
+        )
+
+    ranked: list[tuple[tuple[object, ...], pd.DataFrame, dict[str, object]]] = []
+    for run in eligible:
+        associated = sorted(
+            {str(value) for value in run["cluster_id"].dropna().unique()}
+        )
+        stability_score = _performance_stability_score(run, centers, columns)
+        candidate: dict[str, object] = {
+            "candidate_id": _preferred_region_candidate_id(run),
+            "source": "preferred_region",
+            "cluster_id": associated[0] if len(associated) == 1 else None,
+            "associated_cluster_ids": associated,
+            "start": run.index[0].isoformat(),
+            "end": run.index[-1].isoformat(),
+            "sample_count": len(run),
+            "duration_minutes": _coverage_duration_minutes(run, interval),
+            "stability_score": stability_score,
+            "comment": "",
+        }
+        performance_ratio: float | None = None
+        if (
+            normalized_performance is not None
+            and normalized_performance.direction == "target_range"
+            and aligned_performance is not None
+        ):
+            performance_statistics = _target_range_statistics(
+                aligned_performance.reindex(run.index), normalized_performance
+            )
+            candidate.update(performance_statistics)
+            performance_ratio = performance_statistics["performance_target_ratio"]
+        ratio_rank = -1.0 if performance_ratio is None else float(performance_ratio)
+        ranked.append(
+            (
+                (
+                    -ratio_rank if normalized_performance and normalized_performance.direction == "target_range" else 0,
+                    -float(stability_score),
+                    -int(candidate["duration_minutes"]),
+                    run.index[0],
+                ),
+                run,
+                candidate,
+            )
+        )
+
+    ranked.sort(key=lambda item: item[0])
+    result: list[dict[str, object]] = []
+    for rank, (_, _, candidate) in enumerate(ranked, 1):
+        candidate["rank"] = rank
+        result.append(candidate)
+    return result
+
+
+def _preferred_region_candidate_id(run: pd.DataFrame) -> str:
+    return (
+        "preferred-region-candidate-"
+        f"{run.index[0].isoformat()}--{run.index[-1].isoformat()}"
+    )
 
 
 def _normalize_preferred_region_ellipses(

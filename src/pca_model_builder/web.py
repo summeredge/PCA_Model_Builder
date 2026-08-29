@@ -24,6 +24,7 @@ import pandas as pd
 from .clustering import cluster_model_scores, cluster_operating_states
 from .state_exploration import (
     ExplorationConfig,
+    _preferred_region_candidates,
     evaluate_preferred_region,
     run_state_exploration,
 )
@@ -919,11 +920,28 @@ def state_exploration_preferred_region_payload(
             performance_values=exploration.get("_performance_values"),
             performance_config=exploration.get("performance_config"),
         )
+        preprocessing_summary = exploration.get("preprocessing_summary") or {}
+        exploration_config = exploration.get("exploration_config") or {}
+        preferred_region_candidates = _preferred_region_candidates(
+            exploration["cluster_series"],
+            evaluation["ellipses"],
+            exploration["exploratory_model_summary"]["pc_columns"],
+            exploration["cluster_centers"],
+            int(preprocessing_summary.get("target_interval_minutes", 5)),
+            int(exploration_config.get("minimum_candidate_duration_minutes", 30)),
+            performance_values=exploration.get("_performance_values"),
+            performance_config=exploration.get("performance_config"),
+        )
+        evaluation["candidate_count"] = len(preferred_region_candidates)
         exploration["preferred_region"] = evaluation
+        exploration["preferred_region_candidates"] = preferred_region_candidates
+        _refresh_state_exploration_candidate_decisions(exploration)
         STATE_EXPLORATION_RUNS.move_to_end(run_id)
     return {
         "exploration_run_id": run_id,
         "preferred_region": evaluation,
+        "preferred_region_candidates": preferred_region_candidates,
+        "candidate_decisions": exploration["candidate_decisions"],
         **evaluation,
     }
 
@@ -938,10 +956,33 @@ def _state_exploration_candidates(exploration: dict[str, Any]) -> dict[str, dict
     return {
         str(candidate["candidate_id"]): candidate
         for candidate in [
-            *exploration["cluster_candidates"],
-            *exploration["performance_candidates"],
+            *exploration.get("cluster_candidates", []),
+            *exploration.get("performance_candidates", []),
+            *exploration.get("preferred_region_candidates", []),
         ]
     }
+
+
+def _refresh_state_exploration_candidate_decisions(
+    exploration: dict[str, Any],
+) -> None:
+    candidates = _state_exploration_candidates(exploration)
+    existing = {
+        str(item["candidate_id"]): dict(item)
+        for item in exploration.get("candidate_decisions", [])
+    }
+    exploration["candidate_decisions"] = [
+        existing.get(
+            candidate_id,
+            {
+                "candidate_id": candidate_id,
+                "decision": "pending",
+                "comment": "",
+                "decided_at": None,
+            },
+        )
+        for candidate_id in candidates
+    ]
 
 
 def _decision_requests(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -992,8 +1033,18 @@ def state_exploration_decisions_payload(
             raise ValueError("候选不属于当前状态探索运行：" + ", ".join(missing))
         records = {
             str(item["candidate_id"]): dict(item)
-            for item in exploration["candidate_decisions"]
+            for item in exploration.get("candidate_decisions", [])
         }
+        for candidate_id in candidates:
+            records.setdefault(
+                candidate_id,
+                {
+                    "candidate_id": candidate_id,
+                    "decision": "pending",
+                    "comment": "",
+                    "decided_at": None,
+                },
+            )
         decided_at = pd.Timestamp.now(tz="UTC").isoformat()
         for item in decisions:
             records[item["candidate_id"]] = {
@@ -1029,7 +1080,7 @@ def state_exploration_training_windows_payload(
         candidates = _state_exploration_candidates(exploration)
         decisions = {
             str(item["candidate_id"]): item
-            for item in exploration["candidate_decisions"]
+            for item in exploration.get("candidate_decisions", [])
         }
         additions: list[dict[str, object]] = []
         existing_window_ids = {window["id"] for window in windows}
@@ -1038,7 +1089,7 @@ def state_exploration_training_windows_payload(
                 candidate = candidates[candidate_id]
             except KeyError as error:
                 raise ValueError("候选不属于当前状态探索运行：" + candidate_id) from error
-            if decisions[candidate_id]["decision"] != "accepted":
+            if decisions.get(candidate_id, {}).get("decision") != "accepted":
                 raise ValueError("只有已接受候选可以加入正常状态候选池：" + candidate_id)
             window_id = f"state-exploration-{run_id}-{candidate_id}"
             if window_id in existing_window_ids:
@@ -2811,6 +2862,8 @@ INDEX_HTML = r"""<!doctype html>
           <div id="explorationClusterCandidates" class="table-wrap"></div>
           <h3>性能候选表</h3>
           <div id="explorationPerformanceCandidates" class="table-wrap"></div>
+          <h3>优选区域候选表</h3>
+          <div id="explorationPreferredRegionCandidates" class="table-wrap"></div>
           <div class="actions"><button id="saveExplorationCandidateDecisions" class="secondary" type="button">保存所选候选决策</button><button id="convertExplorationCandidates" type="button">加入候选窗口</button></div>
           <div class="notice">接受仅表示允许加入候选窗口，不会自动参与训练；加入后仍需工程师人工确认，才能生成训练窗口。</div>
         </div>
@@ -2922,7 +2975,7 @@ function displayTime(value,length=16) { return value ? value.slice(0,length).rep
 function selectedTags() { return (state.inspection?.numeric_columns||[]).filter(tag=>state.selectedModelTags.has(tag)&&(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
 function numberValue(id) { return Number(el(id).value); }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
-function displayUiValue(value) { const labels={continuous_input:"连续输入",state_filter:"状态过滤",label_only:"仅标签",exclude:"排除",manual:"手工选择",trend:"趋势选择",cluster:"聚类推荐",performance:"性能辅助",suggested:"系统建议",pending:"待决策",accepted:"已接受",rejected:"已拒绝",used:"已使用",dropped:"已丢弃",disabled:"已禁用",higher_is_better:"越高越好",lower_is_better:"越低越好",target_range:"目标范围内",no_raw_samples:"没有原始样本",no_complete_resampling_bins:"无完整重采样时间桶",insufficient_after_smoothing_and_lag:"滤波与 Lag 后样本不足",normal:"正常",attention:"关注",abnormal:"异常",usable:"可用",review:"需确认",blocking:"阻止"}; return labels[value]||value; }
+function displayUiValue(value) { const labels={continuous_input:"连续输入",state_filter:"状态过滤",label_only:"仅标签",exclude:"排除",manual:"手工选择",trend:"趋势选择",cluster:"聚类推荐",performance:"性能辅助",preferred_region:"优选区域",suggested:"系统建议",pending:"待决策",accepted:"已接受",rejected:"已拒绝",used:"已使用",dropped:"已丢弃",disabled:"已禁用",higher_is_better:"越高越好",lower_is_better:"越低越好",target_range:"目标范围内",no_raw_samples:"没有原始样本",no_complete_resampling_bins:"无完整重采样时间桶",insufficient_after_smoothing_and_lag:"滤波与 Lag 后样本不足",normal:"正常",attention:"关注",abnormal:"异常",usable:"可用",review:"需确认",blocking:"阻止"}; return labels[value]||value; }
 function formField(labelText,field,type="text") { const label=document.createElement("label"); label.textContent=labelText; const input=document.createElement("input"); input.type=type; input.dataset.field=field; if(type==="number") input.step="any"; label.append(input); return label; }
 function emptyTagConfig() { return {description:"",unit:"",role:"continuous_input",engineering_min:null,engineering_max:null,normal_min:null,normal_max:null,alarm_min:null,alarm_max:null,comment:""}; }
 function tagConfigPayload() { return state.registry; }
@@ -3042,7 +3095,7 @@ async function api(path, options={}) {
 }
 
 function ensureInspectionPageReady() {
-  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","excludedWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","explorationRegionSelect","explorationRegionDelete","explorationRegionClear","explorationRegionSummary","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
+  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","excludedWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","explorationRegionSelect","explorationRegionDelete","explorationRegionClear","explorationRegionSummary","explorationPreferredRegionCandidates","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","trainButton","validateButton","importConfigButton","exportConfigButton"];
   const missing=ids.filter(id=>!el(id)); if(missing.length) throw new Error(`页面初始化不完整，缺少元素：${missing.join(", ")}`);
 }
 
@@ -3102,7 +3155,7 @@ function renderStateExploration(data) {
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
   el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("显示点数",`${data.returned_point_count}/${data.full_point_count}`);
   const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
-  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationRegionSummary(data); renderExplorationRegionControls(); renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[]);
+  renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationRegionSummary(data); renderExplorationRegionControls(); renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[],data.preferred_region_candidates||[]);
 }
 function renderExplorationLossSummary(losses) {
   const fields=[["empty_bin_count","空桶"],["input_invalid_loss","输入无效"],["filter_warmup_loss","滤波预热"],["filter_context_invalid_loss","滤波上下文无效"],["lag_warmup_loss","Lag预热"],["lag_context_invalid_loss","Lag上下文无效"],["state_filter_loss","状态过滤损失"]];
@@ -3116,7 +3169,8 @@ function renderExplorationRegionSummary(data) {
   const targetRange=data.performance_config?.direction==="target_range";
   const clusters=(region.cluster_counts||[]).map(item=>`<tr><td>${escapeHtml(item.cluster_id)}</td><td class="numeric">${item.sample_count}</td><td class="numeric">${explorationPercent(item.share)}</td></tr>`).join("");
   const performance=targetRange?metric("性能有效样本",region.performance_valid_count??"—")+metric("性能达标样本",region.performance_target_count??"—")+metric("性能达标率",explorationPercent(region.performance_target_ratio))+metric("性能中位数",explorationNumber(region.performance_median,3)):metric("性能评价","—");
-  container.innerHTML=`<div class="metrics">${metric("优选区域样本",region.selected_sample_count??0)}${metric("完整有效样本占比",explorationPercent(region.selected_sample_ratio))}${metric("最大 Cluster 占比",explorationPercent(region.max_cluster_share))}${metric("区域稳定性",explorationNumber(region.stability_score,4))}${performance}</div><div class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算。</div><table><thead><tr><th>Cluster</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table>`;
+  const candidateCount=(data.preferred_region_candidates||[]).length;
+  container.innerHTML=`<div class="metrics">${metric("优选区域样本",region.selected_sample_count??0)}${metric("完整有效样本占比",explorationPercent(region.selected_sample_ratio))}${metric("最大 Cluster 占比",explorationPercent(region.max_cluster_share))}${metric("区域稳定性",explorationNumber(region.stability_score,4))}${metric("连续候选数",candidateCount)}${performance}</div><div class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。</div><table><thead><tr><th>Cluster</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table>`;
 }
 function renderExplorationRegionControls() {
   const hasRun=Boolean(state.exploration?.exploration_run_id), ellipses=state.preferredRegion?.ellipses||[];
@@ -3157,7 +3211,7 @@ function explorationTimelineDetails(rows) {
 function renderExplorationClusterTable(summaries) {
   const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); const values=[item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.performance_valid_count??"—",item.performance_target_count??"—",explorationPercent(item.performance_target_ratio),explorationNumber(item.performance_median,3),item.candidate_count]; values.forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
 }
-function renderExplorationCandidateTables(clusterCandidates,performanceCandidates,decisions) {
+function renderExplorationCandidateTables(clusterCandidates,performanceCandidates,decisions,preferredRegionCandidates=[]) {
   const decisionById=Object.fromEntries(decisions.map(item=>[item.candidate_id,item]));
   const controls=item=>{const decision=decisionById[item.candidate_id]||{decision:"pending",comment:""};return `<td><input class="exploration-candidate-select" type="checkbox" data-candidate-id="${escapeHtml(item.candidate_id)}" aria-label="选择候选"></td><td><select class="exploration-candidate-decision" data-candidate-id="${escapeHtml(item.candidate_id)}"><option value="pending" ${decision.decision==="pending"?"selected":""}>待决策</option><option value="accepted" ${decision.decision==="accepted"?"selected":""}>已接受</option><option value="rejected" ${decision.decision==="rejected"?"selected":""}>已拒绝</option></select></td><td><input class="exploration-candidate-comment" data-candidate-id="${escapeHtml(item.candidate_id)}" value="${escapeHtml(decision.comment||"")}" aria-label="候选备注"></td>`;};
   const clusterHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
@@ -3166,20 +3220,24 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
   const performanceHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
   const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
   el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="10">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
+  const preferredHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>关联Cluster</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const preferredBody=preferredRegionCandidates.map(item=>{const clusterIds=item.associated_cluster_ids||(item.cluster_id?[item.cluster_id]:[]);return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${escapeHtml(clusterIds.join(", ")||"—")}</td><td>${item.performance_valid_count??"—"}</td><td>${item.performance_target_count??"—"}</td><td>${explorationPercent(item.performance_target_ratio)}</td><td>${explorationNumber(item.performance_median,3)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
+  el("explorationPreferredRegionCandidates").innerHTML=preferredHead+(preferredBody||'<tr><td colspan="14">暂无满足最小时长的优选区域连续候选。</td></tr>')+"</tbody></table>";
  }
 
 function resetExplorationRegion() { state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; renderExplorationRegionControls(); }
 async function updateExplorationPreferredRegion(ellipses) {
   const runId=state.exploration?.exploration_run_id; if(!runId) return;
-  const previous=state.preferredRegion, request=++state.preferredRegionRequest;
-  state.preferredRegion={ellipses}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls();
+  const previous=state.preferredRegion, previousCandidates=state.exploration.preferred_region_candidates||[], previousDecisions=state.exploration.candidate_decisions||[], request=++state.preferredRegionRequest;
+  const previousPreferredIds=new Set(previousCandidates.map(item=>item.candidate_id));
+  state.preferredRegion={ellipses}; state.exploration={...state.exploration,preferred_region_candidates:[],candidate_decisions:previousDecisions.filter(item=>!previousPreferredIds.has(item.candidate_id)&&!String(item.candidate_id).startsWith("preferred-region-candidate-"))}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],[]);
   try {
     const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/preferred-region`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({exploration_run_id:runId,ellipses})});
     if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
-    state.preferredRegion=data.preferred_region||data; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); setStatus(`优选运行区域已更新：${state.preferredRegion.selected_sample_count} 个完整样本。` ,"success");
+    state.preferredRegion=data.preferred_region||data; state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||state.exploration.candidate_decisions||[]}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(`优选运行区域已更新：${state.preferredRegion.selected_sample_count} 个完整样本。` ,"success");
   } catch(error) {
     if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
-    state.preferredRegion=previous; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); setStatus(error.message,"error");
+    state.preferredRegion=previous; state.exploration={...state.exploration,preferred_region_candidates:previousCandidates,candidate_decisions:previousDecisions}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(error.message,"error");
   }
 }
 
@@ -3385,7 +3443,7 @@ el("convertExplorationCandidates").addEventListener("click", async () => {
   const decisions=new Map((state.exploration.candidate_decisions||[]).map(item=>[item.candidate_id,item.decision]));
   const candidateIds=rows.map(input=>input.dataset.candidateId);
   if(candidateIds.some(candidateId=>decisions.get(candidateId)!=="accepted")) { setStatus("只有已接受候选可以加入正常状态候选池。","warning"); return; }
-  const candidates=new Map([...(state.exploration.cluster_candidates||[]),...(state.exploration.performance_candidates||[])].map(item=>[item.candidate_id,item]));
+  const candidates=new Map([...(state.exploration.cluster_candidates||[]),...(state.exploration.performance_candidates||[]),...(state.exploration.preferred_region_candidates||[])].map(item=>[item.candidate_id,item]));
   let added=0;
   candidateIds.forEach(candidateRef=>{ const candidate=candidates.get(candidateRef); if(candidate&&!state.candidateWindows.some(window=>window.source_ref===candidateRef)) { state.candidateWindows.push({id:candidateId(),start:candidate.start,end:candidate.end,source:candidate.source,source_ref:candidateRef,status:"accepted",comment:(state.exploration.candidate_decisions||[]).find(item=>item.candidate_id===candidateRef)?.comment||""}); added+=1; } });
   renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel");

@@ -9,6 +9,7 @@ from pca_model_builder.state_exploration import (
     _cluster_candidates,
     _display_points,
     _performance_candidates,
+    _preferred_region_candidates,
     _summaries,
     evaluate_preferred_region,
     run_state_exploration,
@@ -95,6 +96,116 @@ def test_preferred_region_uses_union_of_ellipses_and_full_pc_space():
         {"cluster_001": np.zeros(3), "cluster_002": np.zeros(3)},
     )
     assert changed_result["stability_score"] != result["stability_score"]
+
+
+def test_preferred_region_candidates_split_full_series_at_region_gaps_and_segments():
+    index = pd.DatetimeIndex(
+        [
+            *pd.date_range("2026-01-01", periods=6, freq="5min"),
+            *pd.date_range("2026-01-01 01:00", periods=6, freq="5min"),
+        ]
+    )
+    points = pd.DataFrame(
+        {
+            "pc1": [0.0, 0.5, 0.0, 50.0, 5.0, 5.0, 5.0, 5.0, 50.0, 5.0, 5.0, 5.0],
+            "pc2": np.zeros(12),
+            "pc3": [0.0, 1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 2.0],
+            "cluster_id": [
+                "cluster_001",
+                "cluster_001",
+                "cluster_001",
+                "cluster_002",
+                "cluster_002",
+                "cluster_002",
+                "cluster_003",
+                "cluster_003",
+                "cluster_003",
+                "cluster_003",
+                "cluster_003",
+                "cluster_003",
+            ],
+            "segment_id": [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+        },
+        index=index,
+    )
+
+    candidates = _preferred_region_candidates(
+        points,
+        [
+            {"center_pc1": 0.0, "center_pc2": 0.0, "radius_pc1": 1.1, "radius_pc2": 1.0},
+            {"center_pc1": 5.0, "center_pc2": 0.0, "radius_pc1": 0.5, "radius_pc2": 1.0},
+        ],
+        ("pc1", "pc2", "pc3"),
+        {
+            "cluster_001": np.zeros(3),
+            "cluster_002": np.zeros(3),
+            "cluster_003": np.zeros(3),
+        },
+        5,
+        10,
+    )
+
+    assert [item["sample_count"] for item in candidates] == [3, 2, 2, 3]
+    assert [(item["start"], item["end"]) for item in candidates] == [
+        (index[9].isoformat(), index[11].isoformat()),
+        (index[4].isoformat(), index[5].isoformat()),
+        (index[6].isoformat(), index[7].isoformat()),
+        (index[0].isoformat(), index[2].isoformat()),
+    ]
+    assert [item["associated_cluster_ids"] for item in candidates] == [
+        ["cluster_003"],
+        ["cluster_002"],
+        ["cluster_003"],
+        ["cluster_001"],
+    ]
+    assert len({item["candidate_id"] for item in candidates}) == 4
+    assert candidates[0]["stability_score"] > candidates[-1]["stability_score"]
+    assert all(item["source"] == "preferred_region" for item in candidates)
+
+
+def test_preferred_region_candidates_rank_target_ratio_stability_and_duration():
+    index = pd.date_range("2026-01-01", periods=12, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": [0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.0],
+            "pc2": np.zeros(12),
+            "pc3": [0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "cluster_id": ["cluster_001"] * 12,
+            "segment_id": [0] * 12,
+        },
+        index=index,
+    )
+    candidates = _preferred_region_candidates(
+        points,
+        [{"center_pc1": 0.0, "center_pc2": 0.0, "radius_pc1": 1.0, "radius_pc2": 1.0}],
+        ("pc1", "pc2", "pc3"),
+        {"cluster_001": np.zeros(3)},
+        5,
+        10,
+        performance_values=pd.Series(
+            [1.0, np.nan, 2.0, 0.0, 1.0, 1.0, 1.0, 0.0, 2.0, 2.0, 2.0, 2.0],
+            index=index,
+        ),
+        performance_config=PerformanceConfig(
+            "PERF",
+            "target_range",
+            target_min=1.0,
+            target_max=2.0,
+            minimum_duration_minutes=10,
+        ),
+    )
+
+    assert [item["start"] for item in candidates] == [
+        index[8].isoformat(),
+        index[4].isoformat(),
+        index[0].isoformat(),
+    ]
+    invalid_performance = candidates[2]
+    assert invalid_performance["performance_valid_count"] == 2
+    assert invalid_performance["performance_target_count"] == 2
+    assert invalid_performance["performance_target_ratio"] == 1.0
+    assert invalid_performance["performance_median"] == 1.5
+    assert candidates[1]["stability_score"] > invalid_performance["stability_score"]
 
 
 def test_preferred_region_rejects_invalid_axes_and_empty_region():

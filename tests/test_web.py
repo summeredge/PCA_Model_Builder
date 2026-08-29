@@ -688,6 +688,7 @@ def test_final_web_page_exposes_state_exploration_workbench():
         'id="explorationClusterTable"',
         'id="explorationClusterCandidates"',
         'id="explorationPerformanceCandidates"',
+        'id="explorationPreferredRegionCandidates"',
         'id="saveExplorationCandidateDecisions"',
         'id="convertExplorationCandidates"',
     ):
@@ -703,6 +704,7 @@ def test_final_web_page_exposes_state_exploration_workbench():
         "性能达标样本",
         "性能达标率",
         "性能中位数",
+        "优选区域候选表",
     ):
         assert label in html
     assert "自动正常 Cluster" not in html
@@ -874,6 +876,198 @@ def test_preferred_region_api_uses_union_and_full_cached_series():
     assert invalid_status == 400
     assert "半轴" in invalid["error"]
     assert "traceback" not in invalid["error"].lower()
+
+
+def test_preferred_region_candidates_recompute_and_keep_conversion_lifecycle():
+    web.clear_state_exploration_cache()
+    run_id = "d" * 32
+    index = pd.date_range("2026-01-01", periods=12, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": np.zeros(12),
+            "pc2": [0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0, 10.0, 10.0, 10.0, 10.0],
+            "pc3": [0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "cluster_id": ["cluster_001"] * 3 + ["cluster_002"] * 9,
+            "segment_id": [0] * 8 + [1] * 4,
+        },
+        index=index,
+    )
+    cluster_id = "cluster-aux-001"
+    performance_id = "performance-aux-001"
+    web._store_state_exploration_run(
+        run_id,
+        {
+            "exploration_config": {"minimum_candidate_duration_minutes": 10},
+            "preprocessing_summary": {"target_interval_minutes": 5},
+            "exploratory_model_summary": {"pc_columns": ["pc1", "pc2", "pc3"]},
+            "cluster_centers": {
+                "cluster_001": [0.0, 0.0, 0.0],
+                "cluster_002": [0.0, 0.0, 0.0],
+            },
+            "performance_config": {
+                "performance_tag": "PERF",
+                "direction": "target_range",
+                "target_min": 1.0,
+                "target_max": 2.0,
+            },
+            "_performance_values": pd.Series(
+                [1.0, np.nan, 2.0, 0.0, 1.0, 1.0, 0.0, 0.0, 2.0, 2.0, 2.0, 2.0],
+                index=index,
+            ),
+            "cluster_series": points,
+            "cluster_series_display": points.iloc[[0, 11]],
+            "cluster_candidates": [
+                {
+                    "candidate_id": cluster_id,
+                    "source": "cluster",
+                    "start": index[0].isoformat(),
+                    "end": index[1].isoformat(),
+                }
+            ],
+            "performance_candidates": [
+                {
+                    "candidate_id": performance_id,
+                    "source": "performance",
+                    "start": index[4].isoformat(),
+                    "end": index[5].isoformat(),
+                }
+            ],
+            "preferred_region_candidates": [],
+            "candidate_decisions": [
+                {
+                    "candidate_id": cluster_id,
+                    "decision": "accepted",
+                    "comment": "保留",
+                    "decided_at": "2026-01-01T00:00:00+00:00",
+                },
+                {
+                    "candidate_id": performance_id,
+                    "decision": "rejected",
+                    "comment": "忽略",
+                    "decided_at": "2026-01-01T00:00:00+00:00",
+                },
+            ],
+        },
+    )
+
+    first, first_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/preferred-region",
+        {
+            "exploration_run_id": run_id,
+            "ellipses": [
+                {
+                    "center_pc1": 0.0,
+                    "center_pc2": 0.0,
+                    "radius_pc1": 1.0,
+                    "radius_pc2": 1.0,
+                },
+                {
+                    "center_pc1": 0.0,
+                    "center_pc2": 10.0,
+                    "radius_pc1": 1.0,
+                    "radius_pc2": 1.0,
+                },
+            ],
+        },
+    )
+
+    assert first_status == 200
+    assert [item["sample_count"] for item in first["preferred_region_candidates"]] == [4, 3, 3]
+    assert [item["start"] for item in first["preferred_region_candidates"]] == [
+        index[8].isoformat(),
+        index[0].isoformat(),
+        index[4].isoformat(),
+    ]
+    assert first["preferred_region_candidates"][1]["performance_valid_count"] == 2
+    assert first["preferred_region_candidates"][1]["performance_target_ratio"] == 1.0
+    assert first["preferred_region_candidates"][1]["performance_median"] == 1.5
+    decisions = {item["candidate_id"]: item for item in first["candidate_decisions"]}
+    assert decisions[cluster_id]["decision"] == "accepted"
+    assert decisions[performance_id]["decision"] == "rejected"
+    old_region_candidate = next(
+        item
+        for item in first["preferred_region_candidates"]
+        if item["start"] == index[0].isoformat()
+    )
+
+    accepted, accepted_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/decisions",
+        {
+            "candidate_id": old_region_candidate["candidate_id"],
+            "decision": "accepted",
+            "comment": "优选区域稳定",
+        },
+    )
+    assert accepted_status == 200
+    converted = web.state_exploration_training_windows_payload(
+        run_id,
+        {
+            "candidate_ids": [old_region_candidate["candidate_id"]],
+            "training_windows": [],
+        },
+    )
+    converted_window = converted["training_windows"][0]
+    assert converted_window["enabled"] is False
+    assert converted_window["source"] == "preferred_region"
+
+    second, second_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/region",
+        {
+            "ellipses": [
+                {
+                    "center_pc1": 0.0,
+                    "center_pc2": 10.0,
+                    "radius_pc1": 1.0,
+                    "radius_pc2": 1.0,
+                }
+            ],
+        },
+    )
+
+    assert second_status == 200
+    assert [item["start"] for item in second["preferred_region_candidates"]] == [
+        index[8].isoformat()
+    ]
+    refreshed_decisions = {
+        item["candidate_id"]: item for item in second["candidate_decisions"]
+    }
+    assert refreshed_decisions[cluster_id]["decision"] == "accepted"
+    assert refreshed_decisions[performance_id]["decision"] == "rejected"
+    assert old_region_candidate["candidate_id"] not in refreshed_decisions
+
+    stale, stale_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/decisions",
+        {
+            "candidate_id": old_region_candidate["candidate_id"],
+            "decision": "accepted",
+            "comment": "不应继续有效",
+        },
+    )
+    assert stale_status == 400
+    assert "不属于当前状态探索运行" in stale["error"]
+
+    new_region_candidate = second["preferred_region_candidates"][0]
+    web.state_exploration_decisions_payload(
+        run_id,
+        {
+            "candidate_id": new_region_candidate["candidate_id"],
+            "decision": "accepted",
+            "comment": "保留第二段",
+        },
+    )
+    preserved = web.state_exploration_training_windows_payload(
+        run_id,
+        {
+            "candidate_ids": [new_region_candidate["candidate_id"]],
+            "training_windows": converted["training_windows"],
+        },
+    )
+    assert preserved["training_windows"][0] == converted_window
+    assert len(preserved["training_windows"]) == 2
 
 
 def test_exploration_series_uses_full_target_status_for_display_points():
