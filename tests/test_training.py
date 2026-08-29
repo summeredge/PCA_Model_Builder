@@ -143,13 +143,165 @@ def test_training_single_window_matches_existing_dynamic_matrix_and_disabled_win
     pd.testing.assert_frame_equal(single.dynamic, expected)
     pd.testing.assert_frame_equal(result.dynamic, expected)
     assert result.window_summaries[1]["status"] == "disabled"
+    assert result.window_summaries[0]["effective_sample_share"] == 1.0
+    assert result.window_summaries[1]["effective_sample_share"] == 0.0
     assert result.training_window_totals == {
         "enabled_window_count": 1,
         "used_window_count": 1,
         "dropped_window_count": 0,
         "training_rows": len(expected),
+        "used_segment_count": 1,
+        "covered_day_count": 1,
+        "max_window_id": "window-001",
+        "max_window_effective_samples": len(expected),
+        "max_window_effective_share": 1.0,
+        "source_summary": {
+            "manual": {
+                "used_window_count": 1,
+                "effective_samples": len(expected),
+                "effective_sample_share": 1.0,
+            }
+        },
     }
     np.testing.assert_allclose(result.dynamic.mean().to_numpy(), expected.mean().to_numpy())
+
+
+def test_training_reports_source_shares_segments_and_final_day_coverage():
+    frame = _frame(24)
+    frame.loc[12:, "time"] += pd.Timedelta(days=1)
+    windows = [
+        {
+            "id": "manual-window",
+            "start": frame.time.iloc[0].isoformat(),
+            "end": frame.time.iloc[5].isoformat(),
+            "source": "manual",
+            "source_ref": None,
+            "enabled": True,
+            "comment": "",
+        },
+        {
+            "id": "preferred-window",
+            "start": frame.time.iloc[12].isoformat(),
+            "end": frame.time.iloc[17].isoformat(),
+            "source": "preferred_region",
+            "source_ref": "region-001",
+            "enabled": True,
+            "comment": "",
+        },
+        {
+            "id": "dropped-window",
+            "start": "2026-01-03T00:00:00",
+            "end": "2026-01-03T00:25:00",
+            "source": "cluster",
+            "source_ref": "cluster-001",
+            "enabled": True,
+            "comment": "",
+        },
+        {
+            "id": "disabled-window",
+            "start": frame.time.iloc[18].isoformat(),
+            "end": frame.time.iloc[23].isoformat(),
+            "source": "performance",
+            "source_ref": "performance-001",
+            "enabled": False,
+            "comment": "",
+        },
+    ]
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+        windows,
+    )
+
+    assert len(result.dynamic) == 12
+    assert [item["status"] for item in result.window_summaries] == [
+        "used",
+        "used",
+        "dropped",
+        "disabled",
+    ]
+    assert [item["effective_sample_share"] for item in result.window_summaries] == [
+        0.5,
+        0.5,
+        0.0,
+        0.0,
+    ]
+    assert result.training_window_totals["used_segment_count"] == 2
+    assert result.training_window_totals["covered_day_count"] == 2
+    assert result.training_window_totals["max_window_id"] == "manual-window"
+    assert result.training_window_totals["max_window_effective_samples"] == 6
+    assert result.training_window_totals["max_window_effective_share"] == 0.5
+    assert result.training_window_totals["source_summary"] == {
+        "manual": {
+            "used_window_count": 1,
+            "effective_samples": 6,
+            "effective_sample_share": 0.5,
+        },
+        "preferred_region": {
+            "used_window_count": 1,
+            "effective_samples": 6,
+            "effective_sample_share": 0.5,
+        },
+        "cluster": {
+            "used_window_count": 0,
+            "effective_samples": 0,
+            "effective_sample_share": 0.0,
+        },
+        "performance": {
+            "used_window_count": 0,
+            "effective_samples": 0,
+            "effective_sample_share": 0.0,
+        },
+    }
+    assert sum(
+        item["effective_sample_share"]
+        for item in result.training_window_totals["source_summary"].values()
+    ) == 1.0
+
+
+def test_training_composition_warnings_are_non_blocking_and_do_not_change_dynamic_rows():
+    frame = _frame()
+    windows = [
+        {
+            "id": "preferred-window",
+            "start": frame.time.iloc[0].isoformat(),
+            "end": frame.time.iloc[-1].isoformat(),
+            "source": "preferred_region",
+            "source_ref": "region-001",
+            "enabled": True,
+            "comment": "",
+        },
+        {
+            "id": "dropped-window",
+            "start": "2026-01-02T00:00:00",
+            "end": "2026-01-02T00:25:00",
+            "source": "manual",
+            "source_ref": None,
+            "enabled": True,
+            "comment": "",
+        },
+    ]
+
+    result = build_training_matrix(
+        frame,
+        "time",
+        ["A", "B", "C"],
+        PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+        windows,
+    )
+
+    assert result.training_window_totals["used_window_count"] == 1
+    assert result.training_window_totals["covered_day_count"] == 1
+    assert {warning["code"] for warning in result.global_quality_warnings} == {
+        "single_used_training_window",
+        "single_training_day",
+        "preferred_region_only_training",
+    }
+    assert all(warning["severity"] == "warning" for warning in result.global_quality_warnings)
+    assert len(result.dynamic) == result.training_window_totals["training_rows"]
 
 
 def test_training_standardizes_from_all_enabled_dynamic_rows():

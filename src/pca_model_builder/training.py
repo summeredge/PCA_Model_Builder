@@ -19,7 +19,7 @@ from .windows import normalize_training_windows
 class TrainingBuildResult:
     dynamic: pd.DataFrame
     window_summaries: list[dict[str, Any]]
-    training_window_totals: dict[str, int]
+    training_window_totals: dict[str, Any]
     reference: pd.DataFrame
     global_quality_warnings: list[dict[str, Any]]
 
@@ -295,20 +295,77 @@ def build_training_matrix(
         )
     if sum(item.get("effective_samples", 0) for item in summaries) != len(dynamic):
         raise ValueError("training window summaries do not match merged dynamic rows")
+    training_rows = len(dynamic)
+    for item in summaries:
+        effective_samples = int(item.get("effective_samples", 0))
+        item["effective_sample_share"] = (
+            float(effective_samples / training_rows) if training_rows else 0.0
+        )
+
+    source_summary: dict[str, dict[str, Any]] = {}
+    for item in summaries:
+        source = str(item["source"])
+        source_totals = source_summary.setdefault(
+            source,
+            {
+                "used_window_count": 0,
+                "effective_samples": 0,
+                "effective_sample_share": 0.0,
+            },
+        )
+        if item["status"] == "used":
+            source_totals["used_window_count"] += 1
+            source_totals["effective_samples"] += int(item["effective_samples"])
+    for source_totals in source_summary.values():
+        source_totals["effective_sample_share"] = (
+            float(source_totals["effective_samples"] / training_rows)
+            if training_rows
+            else 0.0
+        )
+
+    used_items = [
+        item for item in summaries if item.get("status") == "used" and item.get("effective_samples", 0)
+    ]
+    max_window = max(used_items, key=lambda item: item["effective_samples"]) if used_items else None
+    covered_day_count = (
+        int(pd.DatetimeIndex(dynamic.index).normalize().nunique())
+        if training_rows
+        else 0
+    )
     training_window_totals = {
         "enabled_window_count": sum(window["enabled"] for window in windows),
         "used_window_count": sum(item["status"] == "used" for item in summaries),
         "dropped_window_count": sum(
             item["status"] == "dropped" for item in summaries
         ),
-        "training_rows": len(dynamic),
+        "training_rows": training_rows,
+        "used_segment_count": sum(
+            segment["status"] == "used"
+            for item in summaries
+            for segment in item.get("segments", [])
+        ),
+        "covered_day_count": covered_day_count,
+        "max_window_id": max_window["id"] if max_window else None,
+        "max_window_effective_samples": (
+            int(max_window["effective_samples"]) if max_window else 0
+        ),
+        "max_window_effective_share": (
+            float(max_window["effective_sample_share"]) if max_window else 0.0
+        ),
+        "source_summary": source_summary,
     }
+    global_quality_warnings = (
+        _validate_dynamic_matrix(dynamic) if validate_dynamic else []
+    )
+    global_quality_warnings.extend(
+        _training_composition_warnings(summaries, training_window_totals)
+    )
     return TrainingBuildResult(
         dynamic=dynamic,
         window_summaries=summaries,
         training_window_totals=training_window_totals,
         reference=reference,
-        global_quality_warnings=_validate_dynamic_matrix(dynamic) if validate_dynamic else [],
+        global_quality_warnings=global_quality_warnings,
     )
 
 
@@ -321,6 +378,48 @@ def _window_quality_error(window_id: str, report: Any) -> str:
         if issue.severity == "error"
     )
     return f"训练窗口 {window_id} 数据质量问题尚未处理：{details}"
+
+
+def _training_composition_warnings(
+    summaries: Sequence[dict[str, Any]], totals: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if not totals["training_rows"]:
+        return []
+
+    warnings: list[dict[str, Any]] = []
+    if totals["used_window_count"] == 1:
+        warnings.append(
+            {
+                "code": "single_used_training_window",
+                "severity": "warning",
+                "message": "最终训练集仅包含一个有效训练窗口，请检查时间覆盖和代表性。",
+                "details": {"used_window_count": totals["used_window_count"]},
+            }
+        )
+    if totals["covered_day_count"] == 1:
+        warnings.append(
+            {
+                "code": "single_training_day",
+                "severity": "warning",
+                "message": "最终有效训练样本仅覆盖一个自然日，请检查时间覆盖和代表性。",
+                "details": {"covered_day_count": totals["covered_day_count"]},
+            }
+        )
+    effective_sources = {
+        str(item["source"])
+        for item in summaries
+        if item.get("status") == "used" and item.get("effective_samples", 0) > 0
+    }
+    if effective_sources == {"preferred_region"}:
+        warnings.append(
+            {
+                "code": "preferred_region_only_training",
+                "severity": "warning",
+                "message": "最终有效训练样本全部来自优选区域，请检查训练集代表性和覆盖度。",
+                "details": {"sources": sorted(effective_sources)},
+            }
+        )
+    return warnings
 
 
 def _validate_dynamic_matrix(dynamic: pd.DataFrame) -> list[dict[str, Any]]:

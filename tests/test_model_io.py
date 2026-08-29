@@ -180,6 +180,83 @@ def test_schema_v3_training_window_totals_are_optional_and_round_trip(
         assert manifest["config"]["training_window_totals"]["training_rows"] == model.n_samples
 
 
+def test_schema5_training_window_totals_accepts_optional_composition_metadata(tmp_path):
+    frame = pd.DataFrame(
+        np.random.default_rng(15).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    config = _valid_config()
+    config["training_window_totals"] = {
+        "enabled_window_count": 1,
+        "used_window_count": 1,
+        "dropped_window_count": 0,
+        "training_rows": len(frame),
+        "used_segment_count": 1,
+        "covered_day_count": 2,
+        "max_window_id": "window-001",
+        "max_window_effective_samples": len(frame),
+        "max_window_effective_share": 1.0,
+        "source_summary": {
+            "manual": {
+                "used_window_count": 1,
+                "effective_samples": len(frame),
+                "effective_sample_share": 1.0,
+            }
+        },
+    }
+    path = tmp_path / "composition.pcamodel"
+
+    save_model_package(
+        path,
+        fit_dpca(frame, n_components=2),
+        config,
+        [["2026-01-01", "2026-01-02"]],
+    )
+    _, manifest = load_model_package(path)
+
+    assert manifest["schema_version"] == 5
+    assert manifest["config"]["training_window_totals"] == config[
+        "training_window_totals"
+    ]
+
+
+@pytest.mark.parametrize(
+    "extension",
+    [
+        {"unknown": 1},
+        {"used_segment_count": 1.0},
+        {"covered_day_count": True},
+        {"max_window_id": ""},
+        {"max_window_effective_samples": 1.0},
+        {"max_window_effective_share": 1},
+        {"source_summary": {"manual": {"used_window_count": 1}}},
+    ],
+)
+def test_training_window_totals_rejects_invalid_optional_composition_metadata(
+    tmp_path, extension
+):
+    frame = pd.DataFrame(
+        np.random.default_rng(16).normal(size=(100, 3)),
+        columns=["A__lag_000min", "B__lag_000min", "C__lag_000min"],
+    )
+    config = _valid_config()
+    config["training_window_totals"] = {
+        "enabled_window_count": 1,
+        "used_window_count": 1,
+        "dropped_window_count": 0,
+        "training_rows": len(frame),
+        **extension,
+    }
+
+    with pytest.raises(ValueError, match="training_window_totals"):
+        save_model_package(
+            tmp_path / "invalid-composition.pcamodel",
+            fit_dpca(frame, n_components=2),
+            config,
+            [["2026-01-01", "2026-01-02"]],
+        )
+
+
 def test_model_package_accepts_optional_source_registry_and_exclusion_metadata(
     tmp_path,
 ):

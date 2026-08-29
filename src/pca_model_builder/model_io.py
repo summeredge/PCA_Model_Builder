@@ -106,11 +106,27 @@ _DEPLOYMENT_PREPROCESSING_FIELDS_V2 = _DEPLOYMENT_PREPROCESSING_FIELDS_V1 | {
     "invalid_row_policy",
     "continuous_segment_policy",
 }
-_TRAINING_WINDOW_TOTAL_FIELDS = {
+_TRAINING_WINDOW_TOTAL_CORE_FIELDS = {
     "enabled_window_count",
     "used_window_count",
     "dropped_window_count",
     "training_rows",
+}
+_TRAINING_WINDOW_TOTAL_EXTENSION_FIELDS = {
+    "used_segment_count",
+    "covered_day_count",
+    "max_window_id",
+    "max_window_effective_samples",
+    "max_window_effective_share",
+    "source_summary",
+}
+_TRAINING_WINDOW_TOTAL_FIELDS = (
+    _TRAINING_WINDOW_TOTAL_CORE_FIELDS | _TRAINING_WINDOW_TOTAL_EXTENSION_FIELDS
+)
+_TRAINING_SOURCE_SUMMARY_FIELDS = {
+    "used_window_count",
+    "effective_samples",
+    "effective_sample_share",
 }
 _FEATURE_PATTERN = re.compile(r"^(?P<tag>.+)__lag_(?P<lag>\d+)min$")
 _MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -846,17 +862,104 @@ def _validate_config(
 
 
 def _validate_training_window_totals(value: object) -> None:
-    if not isinstance(value, dict) or set(value) != _TRAINING_WINDOW_TOTAL_FIELDS:
+    if not isinstance(value, dict):
+        raise ValueError("training_window_totals fields are invalid")
+    fields = set(value)
+    if (
+        not _TRAINING_WINDOW_TOTAL_CORE_FIELDS <= fields
+        or fields - _TRAINING_WINDOW_TOTAL_FIELDS
+    ):
         raise ValueError("training_window_totals fields are invalid")
     if any(
-        not isinstance(count, int) or isinstance(count, bool) or count < 0
-        for count in value.values()
+        not isinstance(value[field], int)
+        or isinstance(value[field], bool)
+        or value[field] < 0
+        for field in _TRAINING_WINDOW_TOTAL_CORE_FIELDS
     ):
         raise ValueError("training_window_totals values are invalid")
     if value["used_window_count"] + value["dropped_window_count"] != value[
         "enabled_window_count"
     ]:
         raise ValueError("training_window_totals window counts are inconsistent")
+    for field in ("used_segment_count", "covered_day_count", "max_window_effective_samples"):
+        if field in value and (
+            not isinstance(value[field], int)
+            or isinstance(value[field], bool)
+            or value[field] < 0
+        ):
+            raise ValueError(f"training_window_totals {field} is invalid")
+    if "max_window_id" in value and value["max_window_id"] is not None and (
+        not isinstance(value["max_window_id"], str) or not value["max_window_id"].strip()
+    ):
+        raise ValueError("training_window_totals max_window_id is invalid")
+    if "max_window_effective_share" in value:
+        _validate_training_share(
+            value["max_window_effective_share"],
+            "training_window_totals max_window_effective_share",
+        )
+        if "max_window_effective_samples" in value:
+            expected = (
+                value["max_window_effective_samples"] / value["training_rows"]
+                if value["training_rows"]
+                else 0.0
+            )
+            if not np.isclose(value["max_window_effective_share"], expected):
+                raise ValueError("training_window_totals max window values are inconsistent")
+    if "source_summary" in value:
+        _validate_training_source_summary(value["source_summary"], value)
+
+
+def _validate_training_share(value: object, field: str) -> None:
+    if (
+        not isinstance(value, (float, np.floating))
+        or not np.isfinite(value)
+        or not 0.0 <= float(value) <= 1.0
+    ):
+        raise ValueError(f"{field} is invalid")
+
+
+def _validate_training_source_summary(
+    value: object, totals: dict[str, Any]
+) -> None:
+    if not isinstance(value, dict):
+        raise ValueError("training_window_totals source_summary is invalid")
+    used_window_count = 0
+    effective_samples = 0
+    effective_share = 0.0
+    for source, summary in value.items():
+        if (
+            not isinstance(source, str)
+            or not source.strip()
+            or not isinstance(summary, dict)
+            or set(summary) != _TRAINING_SOURCE_SUMMARY_FIELDS
+            or any(
+                not isinstance(summary[field], int)
+                or isinstance(summary[field], bool)
+                or summary[field] < 0
+                for field in ("used_window_count", "effective_samples")
+            )
+        ):
+            raise ValueError("training_window_totals source_summary is invalid")
+        _validate_training_share(
+            summary["effective_sample_share"],
+            "training_window_totals source effective_sample_share",
+        )
+        used_window_count += summary["used_window_count"]
+        effective_samples += summary["effective_samples"]
+        effective_share += summary["effective_sample_share"]
+        expected = (
+            summary["effective_samples"] / totals["training_rows"]
+            if totals["training_rows"]
+            else 0.0
+        )
+        if not np.isclose(summary["effective_sample_share"], expected):
+            raise ValueError("training_window_totals source values are inconsistent")
+    if used_window_count != totals["used_window_count"] or effective_samples != totals[
+        "training_rows"
+    ]:
+        raise ValueError("training_window_totals source totals are inconsistent")
+    if not np.isclose(effective_share, 1.0 if totals["training_rows"] else 0.0):
+        raise ValueError("training_window_totals source shares are inconsistent")
 
 
 def _normalize_preprocessing_config(

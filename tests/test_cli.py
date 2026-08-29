@@ -419,6 +419,18 @@ def test_cli_training_uses_shared_multiwindow_builder(tmp_path, monkeypatch):
         "used_window_count": 1,
         "dropped_window_count": 1,
         "training_rows": model.n_samples,
+        "used_segment_count": 1,
+        "covered_day_count": 1,
+        "max_window_id": "window-001",
+        "max_window_effective_samples": model.n_samples,
+        "max_window_effective_share": 1.0,
+        "source_summary": {
+            "manual": {
+                "used_window_count": 1,
+                "effective_samples": model.n_samples,
+                "effective_sample_share": 1.0,
+            }
+        },
     }
 
 

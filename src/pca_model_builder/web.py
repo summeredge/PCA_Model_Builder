@@ -492,6 +492,7 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if readiness["normal_state"]["issue"] is not None:
             result["time_issues"].append(readiness["normal_state"]["issue"])
     result["training_window_summary"] = normal_training.window_summaries
+    result["training_window_totals"] = normal_training.training_window_totals
     result["training_quality_warnings"] = normal_training.global_quality_warnings
     return _with_data_usage(
         result, loaded, len(normal_training.reference), len(normal_training.reference)
@@ -2794,11 +2795,13 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
-        <h3>建模质量检查</h3>
-        <button id="qualityButton" class="secondary" disabled>执行建模质量检查</button>
-        <div id="modelQualityStatus" class="status info" role="status">未检查</div>
-        <div id="modelQualityResults">
-          <div id="qualitySummary" class="metrics"></div>
+         <h3>建模质量检查</h3>
+         <button id="qualityButton" class="secondary" disabled>执行建模质量检查</button>
+         <div id="modelQualityStatus" class="status info" role="status">未检查</div>
+         <div id="modelQualityResults">
+          <h3>训练集组成审查</h3>
+          <div id="trainingCompositionReview" class="empty">执行建模质量检查后显示训练集组成。</div>
+           <div id="qualitySummary" class="metrics"></div>
           <h3>当前 Tag 建模质量详情</h3>
           <label>查看 Tag：<select id="qualityTagSelect" disabled></select></label>
           <div id="currentTagQuality" class="empty">尚未执行建模质量检查。</div>
@@ -3053,6 +3056,7 @@ function invalidateQuality(reason) {
   const checked=Boolean(state.quality); state.quality=null; state.qualityError=""; state.qualityStatus=reason&&checked?"changed":"unchecked";
   el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true;
   if(el("qualitySummary")) el("qualitySummary").innerHTML="";
+  if(el("trainingCompositionReview")) { el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"执行建模质量检查后显示训练集组成。"; }
   if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"尚未执行建模质量检查。"; }
   el("excludeAllConstants").disabled=true; renderModelQualityStatus(); renderCurrentTagQuality();
   if(reason) setStatus(`${reason}，请重新执行建模质量检查。`,"warning");
@@ -3362,6 +3366,7 @@ el("exportConfigButton").addEventListener("click",async()=>{
 el("qualityButton").addEventListener("click",async()=>{
   const tags=selectedTags(); if(tags.length<2) { setStatus("至少选择两个“连续输入” Tag。","warning"); return; }
   const button=el("qualityButton"); state.quality=null; state.qualityStatus="checking"; state.qualityError=""; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("qualitySummary").innerHTML=""; el("qualityIssues").className="empty"; el("qualityIssues").textContent="正在执行建模质量检查。"; el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); renderModelQualityStatus(); setBusy(button,true,"检查中…");
+  el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent="正在执行建模质量检查。";
   try {
     const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
     const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; if(!data.tags.some(item=>item.tag===state.selectedTag)) state.selectedTag=data.tags[0]?.tag||null; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
@@ -3590,11 +3595,22 @@ function renderCurrentTagQuality() {
   const role=state.registry[item.tag]?.role||item.role; const issueHtml=item.issues.length?item.issues.map(issue=>`<li>${escapeHtml(issue.message)}</li>`).join(""):"<li>无质量问题</li>";
   container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(role))} · ${escapeHtml(displayUiValue(item.status))}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
 }
+function trainingCompositionShare(value) { return value===null||value===undefined||!Number.isFinite(Number(value))?"—":`${(Number(value)*100).toFixed(1)}%`; }
+function renderTrainingComposition(totals) {
+  const container=el("trainingCompositionReview"); if(!container) return;
+  if(!totals||totals.training_rows===undefined) { container.className="empty"; container.textContent="执行建模质量检查后显示训练集组成。"; return; }
+  const sources=totals.source_summary||{};
+  const rows=Object.entries(sources).map(([source,item])=>`<tr><td>${escapeHtml(displayUiValue(source))}</td><td class="numeric">${item.used_window_count??0}</td><td class="numeric">${item.effective_samples??0}</td><td class="numeric">${trainingCompositionShare(item.effective_sample_share)}</td></tr>`).join("");
+  container.className="";
+  container.innerHTML=`<div class="metrics">${metric("有效训练样本",totals.training_rows)}${metric("used 窗口数",totals.used_window_count??0)}${metric("used 连续段数",totals.used_segment_count??0)}${metric("覆盖日期数",totals.covered_day_count??0)}${metric("最大单窗口占比",trainingCompositionShare(totals.max_window_effective_share))}${metric("最大单窗口 ID",totals.max_window_id??"—")}</div><div class="table-wrap"><table><thead><tr><th>来源</th><th>used 窗口数</th><th>有效样本数</th><th>有效样本占比</th></tr></thead><tbody>${rows||'<tr><td colspan="4">暂无有效训练样本来源。</td></tr>'}</tbody></table></div><div class="help">这些指标用于检查训练集的代表性和时间覆盖度，由工程师判断；不会自动改变训练集。</div>`;
+}
 function renderQuality(data) {
   const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}};
   el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("正常状态训练",readiness.normal_state.can_train?"通过":"未通过")+metric("探索训练",readiness.exploratory.can_train?"通过":"未通过");
+  renderTrainingComposition(data.training_window_totals||{});
   const container=el("qualityIssues"); container.className=""; container.replaceChildren();
   data.time_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; container.append(card); });
+  (data.training_quality_warnings||[]).forEach(item=>{ const card=document.createElement("div"); card.className="issue-card"; const message=item.message||`${item.feature} 全局变化极小`; card.innerHTML=`<strong>${escapeHtml(item.code||"training_quality_warning")}</strong><span>${escapeHtml(message)}</span>`; container.append(card); });
   const problemTags=data.tags.filter(item=>item.status!=="usable"); problemTags.forEach(item=>{
     const card=document.createElement("div"); card.className=`issue-card ${item.status}`; const profile=item.reference;
     card.innerHTML=`<strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(item.status))}</strong><span>参考期样本 ${profile.sample_count}；有效 ${profile.valid_count}；唯一值 ${profile.unique_count}；标准差 ${profile.standard_deviation??"—"}</span>${item.issues.map(issue=>`<span>${escapeHtml(issue.message)}</span>`).join("")}`;
@@ -3673,8 +3689,9 @@ function renderTraining(data) {
   const totals=data.training_window_totals||{}; const windowCounts=`${totals.enabled_window_count??"—"} / ${totals.used_window_count??"—"} / ${totals.dropped_window_count??"—"}`;
   el("modelMetrics").innerHTML=metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("训练动态样本",data.training_rows)+metric("启用 / 使用 / 丢弃窗口",windowCounts)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
   el("modelLifecycleNotice").textContent=lifecycle.notice;
+  renderTrainingComposition(totals);
   renderTrainingWindowSummary(data.training_window_summary||[]);
-  const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>`${item.feature} 全局变化极小`).join("；")}`:"";
+  const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>item.message||`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
   data.explained_variance.slice(0,30).forEach((value,index)=>{ const bar=document.createElement("div"); bar.className=`variance-bar ${index<data.n_components?"selected":""}`; bar.style.height=`${Math.max(3,value/max*95)}px`; const label=document.createElement("span"); label.textContent=`${(value*100).toFixed(0)}%`; bar.title=`PC${index+1}: ${(value*100).toFixed(2)}%`; bar.append(label); variance.append(bar); });
   lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download;

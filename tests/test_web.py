@@ -3353,8 +3353,85 @@ def test_web_quality_uses_all_enabled_candidate_windows(tmp_path, monkeypatch):
     ]
     assert all(item["status"] == "used" for item in result["training_window_summary"])
     assert all(item["effective_samples"] > 0 for item in result["training_window_summary"])
+    totals = result["training_window_totals"]
+    assert totals["training_rows"] == sum(
+        item["effective_samples"] for item in result["training_window_summary"]
+    )
+    assert totals["used_segment_count"] == 2
+    assert totals["covered_day_count"] == 1
+    assert totals["max_window_id"] in {"manual-window-001", "trend-window-001"}
+    assert totals["max_window_effective_samples"] == max(
+        item["effective_samples"] for item in result["training_window_summary"]
+    )
+    assert sum(
+        item["effective_sample_share"] for item in result["training_window_summary"]
+    ) == pytest.approx(1.0)
+    assert sum(
+        item["effective_sample_share"] for item in totals["source_summary"].values()
+    ) == pytest.approx(1.0)
     assert result["training_readiness"]["normal_state"]["can_train"]
     assert result["training_readiness"]["exploratory"]["can_train"]
+
+
+def test_web_quality_page_exposes_training_composition_and_non_blocking_warnings():
+    html = web.INDEX_HTML
+    for label in (
+        "训练集组成审查",
+        "有效训练样本",
+        "used 窗口数",
+        "used 连续段数",
+        "覆盖日期数",
+        "最大单窗口占比",
+        "最大单窗口 ID",
+        "有效样本占比",
+        "这些指标用于检查训练集的代表性和时间覆盖度",
+    ):
+        assert label in html
+    assert 'id="trainingCompositionReview"' in html
+    quality_source = html.split("function renderQuality(data)", 1)[1].split(
+        "function excludeConstantTag", 1
+    )[0]
+    assert "renderTrainingComposition(data.training_window_totals||{})" in quality_source
+    assert "data.training_quality_warnings" in quality_source
+    assert 'card.className="issue-card"' in quality_source
+
+
+def test_web_quality_returns_normal_state_training_composition_after_range_exclusion(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    history = _history_frame()
+    history.loc[60, "A"] = 1000.0
+    uploaded = web.save_upload(
+        "composition.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    quality = web.quality_payload(
+        {
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "time",
+            "tags": ["A", "B", "C"],
+            "normal_start": history.time.iloc[0].isoformat(),
+            "normal_end": history.time.iloc[119].isoformat(),
+            "sample_interval_minutes": 5,
+            "smoothing_window_minutes": 0,
+            "filter_method": "none",
+            "max_lag_minutes": 0,
+            "lag_step_minutes": 5,
+            "tag_configs": {
+                "A": {"engineering_min": -10.0, "engineering_max": 10.0}
+            },
+        }
+    )
+
+    totals = quality["training_window_totals"]
+    assert totals["training_rows"] == sum(
+        item["effective_samples"] for item in quality["training_window_summary"]
+    )
+    assert quality["training_window_summary"][0]["engineering_range_loss"] == 1
+    assert totals["source_summary"]["legacy"]["effective_samples"] == totals[
+        "training_rows"
+    ]
+    assert totals["source_summary"]["legacy"]["effective_sample_share"] == 1.0
 
 
 def test_training_windows_api_preserves_candidate_sources_and_disabled_state():
@@ -3560,6 +3637,23 @@ def test_explicitly_enabled_candidate_can_complete_quality_and_training(
         "used_window_count": 1,
         "dropped_window_count": 0,
         "training_rows": trained["training_rows"],
+        "used_segment_count": 1,
+        "covered_day_count": 1,
+        "max_window_id": "manual-window-001",
+        "max_window_effective_samples": trained["training_rows"],
+        "max_window_effective_share": 1.0,
+        "source_summary": {
+            "suggested": {
+                "used_window_count": 0,
+                "effective_samples": 0,
+                "effective_sample_share": 0.0,
+            },
+            "manual": {
+                "used_window_count": 1,
+                "effective_samples": trained["training_rows"],
+                "effective_sample_share": 1.0,
+            },
+        },
     }
     assert manifest["config"]["preprocessing_summary"] == trained[
         "training_window_summary"
