@@ -429,6 +429,27 @@ def test_target_range_candidates_do_not_prefer_lower_mean_when_fully_in_range():
     ]
 
 
+def test_display_points_preserves_representative_target_range_samples():
+    index = pd.date_range("2026-01-01", periods=100, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": np.zeros(100),
+            "pc2": np.zeros(100),
+            "cluster_id": ["cluster_001"] * 100,
+            "segment_id": [0] * 100,
+            "performance_target_met": [
+                position in {11, 73} for position in range(100)
+            ],
+        },
+        index=index,
+    )
+
+    display = _display_points(points, 4, 5)
+
+    assert len(display) == 4
+    assert {index[11], index[73]}.issubset(display.index)
+
+
 def test_target_range_status_and_cluster_statistics_use_full_aligned_samples():
     index = pd.date_range("2026-01-01", periods=36, freq="5min")
     frame = pd.DataFrame(
@@ -491,6 +512,27 @@ def test_target_range_status_and_cluster_statistics_use_full_aligned_samples():
         )
         assert item["performance_target_ratio"] == expected_ratio
         assert item["performance_median"] is not None
+
+
+def test_performance_tag_cannot_overlap_state_exploration_pca_inputs():
+    index = pd.date_range("2026-01-01", periods=12, freq="5min")
+    frame = pd.DataFrame(
+        {
+            "A": np.linspace(0.0, 1.0, len(index)),
+            "B": np.linspace(1.0, 2.0, len(index)),
+            "PERF": np.linspace(2.0, 3.0, len(index)),
+        },
+        index=index,
+    )
+
+    with pytest.raises(ValueError, match="性能 Tag.*PCA"):
+        run_state_exploration(
+            frame,
+            ["A", "B", "PERF"],
+            PreprocessingConfig(5, 0, 0, 5, filter_method="none"),
+            ExplorationConfig(cluster_count=2),
+            performance_config=PerformanceConfig("PERF", "higher_is_better"),
+        )
 
 
 @pytest.mark.parametrize(

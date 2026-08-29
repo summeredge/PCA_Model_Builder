@@ -1304,6 +1304,7 @@ def test_state_exploration_target_range_exposes_full_status_and_cluster_metrics(
     cached = web._state_exploration_run(run_id)
 
     assert result["cluster_series"]
+    assert result["preprocessing_summary"]["dynamic_feature_count"] == 3
     assert all("performance_target_met" in row for row in result["cluster_series"])
     assert {row["performance_target_met"] for row in result["cluster_series"]} == {
         True,
@@ -2166,6 +2167,10 @@ def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
         "if(config.role!==\"continuous_input\") "
         "state.selectedModelTags.delete(tag)"
     ) in html
+    assert "function explorationPerformanceTag()" in html
+    assert "tag!==performanceTag" in render_source
+    assert "state.selectedModelTags.delete(performanceTag)" in html
+    assert 'el("explorationPerformanceTag").addEventListener("change",syncExplorationPerformanceSelection)' in html
 
 
 def test_uploaded_tag_names_are_not_ellipsis_clipped_before_inspection():
@@ -2670,6 +2675,9 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
     assert "traceback" not in invalid_config["error"].lower()
     assert missing_tag_status == 400
     assert "MISSING_PERF" in missing_tag["error"]
+
+    with pytest.raises(ValueError, match="性能 Tag.*PCA"):
+        web.state_exploration_payload({**payload, "tags": ["A", "B", "PERF"]})
 
 
 def test_state_exploration_uses_model_tag_engineering_ranges_only(tmp_path, monkeypatch):

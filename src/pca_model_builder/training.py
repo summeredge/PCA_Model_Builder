@@ -40,6 +40,7 @@ def build_training_matrix(
     dynamic_parts: list[pd.DataFrame] = []
     summaries: list[dict[str, Any]] = []
     reference_parts: list[pd.DataFrame] = []
+    used_segment_count = 0
 
     if not any(window["enabled"] for window in windows):
         raise ValueError("至少需要一个启用的training_windows窗口")
@@ -115,6 +116,11 @@ def build_training_matrix(
         assert processed.state_filtered is not None
         dynamic = processed.dynamic
         resampled_segment_ids = processed.segment_ids
+        used_segment_count += _dynamic_segment_count(
+            dynamic,
+            processed.final_segment_ids,
+            config.sample_interval_minutes,
+        )
         segment_summaries: list[dict[str, Any]] = []
         for position, segment_id in enumerate(segment_ids.unique(), start=1):
             segment = indexed.loc[segment_ids.eq(segment_id)]
@@ -339,11 +345,7 @@ def build_training_matrix(
             item["status"] == "dropped" for item in summaries
         ),
         "training_rows": training_rows,
-        "used_segment_count": sum(
-            segment["status"] == "used"
-            for item in summaries
-            for segment in item.get("segments", [])
-        ),
+        "used_segment_count": used_segment_count,
         "covered_day_count": covered_day_count,
         "max_window_id": max_window["id"] if max_window else None,
         "max_window_effective_samples": (
@@ -367,6 +369,23 @@ def build_training_matrix(
         reference=reference,
         global_quality_warnings=global_quality_warnings,
     )
+
+
+def _dynamic_segment_count(
+    dynamic: pd.DataFrame,
+    final_segment_ids: pd.Series,
+    interval: int,
+) -> int:
+    if dynamic.empty:
+        return 0
+    segment_ids = final_segment_ids.reindex(dynamic.index)
+    if segment_ids.isna().any():
+        raise ValueError("最终连续段标识未覆盖动态训练样本")
+    breaks = dynamic.index.to_series().diff().ne(
+        pd.Timedelta(minutes=interval)
+    )
+    breaks |= segment_ids.ne(segment_ids.shift())
+    return int(breaks.sum())
 
 
 def _window_quality_error(window_id: str, report: Any) -> str:

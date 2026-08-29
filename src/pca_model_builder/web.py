@@ -801,6 +801,10 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if performance_config is not None
         else ""
     )
+    if performance_tag and performance_tag in tags:
+        raise ValueError(
+            f"性能 Tag {performance_tag} 不得同时进入状态探索 PCA"
+        )
     state_columns = [condition.column for condition in config.state_filters]
     requested_columns = list(
         dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else [])])
@@ -2858,7 +2862,7 @@ INDEX_HTML = r"""<!doctype html>
       <div id="stateExplorationPanel" class="panel">
         <div class="group">
           <div class="group-title">状态探索工作台</div>
-          <div class="help">建模 Tag 复用左侧当前勾选的“连续输入”；预处理参数复用左侧表单。探索结果仅用于运行状态浏览和候选窗口比较。</div>
+          <div class="help">建模 Tag 复用左侧当前勾选的“连续输入”；预处理参数复用左侧表单。性能 Tag 仅用于 post-hoc 性能评价，选定后不会进入 PCA 或后续正常模型。探索结果仅用于运行状态浏览和候选窗口比较。</div>
           <div class="exploration-controls">
             <label>探索开始时间<input id="explorationStart" type="datetime-local"></label>
             <label>探索结束时间<input id="explorationEnd" type="datetime-local"></label>
@@ -3008,7 +3012,8 @@ function setStatus(message, type="info") { const node=el("status"); node.textCon
 function setBusy(button, busy, text) { if (!button.dataset.label) button.dataset.label=button.textContent; button.disabled=busy; button.textContent=busy?text:button.dataset.label; }
 function localTime(value) { return value ? value.slice(0,16) : ""; }
 function displayTime(value,length=16) { return value ? value.slice(0,length).replace("T"," ") : ""; }
-function selectedTags() { return (state.inspection?.numeric_columns||[]).filter(tag=>state.selectedModelTags.has(tag)&&(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
+function explorationPerformanceTag() { return (el("explorationPerformanceTag")?.value||"").trim(); }
+function selectedTags() { const performanceTag=explorationPerformanceTag(); return (state.inspection?.numeric_columns||[]).filter(tag=>tag!==performanceTag&&state.selectedModelTags.has(tag)&&(state.registry[tag]?.role||"continuous_input")==="continuous_input"); }
 function numberValue(id) { return Number(el(id).value); }
 function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[ch])); }
 function displayUiValue(value) { const labels={continuous_input:"连续输入",state_filter:"状态过滤",label_only:"仅标签",exclude:"排除",manual:"手工选择",trend:"趋势选择",cluster:"聚类推荐",performance:"性能辅助",preferred_region:"优选区域",suggested:"系统建议",pending:"待决策",accepted:"已接受",rejected:"已拒绝",used:"已使用",dropped:"已丢弃",disabled:"已禁用",higher_is_better:"越高越好",lower_is_better:"越低越好",target_range:"目标范围内",no_raw_samples:"没有原始样本",no_complete_resampling_bins:"无完整重采样时间桶",insufficient_after_smoothing_and_lag:"滤波与 Lag 后样本不足",normal:"正常",attention:"关注",abnormal:"异常",usable:"可用",review:"需确认",blocking:"阻止"}; return labels[value]||value; }
@@ -3021,13 +3026,14 @@ function reconcileExcludedTags() { const candidates=new Set(state.inspection?.nu
 function confirmSuggestedExclusion(profile) { if(!state.inspection?.numeric_columns.includes(profile.tag)||!profile.suggestion) return; setTagExclusion(profile.tag,{tag:profile.tag,reason:profile.suggestion.reason}); if(state.selectedTag===profile.tag) selectTag(profile.tag); invalidateQuality(`${profile.tag}已确认排除`); renderBasicInspection(state.inspection); renderTagList(); }
 function renderTagList() {
   if(!state.inspection) return;
+  const performanceTag=explorationPerformanceTag();
   const query=el("tagSearch").value.trim().toLowerCase(); const list=el("tagOptions"); list.replaceChildren();
   state.inspection.numeric_columns.forEach(tag=>{
     const quality=qualityFor(tag); const config=state.registry[tag]||emptyTagConfig(); const status=quality?.status||(config.role==="continuous_input"?"usable":"review");
     if(query&&!tag.toLowerCase().includes(query)) return;
     if(state.showProblems&&status==="usable") return;
     const row=document.createElement("div"); row.className=`tag-row ${state.selectedTag===tag?"selected":""}`; row.dataset.tag=tag;
-    const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=state.selectedModelTags.has(tag)&&config.role==="continuous_input";
+    const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=tag!==performanceTag&&state.selectedModelTags.has(tag)&&config.role==="continuous_input"; input.disabled=tag===performanceTag;
     input.addEventListener("change",()=>{ if(input.checked) state.selectedModelTags.add(tag); else state.selectedModelTags.delete(tag); invalidateQuality("建模Tag已修改"); selectTag(tag); });
     const name=document.createElement("span"); name.className="tag-name"; name.title=tag; name.textContent=tag;
     const badge=document.createElement("span"); badge.className=`tag-state ${status}`; badge.textContent=config.role!=="continuous_input"?displayUiValue(config.role):displayUiValue(status);
@@ -3175,10 +3181,10 @@ function performanceConditionPayload() {
   return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
 }
 function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>state.selectedModelTags.delete(tag)); invalidateQuality("性能筛选列已从建模Tag取消"); renderTagList(); }
+function syncExplorationPerformanceSelection() { const performanceTag=explorationPerformanceTag(); const changed=performanceTag&&state.selectedModelTags.delete(performanceTag); if(changed) invalidateQuality("状态探索性能 Tag 已从建模Tag取消"); if(state.inspection) renderTagList(); }
 function stateExplorationPayload() {
-  const tags=selectedTags(); if(tags.length<2) throw new Error("至少选择两个连续 Tag。");
+  const performanceTag=explorationPerformanceTag(); syncExplorationPerformanceSelection(); const tags=selectedTags().filter(tag=>tag!==performanceTag); if(tags.length<2) throw new Error("至少选择两个连续 Tag。");
   const payload={...commonPayload(),tags,exploration_start:el("explorationStart").value,exploration_end:el("explorationEnd").value,exploration_config:{cluster_count:numberValue("explorationClusterCount"),random_state:numberValue("explorationRandomState"),candidate_count_per_cluster:numberValue("explorationCandidateCount"),minimum_candidate_duration_minutes:numberValue("explorationMinimumDuration"),maximum_plot_points:numberValue("explorationMaximumPlotPoints")}};
-  const performanceTag=el("explorationPerformanceTag").value.trim();
   if(performanceTag) payload.performance_config={performance_tag:performanceTag,direction:el("explorationPerformanceDirection").value,target_min:optionalNumber("explorationTargetMin"),target_max:optionalNumber("explorationTargetMax"),minimum_duration_minutes:numberValue("explorationPerformanceMinimumDuration"),candidate_count:numberValue("explorationPerformanceCandidateCount")};
   return payload;
 }
@@ -3324,7 +3330,7 @@ el("inspectButton").addEventListener("click", async () => {
 });
 
 el("tagSearch").addEventListener("input",renderTagList);
-el("selectAllTags").addEventListener("click",()=>{ state.selectedModelTags=new Set((state.inspection?.numeric_columns||[]).filter(tag=>(state.registry[tag]?.role||"continuous_input")==="continuous_input")); invalidateQuality("建模Tag已修改"); renderTagList(); });
+el("selectAllTags").addEventListener("click",()=>{ const performanceTag=explorationPerformanceTag(); state.selectedModelTags=new Set((state.inspection?.numeric_columns||[]).filter(tag=>tag!==performanceTag&&(state.registry[tag]?.role||"continuous_input")==="continuous_input")); invalidateQuality("建模Tag已修改"); renderTagList(); });
 el("clearAllTags").addEventListener("click",()=>{ state.selectedModelTags.clear(); invalidateQuality("建模Tag已修改"); renderTagList(); });
 el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.showProblems; el("showProblemTags").textContent=state.showProblems?"显示全部Tag":"只看问题Tag"; renderTagList(); });
 el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
@@ -3333,6 +3339,7 @@ document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener(
 function syncFilterControls() { const filterMethod=el("filterMethod").value, firstOrder=filterMethod==="first_order", trailingMean=filterMethod==="trailing_mean"; el("firstOrderAlpha").disabled=!firstOrder; el("firstOrderAlpha").required=firstOrder; el("firstOrderAlpha").closest("label").hidden=!firstOrder; el("smoothingWindow").disabled=!trailingMean; el("smoothingWindow").closest("label").hidden=!trailingMean; }
 el("filterMethod").addEventListener("change",syncFilterControls);
 syncFilterControls();
+el("explorationPerformanceTag").addEventListener("change",syncExplorationPerformanceSelection);
 el("addManualCandidate").addEventListener("click",()=>addCandidateWindow("manual",el("candidateStart").value,el("candidateEnd").value,null,el("candidateComment").value.trim()));
 
 el("tagConfigFile").addEventListener("change",()=>{ el("importConfigButton").disabled=!el("tagConfigFile").files[0]||!state.fileId; });

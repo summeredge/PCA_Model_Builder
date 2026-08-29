@@ -505,6 +505,8 @@ def test_training_resamples_each_window_and_records_preprocessing_summary():
 @pytest.mark.parametrize("invalid", [None, "bad", float("inf"), float("-inf")])
 def test_training_drops_invalid_model_rows_and_records_loss(invalid):
     frame = _frame(20)
+    if isinstance(invalid, str):
+        frame["A"] = frame["A"].astype(object)
     frame.loc[10, "A"] = invalid
     result = build_training_matrix(
         frame,
@@ -517,6 +519,7 @@ def test_training_drops_invalid_model_rows_and_records_loss(invalid):
 
     summary = result.window_summaries[0]
     assert summary["input_invalid_loss"] == 1
+    assert result.training_window_totals["used_segment_count"] == 2
     assert frame.time.iloc[10] not in result.dynamic.index
     assert summary["resampled_samples"] == summary["empty_bins"] + summary["input_invalid_loss"] + summary["state_filter_input_rows"]
 
@@ -545,6 +548,7 @@ def test_training_state_filter_column_is_not_a_dynamic_feature_and_breaks_lag():
     assert not any("LOAD" in column for column in result.dynamic.columns)
     assert frame.time.iloc[12] not in result.dynamic.index
     assert result.window_summaries[0]["state_filter_output_rows"] == 16
+    assert result.training_window_totals["used_segment_count"] == 2
     assert result.window_summaries[0]["first_order_alpha"] == 0.5
     segments = result.window_summaries[0]["segments"]
     assert [segment["state_filter_input_rows"] for segment in segments] == [20]

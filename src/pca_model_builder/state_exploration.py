@@ -118,6 +118,13 @@ def run_state_exploration(
 ) -> dict[str, object]:
     """Explore historical operating states; never labels a state as normal."""
     normalized_performance = _normalize_performance_config(performance_config)
+    if (
+        normalized_performance is not None
+        and normalized_performance.performance_tag in tag_columns
+    ):
+        raise ValueError(
+            f"性能 Tag {normalized_performance.performance_tag} 不得同时进入状态探索 PCA"
+        )
     preserve_columns = (
         [normalized_performance.performance_tag]
         if normalized_performance is not None
@@ -1137,6 +1144,19 @@ def _display_points(points: pd.DataFrame, limit: int, interval: int = 5) -> pd.D
         finite = np.flatnonzero(np.isfinite(values))
         if len(finite):
             add_positions((finite[np.argmin(values[finite])], finite[np.argmax(values[finite])]))
+
+    if "performance_target_met" in ordered.columns:
+        target_positions = np.flatnonzero(
+            ordered["performance_target_met"].eq(True).to_numpy()
+        )
+        target_positions = np.array(
+            [position for position in target_positions if position not in selected],
+            dtype=int,
+        )
+        if len(selected) < limit and len(target_positions):
+            add_positions(
+                _spread_positions(target_positions, limit - len(selected))
+            )
 
     remaining = np.array(
         [position for position in range(len(ordered)) if position not in selected],
