@@ -105,6 +105,7 @@ MAX_XLSX_BODY_BYTES = MAX_TAG_CONFIG_BYTES
 MAX_STATE_EXPLORATION_RUNS = 8
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _CANDIDATE_DECISIONS = frozenset({"pending", "accepted", "rejected"})
+_PREFERRED_REGION_UPDATE_SEQ = "preferred_region_update_seq"
 _VALIDATION_ARTIFACTS = {
     "scores": ("validation_scores.csv", "text/csv; charset=utf-8"),
     "report": ("validation_report.json", "application/json; charset=utf-8"),
@@ -847,6 +848,8 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for key, value in exploration.items()
         if key not in {"cluster_series", "cluster_series_display", "_performance_values"}
     }
+    exploration.setdefault(_PREFERRED_REGION_UPDATE_SEQ, 0)
+    response[_PREFERRED_REGION_UPDATE_SEQ] = exploration[_PREFERRED_REGION_UPDATE_SEQ]
     response["cluster_series"] = _exploration_series(
         exploration["cluster_series_display"],
         exploration["cluster_series"],
@@ -864,6 +867,7 @@ def _store_state_exploration_run(
     run_id: str, exploration: dict[str, Any]
 ) -> None:
     with _STATE_EXPLORATION_LOCK:
+        exploration.setdefault(_PREFERRED_REGION_UPDATE_SEQ, 0)
         STATE_EXPLORATION_RUNS[run_id] = exploration
         STATE_EXPLORATION_RUNS.move_to_end(run_id)
         while len(STATE_EXPLORATION_RUNS) > MAX_STATE_EXPLORATION_RUNS:
@@ -907,11 +911,27 @@ def state_exploration_preferred_region_payload(
         raise ValueError("exploration_run_id与当前状态探索运行不一致")
     if "ellipses" not in payload:
         raise ValueError("ellipses必须是列表")
+    update_seq = _preferred_region_update_sequence(payload)
     with _STATE_EXPLORATION_LOCK:
         try:
             exploration = STATE_EXPLORATION_RUNS[run_id]
         except KeyError as error:
             raise StateExplorationNotFoundError("状态探索运行记录不存在") from error
+        current_update_seq = int(exploration.get(_PREFERRED_REGION_UPDATE_SEQ, 0))
+        if update_seq <= current_update_seq:
+            preferred_region = exploration.get("preferred_region")
+            return {
+                "exploration_run_id": run_id,
+                "applied": False,
+                "stale": True,
+                _PREFERRED_REGION_UPDATE_SEQ: current_update_seq,
+                **(preferred_region or {}),
+                "preferred_region": preferred_region,
+                "preferred_region_candidates": exploration.get(
+                    "preferred_region_candidates", []
+                ),
+                "candidate_decisions": exploration.get("candidate_decisions", []),
+            }
         evaluation = evaluate_preferred_region(
             exploration["cluster_series"],
             payload["ellipses"],
@@ -936,14 +956,27 @@ def state_exploration_preferred_region_payload(
         exploration["preferred_region"] = evaluation
         exploration["preferred_region_candidates"] = preferred_region_candidates
         _refresh_state_exploration_candidate_decisions(exploration)
+        exploration[_PREFERRED_REGION_UPDATE_SEQ] = update_seq
         STATE_EXPLORATION_RUNS.move_to_end(run_id)
     return {
         "exploration_run_id": run_id,
+        "applied": True,
+        _PREFERRED_REGION_UPDATE_SEQ: update_seq,
         "preferred_region": evaluation,
         "preferred_region_candidates": preferred_region_candidates,
         "candidate_decisions": exploration["candidate_decisions"],
         **evaluation,
     }
+
+
+def _preferred_region_update_sequence(payload: dict[str, Any]) -> int:
+    value = payload.get(_PREFERRED_REGION_UPDATE_SEQ)
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(f"{_PREFERRED_REGION_UPDATE_SEQ}必须是正整数")
+    sequence = int(value)
+    if sequence < 1:
+        raise ValueError(f"{_PREFERRED_REGION_UPDATE_SEQ}必须是正整数")
+    return sequence
 
 
 def state_exploration_region_payload(
@@ -2965,7 +2998,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -3225,15 +3258,22 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
   el("explorationPreferredRegionCandidates").innerHTML=preferredHead+(preferredBody||'<tr><td colspan="14">暂无满足最小时长的优选区域连续候选。</td></tr>')+"</tbody></table>";
  }
 
-function resetExplorationRegion() { state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; renderExplorationRegionControls(); }
+function resetExplorationRegion() { state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; renderExplorationRegionControls(); }
 async function updateExplorationPreferredRegion(ellipses) {
   const runId=state.exploration?.exploration_run_id; if(!runId) return;
-  const previous=state.preferredRegion, previousCandidates=state.exploration.preferred_region_candidates||[], previousDecisions=state.exploration.candidate_decisions||[], request=++state.preferredRegionRequest;
+  const previous=state.preferredRegion, previousCandidates=state.exploration.preferred_region_candidates||[], previousDecisions=state.exploration.candidate_decisions||[], request=++state.preferredRegionRequest, updateSeq=++state.preferredRegionUpdateSeq;
   const previousPreferredIds=new Set(previousCandidates.map(item=>item.candidate_id));
   state.preferredRegion={ellipses}; state.exploration={...state.exploration,preferred_region_candidates:[],candidate_decisions:previousDecisions.filter(item=>!previousPreferredIds.has(item.candidate_id)&&!String(item.candidate_id).startsWith("preferred-region-candidate-"))}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],[]);
   try {
-    const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/preferred-region`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({exploration_run_id:runId,ellipses})});
+    const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/preferred-region`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({exploration_run_id:runId,ellipses,preferred_region_update_seq:updateSeq})});
     if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
+    if(data.applied===false) {
+      state.preferredRegion=data.preferred_region||data;
+      state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||[]};
+      if(Number.isInteger(Number(data.preferred_region_update_seq))) state.preferredRegionUpdateSeq=Math.max(state.preferredRegionUpdateSeq,Number(data.preferred_region_update_seq));
+      renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus("优选运行区域已同步到服务端最新版本。","warning"); return;
+    }
+    if(Number.isInteger(Number(data.preferred_region_update_seq))) state.preferredRegionUpdateSeq=Math.max(state.preferredRegionUpdateSeq,Number(data.preferred_region_update_seq));
     state.preferredRegion=data.preferred_region||data; state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||state.exploration.candidate_decisions||[]}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(`优选运行区域已更新：${state.preferredRegion.selected_sample_count} 个完整样本。` ,"success");
   } catch(error) {
     if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;

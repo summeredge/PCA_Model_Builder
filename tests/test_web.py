@@ -759,6 +759,9 @@ def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
     assert "radius_pc2" in html
     assert "getBoundingClientRect" in html
     assert "state.preferredRegionRequest" in html
+    assert "preferredRegionUpdateSeq:0" in html
+    assert "preferred_region_update_seq:updateSeq" in html
+    assert "data.applied===false" in html
     assert "完整有效样本占比" in html
     assert "区域稳定性" in html
 
@@ -804,6 +807,7 @@ def test_preferred_region_api_uses_union_and_full_cached_series():
 
     payload = {
         "exploration_run_id": run_id,
+        "preferred_region_update_seq": 1,
         "ellipses": [
             {
                 "center_pc1": 0.0,
@@ -853,7 +857,7 @@ def test_preferred_region_api_uses_union_and_full_cached_series():
     cleared, clear_status = _post_response(
         web._Handler,
         f"/api/state-exploration/{run_id}/region",
-        {"ellipses": []},
+        {"ellipses": [], "preferred_region_update_seq": 2},
     )
     assert clear_status == 200
     assert cleared["selected_sample_count"] == 0
@@ -863,6 +867,7 @@ def test_preferred_region_api_uses_union_and_full_cached_series():
         web._Handler,
         f"/api/state-exploration/{run_id}/preferred-region",
         {
+            "preferred_region_update_seq": 3,
             "ellipses": [
                 {
                     "center_pc1": 0,
@@ -955,6 +960,7 @@ def test_preferred_region_candidates_recompute_and_keep_conversion_lifecycle():
         f"/api/state-exploration/{run_id}/preferred-region",
         {
             "exploration_run_id": run_id,
+            "preferred_region_update_seq": 1,
             "ellipses": [
                 {
                     "center_pc1": 0.0,
@@ -1016,6 +1022,7 @@ def test_preferred_region_candidates_recompute_and_keep_conversion_lifecycle():
         web._Handler,
         f"/api/state-exploration/{run_id}/region",
         {
+            "preferred_region_update_seq": 2,
             "ellipses": [
                 {
                     "center_pc1": 0.0,
@@ -1068,6 +1075,170 @@ def test_preferred_region_candidates_recompute_and_keep_conversion_lifecycle():
     )
     assert preserved["training_windows"][0] == converted_window
     assert len(preserved["training_windows"]) == 2
+
+
+def test_preferred_region_out_of_order_updates_keep_latest_cache_and_decisions():
+    web.clear_state_exploration_cache()
+    run_id = "e" * 32
+    index = pd.date_range("2026-01-01", periods=12, freq="5min")
+    points = pd.DataFrame(
+        {
+            "pc1": np.zeros(12),
+            "pc2": [0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0, 10.0, 10.0, 10.0, 10.0],
+            "pc3": np.zeros(12),
+            "cluster_id": ["cluster_001"] * 8 + ["cluster_002"] * 4,
+            "segment_id": [0] * 8 + [1] * 4,
+        },
+        index=index,
+    )
+    cluster_id = "cluster-aux-001"
+    performance_id = "performance-aux-001"
+    web._store_state_exploration_run(
+        run_id,
+        {
+            "exploration_config": {"minimum_candidate_duration_minutes": 10},
+            "preprocessing_summary": {"target_interval_minutes": 5},
+            "exploratory_model_summary": {"pc_columns": ["pc1", "pc2", "pc3"]},
+            "cluster_centers": {
+                "cluster_001": [0.0, 0.0, 0.0],
+                "cluster_002": [0.0, 0.0, 0.0],
+            },
+            "cluster_series": points,
+            "cluster_series_display": points.iloc[[0, 11]],
+            "cluster_candidates": [
+                {
+                    "candidate_id": cluster_id,
+                    "source": "cluster",
+                    "start": index[0].isoformat(),
+                    "end": index[1].isoformat(),
+                }
+            ],
+            "performance_candidates": [
+                {
+                    "candidate_id": performance_id,
+                    "source": "performance",
+                    "start": index[4].isoformat(),
+                    "end": index[5].isoformat(),
+                }
+            ],
+            "preferred_region_candidates": [],
+            "candidate_decisions": [
+                {
+                    "candidate_id": cluster_id,
+                    "decision": "accepted",
+                    "comment": "保留 Cluster",
+                    "decided_at": "2026-01-01T00:00:00+00:00",
+                },
+                {
+                    "candidate_id": performance_id,
+                    "decision": "rejected",
+                    "comment": "忽略性能",
+                    "decided_at": "2026-01-01T00:00:00+00:00",
+                },
+            ],
+        },
+    )
+    old_ellipses = [
+        {
+            "center_pc1": 0.0,
+            "center_pc2": 0.0,
+            "radius_pc1": 1.0,
+            "radius_pc2": 1.0,
+        }
+    ]
+    new_ellipses = [
+        {
+            "center_pc1": 0.0,
+            "center_pc2": 10.0,
+            "radius_pc1": 1.0,
+            "radius_pc2": 1.0,
+        }
+    ]
+
+    newest, newest_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/preferred-region",
+        {
+            "exploration_run_id": run_id,
+            "preferred_region_update_seq": 2,
+            "ellipses": new_ellipses,
+        },
+    )
+    assert newest_status == 200
+    assert newest["applied"] is True
+    assert newest["preferred_region_update_seq"] == 2
+    newest_candidate_ids = {
+        item["candidate_id"] for item in newest["preferred_region_candidates"]
+    }
+    assert [item["start"] for item in newest["preferred_region_candidates"]] == [
+        index[8].isoformat()
+    ]
+
+    stale, stale_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/preferred-region",
+        {
+            "exploration_run_id": run_id,
+            "preferred_region_update_seq": 1,
+            "ellipses": old_ellipses,
+        },
+    )
+    assert stale_status == 200
+    assert stale["applied"] is False
+    assert stale["preferred_region_update_seq"] == 2
+    assert stale["ellipses"] == newest["ellipses"]
+    assert stale["preferred_region_candidates"] == newest["preferred_region_candidates"]
+
+    cached = web._state_exploration_run(run_id)
+    assert cached["preferred_region_update_seq"] == 2
+    assert cached["preferred_region"]["ellipses"] == newest["ellipses"]
+    assert cached["preferred_region_candidates"] == newest["preferred_region_candidates"]
+    assert {
+        item["candidate_id"] for item in cached["preferred_region_candidates"]
+    } == newest_candidate_ids
+    assert all(
+        item["start"] not in {index[0].isoformat(), index[4].isoformat()}
+        for item in cached["preferred_region_candidates"]
+    )
+    assert cached["candidate_decisions"] == newest["candidate_decisions"]
+
+    region_candidate = newest["preferred_region_candidates"][0]
+    accepted, accepted_status = _post_response(
+        web._Handler,
+        f"/api/state-exploration/{run_id}/decisions",
+        {
+            "candidate_id": region_candidate["candidate_id"],
+            "decision": "accepted",
+            "comment": "保留最新优选区域",
+        },
+    )
+    assert accepted_status == 200
+    assert next(
+        item
+        for item in accepted["candidate_decisions"]
+        if item["candidate_id"] == region_candidate["candidate_id"]
+    )["decision"] == "accepted"
+
+    existing_window = {
+        "id": "existing-window",
+        "start": index[0].isoformat(),
+        "end": index[1].isoformat(),
+        "source": "manual",
+        "source_ref": None,
+        "enabled": False,
+        "comment": "已有窗口",
+    }
+    converted = web.state_exploration_training_windows_payload(
+        run_id,
+        {
+            "candidate_ids": [region_candidate["candidate_id"]],
+            "training_windows": [existing_window],
+        },
+    )
+    assert converted["training_windows"][0] == existing_window
+    assert converted["converted_candidate_ids"] == [region_candidate["candidate_id"]]
+    assert converted["training_windows"][1]["source"] == "preferred_region"
+    assert converted["training_windows"][1]["enabled"] is False
 
 
 def test_exploration_series_uses_full_target_status_for_display_points():
@@ -1155,6 +1326,7 @@ def test_state_exploration_target_range_exposes_full_status_and_cluster_metrics(
         f"/api/state-exploration/{run_id}/preferred-region",
         {
             "exploration_run_id": run_id,
+            "preferred_region_update_seq": 1,
             "ellipses": [
                 {
                     "center_pc1": 0.0,
