@@ -123,6 +123,30 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     assert 'id="varianceThreshold" type="number" min="0.01" max="0.99"' in web.INDEX_HTML
 
 
+def test_web_places_performance_conditions_in_cluster_configuration():
+    for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
+        cluster_setup = html.split('<div id="clusterPanel"', 1)[1].split(
+            '<div id="clusterEmpty"', 1
+        )[0]
+        performance_setup = html.split('<div id="performancePanel"', 1)[1].split(
+            '<div id="performanceEmpty"', 1
+        )[0]
+
+        assert cluster_setup.index('id="clusterButton"') < cluster_setup.index(
+            'id="performanceConditions"'
+        )
+        assert '<div class="sub-title">性能条件筛选</div>' in cluster_setup
+        for element_id in (
+            'id="performanceConditions"',
+            'id="addPerformanceCondition"',
+            'id="performanceButton"',
+        ):
+            assert html.count(element_id) == 1
+            assert element_id in cluster_setup
+            assert element_id not in performance_setup
+        assert "全部条件按AND组合；性能列只用于筛选，不会自动进入PCA。" in cluster_setup
+
+
 def test_upload_reads_only_file_header_and_basic_metadata(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(

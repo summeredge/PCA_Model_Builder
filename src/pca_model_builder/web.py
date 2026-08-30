@@ -2942,6 +2942,10 @@ INDEX_HTML = r"""<!doctype html>
           <div class="row"><label>分析期开始<input id="analysisStart" type="datetime-local"></label><label>分析期结束<input id="analysisEnd" type="datetime-local"></label></div>
           <div class="row"><label>Cluster 数量<input id="clusterCount" type="number" min="2" max="10" value="3"></label><button id="clusterButton" class="secondary" disabled>生成运行状态聚类</button></div>
           <div class="help">聚类只辅助发现运行模式，不会自动认定正常状态。</div>
+          <div class="sub-title">性能条件筛选</div>
+          <div id="performanceConditions" class="condition-list"><span class="help">检查数据后可添加筛选条件。</span></div>
+          <div class="actions"><button id="addPerformanceCondition" class="secondary" disabled>添加条件</button><button id="performanceButton" class="secondary" disabled>筛选候选时段</button></div>
+          <div class="help">全部条件按AND组合；性能列只用于筛选，不会自动进入PCA。</div>
         </div>
         <div id="clusterEmpty" class="empty">检查数据后，可对选定历史窗口生成运行状态聚类。</div>
         <div id="clusterContent" hidden>
@@ -2953,12 +2957,6 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div id="performancePanel" class="panel">
-        <div class="group">
-          <div class="group-title">性能条件筛选</div>
-          <div id="performanceConditions" class="condition-list"><span class="help">检查数据后可添加筛选条件。</span></div>
-          <div class="actions"><button id="addPerformanceCondition" class="secondary" disabled>添加条件</button><button id="performanceButton" class="secondary" disabled>筛选候选时段</button></div>
-          <div class="help">全部条件按AND组合；性能列只用于筛选，不会自动进入PCA。</div>
-        </div>
         <div id="performanceEmpty" class="empty">检查数据后，可使用透明的性能范围条件筛选候选时段。</div>
         <div id="performanceContent" hidden>
           <div id="performanceMetrics" class="metrics"></div>
