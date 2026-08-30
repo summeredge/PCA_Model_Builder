@@ -1117,6 +1117,19 @@ def _display_points(points: pd.DataFrame, limit: int, interval: int = 5) -> pd.D
             selected.add(position)
 
     add_positions((0, len(ordered) - 1))
+    if "performance_target_met" in ordered.columns:
+        target_positions = np.flatnonzero(
+            ordered["performance_target_met"].eq(True).to_numpy()
+        )
+        target_positions = np.array(
+            [position for position in target_positions if position not in selected],
+            dtype=int,
+        )
+        if len(selected) < limit and len(target_positions):
+            add_positions(
+                _spread_positions(target_positions, limit - len(selected))
+            )
+
     expected = pd.Timedelta(minutes=interval)
     for position in range(1, len(ordered)):
         physical_break = ordered.index[position] - ordered.index[position - 1] != expected
@@ -1144,19 +1157,6 @@ def _display_points(points: pd.DataFrame, limit: int, interval: int = 5) -> pd.D
         finite = np.flatnonzero(np.isfinite(values))
         if len(finite):
             add_positions((finite[np.argmin(values[finite])], finite[np.argmax(values[finite])]))
-
-    if "performance_target_met" in ordered.columns:
-        target_positions = np.flatnonzero(
-            ordered["performance_target_met"].eq(True).to_numpy()
-        )
-        target_positions = np.array(
-            [position for position in target_positions if position not in selected],
-            dtype=int,
-        )
-        if len(selected) < limit and len(target_positions):
-            add_positions(
-                _spread_positions(target_positions, limit - len(selected))
-            )
 
     remaining = np.array(
         [position for position in range(len(ordered)) if position not in selected],

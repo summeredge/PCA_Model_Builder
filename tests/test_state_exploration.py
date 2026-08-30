@@ -450,6 +450,57 @@ def test_display_points_preserves_representative_target_range_samples():
     assert {index[11], index[73]}.issubset(display.index)
 
 
+def test_display_points_reserves_target_sample_before_segment_break_budget():
+    index = pd.DatetimeIndex(
+        [
+            *pd.date_range("2026-01-01", periods=50, freq="5min"),
+            *pd.date_range("2026-01-01 06:00", periods=50, freq="5min"),
+        ]
+    )
+    points = pd.DataFrame(
+        {
+            "pc1": np.zeros(100),
+            "pc2": np.zeros(100),
+            "cluster_id": ["cluster_001"] * 100,
+            "segment_id": [0] * 50 + [1] * 50,
+            "performance_target_met": [position == 30 for position in range(100)],
+        },
+        index=index,
+    )
+
+    display = _display_points(points, 4, 5)
+
+    assert len(display) <= 4
+    assert {index[0], index[-1], index[30]}.issubset(display.index)
+    assert display["performance_target_met"].eq(True).any()
+
+
+def test_display_points_target_sample_competes_with_cluster_switch_deterministically():
+    index = pd.date_range("2026-01-01", periods=100, freq="5min")
+    pc1 = np.zeros(100)
+    pc1[20], pc1[80] = -100.0, 100.0
+    points = pd.DataFrame(
+        {
+            "pc1": pc1,
+            "pc2": np.zeros(100),
+            "cluster_id": ["cluster_001"] * 50 + ["cluster_002"] * 50,
+            "segment_id": [0] * 100,
+            "performance_target_met": [position == 35 for position in range(100)],
+        },
+        index=index,
+    )
+
+    first = _display_points(points, 5, 5)
+    second = _display_points(points, 5, 5)
+
+    assert len(first) <= 5
+    assert {index[0], index[-1], index[35], index[49], index[50]}.issubset(
+        first.index
+    )
+    assert first["performance_target_met"].eq(True).any()
+    pd.testing.assert_frame_equal(first, second)
+
+
 def test_target_range_status_and_cluster_statistics_use_full_aligned_samples():
     index = pd.date_range("2026-01-01", periods=36, freq="5min")
     frame = pd.DataFrame(
