@@ -2948,7 +2948,7 @@ def test_state_exploration_candidate_decisions_and_window_conversion():
         "start": "2026-01-01T00:00:00",
         "end": "2026-01-01T00:10:00",
         "source": "cluster",
-        "source_ref": cluster_id,
+        "source_ref": f"state-exploration-{run_id}-{cluster_id}",
         "enabled": False,
         "comment": "Cluster稳定",
     }
@@ -2982,7 +2982,9 @@ def test_state_exploration_candidate_decisions_and_window_conversion():
     assert converted_performance_status == 200
     assert converted_performance["converted_candidate_ids"] == [performance_id]
     assert converted_performance["training_windows"][1]["source"] == "performance"
-    assert converted_performance["training_windows"][1]["source_ref"] == performance_id
+    assert converted_performance["training_windows"][1]["source_ref"] == (
+        f"state-exploration-{run_id}-{performance_id}"
+    )
     assert converted_performance["training_windows"][1]["enabled"] is False
     assert converted_performance["training_windows"][1]["comment"] == "性能优秀"
     assert accepted_performance["candidate_decisions"][1]["decision"] == "accepted"
@@ -3062,7 +3064,10 @@ def test_state_exploration_conversion_keeps_same_candidate_from_separate_runs():
         f"state-exploration-{first_run_id}-{candidate_id}",
         f"state-exploration-{second_run_id}-{candidate_id}",
     ]
-    assert [window["source_ref"] for window in second["training_windows"]] == [candidate_id] * 2
+    assert [window["source_ref"] for window in second["training_windows"]] == [
+        f"state-exploration-{first_run_id}-{candidate_id}",
+        f"state-exploration-{second_run_id}-{candidate_id}",
+    ]
     assert [(window["start"], window["end"], window["comment"]) for window in second["training_windows"]] == [
         ("2026-01-01T00:00:00", "2026-01-01T00:10:00", "第一轮"),
         ("2026-01-02T00:00:00", "2026-01-02T00:20:00", "第二轮"),

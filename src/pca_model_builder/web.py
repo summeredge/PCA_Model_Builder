@@ -1121,6 +1121,7 @@ def state_exploration_training_windows_payload(
             for item in exploration.get("candidate_decisions", [])
         }
         additions: list[dict[str, object]] = []
+        converted_candidate_ids: list[str] = []
         existing_window_ids = {window["id"] for window in windows}
         for candidate_id in candidate_ids:
             try:
@@ -1138,17 +1139,18 @@ def state_exploration_training_windows_payload(
                     "start": candidate["start"],
                     "end": candidate["end"],
                     "source": str(candidate["source"]),
-                    "source_ref": candidate_id,
+                    "source_ref": window_id,
                     "enabled": False,
                     "comment": str(decisions[candidate_id]["comment"]),
                 }
             )
+            converted_candidate_ids.append(candidate_id)
         updated = normalize_training_windows([*windows, *additions], allow_empty=True)
         STATE_EXPLORATION_RUNS.move_to_end(run_id)
     return {
         "training_windows": updated,
         "summary": summarize_training_windows(updated),
-        "converted_candidate_ids": [window["source_ref"] for window in additions],
+        "converted_candidate_ids": converted_candidate_ids,
     }
 
 
