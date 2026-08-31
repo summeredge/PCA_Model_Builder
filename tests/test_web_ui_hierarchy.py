@@ -102,7 +102,8 @@ def test_workbench_script_only_updates_static_stage_state() -> None:
     source = web_model_results._WORKBENCH_UI_SCRIPT
 
     assert 'globalThis.showWorkflowStage = target =>' in source
-    assert 'candidateDecisions.some(select => select.value === "accepted")' in source
+    assert 'Boolean(trainingTable.querySelector("tbody tr"))' in source
+    assert 'candidateDecisions.some(select => select.value === "accepted")' not in source
     assert '!document.getElementById("modelContent").hidden' in source
     assert '!document.getElementById("validationContent").hidden' in source
     assert '!document.getElementById("deploymentModelDownload").hidden' in source
@@ -150,4 +151,5 @@ def test_web_translates_display_labels_without_changing_option_values() -> None:
     assert 'value="lower_is_better">越低越好' in html
     assert 'value="target_range">目标范围内' in html
     assert 'value="continuous_input">连续输入' in html
-    assert ">待决策</option>" in html
+    assert 'pending:"待决策"' in html
+    assert ">待决策</option>" not in html

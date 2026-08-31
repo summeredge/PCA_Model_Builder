@@ -713,7 +713,6 @@ def test_final_web_page_exposes_state_exploration_workbench():
         'id="explorationClusterCandidates"',
         'id="explorationPerformanceCandidates"',
         'id="explorationPreferredRegionCandidates"',
-        'id="saveExplorationCandidateDecisions"',
         'id="convertExplorationCandidates"',
     ):
         assert element_id in html
@@ -733,9 +732,19 @@ def test_final_web_page_exposes_state_exploration_workbench():
         assert label in html
     assert "自动正常 Cluster" not in html
     assert "自动正常窗口" not in html
-    assert "接受仅表示允许加入候选窗口，不会自动参与训练" in html
+    assert "选择候选后加入统一候选窗口列表" in html
     assert "exploration-candidate-select" in html
+    assert "exploration-candidate-comment" in html
+    assert "exploration-candidate-decision" not in html
+    assert "saveExplorationCandidateDecisions" not in html
+    assert "/decisions" not in html
     assert "selectedExplorationCandidateRows" in html
+    exploration_source = html.split("function renderExplorationCandidateTables", 1)[1].split(
+        "function resetExplorationRegion", 1
+    )[0]
+    assert '<td>${escapeHtml(displayUiValue(status))}</td>' in exploration_source
+    assert '<select class="exploration-candidate-decision"' not in exploration_source
+    assert 'decision.decision' not in exploration_source
 
 
 def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():

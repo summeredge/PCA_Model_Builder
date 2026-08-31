@@ -2788,7 +2788,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="group-title">3. 参考状态与 DPCA 参数</div>
         <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
-        <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>
+        <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
         <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>
         <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>
         <h3>训练窗口</h3><div id="trainingWindows" class="table-wrap"><div class="empty">尚无已确认训练窗口。</div></div>
@@ -2904,8 +2904,8 @@ INDEX_HTML = r"""<!doctype html>
           <div id="explorationPerformanceCandidates" class="table-wrap"></div>
           <h3>优选区域候选表</h3>
           <div id="explorationPreferredRegionCandidates" class="table-wrap"></div>
-          <div class="actions"><button id="saveExplorationCandidateDecisions" class="secondary" type="button">保存所选候选决策</button><button id="convertExplorationCandidates" type="button">加入候选窗口</button></div>
-          <div class="notice">接受仅表示允许加入候选窗口，不会自动参与训练；加入后仍需工程师人工确认，才能生成训练窗口。</div>
+          <div class="actions"><button id="convertExplorationCandidates" type="button">加入候选窗口</button></div>
+          <div class="notice">选择候选后加入统一候选窗口列表；加入后仍需在候选窗口列表确认作为训练窗口。</div>
         </div>
       </div>
       <div id="trendPanel" class="panel">
@@ -3085,17 +3085,17 @@ function removeExcludedWindow(windowId) { state.excludedWindows=state.excludedWi
 function showCandidateTrend(window) { el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); }
 function renderCandidateWindows() {
   const container=el("candidateWindows"); container.replaceChildren();
-  if(!state.candidateWindows.length) { container.innerHTML='<div class="empty">尚无候选窗口。</div>'; return; }
+  if(!state.candidateWindows.length) { container.innerHTML='<div class="empty">尚无候选窗口。</div>'; if(state.exploration) renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); return; }
   const table=document.createElement("table"), head=document.createElement("thead"), body=document.createElement("tbody");
   const header=document.createElement("tr"); ["窗口","来源","时间范围","状态","操作"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
   state.candidateWindows.forEach(window=>{ const row=document.createElement("tr");
     const name=document.createElement("td"); name.textContent=window.id;
     const source=document.createElement("td"); source.textContent=displayUiValue(window.source)+(window.source_ref?` (${window.source_ref})`:"");
     const range=document.createElement("td"); range.textContent=`${displayTime(window.start)} ～ ${displayTime(window.end)}`;
-    const generated=candidateTrainingWindows(window).length>0; const status=document.createElement("td"); const select=document.createElement("select"); ["pending","accepted","rejected"].forEach(value=>{ const option=document.createElement("option"); option.value=value; option.textContent=displayUiValue(value); option.selected=window.status===value; select.append(option); }); select.disabled=generated; select.addEventListener("change",()=>{ window.status=select.value; renderCandidateWindows(); }); status.append(select); if(generated) { const note=document.createElement("div"); note.textContent="已生成训练窗口"; status.append(note); }
-    const actions=document.createElement("td"); [["查看趋势",()=>showCandidateTrend(window)],["确认作为训练窗口",()=>confirmCandidateWindow(window)],["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]].forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&(window.status!=="accepted"||generated); button.addEventListener("click",handler); actions.append(button); });
+    const generated=candidateTrainingWindows(window).length>0; const status=document.createElement("td"); status.textContent=displayUiValue(generated?"accepted":"pending"); if(generated) { const note=document.createElement("div"); note.textContent="已生成训练窗口"; status.append(note); }
+    const actions=document.createElement("td"); [["查看趋势",()=>showCandidateTrend(window)],["确认作为训练窗口",()=>confirmCandidateWindow(window)],["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]].forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&generated; button.addEventListener("click",handler); actions.append(button); });
     row.append(name,source,range,status,actions); body.append(row);
-  }); table.append(head,body); container.append(table);
+  }); table.append(head,body); container.append(table); if(state.exploration) renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]);
 }
 function renderTrainingWindows() {
   const container=el("trainingWindows"); container.replaceChildren();
@@ -3122,8 +3122,8 @@ async function updateTrainingWindows(operation, affectsTraining) {
   try { const previous=JSON.stringify(state.trainingWindows); const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation})}); state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); renderCandidateWindows(); updateQualityButtonAvailability(); if(affectsTraining&&previous!==JSON.stringify(state.trainingWindows)) invalidateQuality("人工确认的训练窗口已修改"); return true; }
   catch(error) { renderTrainingWindows(); setStatus(error.message,"error"); return false; }
 }
-async function confirmCandidateWindow(candidate) { if(candidate.status!=="accepted") { setStatus("请先将候选标记为已接受。","warning"); return; } if(candidateTrainingWindows(candidate).length) { setStatus("该候选已生成训练窗口。","warning"); return; } const added=await updateTrainingWindows({action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows},true); if(added) { const count=candidateTrainingWindows(candidate).length; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus(`已确认并生成 ${count} 个训练窗口；它们将分别参与质量检查和训练。`,"success"); } }
-async function addCandidateWindow(source,start,end,sourceRef=null,comment="",status="pending") { if(!start||!end) { setStatus("候选窗口需要开始和结束时间。","warning"); return; } if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) { setStatus("该候选已在候选窗口列表中。","warning"); return; } state.candidateWindows.push({id:candidateId(),start,end,source,source_ref:sourceRef,comment,status}); renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel"); el("candidateWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("候选窗口已加入；不会修改训练窗口，请人工确认后再生成训练窗口。","success"); }
+async function confirmCandidateWindow(candidate) { if(candidateTrainingWindows(candidate).length) { setStatus("该候选已生成训练窗口。","warning"); return; } const added=await updateTrainingWindows({action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows},true); if(added) { const count=candidateTrainingWindows(candidate).length; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus(`已确认并生成 ${count} 个训练窗口；它们将分别参与质量检查和训练。`,"success"); } }
+async function addCandidateWindow(source,start,end,sourceRef=null,comment="") { if(!start||!end) { setStatus("候选窗口需要开始和结束时间。","warning"); return; } if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) { setStatus("该候选已在候选窗口列表中。","warning"); return; } state.candidateWindows.push({id:candidateId(),start,end,source,source_ref:sourceRef,comment}); renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel"); el("candidateWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("候选窗口已加入；不会修改训练窗口，请人工确认后再生成训练窗口。","success"); }
 function editTrainingWindow(window) { const start=prompt("训练窗口开始时间",displayTime(window.start)); if(start===null) return; const end=prompt("训练窗口结束时间",displayTime(window.end)); if(end===null) return; const comment=prompt("备注",window.comment||""); if(comment===null) return; updateTrainingWindows({action:"update",id:window.id,changes:{start,end,comment}},window.enabled); }
 
 async function api(path, options={}) {
@@ -3262,15 +3262,15 @@ function renderExplorationClusterTable(summaries) {
   const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); const values=[item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.performance_valid_count??"—",item.performance_target_count??"—",explorationPercent(item.performance_target_ratio),explorationNumber(item.performance_median,3),item.candidate_count]; values.forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
 }
 function renderExplorationCandidateTables(clusterCandidates,performanceCandidates,decisions,preferredRegionCandidates=[]) {
-  const decisionById=Object.fromEntries(decisions.map(item=>[item.candidate_id,item]));
-  const controls=item=>{const decision=decisionById[item.candidate_id]||{decision:"pending",comment:""};return `<td><input class="exploration-candidate-select" type="checkbox" data-candidate-id="${escapeHtml(item.candidate_id)}" aria-label="选择候选"></td><td><select class="exploration-candidate-decision" data-candidate-id="${escapeHtml(item.candidate_id)}"><option value="pending" ${decision.decision==="pending"?"selected":""}>待决策</option><option value="accepted" ${decision.decision==="accepted"?"selected":""}>已接受</option><option value="rejected" ${decision.decision==="rejected"?"selected":""}>已拒绝</option></select></td><td><input class="exploration-candidate-comment" data-candidate-id="${escapeHtml(item.candidate_id)}" value="${escapeHtml(decision.comment||"")}" aria-label="候选备注"></td>`;};
-  const clusterHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const commentById=Object.fromEntries(decisions.map(item=>[item.candidate_id,item.comment||""]));
+  const controls=item=>{const candidate=state.candidateWindows.find(window=>window.source_ref===item.candidate_id);const status=candidate&&candidateTrainingWindows(candidate).length>0?"accepted":"pending";const comment=candidate?.comment??commentById[item.candidate_id]??"";return `<td><input class="exploration-candidate-select" type="checkbox" data-candidate-id="${escapeHtml(item.candidate_id)}" aria-label="选择候选"></td><td>${escapeHtml(displayUiValue(status))}</td><td><input class="exploration-candidate-comment" data-candidate-id="${escapeHtml(item.candidate_id)}" value="${escapeHtml(comment)}" aria-label="候选备注"></td>`;};
+  const clusterHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
   const clusterBody=clusterCandidates.map(item=>`<tr>${controls(item)}<td>${escapeHtml(item.cluster_id)}</td><td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
   el("explorationClusterCandidates").innerHTML=clusterHead+(clusterBody||'<tr><td colspan="11">暂无满足条件的 Cluster 候选。</td></tr>')+"</tbody></table>";
-  const performanceHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const performanceHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
   const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
   el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="10">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
-  const preferredHead="<table><thead><tr><th>选择</th><th>决策</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>关联Cluster</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const preferredHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>关联Cluster</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
   const preferredBody=preferredRegionCandidates.map(item=>{const clusterIds=item.associated_cluster_ids||(item.cluster_id?[item.cluster_id]:[]);return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${escapeHtml(clusterIds.join(", ")||"—")}</td><td>${item.performance_valid_count??"—"}</td><td>${item.performance_target_count??"—"}</td><td>${explorationPercent(item.performance_target_ratio)}</td><td>${explorationNumber(item.performance_median,3)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
   el("explorationPreferredRegionCandidates").innerHTML=preferredHead+(preferredBody||'<tr><td colspan="14">暂无满足最小时长的优选区域连续候选。</td></tr>')+"</tbody></table>";
  }
@@ -3324,7 +3324,7 @@ el("inspectButton").addEventListener("click", async () => {
     ensureInspectionPageReady();
     state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; state.explorationPcMode="cluster"; resetExplorationRegion(); state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
-    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",status:"pending",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
+    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); el("explorationStart").value=localTime(data.time_start); el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.trend_default_start); el("trendEnd").value=localTime(data.trend_default_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
     el("clusterButton").disabled=false; el("stateExplorationButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("preprocessingPreviewButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false;
@@ -3486,27 +3486,12 @@ function selectedExplorationCandidateRows() {
   return [...document.querySelectorAll(".exploration-candidate-select:checked")];
 }
 
-el("saveExplorationCandidateDecisions").addEventListener("click", async () => {
-  const runId=state.exploration?.exploration_run_id, rows=selectedExplorationCandidateRows();
-  if(!runId||!rows.length) { setStatus("请先勾选至少一个状态探索候选。","warning"); return; }
-  const button=el("saveExplorationCandidateDecisions"); setBusy(button,true,"保存中…");
-  try {
-    const decisions=rows.map(input=>{const row=input.closest("tr");return {candidate_id:input.dataset.candidateId,decision:row.querySelector(".exploration-candidate-decision").value,comment:row.querySelector(".exploration-candidate-comment").value};});
-    const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/decisions`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({decisions})});
-    state.exploration={...state.exploration,candidate_decisions:data.candidate_decisions}; renderStateExploration(state.exploration); setStatus("候选人工决策已保存；接受不会自动参与训练。","success");
-  } catch(error) { setStatus(error.message,"error"); }
-  finally { setBusy(button,false,""); }
-});
-
-el("convertExplorationCandidates").addEventListener("click", async () => {
-  const runId=state.exploration?.exploration_run_id, rows=selectedExplorationCandidateRows();
-  if(!runId||!rows.length) { setStatus("请勾选已接受的状态探索候选。","warning"); return; }
-  const decisions=new Map((state.exploration.candidate_decisions||[]).map(item=>[item.candidate_id,item.decision]));
-  const candidateIds=rows.map(input=>input.dataset.candidateId);
-  if(candidateIds.some(candidateId=>decisions.get(candidateId)!=="accepted")) { setStatus("只有已接受候选可以加入正常状态候选池。","warning"); return; }
+el("convertExplorationCandidates").addEventListener("click", () => {
+  const rows=selectedExplorationCandidateRows();
+  if(!rows.length) { setStatus("请先勾选至少一个状态探索候选。","warning"); return; }
   const candidates=new Map([...(state.exploration.cluster_candidates||[]),...(state.exploration.performance_candidates||[]),...(state.exploration.preferred_region_candidates||[])].map(item=>[item.candidate_id,item]));
   let added=0;
-  candidateIds.forEach(candidateRef=>{ const candidate=candidates.get(candidateRef); if(candidate&&!state.candidateWindows.some(window=>window.source_ref===candidateRef)) { state.candidateWindows.push({id:candidateId(),start:candidate.start,end:candidate.end,source:candidate.source,source_ref:candidateRef,status:"accepted",comment:(state.exploration.candidate_decisions||[]).find(item=>item.candidate_id===candidateRef)?.comment||""}); added+=1; } });
+  rows.forEach(input=>{ const candidateRef=input.dataset.candidateId; const candidate=candidates.get(candidateRef); const comment=input.closest("tr")?.querySelector(".exploration-candidate-comment")?.value.trim()||""; if(candidate&&!state.candidateWindows.some(window=>window.source_ref===candidateRef)) { state.candidateWindows.push({id:candidateId(),start:candidate.start,end:candidate.end,source:candidate.source,source_ref:candidateRef,comment}); added+=1; } });
   renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel");
   setStatus(added?"已加入候选窗口；请在候选窗口列表确认作为训练窗口。":"所选候选已在候选窗口列表中。",added?"success":"warning");
 });

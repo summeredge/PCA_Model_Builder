@@ -512,7 +512,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const candidatePanel = document.getElementById("candidatePanel");
   const modelPanel = document.getElementById("modelPanel");
   const validationPanel = document.getElementById("validationPanel");
-  const candidateTable = document.getElementById("candidateWindows");
+  const trainingTable = document.getElementById("trainingWindows");
   const releasePanel = document.getElementById("releasePanel");
   const workflowSteps = document.getElementById("workflowSteps");
   const toolPanels = ["trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"].map(id => document.getElementById(id));
@@ -544,10 +544,9 @@ document.addEventListener("DOMContentLoaded", () => {
   globalThis.showWorkflowStage("configPanel");
 
   const refreshWorkflow = () => {
-    const candidateDecisions = [...candidateTable.querySelectorAll('tbody select')];
     const completed = [
       Boolean(document.getElementById("candidateStart").value),
-      candidateDecisions.some(select => select.value === "accepted"),
+      Boolean(trainingTable.querySelector("tbody tr")),
       !document.getElementById("modelContent").hidden,
       !document.getElementById("validationContent").hidden,
       !document.getElementById("deploymentModelDownload").hidden,
@@ -738,7 +737,7 @@ def _candidate_manager_html() -> str:
         <div class="help">手工选择、趋势选择、聚类推荐和性能辅助统一进入此列表。候选默认待确认，不会自动参与训练。</div>
         <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
-        <div class="help">候选窗口不会修改训练窗口。先记录人工决策，再确认作为训练窗口。</div>
+        <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
         <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>
         <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>
       </div>"""

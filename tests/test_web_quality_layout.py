@@ -456,8 +456,8 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     assert "candidateWindows:[]" in html
     assert "excludedWindows:[]" in html
     assert "trainingWindows:[]" in html
-    assert 'async function addCandidateWindow(source,start,end,sourceRef=null,comment="",status="pending")' in html
-    assert 'status="pending"' in html
+    assert 'async function addCandidateWindow(source,start,end,sourceRef=null,comment="")' in html
+    assert 'status="pending"' not in html
     assert 'addCandidateWindow("manual"' in html
     assert 'addCandidateWindow("cluster"' in html
     assert 'addCandidateWindow("trend"' in html
@@ -467,18 +467,16 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     assert "normalEnd" not in html
 
 
-def test_final_web_keeps_candidate_decisions_manual_and_non_training() -> None:
+def test_final_web_uses_read_only_candidate_status_and_non_training_conversion() -> None:
     html = web_model_results.INDEX_HTML
 
-    for element_id in (
-        'id="saveExplorationCandidateDecisions"',
-        'id="convertExplorationCandidates"',
-    ):
-        assert element_id in html
-    assert "exploration-candidate-decision" in html
+    assert 'id="convertExplorationCandidates"' in html
+    assert 'id="saveExplorationCandidateDecisions"' not in html
+    assert "exploration-candidate-decision" not in html
     assert "exploration-candidate-comment" in html
-    assert "接受仅表示允许加入候选窗口，不会自动参与训练" in html
+    assert "选择候选后加入统一候选窗口列表" in html
     assert "请在候选窗口列表确认作为训练窗口" in html
+    assert "/decisions" not in html
 
 
 def test_model_quality_check_is_in_the_model_training_stage() -> None:
@@ -609,7 +607,8 @@ def test_inspection_creates_only_a_pending_suggested_candidate() -> None:
     )[0]
 
     assert 'state.candidateWindows=[{id:"suggested-window-001"' in inspect_source
-    assert 'source:"suggested",source_ref:"inspect-default",status:"pending"' in inspect_source
+    assert 'source:"suggested",source_ref:"inspect-default",comment:' in inspect_source
+    assert 'status:"pending"' not in inspect_source
     assert '系统建议的初始正常候选时段' in inspect_source
     assert 'state.trainingWindows=[]' in inspect_source
     assert 'el("qualityButton").disabled=true' in inspect_source
@@ -673,9 +672,12 @@ def test_candidate_confirmation_is_separate_from_training_windows() -> None:
     assert "window.enabled" not in view_source
     assert "set_enabled" not in view_source
     assert "state.trainingWindows" not in view_source
-    assert '["pending","accepted","rejected"]' in candidate_source
+    assert '["pending","accepted","rejected"]' not in candidate_source
     assert "candidateTrainingWindows(window).length>0" in candidate_source
-    assert 'label==="确认作为训练窗口"&&(window.status!=="accepted"||generated)' in candidate_source
+    assert 'status.textContent=displayUiValue(generated?"accepted":"pending")' in candidate_source
+    assert 'label==="确认作为训练窗口"&&generated' in candidate_source
+    assert "window.status" not in candidate_source
+    assert 'document.createElement("select")' not in candidate_source
     assert "async function confirmCandidateWindow(candidate)" in mutation_source
     assert 'action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows' in mutation_source
     assert 'action:"set_enabled"' in mutation_source
