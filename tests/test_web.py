@@ -775,40 +775,40 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert 'index===3?"end"' in timeline
     assert ':"middle"' in timeline
     assert 'data.performance_config?.direction==="target_range"' in html
-    assert 'row.performance_target_met===true' in html
     assert 'stroke="#111827"' not in html
 
 
-def test_state_exploration_pc_chart_has_local_cluster_and_performance_modes():
+def test_state_exploration_pc_chart_is_fixed_cluster_structure():
     for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
-        assert html.count('id="explorationPcModeCluster"') == 1
-        assert html.count('id="explorationPcModePerformance"') == 1
-        assert 'explorationPcMode:"cluster"' in html
-        assert 'performance.hidden=!targetRange' in html
-        assert 'performance_config?.direction==="target_range"' in html
-        assert "Cluster 结构" in html
-        assert "性能达标分布" in html
-        assert "◎ 外圈：性能达标" in html
-        assert "淡化点：未达标或无有效性能值" in html
+        assert 'id="explorationPcModeCluster"' not in html
+        assert 'id="explorationPcModePerformance"' not in html
+        assert "显示模式：" not in html
+        assert "Cluster 结构" not in html
+        assert "性能达标分布" not in html
+        assert "◎ 外圈：性能达标" not in html
+        assert "淡化点：未达标或无有效性能值" not in html
         assert "散点经过代表性抽样，仅用于观察空间分布；性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
+        assert "优选区域：" in html
+        assert "椭圆选择" in html
+        assert "删除上一个" in html
+        assert "清除区域" in html
+        assert "explorationPcMode" not in html
+        assert "renderExplorationPcModeControls" not in html
     renderer = web.INDEX_HTML.split("function renderExplorationPcChart(data)", 1)[1].split(
         "function explorationTimelineTick", 1
     )[0]
     point_layers = renderer.split("const points=", 1)[1].split("const centers=", 1)[0]
     assert 'class="exploration-pc-point"' in point_layers
-    assert 'class="exploration-pc-target-halo"' in point_layers
-    assert "row.performance_target_met!==true" in point_layers
+    assert 'fill-opacity=".75"' in point_layers
+    assert "row.performance_target_met" not in point_layers
     assert "<title>" not in point_layers
-    assert 'const targetHalos=performanceMode?' in renderer
-    assert 'state.explorationPcMode="performance"' in html
-    cluster_handler = html.split(
-        'el("explorationPcModeCluster").addEventListener("click",()=>{', 1
-    )[1].split("});", 1)[0]
-    performance_handler = html.split(
-        'el("explorationPcModePerformance").addEventListener("click",()=>{', 1
-    )[1].split("});", 1)[0]
-    assert "api(" not in cluster_handler
-    assert "api(" not in performance_handler
+    assert "performanceMode" not in renderer
+    assert "targetHalos" not in renderer
+    assert "targetLegend" not in renderer
+    assert "exploration-pc-target-halo" not in renderer
+    assert "const centers=Object.entries(data.cluster_centers||{})" in renderer
+    assert "const legend=[...new Set(rows.map(row=>row.cluster_id))]" in renderer
+    assert "${regionEllipses}${points}${centers}" in renderer
 
 
 def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
