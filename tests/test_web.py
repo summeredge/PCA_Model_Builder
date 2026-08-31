@@ -743,7 +743,8 @@ def test_final_web_page_exposes_state_exploration_workbench():
         "function resetExplorationRegion", 1
     )[0]
     assert '<td>${escapeHtml(displayUiValue(status))}</td>' in exploration_source
-    assert 'state.trainingWindows.some(window=>window.source_ref===item.candidate_id)' in exploration_source
+    assert "stateExplorationCandidateSourceRef(runId,item.candidate_id)" in exploration_source
+    assert "state.trainingWindows.some(window=>window.source_ref===sourceRef)" in exploration_source
     assert '<select class="exploration-candidate-decision"' not in exploration_source
     assert 'decision.decision' not in exploration_source
 
@@ -3074,13 +3075,24 @@ def test_state_exploration_conversion_keeps_same_candidate_from_separate_runs():
 
 
 def test_state_exploration_conversion_adds_only_to_candidate_windows_in_web():
-    assert "state.candidateWindows.some(window=>window.source_ref===candidateRef)" in web.INDEX_HTML
-    assert "state.trainingWindows.some(window=>window.source_ref===candidateRef)" in web.INDEX_HTML
     assert "请在候选窗口列表确认作为训练窗口。" in web.INDEX_HTML
     conversion_source = web.INDEX_HTML.split(
         'el("convertExplorationCandidates").addEventListener', 1
     )[1].split('el("trainExploratoryButton")', 1)[0]
+    assert "const runId=state.exploration?.exploration_run_id" in conversion_source
+    assert "stateExplorationCandidateSourceRef(runId,candidateKey)" in conversion_source
+    assert "state.candidateWindows.some(window=>window.source_ref===sourceRef)" in conversion_source
+    assert "state.trainingWindows.some(window=>window.source_ref===sourceRef)" in conversion_source
+    assert "source_ref:sourceRef" in conversion_source
     assert "/training-windows" not in conversion_source
+
+
+def test_state_exploration_candidate_source_refs_are_scoped_to_run_in_web():
+    html = web.INDEX_HTML
+    assert "function stateExplorationCandidateSourceRef(runId,candidateId)" in html
+    assert "return `state-exploration-${runId}-${candidateId}`" in html
+    assert "source_ref:sourceRef" in html
+    assert "source_ref===item.candidate_id" not in html
 
 
 def test_cluster_representative_windows_use_distinct_physical_source_refs_in_web():
