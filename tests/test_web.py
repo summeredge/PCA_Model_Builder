@@ -78,6 +78,7 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     assert "8765" not in web.INDEX_HTML
     assert '<link rel="icon" href="data:,">' in web.INDEX_HTML
     assert '[hidden] { display:none !important; }' in web.INDEX_HTML
+    assert 'th { position:sticky; top:0;' not in web.INDEX_HTML
     for element_id in (
         'id="fileInput"',
         'id="uploadButton"',
@@ -730,6 +731,7 @@ def test_final_web_page_exposes_state_exploration_workbench():
         "优选区域候选表",
     ):
         assert label in html
+    assert "可选性能候选" not in html
     assert "自动正常 Cluster" not in html
     assert "自动正常窗口" not in html
     assert "选择候选后加入统一候选窗口列表" in html

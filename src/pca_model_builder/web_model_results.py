@@ -483,6 +483,8 @@ _WORKBENCH_UI_STYLE = r"""
     font-variant-numeric:tabular-nums;
     white-space:nowrap;
   }
+  #stateExplorationPanel .exploration-controls { border:0; }
+  #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
   @media (max-width:760px) {
     main { grid-template-columns:minmax(0,1fr); padding:12px; gap:12px; }
     .workflow-sidebar { position:static; padding:14px; }

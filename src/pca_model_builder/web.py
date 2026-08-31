@@ -2744,7 +2744,7 @@ INDEX_HTML = r"""<!doctype html>
     .table-wrap { overflow:auto; max-height:360px; border:1px solid var(--line); border-radius:7px; }
     table { width:100%; border-collapse:collapse; font-size:12px; }
     th, td { padding:8px 9px; border-bottom:1px solid var(--line-soft); text-align:left; }
-    th { position:sticky; top:0; background:#eef2f6; }
+    th { background:#eef2f6; }
     td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
     .download { color:#fff; background:var(--green); padding:8px 11px; border-radius:6px; text-decoration:none; font-size:13px; }
      .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
@@ -2875,7 +2875,6 @@ INDEX_HTML = r"""<!doctype html>
             <label>最大显示点数<input id="explorationMaximumPlotPoints" type="number" min="2" value="1200"></label>
             <button id="stateExplorationButton" type="button" disabled>运行状态探索</button>
           </div>
-          <div class="sub-title">可选性能候选</div>
           <div class="exploration-controls">
             <label>性能 Tag<select id="explorationPerformanceTag"><option value="">不配置</option></select></label>
             <label>性能方向<select id="explorationPerformanceDirection"><option value="higher_is_better">越高越好</option><option value="lower_is_better">越低越好</option><option value="target_range">目标范围内</option></select></label>

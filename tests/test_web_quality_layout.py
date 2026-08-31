@@ -719,6 +719,8 @@ def test_workbench_tables_map_all_runtime_statuses_and_align_numeric_cells() -> 
     html = web_model_results.INDEX_HTML
 
     assert ".table-wrap td.numeric" in html
+    assert '#stateExplorationPanel .exploration-controls { border:0; }' in html
+    assert "#explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }" in html
     assert "font-variant-numeric:tabular-nums;" in html
     for status, label in (
         ("pending", "待决策"),
