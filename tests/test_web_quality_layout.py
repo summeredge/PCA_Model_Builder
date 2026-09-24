@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import shutil
+import subprocess
+import textwrap
 
 import pytest
 
@@ -8,6 +12,21 @@ from pca_model_builder import cli_entry, web_model_results, web_quality_layout
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _run_web_javascript(source: str) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for Web state-machine regression tests")
+    result = subprocess.run(
+        [node, "-e", textwrap.dedent(source)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
 
 
 def test_quality_profiles_use_two_side_by_side_sections() -> None:
@@ -638,7 +657,10 @@ def test_model_quality_status_tracks_check_and_configuration_changes() -> None:
     assert 'state.qualityStatus="checking"' in html
     assert "qualityRevision:0" in html
     assert "state.qualityRevision+=1" in invalidate_source
-    assert 'state.qualityStatus=reason||checking?"changed":"unchecked"' in invalidate_source
+    assert (
+        'state.qualityStatus=reason&&(checked||checking)?"changed":"unchecked"'
+        in invalidate_source
+    )
     assert 'el("trainButton").disabled=true' in html
     assert 'state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"' in html
     assert 'state.qualityStatus="failed"' in html
@@ -650,6 +672,191 @@ def test_model_quality_status_tracks_check_and_configuration_changes() -> None:
     assert quality_request_source.rindex(
         "if(qualityRevision!==state.qualityRevision) return;"
     ) < quality_request_source.index('state.qualityStatus="failed"')
+
+
+def test_invalidate_quality_executes_actual_status_boundaries() -> None:
+    html = web_model_results.INDEX_HTML
+    function_source = "function invalidateQuality" + html.split("function invalidateQuality", 1)[1].split(
+        "function firstOrderAlphaError", 1
+    )[0]
+    _run_web_javascript(
+        f"""
+        const functionSource = {json.dumps(function_source)};
+        const elements = new Map([
+          ["trainButton", {{disabled: false}}],
+          ["trainExploratoryButton", {{disabled: false}}],
+          ["qualitySummary", {{innerHTML: "old"}}],
+          ["trainingCompositionReview", {{className: "", textContent: "old"}}],
+          ["qualityIssues", {{className: "", textContent: "old"}}],
+          ["modelTrainingDataSummary", {{className: "", textContent: "old"}}],
+          ["excludeAllConstants", {{disabled: false}}],
+          ["modelQualityStatus", {{className: "", textContent: ""}}],
+          ["currentTagQuality", {{className: "", textContent: ""}}],
+          ["qualityTagSelect", null],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{
+          quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:""
+        }};
+        function renderModelTrainingDataSummary() {{}}
+        function renderModelQualityStatus() {{}}
+        function renderCurrentTagQuality() {{}}
+        function setStatus() {{}}
+        {function_source}
+
+        const snapshots = [];
+        for (const scenario of [
+          {{quality:null, status:"unchecked", reason:"Tag changed"}},
+          {{quality:null, status:"passed", reason:"Tag changed"}},
+          {{quality:{{tags:[]}}, status:"passed", reason:"Tag changed"}},
+          {{quality:null, status:"failed", reason:"Tag changed"}},
+          {{quality:null, status:"checking", reason:"Tag changed"}},
+          {{quality:null, status:"unchecked", reason:undefined}},
+        ]) {{
+          state.quality=scenario.quality;
+          state.qualityStatus=scenario.status;
+          const before=state.qualityRevision;
+          invalidateQuality(scenario.reason);
+          snapshots.push([
+            state.qualityStatus,
+            state.qualityRevision-before,
+            el("trainButton").disabled,
+            el("trainExploratoryButton").disabled,
+          ]);
+        }}
+        if (JSON.stringify(snapshots) !== JSON.stringify([
+          ["unchecked",1,true,true],
+          ["unchecked",1,true,true],
+          ["changed",1,true,true],
+          ["changed",1,true,true],
+          ["changed",1,true,true],
+          ["unchecked",1,true,true],
+        ])) throw new Error(JSON.stringify(snapshots));
+        """
+    )
+
+
+def test_quality_handler_executes_stale_and_current_result_boundaries() -> None:
+    html = web_model_results.INDEX_HTML
+    request_start = html.split(
+        'el("qualityButton").addEventListener("click",async()=>{', 1
+    )[1].split("\n  try {", 1)[0]
+    try_block = "  try {" + html.split(
+        'el("qualityButton").addEventListener("click",async()=>{', 1
+    )[1].split("\n  try {", 1)[1].split("\n  finally", 1)[0]
+    totals = {
+        "enabled_window_count": 1,
+        "used_window_count": 1,
+        "training_rows": 8,
+        "covered_day_count": 1,
+        "max_window_effective_share": 1.0,
+    }
+    handler_source = "return (async()=>{" + request_start + try_block + "})();"
+    harness = f"""
+        const requestStart = {json.dumps(request_start)};
+        const tryBlock = {json.dumps(try_block)};
+        const handlerSource = {json.dumps(handler_source)};
+        const elements = new Map([
+          ["qualityButton", {{disabled:false, dataset:{{}}, textContent:"check"}}],
+          ["trainButton", {{disabled:true}}],
+          ["trainExploratoryButton", {{disabled:true}}],
+          ["qualitySummary", {{innerHTML:""}}],
+          ["qualityIssues", {{className:"", textContent:""}}],
+          ["trainingCompositionReview", {{className:"", textContent:""}}],
+          ["modelTrainingDataSummary", {{className:"", textContent:""}}],
+          ["excludeAllConstants", {{disabled:true}}],
+          ["modelQualityStatus", {{className:"", textContent:""}}],
+          ["currentTagQuality", {{className:"", textContent:""}}],
+          ["qualityTagSelect", null],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{
+          fileId:"file", runId:null, exploratoryRunId:null, inspection:{{numeric_columns:["A","B"]}},
+          registry:{{}}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"",
+          selectedTag:null, selectedModelTags:new Set(["A","B"]), importPreview:null, excludedTags:[],
+          excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[],
+          trainingWindowSummary:[], validationWindows:[], trend:null,
+        }};
+        const display = value => value;
+        const trainingWindowsPayload = () => state.trainingWindows;
+        const firstOrderAlphaError = () => "";
+        const commonPayload = () => ({{}});
+        const selectedTags = () => ["A","B"];
+        const setStatus = () => {{}};
+        const setBusy = () => {{}};
+        const renderModelQualityStatus = () => {{}};
+        const renderCurrentTagQuality = () => {{}};
+        const renderTrainingWindows = () => {{}};
+        const renderQuality = data => {{
+          el("modelTrainingDataSummary").totals=data.training_window_totals || null;
+        }};
+        const renderTrainingComposition = totals => {{ el("trainingCompositionReview").totals=totals; }};
+        const trainingCompositionShare = value => `${{(Number(value)*100).toFixed(1)}}%`;
+        const renderModelTrainingDataSummary = totals => {{
+          el("modelTrainingDataSummary").totals=totals || state.quality?.training_window_totals || null;
+          el("modelTrainingDataSummary").textContent="updated";
+        }};
+        const renderTagList = () => {{}};
+        const AsyncFunction = Object.getPrototypeOf(async function(){{}}).constructor;
+        let nextResult, nextError=null;
+        const api = () => new Promise((resolve,reject) => {{
+          nextResult=resolve; nextError=reject;
+        }});
+        const showWorkflowStage = () => {{}};
+        const invoke = () => new AsyncFunction(
+          "api", "globalThis", handlerSource
+        ).call(el("qualityButton"), api, globalThis);
+
+        const qualityData = {{
+          training_readiness:{{normal_state:{{can_train:true}},exploratory:{{can_train:true}}}},
+          can_train:true, summary:{{usable:2,review:0,blocking:0}}, tags:[], time_issues:[],
+          training_quality_warnings:[], training_window_summary:[],
+          training_window_totals:{json.dumps(totals, separators=(",", ":"))},
+        }};
+        const run = async () => {{
+          const staleRequest=invoke();
+          if (state.qualityStatus !== "checking") throw new Error("not checking");
+          state.qualityRevision+=1;
+          state.qualityStatus="changed";
+          nextResult({{...qualityData, training_window_totals:{{training_rows:99, used_window_count:9, enabled_window_count:9, covered_day_count:9, max_window_effective_share:0.9}}}});
+          await staleRequest;
+          if (state.quality || state.qualityStatus!=="changed" || el("trainButton").disabled!==true)
+            throw new Error("stale success was applied");
+          if (el("modelTrainingDataSummary").totals!==null ||
+              el("trainingCompositionReview").totals!==undefined ||
+              state.trainingWindowSummary.length!==0)
+            throw new Error("stale success updated quality projections");
+
+          const errorRequest=invoke();
+          const errorRevision=state.qualityRevision;
+          state.qualityRevision+=1;
+          state.qualityStatus="changed";
+          nextError(new Error("stale error"));
+          await errorRequest;
+          if (state.qualityStatus!=="changed" || state.qualityError!=="")
+            throw new Error("stale error was applied");
+          if (el("modelTrainingDataSummary").totals!==null ||
+              el("trainingCompositionReview").totals!==undefined ||
+              state.trainingWindowSummary.length!==0)
+            throw new Error("stale error updated quality projections");
+
+          const currentRequest=invoke();
+          if (state.qualityRevision!==errorRevision+1) throw new Error("bad revisions");
+          nextResult(qualityData);
+          await currentRequest;
+          if (!state.quality || state.qualityStatus!=="passed") throw new Error("current success missing");
+          if (el("trainButton").disabled || el("trainExploratoryButton").disabled)
+            throw new Error("training gate did not recover");
+          const summary=el("modelTrainingDataSummary");
+          if (summary.totals.training_rows!==8 || summary.totals.used_window_count!==1 ||
+              summary.totals.covered_day_count!==1 || summary.totals.max_window_effective_share!==1)
+            throw new Error(`summary mismatch: ${{summary.textContent}}`);
+        }};
+        run().then(() => process.stdout.write("quality-state-ok"), error => {{
+          process.stderr.write(String(error.stack||error)); process.exitCode=1;
+        }});
+        """
+    _run_web_javascript(harness)
 
 
 def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None:

@@ -3064,7 +3064,7 @@ function renderModelTrainingDataSummary(totals=state.quality?.training_window_to
   node.textContent=`训练数据摘要：已使用 / 启用训练窗口：${totals.used_window_count??"—"} / ${totals.enabled_window_count??"—"}；有效训练样本：${totals.training_rows??"—"}；覆盖日期数：${totals.covered_day_count??"—"}；最大单窗口有效样本占比：${trainingCompositionShare(totals.max_window_effective_share)}。`;
 }
 function invalidateQuality(reason) {
-  const checking=state.qualityStatus==="checking"; state.qualityRevision+=1; state.quality=null; state.qualityError=""; state.qualityStatus=reason||checking?"changed":"unchecked";
+  const checked=Boolean(state.quality)||state.qualityStatus==="failed", checking=state.qualityStatus==="checking"; state.qualityRevision+=1; state.quality=null; state.qualityError=""; state.qualityStatus=reason&&(checked||checking)?"changed":"unchecked";
   el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true;
   if(el("qualitySummary")) el("qualitySummary").innerHTML="";
   if(el("trainingCompositionReview")) { el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"执行建模质量检查后显示训练集组成。"; }
