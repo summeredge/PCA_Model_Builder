@@ -378,6 +378,24 @@ def test_model_score_and_loading_plots_use_side_by_side_grid() -> None:
     assert 'insertAdjacentElement("afterend", section)' not in source
 
 
+def test_component_loadings_show_signed_top_five_and_expandable_full_rows() -> None:
+    source = (
+        PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
+    ).read_text(encoding="utf-8")
+    html = web_model_results.INDEX_HTML
+
+    assert 'componentLoadingsCard.id = "componentLoadings"' in source
+    assert 'id="componentLoadingsContent"' in source
+    assert "renderComponentLoadings(data.loading_plot?.component_loadings)" in source
+    assert "component.top_loadings" in source
+    assert "Top ${topRows.length} |loading| 变量" in source
+    assert "查看全部 ${fullRows.length} 个变量 loading" in source
+    assert "cell(formatLoading(loading))" in source
+    assert "T²/SPE 异常贡献" in source
+    assert "componentLoadingsCard.insertAdjacentElement(\"afterend\", diagnosticCard);" in source
+    assert "#componentLoadings .component-loading-table" in html
+
+
 def test_final_web_has_one_static_workbench_structure_and_asset_set() -> None:
     html = web_model_results.INDEX_HTML
 

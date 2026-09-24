@@ -687,6 +687,17 @@ _MODEL_RESULTS_STYLE = r"""
   .model-projection-grid > .chart-card > .chart { flex:1 1 auto; min-height:420px; }
   .model-projection-grid #scoreChart svg,
   .model-projection-grid #loadingChart svg { width:100%; height:420px; display:block; }
+  #componentLoadings .component-loading-list { display:grid; gap:12px; }
+  #componentLoadings .component-loading-item { border:1px solid var(--line); border-radius:6px; padding:12px; }
+  #componentLoadings .component-loading-item h4 { margin:0 0 8px; }
+  #componentLoadings .component-loading-full { margin-top:12px; }
+  #componentLoadings .component-loading-table { width:100%; table-layout:fixed; }
+  #componentLoadings .component-loading-table th:first-child,
+  #componentLoadings .component-loading-table td:first-child { text-align:left; overflow-wrap:anywhere; }
+  #componentLoadings .component-loading-table th:nth-child(2),
+  #componentLoadings .component-loading-table td:nth-child(2),
+  #componentLoadings .component-loading-table th:nth-child(3),
+  #componentLoadings .component-loading-table td:nth-child(3) { width:8em; text-align:right; white-space:nowrap; }
   #modelStructureComparison .model-variance-chart svg { display:block; width:100%; max-width:640px; height:auto; }
   #modelStructureComparison .model-variance-summary { display:flex; flex-wrap:wrap; gap:4px 14px; margin:0 0 10px; }
   #modelStructureComparison .model-energy-grid {

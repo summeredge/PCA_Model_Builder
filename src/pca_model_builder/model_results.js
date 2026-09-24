@@ -27,6 +27,15 @@
   scoreCard.parentNode.insertBefore(projectionGrid, scoreCard);
   projectionGrid.append(scoreCard, section);
 
+  const componentLoadingsCard = document.createElement("section");
+  componentLoadingsCard.className = "chart-card";
+  componentLoadingsCard.id = "componentLoadings";
+  componentLoadingsCard.innerHTML = `
+    <h3>主元组成 / Loadings</h3>
+    <div class="help">载荷来自实际训练模型的 PCA components；正负号保留。默认摘要按 |loading| 从大到小显示 Top 5，完整表中的绝对值排序仅用于查看，不等同于 T²/SPE 异常贡献。</div>
+    <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>`;
+  projectionGrid.insertAdjacentElement("afterend", componentLoadingsCard);
+
   const diagnosticCard = document.createElement("section");
   diagnosticCard.className = "chart-card";
   diagnosticCard.id = "modelStructureComparison";
@@ -40,7 +49,7 @@
     </label>
     <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button><button id="deleteModelsButton" class="danger" type="button">删除所选候选模型</button></div>
     <div id="modelComparisonResult" class="help">比较只读取已保存的正常状态候选模型包。</div>`;
-  projectionGrid.insertAdjacentElement("afterend", diagnosticCard);
+  componentLoadingsCard.insertAdjacentElement("afterend", diagnosticCard);
 
   const replayCard = document.createElement("section");
   replayCard.className = "chart-card";
@@ -135,6 +144,7 @@
   window.renderTraining = function renderTrainingWithLoadings(data) {
     originalRenderTraining(data);
     drawLoadingPlot(data.loading_plot);
+    renderComponentLoadings(data.loading_plot?.component_loadings);
     renderSingleModelDiagnostic(data.model_diagnostic);
     refreshCandidateOptions(data.run_id);
   };
@@ -437,6 +447,88 @@
     target.className = type === "empty" ? "empty" : type === "error" ? "status error" : `status ${type}`;
     target.setAttribute("role", type === "error" ? "alert" : "status");
     target.textContent = message;
+  }
+
+  function renderComponentLoadings(components) {
+    const target = document.getElementById("componentLoadingsContent");
+    if (!target) return;
+    target.replaceChildren();
+    if (!Array.isArray(components) || !components.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "当前模型没有可展示的主元组成。";
+      target.append(empty);
+      return;
+    }
+
+    const list = document.createElement("div");
+    list.className = "component-loading-list";
+    components.forEach((component, index) => {
+      const item = document.createElement("section");
+      item.className = "component-loading-item";
+      const title = document.createElement("h4");
+      const name = component.component || `PC${index + 1}`;
+      title.textContent = `${name} · explained variance ${formatExplainedVariance(component.explained_variance_ratio)}`;
+      const topRows = sortedLoadings(
+        Array.isArray(component.top_loadings) && component.top_loadings.length
+          ? component.top_loadings
+          : component.loadings,
+      ).slice(0, 5);
+      const topTitle = document.createElement("div");
+      topTitle.className = "help";
+      topTitle.textContent = `Top ${topRows.length} |loading| 变量`;
+      const fullRows = sortedLoadings(component.loadings);
+      const full = document.createElement("details");
+      full.className = "component-loading-full";
+      full.hidden = !fullRows.length;
+      const fullSummary = document.createElement("summary");
+      fullSummary.textContent = `查看全部 ${fullRows.length} 个变量 loading（按 |loading| 降序）`;
+      full.append(fullSummary, componentLoadingTable(fullRows));
+      item.append(title, topTitle, componentLoadingTable(topRows), full);
+      list.append(item);
+    });
+    target.append(list);
+  }
+
+  function componentLoadingTable(rows) {
+    const container = document.createElement("div");
+    container.className = "table-wrap";
+    const table = document.createElement("table");
+    table.className = "component-loading-table";
+    table.innerHTML = "<thead><tr><th>变量</th><th>loading</th><th>|loading|</th></tr></thead>";
+    const body = document.createElement("tbody");
+    (Array.isArray(rows) ? rows : []).forEach(row => {
+      const loading = Number(row?.loading);
+      const magnitude = Number.isFinite(loading) ? Math.abs(loading) : Number(row?.absolute_loading);
+      const tr = document.createElement("tr");
+      tr.append(
+        cell(row?.feature ?? "—"),
+        cell(formatLoading(loading)),
+        cell(formatLoading(magnitude)),
+      );
+      body.append(tr);
+    });
+    table.append(body);
+    container.append(table);
+    return container;
+  }
+
+  function sortedLoadings(rows) {
+    return (Array.isArray(rows) ? [...rows] : []).sort(
+      (left, right) => loadingMagnitude(right) - loadingMagnitude(left),
+    );
+  }
+
+  function loadingMagnitude(row) {
+    const loading = Number(row?.loading);
+    if (Number.isFinite(loading)) return Math.abs(loading);
+    const absolute = Number(row?.absolute_loading);
+    return Number.isFinite(absolute) ? absolute : 0;
+  }
+
+  function formatExplainedVariance(value) {
+    const ratio = Number(value);
+    return Number.isFinite(ratio) ? `${(ratio * 100).toFixed(2)}%` : "—";
   }
 
   function drawLoadingPlot(plot) {

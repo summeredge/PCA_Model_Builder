@@ -36,13 +36,47 @@ def _explained_variance_ratio(model: Any, component_index: int) -> float | None:
     return value if np.isfinite(value) else None
 
 
+def _component_loading_payload(
+    model: Any, components: np.ndarray
+) -> list[dict[str, Any]]:
+    feature_names = [str(name) for name in getattr(model, "feature_names", ())]
+    if components.ndim != 2 or components.shape[1] != len(feature_names):
+        return []
+
+    payload: list[dict[str, Any]] = []
+    for index, component in enumerate(components):
+        loadings = [
+            {
+                "feature": feature_name,
+                "loading": float(value),
+                "absolute_loading": abs(float(value)),
+            }
+            for feature_name, value in zip(feature_names, component)
+        ]
+        payload.append(
+            {
+                "component": f"PC{index + 1}",
+                "explained_variance_ratio": _explained_variance_ratio(model, index),
+                "loadings": loadings,
+                "top_loadings": sorted(
+                    loadings,
+                    key=lambda item: item["absolute_loading"],
+                    reverse=True,
+                )[:5],
+            }
+        )
+    return payload
+
+
 def loading_plot_payload(model: Any, manifest: Mapping[str, Any]) -> dict[str, Any]:
-    """Aggregate DPCA lag-feature loadings back to original Tag coordinates."""
+    """Return raw component loadings and aggregated original-Tag plot data."""
     components = np.asarray(model.components, dtype=float)
+    component_loadings = _component_loading_payload(model, components)
     x_ratio = _explained_variance_ratio(model, 0)
     y_ratio = _explained_variance_ratio(model, 1)
     if components.ndim != 2 or components.shape[0] < 2:
         return {
+            "component_loadings": component_loadings,
             "aggregation": "signed_l2_by_original_tag",
             "x_component": "PC1",
             "y_component": "PC2",
@@ -97,6 +131,7 @@ def loading_plot_payload(model: Any, manifest: Mapping[str, Any]) -> dict[str, A
 
     points.sort(key=lambda point: point["magnitude"], reverse=True)
     return {
+        "component_loadings": component_loadings,
         "aggregation": "signed_l2_by_original_tag",
         "aggregation_description": (
             "同一原始Tag的各Lag载荷先计算L2能量，符号取绝对载荷最大的主导Lag。"

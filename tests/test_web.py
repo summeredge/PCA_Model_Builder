@@ -1552,6 +1552,28 @@ def test_final_web_model_comparison_routes_only_read_saved_candidates(
         {**base, "model_purpose": "exploratory"}
     )
     first_path = tmp_path / "runs" / first["run_id"] / "model.pcamodel"
+    trained_model, _ = load_model_package(first_path)
+    component_loadings = first["loading_plot"]["component_loadings"]
+    assert len(component_loadings) == trained_model.n_components
+    for index, component in enumerate(component_loadings):
+        assert component["component"] == f"PC{index + 1}"
+        assert [item["feature"] for item in component["loadings"]] == list(
+            trained_model.feature_names
+        )
+        np.testing.assert_allclose(
+            [item["loading"] for item in component["loadings"]],
+            trained_model.components[index],
+        )
+        assert component["explained_variance_ratio"] == pytest.approx(
+            trained_model.explained_variance_ratio[index]
+        )
+        assert len(component["top_loadings"]) <= 5
+        assert [
+            item["absolute_loading"] for item in component["top_loadings"]
+        ] == sorted(
+            (item["absolute_loading"] for item in component["top_loadings"]),
+            reverse=True,
+        )
     before = first_path.read_bytes(), first_path.stat().st_mtime_ns
 
     diagnostic, diagnostic_status = _post_response(
