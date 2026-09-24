@@ -619,6 +619,12 @@ def test_model_training_summary_reuses_quality_totals_and_clears_on_invalidation
 
 def test_model_quality_status_tracks_check_and_configuration_changes() -> None:
     html = web_model_results.INDEX_HTML
+    invalidate_source = html.split("function invalidateQuality", 1)[1].split(
+        "function firstOrderAlphaError", 1
+    )[0]
+    quality_request_source = html.split(
+        'el("qualityButton").addEventListener("click",async()=>{', 1
+    )[1].split('el("qualityTagSelect")', 1)[0]
 
     for label in (
         "未检查",
@@ -630,10 +636,20 @@ def test_model_quality_status_tracks_check_and_configuration_changes() -> None:
     ):
         assert label in html
     assert 'state.qualityStatus="checking"' in html
+    assert "qualityRevision:0" in html
+    assert "state.qualityRevision+=1" in invalidate_source
+    assert 'state.qualityStatus=reason||checking?"changed":"unchecked"' in invalidate_source
     assert 'el("trainButton").disabled=true' in html
     assert 'state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"' in html
     assert 'state.qualityStatus="failed"' in html
-    assert 'state.qualityStatus=reason&&checked?"changed":"unchecked"' in html
+    assert "qualityRevision=state.qualityRevision" in quality_request_source
+    assert quality_request_source.count("if(qualityRevision!==state.qualityRevision) return;") == 2
+    assert quality_request_source.index(
+        "if(qualityRevision!==state.qualityRevision) return;"
+    ) < quality_request_source.index("state.quality=data;")
+    assert quality_request_source.rindex(
+        "if(qualityRevision!==state.qualityRevision) return;"
+    ) < quality_request_source.index('state.qualityStatus="failed"')
 
 
 def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None:

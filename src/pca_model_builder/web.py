@@ -3004,7 +3004,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -3064,7 +3064,7 @@ function renderModelTrainingDataSummary(totals=state.quality?.training_window_to
   node.textContent=`训练数据摘要：已使用 / 启用训练窗口：${totals.used_window_count??"—"} / ${totals.enabled_window_count??"—"}；有效训练样本：${totals.training_rows??"—"}；覆盖日期数：${totals.covered_day_count??"—"}；最大单窗口有效样本占比：${trainingCompositionShare(totals.max_window_effective_share)}。`;
 }
 function invalidateQuality(reason) {
-  const checked=Boolean(state.quality); state.quality=null; state.qualityError=""; state.qualityStatus=reason&&checked?"changed":"unchecked";
+  const checking=state.qualityStatus==="checking"; state.qualityRevision+=1; state.quality=null; state.qualityError=""; state.qualityStatus=reason||checking?"changed":"unchecked";
   el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true;
   if(el("qualitySummary")) el("qualitySummary").innerHTML="";
   if(el("trainingCompositionReview")) { el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"执行建模质量检查后显示训练集组成。"; }
@@ -3378,15 +3378,15 @@ el("exportConfigButton").addEventListener("click",async()=>{
 
 el("qualityButton").addEventListener("click",async()=>{
   const tags=selectedTags(); if(tags.length<2) { setStatus("至少选择两个“连续输入” Tag。","warning"); return; }
-  const button=el("qualityButton"); state.quality=null; state.qualityStatus="checking"; state.qualityError=""; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("qualitySummary").innerHTML=""; el("qualityIssues").className="empty"; el("qualityIssues").textContent="正在执行建模质量检查。"; el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); renderModelQualityStatus(); setBusy(button,true,"检查中…");
+  const button=el("qualityButton"), qualityRevision=state.qualityRevision; state.quality=null; state.qualityStatus="checking"; state.qualityError=""; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("qualitySummary").innerHTML=""; el("qualityIssues").className="empty"; el("qualityIssues").textContent="正在执行建模质量检查。"; el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); renderModelQualityStatus(); setBusy(button,true,"检查中…");
   el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent="正在执行建模质量检查。";
   renderModelTrainingDataSummary(null,"正在执行建模质量检查。");
   try {
     const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
-    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; if(!data.tags.some(item=>item.tag===state.selectedTag)) state.selectedTag=data.tags[0]?.tag||null; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
+    const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); if(qualityRevision!==state.qualityRevision) return; const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; if(!data.tags.some(item=>item.tag===state.selectedTag)) state.selectedTag=data.tags[0]?.tag||null; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
     globalThis.showWorkflowStage?.("modelPanel");
     setStatus(readiness.normal_state.can_train&&readiness.exploratory.can_train?"建模质量检查通过，可以训练两类模型。":readiness.exploratory.can_train?"探索模型可训练；正常状态候选受当前工程量程排除影响不可训练。":"建模质量检查发现问题，请排除问题 Tag 或调整训练窗口后重新检查。",readiness.exploratory.can_train?"success":"error");
-  } catch(error) { state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelTrainingDataSummary(null,"建模质量检查失败，需重新执行建模质量检查。"); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
+  } catch(error) { if(qualityRevision!==state.qualityRevision) return; state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelTrainingDataSummary(null,"建模质量检查失败，需重新执行建模质量检查。"); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
   finally { setBusy(button,false,""); }
 });
 
