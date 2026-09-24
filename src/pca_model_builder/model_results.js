@@ -32,7 +32,7 @@
   componentLoadingsCard.id = "componentLoadings";
   componentLoadingsCard.innerHTML = `
     <h3>主元组成 / Loadings</h3>
-    <div class="help">载荷来自实际训练模型的 PCA components；正负号保留。默认摘要按 |loading| 从大到小显示 Top 5，完整表中的绝对值排序仅用于查看，不等同于 T²/SPE 异常贡献。</div>
+    <div class="help">载荷来自实际训练模型的 PCA components；正负号保留。按 |loading| 从大到小显示 Top 10，不等同于 T²/SPE 异常贡献。</div>
     <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>`;
   projectionGrid.insertAdjacentElement("afterend", componentLoadingsCard);
 
@@ -473,18 +473,11 @@
         Array.isArray(component.top_loadings) && component.top_loadings.length
           ? component.top_loadings
           : component.loadings,
-      ).slice(0, 5);
+      ).slice(0, 10);
       const topTitle = document.createElement("div");
       topTitle.className = "help";
       topTitle.textContent = `Top ${topRows.length} |loading| 变量`;
-      const fullRows = sortedLoadings(component.loadings);
-      const full = document.createElement("details");
-      full.className = "component-loading-full";
-      full.hidden = !fullRows.length;
-      const fullSummary = document.createElement("summary");
-      fullSummary.textContent = `查看全部 ${fullRows.length} 个变量 loading（按 |loading| 降序）`;
-      full.append(fullSummary, componentLoadingTable(fullRows));
-      item.append(title, topTitle, componentLoadingTable(topRows), full);
+      item.append(title, topTitle, componentLoadingTable(topRows));
       list.append(item);
     });
     target.append(list);

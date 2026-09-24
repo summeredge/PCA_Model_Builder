@@ -690,7 +690,6 @@ _MODEL_RESULTS_STYLE = r"""
   #componentLoadings .component-loading-list { display:grid; gap:12px; }
   #componentLoadings .component-loading-item { border:1px solid var(--line); border-radius:6px; padding:12px; }
   #componentLoadings .component-loading-item h4 { margin:0 0 8px; }
-  #componentLoadings .component-loading-full { margin-top:12px; }
   #componentLoadings .component-loading-table { width:100%; table-layout:fixed; }
   #componentLoadings .component-loading-table th:first-child,
   #componentLoadings .component-loading-table td:first-child { text-align:left; overflow-wrap:anywhere; }

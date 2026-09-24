@@ -87,14 +87,14 @@ def test_loading_plot_tolerates_legacy_model_without_explained_ratio() -> None:
     assert len(payload["points"]) == 1
 
 
-def test_component_loadings_keep_feature_order_and_limit_top_five_by_absolute_value() -> None:
-    feature_names = tuple(f"TAG_{index}__lag_000min" for index in range(6))
+def test_component_loadings_keep_feature_order_and_limit_top_ten_by_absolute_value() -> None:
+    feature_names = tuple(f"TAG_{index}__lag_000min" for index in range(12))
     model = SimpleNamespace(
         feature_names=feature_names,
         components=np.array(
             [
-                [0.05, -0.9, 0.2, 0.8, -0.4, 0.1],
-                [-0.6, 0.3, -0.2, 0.1, 0.7, -0.05],
+                [0.05, -0.9, 0.2, 0.8, -0.4, 0.1, 0.7, -0.3, 0.6, 0.15, -0.02, 0.04],
+                [-0.6, 0.3, -0.2, 0.1, 0.7, -0.05, 0.4, -0.8, 0.15, 0.09, 0.02, -0.01],
             ]
         ),
         explained_variance_ratio=np.array([0.55, 0.25]),
@@ -104,14 +104,20 @@ def test_component_loadings_keep_feature_order_and_limit_top_five_by_absolute_va
     first = payload["component_loadings"][0]
 
     assert [item["feature"] for item in first["loadings"]] == list(feature_names)
+    assert len(first["top_loadings"]) == 10
     assert [item["feature"] for item in first["top_loadings"]] == [
         "TAG_1__lag_000min",
         "TAG_3__lag_000min",
+        "TAG_6__lag_000min",
+        "TAG_8__lag_000min",
         "TAG_4__lag_000min",
+        "TAG_7__lag_000min",
         "TAG_2__lag_000min",
+        "TAG_9__lag_000min",
         "TAG_5__lag_000min",
+        "TAG_0__lag_000min",
     ]
     assert first["top_loadings"][0]["loading"] == pytest.approx(-0.9)
-    assert "TAG_0__lag_000min" not in {
+    assert {"TAG_10__lag_000min", "TAG_11__lag_000min"}.isdisjoint(
         item["feature"] for item in first["top_loadings"]
-    }
+    )

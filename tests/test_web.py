@@ -1567,7 +1567,7 @@ def test_final_web_model_comparison_routes_only_read_saved_candidates(
         assert component["explained_variance_ratio"] == pytest.approx(
             trained_model.explained_variance_ratio[index]
         )
-        assert len(component["top_loadings"]) <= 5
+        assert len(component["top_loadings"]) == min(10, len(trained_model.feature_names))
         assert [
             item["absolute_loading"] for item in component["top_loadings"]
         ] == sorted(

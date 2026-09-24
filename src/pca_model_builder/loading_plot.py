@@ -62,7 +62,7 @@ def _component_loading_payload(
                     loadings,
                     key=lambda item: item["absolute_loading"],
                     reverse=True,
-                )[:5],
+                )[:10],
             }
         )
     return payload
