@@ -570,14 +570,51 @@ def test_model_quality_check_is_in_the_normal_state_candidate_stage() -> None:
 
 def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     html = web_model_results.INDEX_HTML
+    candidate_start = html.index('<div id="candidatePanel"')
+    model_start = html.index('<div id="modelPanel"', candidate_start)
+    candidate_source = html[candidate_start:model_start]
 
-    assert "#modelPanel #modelQualityStatus," in html
-    assert "#modelPanel #qualityButton {" in html
-    assert "#modelPanel #modelQualityStatus {" in html
+    for element_id in ("qualityButton", "modelQualityStatus", "currentTagQuality"):
+        assert f'id="{element_id}"' in candidate_source
+    assert "#candidatePanel #modelQualityStatus," in html
+    assert "#candidatePanel #qualityButton {" in html
+    assert "#candidatePanel #modelQualityStatus {" in html
     assert "height:42px;" in html
     assert "min-height:42px;" in html
-    assert "#modelPanel #modelQualityStatus { max-width:100%; }" in html
-    assert "#modelPanel #currentTagQuality { max-width:1200px; }" in html
+    assert "#candidatePanel #modelQualityStatus {" in html
+    assert "max-width:100%;" in html.split("#candidatePanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
+    assert "#candidatePanel #currentTagQuality { max-width:1200px; }" in html
+    assert "#modelPanel #modelQualityStatus" not in html
+    assert "#modelPanel #qualityButton" not in html
+    assert "#modelPanel #currentTagQuality" not in html
+
+
+def test_model_training_summary_reuses_quality_totals_and_clears_on_invalidation() -> None:
+    html = web_model_results.INDEX_HTML
+    summary_source = html.split(
+        "function renderModelTrainingDataSummary", 1
+    )[1].split("function invalidateQuality", 1)[0]
+    invalidate_source = html.split("function invalidateQuality", 1)[1].split(
+        "function firstOrderAlphaError", 1
+    )[0]
+    quality_source = html.split("function renderQuality(data)", 1)[1].split(
+        "function excludeConstantTag", 1
+    )[0]
+
+    assert "需重新执行建模质量检查后显示训练数据摘要。" in html
+    for field in (
+        "used_window_count",
+        "enabled_window_count",
+        "training_rows",
+        "covered_day_count",
+        "max_window_effective_share",
+    ):
+        assert f"totals.{field}" in summary_source
+    assert "renderModelTrainingDataSummary(data.training_window_totals)" in quality_source
+    assert "renderModelTrainingDataSummary(null" in invalidate_source
+    assert "需重新执行建模质量检查" in invalidate_source
+    assert "window_summaries" not in summary_source
+    assert "trainingWindowSummary" not in summary_source
 
 
 def test_model_quality_status_tracks_check_and_configuration_changes() -> None:

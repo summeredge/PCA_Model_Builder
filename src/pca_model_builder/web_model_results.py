@@ -351,19 +351,19 @@ _APPLE_DESIGN_STYLE = r"""
   .status.success { background:#e8f5e9; color:#0e6027; border-color:#24a148; }
   .status.warning, .notice { background:#fff8e1; color:#6f4e00; border-color:#f1c21b; }
   .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
-  #modelPanel #modelQualityStatus,
-  #modelPanel #qualityButton {
+  #candidatePanel #modelQualityStatus,
+  #candidatePanel #qualityButton {
     width:fit-content;
     height:42px;
     min-height:42px;
     justify-self:start;
   }
-  #modelPanel #modelQualityStatus {
+  #candidatePanel #modelQualityStatus {
     display:inline-flex;
     align-items:center;
+    max-width:100%;
   }
-  #modelPanel #modelQualityStatus { max-width:100%; }
-  #modelPanel #currentTagQuality { max-width:1200px; }
+  #candidatePanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:6px; }
   .tag-row.selected { background:#edf5ff; }
   .metric { padding:24px; }
@@ -967,8 +967,7 @@ def _stabilize_workbench_html(html: str) -> str:
     )
     training_data_summary = (
         '        <div id="modelTrainingDataSummary" class="notice">'
-        '训练数据摘要：已确认训练窗口及训练集质量/组成检查位于“正常状态候选”阶段；'
-        '当前模型仅使用已启用的 training_windows。'
+        '需重新执行建模质量检查后显示训练数据摘要。'
         '</div>\n'
     )
     advanced_rows = (

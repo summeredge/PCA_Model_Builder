@@ -3057,12 +3057,19 @@ function renderModelQualityStatus(status=state.qualityStatus,error=state.quality
   node.textContent=error?`${labels[status]}：${error}`:labels[status];
   node.className=`status ${status==="passed"?"success":status==="issues"||status==="changed"?"warning":status==="failed"?"error":"info"}`;
 }
+function renderModelTrainingDataSummary(totals=state.quality?.training_window_totals,message="需重新执行建模质量检查后显示训练数据摘要。") {
+  const node=el("modelTrainingDataSummary"); if(!node) return;
+  node.className="notice";
+  if(!totals||totals.training_rows===undefined) { node.textContent=message; return; }
+  node.textContent=`训练数据摘要：已使用 / 启用训练窗口：${totals.used_window_count??"—"} / ${totals.enabled_window_count??"—"}；有效训练样本：${totals.training_rows??"—"}；覆盖日期数：${totals.covered_day_count??"—"}；最大单窗口有效样本占比：${trainingCompositionShare(totals.max_window_effective_share)}。`;
+}
 function invalidateQuality(reason) {
   const checked=Boolean(state.quality); state.quality=null; state.qualityError=""; state.qualityStatus=reason&&checked?"changed":"unchecked";
   el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true;
   if(el("qualitySummary")) el("qualitySummary").innerHTML="";
   if(el("trainingCompositionReview")) { el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"执行建模质量检查后显示训练集组成。"; }
   if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"尚未执行建模质量检查。"; }
+  renderModelTrainingDataSummary(null,state.qualityStatus==="changed"?"训练窗口或训练配置已变更，需重新执行建模质量检查。":undefined);
   el("excludeAllConstants").disabled=true; renderModelQualityStatus(); renderCurrentTagQuality();
   if(reason) setStatus(`${reason}，请重新执行建模质量检查。`,"warning");
 }
@@ -3373,12 +3380,13 @@ el("qualityButton").addEventListener("click",async()=>{
   const tags=selectedTags(); if(tags.length<2) { setStatus("至少选择两个“连续输入” Tag。","warning"); return; }
   const button=el("qualityButton"); state.quality=null; state.qualityStatus="checking"; state.qualityError=""; el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("qualitySummary").innerHTML=""; el("qualityIssues").className="empty"; el("qualityIssues").textContent="正在执行建模质量检查。"; el("excludeAllConstants").disabled=true; renderCurrentTagQuality(); renderModelQualityStatus(); setBusy(button,true,"检查中…");
   el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent="正在执行建模质量检查。";
+  renderModelTrainingDataSummary(null,"正在执行建模质量检查。");
   try {
     const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
     const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; if(!data.tags.some(item=>item.tag===state.selectedTag)) state.selectedTag=data.tags[0]?.tag||null; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
     globalThis.showWorkflowStage?.("modelPanel");
     setStatus(readiness.normal_state.can_train&&readiness.exploratory.can_train?"建模质量检查通过，可以训练两类模型。":readiness.exploratory.can_train?"探索模型可训练；正常状态候选受当前工程量程排除影响不可训练。":"建模质量检查发现问题，请排除问题 Tag 或调整训练窗口后重新检查。",readiness.exploratory.can_train?"success":"error");
-  } catch(error) { state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
+  } catch(error) { state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelTrainingDataSummary(null,"建模质量检查失败，需重新执行建模质量检查。"); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
   finally { setBusy(button,false,""); }
 });
 
@@ -3600,6 +3608,7 @@ function renderQuality(data) {
   const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}};
   el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("正常状态训练",readiness.normal_state.can_train?"通过":"未通过")+metric("探索训练",readiness.exploratory.can_train?"通过":"未通过");
   renderTrainingComposition(data.training_window_totals||{});
+  renderModelTrainingDataSummary(data.training_window_totals);
   const container=el("qualityIssues"); container.className=""; container.replaceChildren();
   data.time_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; container.append(card); });
   (data.training_quality_warnings||[]).forEach(item=>{ const card=document.createElement("div"); card.className="issue-card"; const message=item.message||`${item.feature} 全局变化极小`; card.innerHTML=`<strong>${escapeHtml(item.code||"training_quality_warning")}</strong><span>${escapeHtml(message)}</span>`; container.append(card); });

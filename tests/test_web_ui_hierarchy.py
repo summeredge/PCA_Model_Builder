@@ -85,6 +85,7 @@ def test_static_panels_own_their_existing_controls() -> None:
         "maxLag": "modelPanel",
         "qualityButton": "candidatePanel",
         "modelQualityStatus": "candidatePanel",
+        "currentTagQuality": "candidatePanel",
         "modelQualityResults": "candidatePanel",
         "trainButton": "modelPanel",
         "validateButton": "validationPanel",
