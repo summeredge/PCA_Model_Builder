@@ -1004,20 +1004,23 @@ def _stabilize_workbench_html(html: str) -> str:
     candidate_panel = "\n".join(
         (
             '      <div id="candidatePanel" class="panel">',
-            _candidate_manager_html(),
             '        <div class="candidate-tool-tabs" role="tablist">',
             '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索 / 聚类推荐</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="statePanels" role="tab" aria-selected="false">聚类与性能辅助</button>',
             '        </div>',
             *candidate_panels,
+            _candidate_manager_html(),
             '      </div>',
         )
     )
     model_panel_lines = model_panel.rsplit("\n", 1)
     if len(model_panel_lines) != 2 or model_panel_lines[1] != "      </div>":
         raise ValueError("无法固定模型训练结果区域")
-    model_panel = f"{model_panel_lines[0]}\n{parameter_group}\n      </div>"
+    model_panel_content = model_panel_lines[0].split("\n", 1)
+    if len(model_panel_content) != 2:
+        raise ValueError("无法固定模型训练页面结构")
+    model_panel = f"{model_panel_content[0]}\n{parameter_group}\n{model_panel_content[1]}\n      </div>"
     static_main = "\n".join(
         (
             "  <main>",

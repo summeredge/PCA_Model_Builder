@@ -243,6 +243,19 @@ def test_operation_log_is_shared_by_all_workflow_stages() -> None:
     assert 'id="status"' not in html[config_start:candidate_start]
 
 
+def test_candidate_tools_precede_candidate_window_manager() -> None:
+    html = web_model_results.INDEX_HTML
+    candidate_start = html.index('<div id="candidatePanel"')
+    model_start = html.index('<div id="modelPanel"', candidate_start)
+    candidate_source = html[candidate_start:model_start]
+
+    assert candidate_source.index('id="trendPanel"') < candidate_source.index(
+        'id="stateExplorationPanel"'
+    ) < candidate_source.index('id="candidateWindows"')
+    assert candidate_source.count('id="candidateWindows"') == 1
+    assert candidate_source.count('id="excludedWindows"') == 1
+
+
 def test_final_web_preprocessing_notice_matches_schema5_invalid_row_policy() -> None:
     html = web_model_results.INDEX_HTML
 
@@ -297,14 +310,17 @@ def test_training_parameters_split_common_and_advanced_fields() -> None:
         assert html.count(f'id="{field_id}"') == 1
 
 
-def test_model_results_precede_training_configuration() -> None:
+def test_training_configuration_precedes_model_results() -> None:
     html = web_model_results.INDEX_HTML
     model_start = html.index('<div id="modelPanel"')
     validation_start = html.index('<div id="validationPanel"', model_start)
     model_source = html[model_start:validation_start]
 
-    assert model_source.index('id="modelContent"') < model_source.index(
-        'class="group training-configuration"'
+    assert model_source.index('class="group training-configuration"') < model_source.index(
+        'id="modelEmpty"'
+    )
+    assert model_source.index('id="trainButton"') < model_source.index(
+        'id="modelContent"'
     )
     assert model_source.index('id="modelMetrics"') < model_source.index(
         'id="trainingWindowSummary"'
