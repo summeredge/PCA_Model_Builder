@@ -201,6 +201,35 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
         assert behavior in html
 
 
+def test_final_web_uses_shared_control_and_responsive_layout_tokens() -> None:
+    html = web_model_results.INDEX_HTML
+
+    for token in (
+        "--control-height:42px;",
+        "--control-radius:6px;",
+        "--space-1:8px;",
+        "--space-2:12px;",
+        "--space-3:16px;",
+        "--space-4:24px;",
+        "--panel-padding:24px;",
+    ):
+        assert token in html
+    for rule in (
+        "height:var(--control-height);",
+        "display:inline-flex;",
+        "align-items:center;",
+        "justify-content:center;",
+        "min-width:0;",
+        "max-width:100%;",
+        "@media (max-width:1050px)",
+        "main { grid-template-columns:minmax(0,1fr); }",
+        "@media (max-width:760px)",
+        ".candidate-manager .row { grid-template-columns:minmax(0,1fr); }",
+        ".candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }",
+    ):
+        assert rule in html
+
+
 def test_operation_log_is_shared_by_all_workflow_stages() -> None:
     html = web_model_results.INDEX_HTML
 

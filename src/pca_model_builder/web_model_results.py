@@ -40,18 +40,20 @@ _FORM_ALIGNMENT_STYLE = r"""
 <style id="webFormAlignmentStyle">
   #engineeringPanel .batch-config {
     width:100%;
-    max-width:760px;
+    max-width:100%;
+    min-width:0;
     display:grid;
-    gap:10px;
+    gap:var(--space-2);
   }
   #engineeringPanel .batch-config-title {
     font-size:16px;
     font-weight:600;
+    line-height:1.4;
   }
   #engineeringPanel .batch-config .actions {
     display:grid;
     grid-template-columns:max-content minmax(260px,1fr) max-content max-content max-content;
-    gap:10px;
+    gap:var(--space-2);
     align-items:end;
   }
   #engineeringPanel .batch-config .actions > .download,
@@ -59,8 +61,8 @@ _FORM_ALIGNMENT_STYLE = r"""
     display:inline-flex;
     align-items:center;
     justify-content:center;
-    min-height:42px;
-    height:42px;
+    min-height:var(--control-height);
+    height:var(--control-height);
     white-space:nowrap;
   }
   #engineeringPanel .batch-config .actions > label.secondary {
@@ -76,15 +78,15 @@ _FORM_ALIGNMENT_STYLE = r"""
   }
   #engineeringPanel .batch-config #tagConfigFile {
     min-width:0;
-    min-height:42px;
-    height:42px;
-    padding:5px 8px;
+    min-height:var(--control-height);
+    height:var(--control-height);
+    padding:0 10px;
   }
-  #engineeringPanel .batch-config #importSummary { margin-top:10px; }
+  #engineeringPanel .batch-config #importSummary { margin-top:var(--space-2); }
 
-  #clusterPanel .group { gap:10px; }
+  #clusterPanel .group { gap:var(--space-2); }
   #clusterPanel .row {
-    column-gap:12px;
+    column-gap:var(--space-2);
     align-items:start;
   }
   #clusterPanel .row > label {
@@ -92,21 +94,23 @@ _FORM_ALIGNMENT_STYLE = r"""
     align-content:start;
   }
   #clusterPanel .row input {
-    min-height:42px;
-    height:42px;
+    min-height:var(--control-height);
+    height:var(--control-height);
   }
   #clusterPanel #clusterButton {
     align-self:end;
-    min-height:42px;
-    height:42px;
+    min-height:var(--control-height);
+    height:var(--control-height);
   }
 
   #engineeringPanel .detail-fields {
     display:grid;
-    gap:10px;
+    max-width:100%;
+    min-width:0;
+    gap:var(--space-2);
   }
   #engineeringPanel .detail-fields .row {
-    column-gap:12px;
+    column-gap:var(--space-2);
     align-items:start;
   }
   #engineeringPanel .detail-fields .row > label {
@@ -116,18 +120,19 @@ _FORM_ALIGNMENT_STYLE = r"""
   }
   #engineeringPanel .detail-fields input,
   #engineeringPanel .detail-fields select {
-    min-height:42px;
-    height:42px;
+    min-height:var(--control-height);
+    height:var(--control-height);
   }
   #engineeringPanel #tagComment {
     display:block;
-    min-height:70px;
+    height:84px;
+    min-height:84px;
     resize:vertical;
   }
   #engineeringPanel #tagRole { align-self:start; }
   #engineeringPanel #saveTagConfig {
-    min-height:42px;
-    margin-top:2px;
+    min-height:var(--control-height);
+    margin-top:var(--space-1);
   }
 
   @media (max-width:900px) {
@@ -163,6 +168,13 @@ _APPLE_DESIGN_STYLE = r"""
     --normal:#24a148;
     --attention:#f1c21b;
     --abnormal:#da1e28;
+    --control-height:42px;
+    --control-radius:6px;
+    --space-1:8px;
+    --space-2:12px;
+    --space-3:16px;
+    --space-4:24px;
+    --panel-padding:24px;
   }
 
   *, *::before, *::after { box-shadow:none !important; }
@@ -170,50 +182,60 @@ _APPLE_DESIGN_STYLE = r"""
     background:var(--bg);
     color:var(--text);
     font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;
-    font-size:17px;
+    font-size:16px;
     font-weight:400;
-    letter-spacing:-.374px;
-    line-height:1.47;
+    letter-spacing:0;
+    line-height:1.5;
   }
-  header { padding:12px 32px 10px; background:#000000; border-bottom:0; color:#ffffff; }
+  header { padding:16px clamp(20px,3vw,40px); background:#000000; border-bottom:0; color:#ffffff; }
   h1 { margin:0 0 4px; font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
-  h2 { font-size:34px; font-weight:600; line-height:1.1; letter-spacing:-.374px; }
+  h2 { font-size:34px; font-weight:600; line-height:1.1; letter-spacing:0; }
   h3 { font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
-  h4 { font-size:17px; font-weight:600; line-height:1.24; letter-spacing:-.374px; }
+  h4 { font-size:17px; font-weight:600; line-height:1.24; letter-spacing:0; }
   .subtitle, .help, label, .legend, .dp-legend { color:var(--muted); }
   .subtitle { color:#cccccc; font-size:14px; line-height:1.43; }
   .help, label, .legend, .dp-legend { font-size:14px; line-height:1.43; }
+  h2, h3, h4 { margin:0; }
   main {
     width:100%;
-    max-width:none;
-    margin:0;
-    gap:24px;
-    padding:24px 20px;
+    max-width:1800px;
+    margin:0 auto;
+    gap:var(--space-4);
+    padding:var(--space-4) clamp(16px,2.5vw,32px);
+    align-items:start;
   }
-  section { border:0; border-radius:0; padding:32px; background:var(--panel); }
+  section { min-width:0; border:0; border-radius:0; padding:var(--panel-padding); background:var(--panel); }
+  main > section, .results > *, .panel, .inner-panel, .group, .chart-card { min-width:0; }
   .controls, .controls .group { min-width:0; }
-  .controls { gap:20px; }
+  .controls { gap:var(--space-3); }
   .results { gap:24px; }
-  .row, .actions, .tag-toolbar, .detail-fields { gap:12px; }
+  .row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-2); align-items:end; }
+  .actions, .tag-toolbar, .detail-fields { gap:var(--space-2); }
+  .actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-start; }
   .inner-panel.active, .panel.active { gap:24px; }
   .group, .metric, .validation-box, .exploration-controls, .dp-inline-help {
     background:var(--panel);
     border:1px solid var(--line);
     border-radius:6px;
   }
-  .group { gap:12px; padding:24px; }
-  .group-title, .sub-title { font-size:14px; font-weight:600; line-height:1.29; }
+  .group { gap:var(--space-2); padding:var(--panel-padding); }
+  .group-title, .sub-title { margin:0; font-size:14px; font-weight:600; line-height:1.4; }
   .sub-title { border-top-color:var(--line); }
   input, select, textarea {
-    height:30px;
-    min-height:30px;
+    width:100%;
+    height:var(--control-height);
+    min-height:var(--control-height);
     background:var(--panel);
     border:1px solid var(--line);
-    border-radius:6px;
+    border-radius:var(--control-radius);
     color:var(--text);
-    font:inherit;
-    padding:4px 10px;
+    font:400 14px/20px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;
+    padding:0 12px;
   }
+  textarea { height:auto; min-height:84px; padding:10px 12px; line-height:1.45; resize:vertical; }
+  input[type=range] { height:24px; min-height:24px; padding:0; }
+  select[multiple] { height:auto; min-height:132px; padding:8px 10px; }
+  input[type=file] { padding:0 10px; }
   input:focus, select:focus, textarea:focus {
     outline:2px solid var(--accent);
     outline-offset:2px;
@@ -221,26 +243,34 @@ _APPLE_DESIGN_STYLE = r"""
   }
   button, .download {
     box-sizing:border-box;
-    height:30px;
-    min-height:30px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    vertical-align:middle;
+    height:var(--control-height);
+    min-height:var(--control-height);
     max-width:100%;
     border:1px solid var(--accent);
     background:var(--accent);
     color:#ffffff;
-    border-radius:4px;
+    border-radius:var(--control-radius);
     font:400 14px/20px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;
-    letter-spacing:-.374px;
-    padding:4px 12px;
+    letter-spacing:0;
+    padding:0 14px;
     text-decoration:none;
+    cursor:pointer;
   }
+  button:not(:disabled):hover, .download:hover { filter:brightness(.96); }
+  button:not(:disabled):active, .download:active { filter:brightness(.9); }
   button.secondary {
     background:var(--bg);
     border-color:var(--line-soft);
     color:var(--accent);
-    border-radius:4px;
+    border-radius:var(--control-radius);
   }
+  button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
   #inspectButton, #qualityButton, #saveTagConfig { background:var(--accent); border-color:var(--accent); color:#ffffff; }
-  .tag-toolbar button { min-height:36px; padding:8px 14px; font-size:14px; }
+  .tag-toolbar button { min-height:var(--control-height); padding:0 14px; font-size:14px; }
   #tagOptions {
     max-height:300px;
     padding:6px;
@@ -271,24 +301,33 @@ _APPLE_DESIGN_STYLE = r"""
   #engineeringPanel #tagRole,
   #engineeringPanel #tagComment {
     box-sizing:border-box;
-    height:42px;
-    min-height:42px;
+    height:var(--control-height);
+    min-height:var(--control-height);
   }
+  #engineeringPanel #tagComment { height:84px; min-height:84px; }
   button:focus-visible, .download:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .tabs, .inner-tabs {
+    min-width:0;
+    flex-wrap:wrap;
+    overflow-x:auto;
     gap:0;
     border-bottom:1px solid var(--line);
     padding-bottom:0;
     background:var(--bg);
   }
   .tab, .inner-tab {
+    display:inline-flex;
+    align-items:center;
+    flex:0 0 auto;
+    min-height:var(--control-height);
+    height:var(--control-height);
     border:0;
     border-bottom:2px solid transparent;
     border-radius:0;
     background:transparent;
     color:var(--text);
     font-size:14px;
-    letter-spacing:-.224px;
+    letter-spacing:0;
     padding:8px 15px;
   }
   .tab:hover, .inner-tab:hover { background:var(--accent-soft); }
@@ -347,12 +386,13 @@ _APPLE_DESIGN_STYLE = r"""
     outline-offset:2px;
   }
   @media (max-width:640px) {
-    header { padding:12px 16px 10px; }
+    header { padding:14px 16px; }
     h1 { font-size:21px; }
     main { padding:12px; }
-    section { padding:24px; }
+    section { padding:var(--panel-padding); }
     h2 { font-size:34px; }
-    button, .download, input, select, textarea { height:30px; min-height:30px; }
+    button, .download, input, select, textarea { height:var(--control-height); min-height:var(--control-height); }
+    textarea, select[multiple] { height:auto; }
     .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
 </style>
@@ -362,9 +402,9 @@ _APPLE_DESIGN_STYLE = r"""
 _WORKBENCH_UI_STYLE = r"""
 <style id="workbenchUiStyle">
   main { grid-template-columns:280px minmax(0,1fr); align-items:start; }
-  .workflow-sidebar { position:sticky; top:16px; display:grid; gap:14px; padding:20px; }
+  .workflow-sidebar { position:sticky; top:var(--space-3); display:grid; gap:var(--space-2); padding:var(--panel-padding); }
   .workflow-sidebar-title { margin:0; font-size:17px; font-weight:600; }
-  .workflow-steps { display:grid; gap:8px; }
+  .workflow-steps { display:grid; gap:var(--space-1); }
   .workflow-step {
     display:grid;
     grid-template-columns:30px minmax(0,1fr) auto;
@@ -372,7 +412,7 @@ _WORKBENCH_UI_STYLE = r"""
     width:100%;
     height:auto;
     min-height:76px;
-    padding:11px;
+    padding:12px;
     border:1px solid var(--line);
     border-radius:6px;
     background:var(--panel);
@@ -397,32 +437,34 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step-status { align-self:start; color:var(--muted); font-size:12px; white-space:nowrap; }
   .workflow-step.active .workflow-step-status { color:var(--accent); font-weight:600; }
   .workflow-step.complete .workflow-step-status { color:var(--green); }
-  .data-preparation-grid { display:grid; grid-template-columns:minmax(280px,.75fr) minmax(320px,1.25fr); gap:18px; }
+  .data-preparation-grid { display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:var(--space-3); align-items:stretch; }
   .data-preparation-grid > .group { align-content:start; }
   .candidate-manager, .training-configuration { border-color:#bfd7ef; }
-  .candidate-tool-tabs { display:flex; gap:8px; flex-wrap:wrap; border-bottom:1px solid var(--line); padding-bottom:10px; }
+  .candidate-manager .row { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .candidate-manager .row > * { min-width:0; }
+  .candidate-tool-tabs { display:flex; gap:var(--space-1); flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); padding-bottom:var(--space-2); }
   .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
-  .candidate-tool-panel { display:none; gap:14px; }
+  .candidate-tool-panel { display:none; gap:var(--space-3); }
   .candidate-tool-panel.active { display:grid; }
-  .panel.active { padding:4px 0 24px; }
-  .panel.active > h3 { margin:8px 0 0; }
+  .panel.active { padding:var(--space-1) 0 var(--space-4); }
+  .panel.active > h3 { margin:var(--space-1) 0 0; }
   .advanced-parameters {
     border-top:1px solid var(--line);
     border-bottom:1px solid var(--line);
-    padding:10px 0;
+    padding:var(--space-2) 0;
   }
   .advanced-parameters > summary {
     color:var(--text);
     cursor:pointer;
     font-weight:600;
   }
-  .advanced-parameters[open] > summary { margin-bottom:12px; }
-  .advanced-parameters > .row { margin-top:10px; }
+  .advanced-parameters[open] > summary { margin-bottom:var(--space-2); }
+  .advanced-parameters > .row { margin-top:var(--space-2); }
   .training-parameter-grid {
     display:grid;
     grid-template-columns:repeat(3,minmax(0,1fr));
-    gap:10px 12px;
+    gap:var(--space-2);
   }
   .training-parameter-grid > label,
   .filter-parameter-control,
@@ -430,10 +472,10 @@ _WORKBENCH_UI_STYLE = r"""
   .filter-parameter-control > label { min-width:0; }
   .model-name-field { grid-column:span 2; }
   .advanced-preprocessing-row { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .preprocessing-preview-controls { margin-top:10px; }
+  .preprocessing-preview-controls { margin-top:var(--space-2); }
   .preprocessing-preview-area,
   .preprocessing-preview-area #preprocessingPreview { width:100%; min-width:0; }
-  .preprocessing-preview-area #preprocessingPreview { margin-top:10px; }
+  .preprocessing-preview-area #preprocessingPreview { margin-top:var(--space-2); }
   .preprocessing-preview-area #preprocessingPreviewTagSelect {
     width:300px;
     min-width:0;
@@ -441,7 +483,7 @@ _WORKBENCH_UI_STYLE = r"""
   }
   .operation-log {
     display:grid;
-    gap:5px;
+    gap:var(--space-1);
     border-left:4px solid var(--accent);
   }
   .operation-log::before {
@@ -485,22 +527,50 @@ _WORKBENCH_UI_STYLE = r"""
   }
   #stateExplorationPanel .exploration-controls { border:0; }
   #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
-  @media (max-width:760px) {
-    main { grid-template-columns:minmax(0,1fr); padding:12px; gap:12px; }
-    .workflow-sidebar { position:static; padding:14px; }
+  .validation-box, .exploration-controls { align-items:end; }
+  .validation-box > button, .exploration-controls > button, .validation-box > .download, .exploration-controls > .download { align-self:end; }
+  .candidate-tool-tabs .candidate-tool-tab { height:var(--control-height); }
+  .panel > .actions, .inner-panel > .actions { margin-top:var(--space-1); }
+  .issue-card, .notice, .status, .metric, .chart-card, .table-wrap, .empty, .validation-box, .exploration-controls { min-width:0; }
+  .issue-card, .notice { padding:var(--space-2); }
+  .metric { min-height:104px; align-content:start; }
+  .chart-card { gap:var(--space-2); }
+  .chart-grid { align-items:stretch; }
+  .table-wrap { width:100%; }
+  @media (max-width:1050px) {
+    main { grid-template-columns:minmax(0,1fr); }
+    .workflow-sidebar { position:static; }
     .workflow-steps { grid-template-columns:repeat(5,minmax(190px,1fr)); overflow-x:auto; }
-    section { padding:18px; }
+  }
+  @media (max-width:760px) {
+    main { grid-template-columns:minmax(0,1fr); padding:var(--space-2); gap:var(--space-2); }
+    .workflow-sidebar { position:static; padding:var(--space-3); }
+    .workflow-steps { grid-template-columns:repeat(5,minmax(190px,1fr)); overflow-x:auto; overscroll-behavior-inline:contain; }
+    section { padding:var(--panel-padding); }
     .data-preparation-grid { grid-template-columns:minmax(0,1fr); }
+    .row { grid-template-columns:minmax(0,1fr); }
+    .candidate-manager .row { grid-template-columns:minmax(0,1fr); }
+    .candidate-manager .row > button { width:100%; }
+    .candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }
+    .candidate-tool-tabs > * { flex:0 0 auto; width:auto; }
     #engineeringPanel .detail-fields .row,
     .validation-box, .exploration-controls, .trend-controls,
     .condition-row { grid-template-columns:minmax(0,1fr); }
-    .panel .actions > * { width:100%; }
+    .actions { align-items:stretch; }
+    .panel .actions > *, .inner-panel .actions > * { width:100%; }
+    .tabs > *, .inner-tabs > * { flex:1 1 0; width:auto; min-width:0; }
+    .validation-box > *, .exploration-controls > * { width:100%; }
     .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .metric strong { font-size:22px; }
     .table-wrap { max-width:100%; }
   }
   @media (max-width:1100px) {
+    .training-parameter-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
+  @media (max-width:520px) {
     .training-parameter-grid { grid-template-columns:minmax(0,1fr); }
+    .metrics { grid-template-columns:minmax(0,1fr); }
+    .model-name-field { grid-column:auto; }
   }
 </style>
 """
