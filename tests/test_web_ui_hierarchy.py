@@ -59,9 +59,9 @@ def test_final_web_has_a_static_five_stage_workbench() -> None:
     ]
     assert [
         title
-        for title in ("数据准备", "正常状态候选", "模型训练", "模型验证", "模型发布")
+        for title in ("数据与Tag", "正常状态候选", "模型训练", "模型验证", "冻结与部署")
         if any(title in step["text"] for step in parser.workflow_steps)
-    ] == ["数据准备", "正常状态候选", "模型训练", "模型验证", "模型发布"]
+    ] == ["数据与Tag", "正常状态候选", "模型训练", "模型验证", "冻结与部署"]
     for panel_id in (
         "configPanel",
         "candidatePanel",
@@ -80,12 +80,12 @@ def test_static_panels_own_their_existing_controls() -> None:
         "tagOptions": "configPanel",
         "candidateWindows": "candidatePanel",
         "excludedWindows": "candidatePanel",
-        "trainingWindows": "modelPanel",
+        "trainingWindows": "candidatePanel",
         "sampleInterval": "modelPanel",
         "maxLag": "modelPanel",
-        "qualityButton": "modelPanel",
-        "modelQualityStatus": "modelPanel",
-        "modelQualityResults": "modelPanel",
+        "qualityButton": "candidatePanel",
+        "modelQualityStatus": "candidatePanel",
+        "modelQualityResults": "candidatePanel",
         "trainButton": "modelPanel",
         "validateButton": "validationPanel",
         "validationDecisionStatus": "validationPanel",

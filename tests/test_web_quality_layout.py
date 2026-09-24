@@ -544,17 +544,22 @@ def test_final_web_uses_read_only_candidate_status_and_non_training_conversion()
     assert "/decisions" not in html
 
 
-def test_model_quality_check_is_in_the_model_training_stage() -> None:
+def test_model_quality_check_is_in_the_normal_state_candidate_stage() -> None:
     html = web_model_results.INDEX_HTML
+    candidate_start = html.index('<div id="candidatePanel"')
     model_start = html.index('<div id="modelPanel"')
     model_end = html.index('<div id="validationPanel"')
+    candidate_source = html[candidate_start:model_start]
     model_source = html[model_start:model_end]
 
-    assert "执行建模质量检查" in model_source
-    assert 'id="modelQualityStatus"' in model_source
-    assert 'id="modelQualityResults"' in model_source
-    assert model_source.index('id="qualityButton"') < model_source.index('id="modelQualityStatus"')
-    assert model_source.index('id="modelQualityStatus"') < model_source.index('id="trainButton"')
+    assert "执行建模质量检查" in candidate_source
+    assert 'id="modelQualityStatus"' in candidate_source
+    assert 'id="modelQualityResults"' in candidate_source
+    assert candidate_source.index('id="qualityButton"') < candidate_source.index('id="modelQualityStatus"')
+    assert candidate_source.index('id="modelQualityStatus"') < candidate_source.index('id="trainingCompositionReview"')
+    assert 'id="modelTrainingDataSummary"' in model_source
+    assert 'id="trainButton"' in model_source
+    assert 'id="qualityButton"' not in model_source
     assert "上传后基础数据检查" in html
     assert "此处仅展示整体历史数据的时间轴与原始逐列检查结果" in html
     assert "column_profiles" in html

@@ -718,7 +718,7 @@ def test_final_web_page_exposes_state_exploration_workbench():
     ):
         assert element_id in html
     for label in (
-        "状态探索工作台",
+        "状态探索配置",
         "运行状态探索",
         "Cluster PC1 / PC2 与中心",
         "Cluster 时间轴",
@@ -749,6 +749,55 @@ def test_final_web_page_exposes_state_exploration_workbench():
     assert "state.trainingWindows.some(window=>window.source_ref===sourceRef)" in exploration_source
     assert '<select class="exploration-candidate-decision"' not in exploration_source
     assert 'decision.decision' not in exploration_source
+
+
+def test_final_web_workbench_orders_lifecycle_and_downgrades_exploratory_entries():
+    html = web_model_results.INDEX_HTML
+    workflow_labels = ["数据与Tag", "正常状态候选", "模型训练", "模型验证", "冻结与部署"]
+    workflow_positions = [
+        html.index(f'<span class="workflow-step-title">{label}</span>')
+        for label in workflow_labels
+    ]
+    assert workflow_positions == sorted(workflow_positions)
+
+    candidate = html[html.index('<div id="candidatePanel"') : html.index('<div id="modelPanel"')]
+    candidate_positions = [
+        candidate.index(item)
+        for item in (
+            'id="trendPanel"',
+            'id="stateExplorationPanel"',
+            'id="explorationClusterCandidates"',
+            'id="candidateWindows"',
+            'id="trainingWindows"',
+            'id="trainingCompositionReview"',
+        )
+    ]
+    assert candidate_positions == sorted(candidate_positions)
+    state_panel = candidate[
+        candidate.index('<div id="stateExplorationPanel"') : candidate.index(
+            '<details class="advanced-candidate-tools"'
+        )
+    ]
+    assert state_panel.index('id="explorationPerformanceCandidateCount"') < state_panel.index(
+        'id="stateExplorationButton"'
+    )
+    assert 'data-panel="statePanels"' in candidate
+
+    model = html[html.index('<div id="modelPanel"') : html.index('<div id="validationPanel"')]
+    for field_id in (
+        'id="modelName"',
+        'id="sampleInterval"',
+        'id="maxLag"',
+        'id="varianceThreshold"',
+        'id="components"',
+        'id="modelTrainingDataSummary"',
+        'id="trainButton"',
+        'id="modelContent"',
+    ):
+        assert field_id in model
+    assert model.index('id="trainButton"') < model.index('id="modelContent"')
+    assert model.index('id="trainButton"') < model.index('id="trainExploratoryButton"')
+    assert 'class="advanced-parameters exploratory-model-tools"' in model
 
 
 def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
@@ -1842,9 +1891,9 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
         assert f'id="{field_id}"' in training
         assert f'id="{field_id}"' not in advanced
         assert html.count(f'id="{field_id}"') == 1
-    assert training.index('id="maxLag"') < training.index('id="lagStep"') < training.index(
-        'id="varianceThreshold"'
-    ) < training.index('id="components"') < training.index('id="modelName"')
+    assert training.index('id="modelName"') < training.index('id="maxLag"') < training.index(
+        'id="lagStep"'
+    ) < training.index('id="varianceThreshold"') < training.index('id="components"')
     assert 'class="model-name-field"' in training
     assert advanced.index('id="resamplingMethod"') < advanced.index(
         'id="gapThreshold"'

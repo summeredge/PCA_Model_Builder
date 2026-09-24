@@ -439,7 +439,7 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step.complete .workflow-step-status { color:var(--green); }
   .data-preparation-grid { display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:var(--space-3); align-items:stretch; }
   .data-preparation-grid > .group { align-content:start; }
-  .candidate-manager, .training-configuration { border-color:#bfd7ef; }
+  .candidate-manager, .training-preparation, .training-configuration { border-color:#bfd7ef; }
   .candidate-manager .row { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .candidate-manager .row > * { min-width:0; }
   .candidate-tool-tabs { display:flex; gap:var(--space-1); flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); padding-bottom:var(--space-2); }
@@ -447,6 +447,10 @@ _WORKBENCH_UI_STYLE = r"""
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   .candidate-tool-panel { display:none; gap:var(--space-3); }
   .candidate-tool-panel.active { display:grid; }
+  .advanced-candidate-tools { border-top:1px solid var(--line); padding-top:var(--space-2); }
+  .advanced-candidate-tools > summary { color:var(--muted); cursor:pointer; font-size:13px; font-weight:600; }
+  .advanced-candidate-tools .candidate-tool-tabs { margin-top:var(--space-2); }
+  .training-preparation { display:grid; gap:var(--space-2); }
   .panel.active { padding:var(--space-1) 0 var(--space-4); }
   .panel.active > h3 { margin:var(--space-1) 0 0; }
   .advanced-parameters {
@@ -597,6 +601,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   };
   document.querySelectorAll(".candidate-tool-tab").forEach(button => button.addEventListener("click", () => {
+    button.closest("details")?.setAttribute("open", "");
     globalThis.showWorkflowStage("candidatePanel");
     showCandidateTool(button.dataset.panel);
   }));
@@ -815,8 +820,8 @@ def _row_containing_unique_field(html: str, field_id: str, description: str) -> 
 
 def _candidate_manager_html() -> str:
     return """      <div class="group candidate-manager">
-        <div class="group-title">候选窗口</div>
-        <div class="help">手工选择、趋势选择、聚类推荐和性能辅助统一进入此列表。候选默认待确认，不会自动参与训练。</div>
+        <div class="group-title">正常状态候选窗口</div>
+        <div class="help">手工选择、趋势选择和状态探索候选统一进入此列表。候选默认待确认，不会自动参与训练。</div>
         <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
         <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
@@ -827,11 +832,11 @@ def _candidate_manager_html() -> str:
 
 def _workflow_sidebar_html() -> str:
     steps = (
-        ("configPanel", "数据准备", "上传数据并完成 Tag 配置"),
+        ("configPanel", "数据与Tag", "上传数据并完成 Tag 配置"),
         ("candidatePanel", "正常状态候选", "确认候选后生成训练窗口"),
         ("modelPanel", "模型训练", "质量检查后训练 DPCA"),
-        ("validationPanel", "模型验证", "执行独立验证并记录结论"),
-        ("releasePanel", "模型发布", "冻结并导出部署包"),
+        ("validationPanel", "模型验证", "独立验证窗口并记录工程师结论"),
+        ("releasePanel", "冻结与部署", "仅已验证模型可冻结并导出部署包"),
     )
     buttons = "\n".join(
         "        <button type=\"button\" class=\"workflow-step{}\" data-panel=\"{}\" role=\"tab\" aria-selected=\"{}\"><span class=\"workflow-step-number\">{}</span><span class=\"workflow-step-copy\"><span class=\"workflow-step-title\">{}</span><span class=\"workflow-step-next\">下一步：{}</span></span><span class=\"workflow-step-status\">{}</span></button>".format(
@@ -906,6 +911,19 @@ def _stabilize_workbench_html(html: str) -> str:
         + training_windows_anchor
         + training_section
     )
+    training_window_start = _unique_anchor_index(
+        parameter_group, training_windows_anchor, "已确认训练窗口"
+    )
+    training_parameter_start = _row_containing_unique_field(
+        parameter_group, "sampleInterval", "训练参数"
+    )[0]
+    training_data_section = parameter_group[
+        training_window_start:training_parameter_start
+    ].rstrip()
+    parameter_group = (
+        parameter_group[:training_window_start]
+        + parameter_group[training_parameter_start:]
+    )
     parameter_group = parameter_group.replace(
         '<div class="group">', '<div class="group training-configuration">', 1
     )
@@ -923,8 +941,18 @@ def _stabilize_workbench_html(html: str) -> str:
     )
     if quality_start == -1:
         raise ValueError("无法固定Web工作台结构：建模质量检查标题")
+    training_action_start = _unique_anchor_index(
+        parameter_group,
+        '        <div class="actions"><button id="trainExploratoryButton"',
+        "训练操作",
+    )
+    quality_section = parameter_group[quality_start:training_action_start].rstrip()
+    training_actions_section = parameter_group[training_action_start:].rstrip()
     common_rows = (
         '        <div class="training-parameter-grid">\n'
+        '          <div class="model-name-field">\n'
+        f'            {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
+        '          </div>\n'
         f'          {_label_for_unique_field(parameter_group, "sampleInterval", "目标采样周期")}\n'
         f'          {_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}\n'
         '          <div class="filter-parameter-control">\n'
@@ -935,10 +963,13 @@ def _stabilize_workbench_html(html: str) -> str:
         f'          {_label_for_unique_field(parameter_group, "lagStep", "Lag步长")}\n'
         f'          {_label_for_unique_field(parameter_group, "varianceThreshold", "累计解释率")}\n'
         f'          {_label_for_unique_field(parameter_group, "components", "主元数")}\n'
-        '          <div class="model-name-field">\n'
-        f'            {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
-        '          </div>\n'
         '        </div>\n'
+    )
+    training_data_summary = (
+        '        <div id="modelTrainingDataSummary" class="notice">'
+        '训练数据摘要：已确认训练窗口及训练集质量/组成检查位于“正常状态候选”阶段；'
+        '当前模型仅使用已启用的 training_windows。'
+        '</div>\n'
     )
     advanced_rows = (
         '        <details class="advanced-parameters">\n'
@@ -949,7 +980,32 @@ def _stabilize_workbench_html(html: str) -> str:
         + f'          <div class="preprocessing-preview-area">{_element_with_unique_id(parameter_group, "preprocessingPreview", "div", "预处理预览区域")}</div>\n'
         + '        </details>\n'
     )
-    parameter_group = parameter_group[: field_rows["sampleInterval"][0]] + common_rows + advanced_rows + parameter_group[quality_start:]
+    parameter_group = (
+        parameter_group[: field_rows["sampleInterval"][0]]
+        + common_rows
+        + training_data_summary
+        + advanced_rows
+        + training_actions_section
+    )
+    exploratory_button = _element_with_unique_id(
+        parameter_group, "trainExploratoryButton", "button", "探索模型入口"
+    )
+    parameter_group = parameter_group.replace(exploratory_button, "", 1)
+    exploratory_tools = (
+        '        <details class="advanced-parameters exploratory-model-tools">\n'
+        '          <summary>高级操作：建立探索模型</summary>\n'
+        '          <div class="help">探索模型仅用于兼容保留的状态空间/聚类辅助路径，不属于正常状态主流程。</div>\n'
+        f'          <div class="actions">{exploratory_button}</div>\n'
+        '          <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>\n'
+        '          <div class="notice">探索模型不能执行独立验证，也不能作为正常状态模型。</div>\n'
+        '        </details>'
+    )
+    exploratory_notice = (
+        '        <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>'
+    )
+    if parameter_group.count(exploratory_notice) != 1:
+        raise ValueError("无法固定Web工作台结构：探索模型入口")
+    parameter_group = parameter_group.replace(exploratory_notice, exploratory_tools, 1)
     if 'id="candidateWindows"' in parameter_group:
         raise ValueError("无法固定候选窗口或训练参数区域")
     status_area = (status_marker + status_area).replace(
@@ -981,16 +1037,71 @@ def _stabilize_workbench_html(html: str) -> str:
     performance_panel = results[panel_positions[5] : panel_positions[6]].rstrip()
     validation_panel = results[panel_positions[6] :].rstrip()
 
+    state_exploration_button = _element_with_unique_id(
+        state_panel, "stateExplorationButton", "button", "运行状态探索按钮"
+    )
+    state_panel = state_panel.replace(state_exploration_button, "", 1)
+    exploration_controls_end = (
+        '          </div>\n'
+        '        </div>\n'
+        '        <div id="explorationEmpty"'
+    )
+    if state_panel.count(exploration_controls_end) != 1:
+        raise ValueError("无法固定Web工作台结构：状态探索配置")
+    state_panel = state_panel.replace(
+        exploration_controls_end,
+        f'          </div>\n'
+        f'          <div class="actions">{state_exploration_button}</div>\n'
+        '        </div>\n'
+        '        <div id="explorationEmpty"',
+        1,
+    )
+    state_panel = state_panel.replace(
+        '<div class="group-title">状态探索工作台</div>',
+        '<div class="group-title">状态探索配置</div>',
+        1,
+    )
+    state_panel = state_panel.replace(
+        '探索结果仅用于运行状态浏览和候选窗口比较。',
+        '点击“运行状态探索”后查看完整探索证据；探索结果只提供候选，不自动判定正常状态。',
+        1,
+    )
+
     config_panel = config_panel.replace(
         '>\n',
         f'>\n      <div class="data-preparation-grid">\n{upload_group}\n{tag_group}\n      </div>\n',
         1,
     )
-    candidate_panels = []
-    for panel in (trend_panel, state_panel, cluster_panel, performance_panel):
-        candidate_panels.append(panel.replace('class="panel"', 'class="candidate-tool-panel"', 1))
+    candidate_panels = [
+        panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
+        for panel in (trend_panel, state_panel)
+    ]
     candidate_panels[0] = candidate_panels[0].replace(
         'class="candidate-tool-panel"', 'class="candidate-tool-panel active"', 1
+    )
+    advanced_candidate_panels = [
+        panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
+        for panel in (cluster_panel, performance_panel)
+    ]
+    advanced_candidate_tools = "\n".join(
+        (
+            '        <details class="advanced-candidate-tools">',
+            '          <summary>高级辅助：独立聚类与性能筛选</summary>',
+            '          <div class="candidate-tool-tabs" role="tablist">',
+            '            <button type="button" class="candidate-tool-tab" data-panel="statePanels" role="tab" aria-selected="false">打开高级辅助</button>',
+            '          </div>',
+            *advanced_candidate_panels,
+            '        </details>',
+        )
+    )
+    training_preparation_panel = "\n".join(
+        (
+            '      <div class="group training-preparation">',
+            '        <div class="group-title">已确认训练窗口及训练集质量/组成检查</div>',
+            training_data_section,
+            quality_section,
+            '      </div>',
+        )
     )
 
     validated_download = _element_with_unique_id(
@@ -1003,9 +1114,9 @@ def _stabilize_workbench_html(html: str) -> str:
         freeze_box, "", 1
     )
     release_panel = f"""      <div id="releasePanel" class="panel">
-        <div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结并导出部署包。</div>
+        <div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结与部署。</div>
         <div id="releaseContent" hidden>
-          <h3>模型发布</h3>
+          <h3>冻结与部署</h3>
           <div class="notice">冻结与部署导出沿用现有流程；frozen 表示工程冻结，不表示已经部署。</div>
           <div class="actions">{validated_download}</div>
 {freeze_box}
@@ -1015,12 +1126,13 @@ def _stabilize_workbench_html(html: str) -> str:
         (
             '      <div id="candidatePanel" class="panel">',
             '        <div class="candidate-tool-tabs" role="tablist">',
-            '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
-            '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索 / 聚类推荐</button>',
-            '          <button type="button" class="candidate-tool-tab" data-panel="statePanels" role="tab" aria-selected="false">聚类与性能辅助</button>',
+            '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势与分析范围</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
             '        </div>',
             *candidate_panels,
+            advanced_candidate_tools,
             _candidate_manager_html(),
+            training_preparation_panel,
             '      </div>',
         )
     )
