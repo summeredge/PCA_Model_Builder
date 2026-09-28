@@ -1054,8 +1054,8 @@ def _stabilize_workbench_html(html: str) -> str:
         '      <div class="group training-configuration">\n'
         '        <div class="group-title">PCA 模型配置与训练</div>\n'
         + training_data_summary
-        + quality_section
         + preprocessing_preview_section
+        + quality_section
         + model_configuration_rows
         + training_actions_section
     )

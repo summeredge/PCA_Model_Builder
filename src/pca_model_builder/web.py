@@ -3032,7 +3032,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, explorationRevision:0, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -3050,7 +3050,7 @@ function tagConfigPayload() { return state.registry; }
 function qualityFor(tag) { return state.quality?.tags?.find(item=>item.tag===tag)||null; }
 function setTagExclusion(tag, record) { state.registry[tag]={...state.registry[tag],role:"exclude"}; state.selectedModelTags.delete(tag); state.excludedTags=[...state.excludedTags.filter(value=>value.tag!==tag),record]; }
 function reconcileExcludedTags() { const candidates=new Set(state.inspection?.numeric_columns||[]); const existing=new Map(state.excludedTags.map(record=>[record.tag,record])); state.excludedTags=[...candidates].filter(tag=>state.registry[tag]?.role==="exclude").map(tag=>existing.get(tag)||{tag,reason:"manual_exclude"}); }
-function confirmSuggestedExclusion(profile) { if(!state.inspection?.numeric_columns.includes(profile.tag)||!profile.suggestion) return; setTagExclusion(profile.tag,{tag:profile.tag,reason:profile.suggestion.reason}); if(state.selectedTag===profile.tag) selectTag(profile.tag); invalidateQuality(`${profile.tag}已确认排除`); renderBasicInspection(state.inspection); renderTagList(); }
+function confirmSuggestedExclusion(profile) { if(!state.inspection?.numeric_columns.includes(profile.tag)||!profile.suggestion) return; setTagExclusion(profile.tag,{tag:profile.tag,reason:profile.suggestion.reason}); if(state.selectedTag===profile.tag) selectTag(profile.tag); reconcileStateFilterConditions(); invalidateModellingResults(`${profile.tag}已确认排除`); renderBasicInspection(state.inspection); renderTagList(); }
 function renderTagList() {
   if(!state.inspection) return;
   const performanceTag=explorationPerformanceTag();
@@ -3061,7 +3061,7 @@ function renderTagList() {
     if(state.showProblems&&status==="usable") return;
     const row=document.createElement("div"); row.className=`tag-row ${state.selectedTag===tag?"selected":""}`; row.dataset.tag=tag;
     const input=document.createElement("input"); input.type="checkbox"; input.value=tag; input.checked=tag!==performanceTag&&state.selectedModelTags.has(tag)&&config.role==="continuous_input"; input.disabled=tag===performanceTag;
-    input.addEventListener("change",()=>{ if(input.checked) state.selectedModelTags.add(tag); else state.selectedModelTags.delete(tag); invalidateExploration("建模Tag已修改"); invalidateQuality("建模Tag已修改"); selectTag(tag); });
+    input.addEventListener("change",()=>{ if(input.checked) state.selectedModelTags.add(tag); else state.selectedModelTags.delete(tag); invalidateModellingResults("建模Tag已修改"); selectTag(tag); });
     const name=document.createElement("span"); name.className="tag-name"; name.title=tag; name.textContent=tag;
     const badge=document.createElement("span"); badge.className=`tag-state ${status}`; badge.textContent=config.role!=="continuous_input"?displayUiValue(config.role):displayUiValue(status);
     row.append(input,name,badge); row.addEventListener("click",event=>{ if(event.target!==input) selectTag(tag); }); list.append(row);
@@ -3077,7 +3077,10 @@ function saveCurrentTagConfig() {
   if(!state.selectedTag) throw new Error("请先选择Tag。");
   const tag=state.selectedTag, previousRole=state.registry[tag]?.role; const config={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:el("tagComment").value.trim(),engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")}; state.registry[tag]=config;
   if(config.role==="exclude"&&previousRole!=="exclude") setTagExclusion(tag,{tag,reason:"manual_exclude"}); else { if(previousRole==="exclude"&&config.role==="continuous_input") state.selectedModelTags.add(tag); else if(config.role!=="continuous_input") state.selectedModelTags.delete(tag); reconcileExcludedTags(); }
-  reconcileStateFilterConditions(); invalidateExploration("Tag工程配置或角色已修改"); invalidateQuality("Tag工程配置或角色已修改"); renderTagList();
+  reconcileStateFilterConditions(); invalidateModellingResults("Tag工程配置或角色已修改"); renderTagList();
+}
+function invalidateModellingResults(reason) {
+  invalidateExploration(reason); invalidatePreprocessingPreview(); invalidateQuality(reason||"状态探索配置已修改");
 }
 function renderModelQualityStatus(status=state.qualityStatus,error=state.qualityError) {
   const node=el("modelQualityStatus"); if(!node) return;
@@ -3108,8 +3111,8 @@ function addStateFilterCondition(column="") {
   const row=document.createElement("div"); row.className="condition-row";
   const columnLabel=document.createElement("label"); columnLabel.textContent="状态过滤列"; const select=document.createElement("select"); select.dataset.field="column"; columns.forEach(tag=>{ const option=document.createElement("option"); option.value=tag; option.textContent=tag; option.selected=tag===column; select.append(option); }); columnLabel.append(select);
   const minimum=formField("下限（可空）","minimum","number"), maximum=formField("上限（可空）","maximum","number");
-  const remove=document.createElement("button"); remove.type="button"; remove.className="secondary"; remove.textContent="删除"; remove.addEventListener("click",()=>{ row.remove(); invalidateExploration("状态过滤条件已修改"); });
-  const notify=()=>invalidateExploration("状态过滤条件已修改");
+  const remove=document.createElement("button"); remove.type="button"; remove.className="secondary"; remove.textContent="删除"; remove.addEventListener("click",()=>{ row.remove(); invalidateModellingResults("状态过滤条件已修改"); });
+  const notify=()=>invalidateModellingResults("状态过滤条件已修改");
   select.addEventListener("change",notify); minimum.querySelector("input").addEventListener("change",notify); maximum.querySelector("input").addEventListener("change",notify);
   row.append(columnLabel,minimum,maximum,remove); el("stateFilterConditions").append(row);
 }
@@ -3128,15 +3131,23 @@ function commonPayload() { const gap=el("gapThreshold").value, filterMethod=el("
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function trainingWindowsPayload() { return state.trainingWindows; }
 function updateQualityButtonAvailability() { el("qualityButton").disabled=!state.inspection||!state.trainingWindows.some(window=>window.enabled); }
+function invalidatePreprocessingPreview(message="训练窗口或共享预处理配置已变化，请重新预览。") {
+  if(!state.preprocessingPreview&&!state.preprocessingPreviewTag) return;
+  state.preprocessingPreview=null; state.preprocessingPreviewTag=null;
+  const node=el("preprocessingPreview"); if(!node) return;
+  node.className="muted"; node.textContent=message;
+}
 function renderPreprocessingPreviewWindow() {
   const select=el("preprocessingPreviewWindow"), button=el("preprocessingPreviewButton"); if(!select||!button) return;
   const enabled=state.trainingWindows.filter(window=>window.enabled);
-  if(!enabled.some(window=>window.id===state.preprocessingPreviewWindowId)) state.preprocessingPreviewWindowId=enabled[0]?.id||null;
+  if(!state.preprocessingPreviewWindowId&&enabled.length) state.preprocessingPreviewWindowId=enabled[0].id;
+  if(state.preprocessingPreviewWindowId&&!enabled.some(window=>window.id===state.preprocessingPreviewWindowId)) { state.preprocessingPreviewWindowId=enabled[0]?.id||null; invalidatePreprocessingPreview("当前预览的训练窗口已删除或禁用，请重新预览。"); }
   select.replaceChildren();
   if(!enabled.length) { const option=document.createElement("option"); option.value=""; option.textContent="没有启用的训练窗口"; option.disabled=true; option.selected=true; select.append(option); }
   else enabled.forEach(window=>{ const option=document.createElement("option"); option.value=window.id; option.textContent=`${window.id}　${displayTime(window.start)} ～ ${displayTime(window.end)}`; option.selected=window.id===state.preprocessingPreviewWindowId; select.append(option); });
   select.disabled=!enabled.length; button.disabled=!enabled.length;
-  if(state.preprocessingPreviewWindowId) { state.preprocessingPreview=null; state.preprocessingPreviewTag=null; el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="训练窗口已变化，请重新预览。"; }
+  const current=state.trainingWindows.find(window=>window.id===state.preprocessingPreviewWindowId); const preview=state.preprocessingPreview;
+  if(preview&&(!current||current.start!==preview.start||current.end!==preview.end)) invalidatePreprocessingPreview("预览训练窗口的起止时间已变化，请重新预览。");
 }
 function selectedPreprocessingPreviewWindow() { return state.trainingWindows.find(window=>window.enabled&&window.id===state.preprocessingPreviewWindowId)||state.trainingWindows.find(window=>window.enabled)||null; }
 function windowSummary(id) { return state.trainingWindowSummary.find(item=>item.id===id)||{}; }
@@ -3249,8 +3260,8 @@ function performanceConditionPayload() {
   const rows=[...document.querySelectorAll('#performanceConditions .condition-row')]; if(!rows.length) throw new Error("请至少添加一个性能条件。");
   return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
 }
-function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>state.selectedModelTags.delete(tag)); invalidateQuality("性能筛选列已从建模Tag取消"); renderTagList(); }
-function syncExplorationPerformanceSelection() { const performanceTag=explorationPerformanceTag(); const changed=performanceTag&&state.selectedModelTags.delete(performanceTag); if(changed) invalidateQuality("状态探索性能 Tag 已从建模Tag取消"); if(state.inspection) renderTagList(); }
+function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>state.selectedModelTags.delete(tag)); invalidateModellingResults("性能筛选列已从建模Tag取消"); renderTagList(); }
+function syncExplorationPerformanceSelection() { const performanceTag=explorationPerformanceTag(); const changed=performanceTag&&state.selectedModelTags.delete(performanceTag); if(changed) invalidateModellingResults("状态探索性能 Tag 已从建模Tag取消"); if(state.inspection) renderTagList(); }
 function stateExplorationPayload() {
   const performanceTag=explorationPerformanceTag(); syncExplorationPerformanceSelection(); const tags=selectedTags().filter(tag=>tag!==performanceTag); if(tags.length<2) throw new Error("至少选择两个连续 Tag。");
   const payload={...commonPayload(),tags,exploration_start:el("explorationStart").value,exploration_end:el("explorationEnd").value,exploration_config:{cluster_count:numberValue("explorationClusterCount"),random_state:numberValue("explorationRandomState"),candidate_count_per_cluster:numberValue("explorationCandidateCount"),minimum_candidate_duration_minutes:numberValue("explorationMinimumDuration"),maximum_plot_points:numberValue("explorationMaximumPlotPoints")}};
@@ -3342,14 +3353,16 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
  }
 
 function resetExplorationRegion() { state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; renderExplorationRegionControls(); }
+function confirmedExplorationSourceRefs() { return new Set(state.trainingWindows.map(window=>String(window.source_ref||"")).filter(Boolean)); }
 function invalidateExploration(reason) {
-  if(!state.exploration&&!state.preferredRegion) return;
+  state.explorationRevision+=1;
+  if(!state.exploration&&!state.preferredRegion) return 0;
   state.exploration=null; resetExplorationRegion();
   const empty=el("explorationEmpty"), content=el("explorationContent"); if(empty&&content) { content.hidden=true; empty.hidden=false; empty.textContent=`${reason||"配置已修改"}，请重新运行状态探索。`; }
   ["explorationClusterCandidates","explorationPerformanceCandidates","explorationPreferredRegionCandidates"].forEach(id=>{ const node=el(id); if(node) node.replaceChildren(); });
-  const removed=state.candidateWindows.filter(window=>String(window.source_ref||"").startsWith("state-exploration-")).length;
-  state.candidateWindows=state.candidateWindows.filter(window=>!String(window.source_ref||"").startsWith("state-exploration-")); renderCandidateWindows();
-  invalidateQuality(reason||"状态探索配置已修改");
+  const confirmed=confirmedExplorationSourceRefs();
+  const kept=state.candidateWindows.filter(window=>!String(window.source_ref||"").startsWith("state-exploration-")||confirmed.has(window.source_ref)||candidateTrainingWindows(window).length>0);
+  const removed=state.candidateWindows.length-kept.length; state.candidateWindows=kept; if(removed) renderCandidateWindows();
   return removed;
 }
 async function updateExplorationPreferredRegion(ellipses) {
@@ -3413,12 +3426,12 @@ el("inspectButton").addEventListener("click", async () => {
 });
 
 el("tagSearch").addEventListener("input",renderTagList);
-el("selectAllTags").addEventListener("click",()=>{ const performanceTag=explorationPerformanceTag(); state.selectedModelTags=new Set((state.inspection?.numeric_columns||[]).filter(tag=>tag!==performanceTag&&(state.registry[tag]?.role||"continuous_input")==="continuous_input")); invalidateExploration("建模Tag已修改"); invalidateQuality("建模Tag已修改"); renderTagList(); });
-el("clearAllTags").addEventListener("click",()=>{ state.selectedModelTags.clear(); invalidateExploration("建模Tag已修改"); invalidateQuality("建模Tag已修改"); renderTagList(); });
+el("selectAllTags").addEventListener("click",()=>{ const performanceTag=explorationPerformanceTag(); state.selectedModelTags=new Set((state.inspection?.numeric_columns||[]).filter(tag=>tag!==performanceTag&&(state.registry[tag]?.role||"continuous_input")==="continuous_input")); invalidateModellingResults("建模Tag已修改"); renderTagList(); });
+el("clearAllTags").addEventListener("click",()=>{ state.selectedModelTags.clear(); invalidateModellingResults("建模Tag已修改"); renderTagList(); });
 el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.showProblems; el("showProblemTags").textContent=state.showProblems?"显示全部Tag":"只看问题Tag"; renderTagList(); });
 el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
 document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".inner-tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".inner-panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.inner)); }));
-["sampleInterval","resamplingMethod","filterMethod","firstOrderAlpha","smoothingWindow","gapThreshold","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>{ invalidateExploration("预处理参数已修改"); invalidateQuality("预处理参数已修改"); }));
+["sampleInterval","resamplingMethod","filterMethod","firstOrderAlpha","smoothingWindow","gapThreshold","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>{ invalidateModellingResults("预处理参数已修改"); }));
 function syncFilterControls() { const filterMethod=el("filterMethod").value, firstOrder=filterMethod==="first_order", trailingMean=filterMethod==="trailing_mean"; el("firstOrderAlpha").disabled=!firstOrder; el("firstOrderAlpha").required=firstOrder; el("firstOrderAlpha").closest("label").hidden=!firstOrder; el("smoothingWindow").disabled=!trailingMean; el("smoothingWindow").closest("label").hidden=!trailingMean; }
 el("filterMethod").addEventListener("change",syncFilterControls);
 syncFilterControls();
@@ -3443,7 +3456,7 @@ el("applyConfigButton").addEventListener("click",()=>{
   if(overwrites&&!confirm("导入内容将覆盖页面已有的非空字段，是否继续？")) return;
   Object.entries(state.importPreview.provided_configs).forEach(([tag,config])=>{ Object.entries(config).forEach(([key,value])=>{ if(value!==null&&value!=="") state.registry[tag][key]=value; }); });
   for(const tag of [...state.selectedModelTags]) { if((state.registry[tag]?.role||"continuous_input")!=="continuous_input") state.selectedModelTags.delete(tag); } reconcileExcludedTags();
-  state.importPreview=null; el("applyConfigButton").disabled=true; if(state.selectedTag) selectTag(state.selectedTag); reconcileStateFilterConditions(); invalidateExploration("XLSX工程配置已应用"); invalidateQuality("XLSX工程配置已应用"); renderTagList();
+  state.importPreview=null; el("applyConfigButton").disabled=true; if(state.selectedTag) selectTag(state.selectedTag); reconcileStateFilterConditions(); invalidateModellingResults("XLSX工程配置已应用"); renderTagList();
 });
 el("exportConfigButton").addEventListener("click",async()=>{
   try {
@@ -3495,7 +3508,7 @@ el("preprocessingPreviewButton").addEventListener("click",async()=>{
   const alphaError=firstOrderAlphaError(); if(alphaError) { state.preprocessingPreview=null; state.preprocessingPreviewTag=null; el("preprocessingPreview").className="status error"; el("preprocessingPreview").textContent=alphaError; return; }
   const window=selectedPreprocessingPreviewWindow(); if(!window) { state.preprocessingPreview=null; state.preprocessingPreviewTag=null; el("preprocessingPreview").className="status error"; el("preprocessingPreview").textContent="没有启用的训练窗口，无法预览预处理。"; setStatus("请先在“正常状态候选”确认并启用至少一个训练窗口。","warning"); return; }
   const button=el("preprocessingPreviewButton"); setBusy(button,true,"预览中…");
-  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags:[],start:window.start,end:window.end})}); const tags=preprocessingPreviewTags(data); if(!tags.length){setStatus("当前窗口没有可用于预览的数值Tag。","warning");return;} state.preprocessingPreview={data,tags,windowId:window.id}; if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]; renderPreprocessingPreview(); setStatus(`预处理预览已更新（训练窗口 ${window.id}）；显示抽样不会进入训练。`,"success"); }
+  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags:[],start:window.start,end:window.end})}); const tags=preprocessingPreviewTags(data); if(!tags.length){setStatus("当前窗口没有可用于预览的数值Tag。","warning");return;} state.preprocessingPreview={data,tags,windowId:window.id,start:window.start,end:window.end}; if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]; renderPreprocessingPreview(); setStatus(`预处理预览已更新（训练窗口 ${window.id}）；显示抽样不会进入训练。`,"success"); }
   catch(error){setStatus(error.message,"error");} finally {setBusy(button,false);}
 });
 function preprocessingPreviewTags(data) {
@@ -3551,8 +3564,10 @@ el("performanceButton").addEventListener("click", async () => {
 
 el("stateExplorationButton").addEventListener("click", async () => {
   const button=el("stateExplorationButton"); setBusy(button,true,"探索中…"); setStatus("正在使用统一预处理构建完整状态空间并执行探索聚类。","info");
+  const explorationRevision=state.explorationRevision;
   try {
     const data=await api("/api/state-exploration/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(stateExplorationPayload())});
+    if(explorationRevision!==state.explorationRevision) { setStatus("建模 Tag、预处理或状态过滤条件已变化，本次状态探索结果已丢弃，请重新运行。","warning"); return; }
     state.exploration=data; resetExplorationRegion(); renderStateExploration(data); document.querySelector('[data-panel="stateExplorationPanel"]').click(); setStatus(`状态探索完成：${data.full_point_count} 个完整样本，返回 ${data.returned_point_count} 个显示点。候选仅供工程师比较。`,"success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -3710,12 +3725,12 @@ function excludeConstantTag(item, refresh=true) {
   const issue=item.issues.find(value=>value.code==="constant_tag"); if(!issue) return;
   setTagExclusion(item.tag,{tag:item.tag,reason:"constant_in_reference_window",sample_count:issue.details.valid_count,unique_count:1,constant_value:issue.details.constant_value});
   state.selectedModelTags.delete(item.tag);
-  if(refresh) { if(state.selectedTag===item.tag) selectTag(item.tag); invalidateQuality(`${item.tag}已标记为排除`); renderTagList(); }
+  if(refresh) { if(state.selectedTag===item.tag) selectTag(item.tag); reconcileStateFilterConditions(); invalidateModellingResults(`${item.tag}已标记为排除`); renderTagList(); }
 }
 el("excludeAllConstants").addEventListener("click",()=>{
   const constants=state.quality?.tags.filter(item=>item.issues.some(issue=>issue.code==="constant_tag"))||[]; if(!constants.length) return;
   constants.forEach(item=>excludeConstantTag(item,false));
-  invalidateQuality(`已标记排除 ${constants.length} 个精确常量Tag`); renderTagList();
+  reconcileStateFilterConditions(); invalidateModellingResults(`已标记排除 ${constants.length} 个精确常量Tag`); renderTagList();
 });
 function renderTrend(data) {
   const container=el("trendChart"); container.replaceChildren(); const zoom=Number(el("trendZoom").value);

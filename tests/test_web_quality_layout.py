@@ -940,12 +940,12 @@ def test_model_training_stage_reads_summary_quality_preview_then_parameters() ->
     model_source = html[model_start:model_end]
     order = [
         'id="modelTrainingDataSummary"',
-        'id="qualityButton"',
-        'id="modelQualityStatus"',
-        'id="modelQualityResults"',
         'id="preprocessingPreviewWindow"',
         'id="preprocessingPreviewButton"',
         'id="preprocessingPreview"',
+        'id="qualityButton"',
+        'id="modelQualityStatus"',
+        'id="modelQualityResults"',
         'id="modelName"',
         'id="varianceThreshold"',
         'id="components"',
@@ -1486,6 +1486,9 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
     render_source = "function renderPreprocessingPreviewWindow" + html.split(
         "function renderPreprocessingPreviewWindow", 1
     )[1].split("function selectedPreprocessingPreviewWindow", 1)[0]
+    invalidate_preview_source = "function invalidatePreprocessingPreview" + html.split(
+        "function invalidatePreprocessingPreview", 1
+    )[1].split("function renderPreprocessingPreviewWindow", 1)[0]
     handler_source = html.split(
         'el("preprocessingPreviewButton").addEventListener("click",async()=>{', 1
     )[1].split("function preprocessingPreviewTags(data)", 1)[0]
@@ -1507,6 +1510,11 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         "async function updateTrainingWindows", 1
     )[0]
     assert "renderPreprocessingPreviewWindow();" in render_training
+    # 重新渲染训练窗口表格本身不再无条件清空预览。
+    assert "训练窗口已变化，请重新预览。" not in html
+    assert "invalidatePreprocessingPreview(" in render_source
+    # 预览请求记录窗口起止时间，用于判断窗口是否真的变化。
+    assert "windowId:window.id,start:window.start,end:window.end" in html
     # UI 明确显示当前预览的是哪个训练窗口。
     preview_render = html.split("function renderPreprocessingPreview()", 1)[1].split(
         "function preprocessingPreviewStages", 1
@@ -1515,6 +1523,7 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
 
     _run_web_javascript(
         f"""
+        const invalidatePreviewSource = {json.dumps(invalidate_preview_source)};
         const renderSource = {json.dumps(render_source)};
         const makeOption = () => ({{value:"", textContent:"", disabled:false, selected:false}});
         const makeSelect = () => ({{
@@ -1531,6 +1540,7 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         const state = {{trainingWindows:[], preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null}};
         const displayTime = value => value;
         globalThis.document = {{createElement: tag => tag === "option" ? makeOption() : makeSelect()}};
+        eval(invalidatePreviewSource);
         eval(renderSource);
 
         // 没有启用训练窗口：禁止预览并给出明确提示。
@@ -1546,7 +1556,7 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
           {{id:"training-b", start:"2026-01-01T13:00", end:"2026-01-01T15:00", enabled:false}},
           {{id:"training-c", start:"2026-01-01T16:00", end:"2026-01-01T18:00", enabled:true}},
         ];
-        state.preprocessingPreview={{data:{{}}, tags:["A"]}};
+        state.preprocessingPreview={{data:{{}}, tags:["A"], windowId:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00"}};
         renderPreprocessingPreviewWindow();
         if(state.preprocessingPreviewWindowId!=="training-a") throw new Error("default window wrong");
         const options=el("preprocessingPreviewWindow").children;
@@ -1554,8 +1564,37 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         if(options[0].value!=="training-a"||options[1].value!=="training-c") throw new Error("wrong options");
         if(!el("preprocessingPreviewWindow").children[0].textContent.includes("training-a"))
           throw new Error("option text must show the window id and range");
-        if(state.preprocessingPreview!==null) throw new Error("stale preview must be dropped");
+        if(state.preprocessingPreview===null) throw new Error("valid preview must be kept");
         if(el("preprocessingPreviewButton").disabled) throw new Error("button must be enabled");
+
+        // 质量检查后仅重渲染训练窗口：窗口未变，预览保留。
+        state.trainingWindowSummary=[{{id:"training-a", raw_samples:120, effective_samples:118}}];
+        renderPreprocessingPreviewWindow();
+        if(state.preprocessingPreview===null) throw new Error("quality rerender must keep preview");
+        if(state.preprocessingPreviewTag!==null) throw new Error("preview tag untouched");
+
+        // 编辑当前预览窗口的起止时间：预览失效。
+        state.trainingWindows[0].end="2026-01-01T12:30";
+        renderPreprocessingPreviewWindow();
+        if(state.preprocessingPreview!==null||state.preprocessingPreviewTag!==null) throw new Error("edited window must drop preview");
+        if(!el("preprocessingPreview").textContent.includes("起止时间")) throw new Error("missing edit hint");
+
+        // 恢复时间范围后重新预览，再禁用当前窗口：选择器回退且预览失效。
+        state.trainingWindows[0].end="2026-01-01T12:00";
+        state.preprocessingPreview={{data:{{}}, tags:["A"], windowId:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00"}};
+        state.preprocessingPreviewTag="A";
+        state.trainingWindows[0].enabled=false;
+        renderPreprocessingPreviewWindow();
+        if(state.preprocessingPreviewWindowId!=="training-c") throw new Error("selector must fall back");
+        if(state.preprocessingPreview!==null) throw new Error("disabled window must drop preview");
+
+        // 删除当前预览窗口：预览失效。
+        state.trainingWindows[0].enabled=true;
+        state.preprocessingPreview={{data:{{}}, tags:["A"], windowId:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00"}};
+        state.trainingWindows=state.trainingWindows.filter(window=>window.id!=="training-a");
+        renderPreprocessingPreviewWindow();
+        if(state.preprocessingPreview!==null) throw new Error("removed window must drop preview");
+        if(state.preprocessingPreviewWindowId!=="training-c") throw new Error("selector not synced after removal");
 
         // 切换到第二个启用窗口后，解析出的 start/end 来自该窗口。
         state.preprocessingPreviewWindowId="training-c";
@@ -1606,22 +1645,40 @@ def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> N
     function_source = "function invalidateExploration" + html.split(
         "function invalidateExploration", 1
     )[1].split("async function updateExplorationPreferredRegion", 1)[0]
+    helper_source = "function confirmedExplorationSourceRefs" + html.split(
+        "function confirmedExplorationSourceRefs", 1
+    )[1].split("function invalidateExploration", 1)[0]
 
     assert 'startsWith("state-exploration-")' in function_source
     assert "state.exploration=null" in function_source
     assert "resetExplorationRegion()" in function_source
-    assert "invalidateQuality(reason" in function_source
+    # 探索失效只负责 exploration / 候选；quality 由集中入口 invalidateModellingResults 统一调用。
+    assert "invalidateQuality(" not in function_source
+    assert "state.explorationRevision+=1" in function_source
+    # 只删除未确认候选：已有训练窗口或已生成训练窗口的 exploration 候选保留。
+    assert "confirmedExplorationSourceRefs()" in function_source
+    assert "candidateTrainingWindows(window).length>0" in function_source
     # 已确认训练窗口不因探索失效而删除。
     assert "state.trainingWindows=state.trainingWindows.filter" not in function_source
 
-    # 建模 Tag、Tag role、共享预处理 / Lag、状态过滤条件变化都会调用它。
+    # 所有影响动态矩阵的配置变化都走同一个集中入口，且只调用一次 invalidateQuality。
+    central = html.split("function invalidateModellingResults", 1)[1].split(
+        "function renderModelQualityStatus", 1
+    )[0]
+    assert central.count("invalidateQuality(") == 1
+    assert "invalidateExploration(reason);" in central
+    assert "invalidatePreprocessingPreview();" in central
     for marker in (
-        'invalidateExploration("建模Tag已修改")',
-        'invalidateExploration("Tag工程配置或角色已修改")',
-        'invalidateExploration("预处理参数已修改")',
-        'invalidateExploration("状态过滤条件已修改")',
+        'invalidateModellingResults("建模Tag已修改")',
+        'invalidateModellingResults("Tag工程配置或角色已修改")',
+        'invalidateModellingResults("预处理参数已修改")',
+        'invalidateModellingResults("状态过滤条件已修改")',
     ):
         assert marker in html, marker
+    # 任一 handler 不再自行组合 exploration + quality 两套失效调用。
+    assert 'invalidateExploration("建模Tag已修改")' not in html
+    assert 'invalidateExploration("预处理参数已修改")' not in html
+    assert 'invalidateExploration("状态过滤条件已修改")' not in html
     # 旧探索结果不能再加入候选窗口。
     convert = html.split('el("convertExplorationCandidates").addEventListener("click", () => {', 1)[1].split(
         "el(\"clusterButton\")", 1
@@ -1631,6 +1688,7 @@ def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> N
 
     _run_web_javascript(
         f"""
+        const helperSource = {json.dumps(helper_source)};
         const functionSource = {json.dumps(function_source)};
         const elements = new Map([
           ["explorationEmpty", {{hidden:false, textContent:""}}],
@@ -1641,39 +1699,299 @@ def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> N
         ]);
         const el = id => elements.get(id);
         const state = {{
-          exploration:{{exploration_run_id:"run-1"}}, preferredRegion:{{ellipses:[{{}}]}},
+          exploration:{{exploration_run_id:"run-1"}}, explorationRevision:0,
+          preferredRegion:{{ellipses:[{{}}]}},
           preferredRegionDrawing:true, preferredRegionRequest:3, preferredRegionUpdateSeq:2,
           candidateWindows:[
             {{id:"manual-1", source_ref:null}},
             {{id:"explore-1", source_ref:"state-exploration-run-1-cluster-1"}},
             {{id:"explore-2", source_ref:"state-exploration-run-1-region-2"}},
             {{id:"explore-3", source_ref:"cluster-manual-1"}},
+            {{id:"explore-4", source_ref:"state-exploration-run-1-cluster-7"}},
+            {{id:"explore-5", source_ref:"state-exploration-run-1-cluster-9"}},
           ],
-          trainingWindows:[{{id:"training-keep-1", enabled:true, source_ref:"state-exploration-run-1-cluster-9"}}],
+          trainingWindows:[
+            {{id:"training-keep-1", enabled:true, source_ref:"state-exploration-run-1-cluster-9"}},
+            {{id:"training-explore-4-part-001", enabled:true, source_ref:"state-exploration-run-1-cluster-7"}},
+          ],
         }};
-        const qualityCalls = [];
         function renderCandidateWindows() {{}}
         function renderExplorationRegionControls() {{}}
-        function invalidateQuality(reason) {{ qualityCalls.push(reason); }}
+        function candidateTrainingWindows(candidate) {{
+          const baseId=`training-${{candidate.id}}`;
+          return state.trainingWindows.filter(window=>window.id===baseId||window.id.startsWith(`${{baseId}}-part-`));
+        }}
         function resetExplorationRegion() {{
           state.preferredRegion=null; state.preferredRegionDrawing=false;
           state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0;
           renderExplorationRegionControls();
         }}
+        eval(helperSource);
         eval(functionSource);
 
         invalidateExploration("预处理参数已修改");
+        if(state.explorationRevision!==1) throw new Error("exploration revision not bumped");
         if(state.exploration!==null) throw new Error("exploration not cleared");
         if(state.preferredRegion!==null||state.preferredRegionDrawing!==false) throw new Error("region not reset");
         if(state.preferredRegionRequest!==4) throw new Error("request counter not bumped");
         if(!el("explorationContent").hidden) throw new Error("content still visible");
         if(!el("explorationEmpty").textContent.includes("预处理参数已修改")) throw new Error("empty hint missing");
         const left=state.candidateWindows.map(item=>item.id);
-        if(JSON.stringify(left)!==JSON.stringify(["manual-1","explore-3"])) throw new Error("wrong candidates left: "+JSON.stringify(left));
-        if(state.trainingWindows.length!==1) throw new Error("training windows were removed");
-        if(JSON.stringify(qualityCalls)!==JSON.stringify(["预处理参数已修改"])) throw new Error("quality not invalidated");
+        if(JSON.stringify(left)!==JSON.stringify(["manual-1","explore-3","explore-4","explore-5"])) throw new Error("wrong candidates left: "+JSON.stringify(left));
+        if(state.trainingWindows.length!==2) throw new Error("training windows were removed");
         """
     )
+
+
+def test_state_filter_change_invalidates_quality_without_any_exploration() -> None:
+    html = web_model_results.INDEX_HTML
+    central_source = "function invalidateModellingResults" + html.split(
+        "function invalidateModellingResults", 1
+    )[1].split("function renderModelQualityStatus", 1)[0]
+    invalidate_quality_source = "function invalidateQuality" + html.split(
+        "function invalidateQuality", 1
+    )[1].split("function firstOrderAlphaError", 1)[0]
+    invalidate_exploration_source = "function confirmedExplorationSourceRefs" + html.split(
+        "function confirmedExplorationSourceRefs", 1
+    )[1].split("async function updateExplorationPreferredRegion", 1)[0]
+
+    # 无 exploration 时 invalidateExploration 必须提前返回，不得吞掉 quality 失效。
+    assert 'if(!state.exploration&&!state.preferredRegion) return 0;' in invalidate_exploration_source
+    assert "state.explorationRevision+=1" in invalidate_exploration_source
+    # 集中入口无条件调用 invalidateQuality，且只调用一次。
+    assert central_source.count("invalidateQuality(") == 1
+
+    _run_web_javascript(
+        f"""
+        const centralSource = {json.dumps(central_source)};
+        const invalidateExplorationSource = {json.dumps(invalidate_exploration_source)};
+        const invalidateQualitySource = {json.dumps(invalidate_quality_source)};
+        const elements = new Map([
+          ["trainButton", {{disabled:false}}],
+          ["trainExploratoryButton", {{disabled:false}}],
+          ["qualitySummary", {{innerHTML:""}}],
+          ["trainingCompositionReview", {{className:"", textContent:""}}],
+          ["qualityIssues", {{className:"", textContent:""}}],
+          ["modelTrainingDataSummary", {{className:"", textContent:""}}],
+          ["excludeAllConstants", {{disabled:false}}],
+          ["modelQualityStatus", {{className:"", textContent:""}}],
+          ["currentTagQuality", {{className:"", textContent:""}}],
+          ["qualityTagSelect", null],
+          ["preprocessingPreview", {{className:"muted", textContent:""}}],
+          ["explorationEmpty", {{hidden:false, textContent:""}}],
+          ["explorationContent", {{hidden:false}}],
+          ["explorationClusterCandidates", {{replaceChildren(){{}}}}],
+          ["explorationPerformanceCandidates", {{replaceChildren(){{}}}}],
+          ["explorationPreferredRegionCandidates", {{replaceChildren(){{}}}}],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{
+          exploration:null, explorationRevision:0, preferredRegion:null, preferredRegionDrawing:false,
+          preferredRegionRequest:0, preferredRegionUpdateSeq:0,
+          quality:{{tags:[]}}, qualityStatus:"passed", qualityRevision:4, qualityError:"",
+          candidateWindows:[], trainingWindows:[],
+          preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null,
+        }};
+        const statuses = [];
+        function renderModelTrainingDataSummary() {{}}
+        function renderModelQualityStatus() {{}}
+        function renderCurrentTagQuality() {{}}
+        function renderCandidateWindows() {{}}
+        function renderExplorationRegionControls() {{}}
+        function resetExplorationRegion() {{}}
+        function invalidatePreprocessingPreview() {{}}
+        function setStatus(message) {{ statuses.push(message); }}
+        function candidateTrainingWindows() {{ return []; }}
+        eval(invalidateQualitySource);
+        eval(invalidateExplorationSource);
+        eval(centralSource);
+
+        el("trainButton").disabled=false;
+        invalidateModellingResults("状态过滤条件已修改");
+        if(state.qualityStatus!=="changed") throw new Error("quality must be invalidated: "+state.qualityStatus);
+        if(state.quality!==null) throw new Error("stale quality kept");
+        if(state.qualityRevision!==5) throw new Error("quality revision must advance exactly once");
+        if(!el("trainButton").disabled) throw new Error("trainButton must not reuse old readiness");
+        if(!el("trainExploratoryButton").disabled) throw new Error("trainExploratoryButton must be disabled");
+        if(state.explorationRevision!==1) throw new Error("stale exploration request must be rejected");
+        """
+    )
+
+
+def test_stale_state_exploration_response_cannot_restore_results() -> None:
+    html = web_model_results.INDEX_HTML
+    handler = html.split('el("stateExplorationButton").addEventListener("click", async () => {', 1)[
+        1
+    ].split("\n  finally", 1)[0]
+    handler_source = "return (async()=>{" + handler + "})();"
+
+    assert "explorationRevision:0" in html
+    assert "const explorationRevision=state.explorationRevision;" in handler
+    assert "if(explorationRevision!==state.explorationRevision)" in handler
+    assert handler.index("const explorationRevision=state.explorationRevision;") < handler.index(
+        'api("/api/state-exploration/run"'
+    )
+    assert handler.index("if(explorationRevision!==state.explorationRevision)") < handler.index(
+        "state.exploration=data;"
+    )
+    assert "renderStateExploration(data)" in handler
+
+    _run_web_javascript(
+        f"""
+        const handlerSource = {json.dumps(handler_source)};
+        const rendered = [];
+        const elements = new Map([
+          ["stateExplorationButton", {{disabled:false, dataset:{{}}, textContent:"run"}}],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{exploration:null, explorationRevision:0}};
+        const setBusy = () => {{}};
+        const setStatus = () => {{}};
+        const stateExplorationPayload = () => ({{file_id:"file"}});
+        const resetExplorationRegion = () => {{}};
+        const renderStateExploration = data => rendered.push(data.exploration_run_id);
+        const document = {{querySelector: () => ({{click: () => {{}}}})}};
+        const AsyncFunction = Object.getPrototypeOf(async function(){{}}).constructor;
+        let resolveRun;
+        const api = () => new Promise(resolve => {{ resolveRun=resolve; }});
+        const invoke = () => new AsyncFunction("api","globalThis","document",handlerSource).call(
+          el("stateExplorationButton"), api, globalThis, document
+        );
+
+        const run = async () => {{
+          // 请求进行中：Lag / Tag / state_filter 变化导致 revision 递增。
+          const staleLag=invoke();
+          state.explorationRevision+=1;
+          resolveRun({{exploration_run_id:"stale-lag", full_point_count:10, returned_point_count:10}});
+          await staleLag;
+          if(state.exploration!==null) throw new Error("stale Lag response restored exploration");
+          if(rendered.length) throw new Error("stale Lag response rendered");
+
+          const staleTag=invoke();
+          state.explorationRevision+=1;
+          resolveRun({{exploration_run_id:"stale-tag", full_point_count:10, returned_point_count:10}});
+          await staleTag;
+          if(state.exploration!==null) throw new Error("stale Tag response restored exploration");
+
+          const staleFilter=invoke();
+          state.explorationRevision+=1;
+          resolveRun({{exploration_run_id:"stale-filter", full_point_count:10, returned_point_count:10}});
+          await staleFilter;
+          if(state.exploration!==null) throw new Error("stale state_filter response restored exploration");
+          if(rendered.length) throw new Error("stale state_filter response rendered");
+
+          // revision 未变：当前请求正常写回并渲染。
+          const current=invoke();
+          resolveRun({{exploration_run_id:"current", full_point_count:20, returned_point_count:20}});
+          await current;
+          if(state.exploration?.exploration_run_id!=="current") throw new Error("current response dropped");
+          if(JSON.stringify(rendered)!==JSON.stringify(["current"])) throw new Error("current response not rendered");
+        }};
+        run().then(() => process.stdout.write("exploration-race-ok"), error => {{
+          process.stderr.write(String(error.stack||error)); process.exitCode=1;
+        }});
+        """
+    )
+
+
+def test_exploration_invalidation_keeps_confirmed_candidates_and_training_windows() -> None:
+    html = web_model_results.INDEX_HTML
+    central_source = "function invalidateModellingResults" + html.split(
+        "function invalidateModellingResults", 1
+    )[1].split("function renderModelQualityStatus", 1)[0]
+    invalidate_exploration_source = "function confirmedExplorationSourceRefs" + html.split(
+        "function confirmedExplorationSourceRefs", 1
+    )[1].split("async function updateExplorationPreferredRegion", 1)[0]
+    invalidate_quality_source = "function invalidateQuality" + html.split(
+        "function invalidateQuality", 1
+    )[1].split("function firstOrderAlphaError", 1)[0]
+
+    _run_web_javascript(
+        f"""
+        const centralSource = {json.dumps(central_source)};
+        const invalidateExplorationSource = {json.dumps(invalidate_exploration_source)};
+        const invalidateQualitySource = {json.dumps(invalidate_quality_source)};
+        const candidateRenders = [];
+        const elements = new Map([
+          ["trainButton", {{disabled:false}}],
+          ["trainExploratoryButton", {{disabled:false}}],
+          ["qualitySummary", {{innerHTML:""}}],
+          ["trainingCompositionReview", {{className:"", textContent:""}}],
+          ["qualityIssues", {{className:"", textContent:""}}],
+          ["modelTrainingDataSummary", {{className:"", textContent:""}}],
+          ["excludeAllConstants", {{disabled:false}}],
+          ["modelQualityStatus", {{className:"", textContent:""}}],
+          ["currentTagQuality", {{className:"", textContent:""}}],
+          ["qualityTagSelect", null],
+          ["preprocessingPreview", {{className:"muted", textContent:"已预览"}}],
+          ["explorationEmpty", {{hidden:false, textContent:""}}],
+          ["explorationContent", {{hidden:false}}],
+          ["explorationClusterCandidates", {{replaceChildren(){{}}}}],
+          ["explorationPerformanceCandidates", {{replaceChildren(){{}}}}],
+          ["explorationPreferredRegionCandidates", {{replaceChildren(){{}}}}],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{
+          exploration:{{exploration_run_id:"run-1"}}, explorationRevision:0,
+          preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0,
+          quality:{{tags:[]}}, qualityStatus:"passed", qualityRevision:0, qualityError:"",
+          candidateWindows:[
+            {{id:"confirmed-1", source_ref:"state-exploration-run-1-cluster-1"}},
+            {{id:"confirmed-2", source_ref:"state-exploration-run-1-region-2"}},
+            {{id:"unconfirmed-1", source_ref:"state-exploration-run-1-cluster-3"}},
+            {{id:"manual-1", source_ref:null}},
+          ],
+          trainingWindows:[
+            {{id:"training-confirmed-1", enabled:true, source_ref:"state-exploration-run-1-cluster-1"}},
+            {{id:"training-confirmed-2-part-001", enabled:true, source_ref:"state-exploration-run-1-region-2"}},
+          ],
+          preprocessingPreview:{{data:{{}}, tags:["A"], windowId:"training-confirmed-1", start:"s", end:"e"}},
+          preprocessingPreviewTag:"A", preprocessingPreviewWindowId:"training-confirmed-1",
+        }};
+        function renderModelTrainingDataSummary() {{}}
+        function renderModelQualityStatus() {{}}
+        function renderCurrentTagQuality() {{}}
+        function renderCandidateWindows() {{ candidateRenders.push(state.candidateWindows.length); }}
+        function renderExplorationRegionControls() {{}}
+        function resetExplorationRegion() {{}}
+        function invalidatePreprocessingPreview() {{
+          state.preprocessingPreview=null; state.preprocessingPreviewTag=null;
+        }}
+        function setStatus() {{}}
+        function candidateTrainingWindows(candidate) {{
+          const baseId=`training-${{candidate.id}}`;
+          return state.trainingWindows.filter(window=>window.id===baseId||window.id.startsWith(`${{baseId}}-part-`));
+        }}
+        eval(invalidateQualitySource);
+        eval(invalidateExplorationSource);
+        eval(centralSource);
+
+        invalidateModellingResults("预处理参数已修改");
+        const left=state.candidateWindows.map(item=>item.id);
+        if(JSON.stringify(left)!==JSON.stringify(["confirmed-1","confirmed-2","manual-1"]))
+          throw new Error("wrong candidates left: "+JSON.stringify(left));
+        if(state.trainingWindows.length!==2) throw new Error("training windows were removed");
+        if(candidateRenders.length!==1) throw new Error("candidate table must re-render once");
+        if(state.exploration!==null) throw new Error("exploration not cleared");
+        if(state.preprocessingPreview!==null) throw new Error("shared preprocessing change must drop preview");
+        if(state.qualityStatus!=="changed") throw new Error("quality not invalidated");
+        """
+    )
+
+
+def test_preprocessing_preview_survives_quality_check_rerender() -> None:
+    html = web_model_results.INDEX_HTML
+    # 质量检查成功后只刷新训练窗口统计摘要，不触碰预处理预览状态。
+    quality_source = html.split('el("qualityButton").addEventListener("click",async()=>{', 1)[
+        1
+    ].split('el("qualityTagSelect")', 1)[0]
+    render_training_source = "function renderTrainingWindows" + html.split(
+        "function renderTrainingWindows", 1
+    )[1].split("async function updateTrainingWindows", 1)[0]
+
+    assert "state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary;" in quality_source
+    assert "state.preprocessingPreview=null" not in quality_source
+    assert "renderPreprocessingPreviewWindow();" in render_training_source
 
 
 def test_state_filter_editor_only_offers_state_filter_tags_and_serializes_bounds() -> None:
@@ -1701,8 +2019,8 @@ def test_state_filter_editor_only_offers_state_filter_tags_and_serializes_bounds
     assert "normalMin" not in payload_source
     assert "normalMax" not in payload_source
     # 状态过滤条件变化同时失效探索与质量检查。
-    assert 'remove.addEventListener("click",()=>{ row.remove(); invalidateExploration("状态过滤条件已修改"); })' in html
-    assert 'invalidateExploration("状态过滤条件已修改")' in html
+    assert 'remove.addEventListener("click",()=>{ row.remove(); invalidateModellingResults("状态过滤条件已修改"); })' in html
+    assert 'invalidateModellingResults("状态过滤条件已修改")' in html
 
 
 def test_state_filter_payload_builds_and_filters_in_the_browser() -> None:
