@@ -19,7 +19,9 @@ _DATAPROJECT_TREND_CSS = r"""
   .dp-trend-controls { display:grid; grid-template-columns:repeat(4,minmax(120px,1fr)) 150px auto; gap:10px; align-items:end; }
   .dp-trend-options { display:grid; grid-template-columns:repeat(3,minmax(160px,1fr)); gap:10px; align-items:end; }
   .dp-chart { min-height:280px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:hidden; }
-  .dp-chart svg { width:100%; height:320px; display:block; }
+  .dp-chart .plotly, .dp-chart .svg-container, .dp-chart .gl-container { width:100%!important; height:320px; }
+  .dp-chart .modebar { top:2px; right:2px; }
+  .dp-chart .js-plotly-plot .plotly .cursor-crosshair { cursor:crosshair; }
   .dp-legend { display:flex; justify-content:center; gap:16px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
   .dp-swatch { width:18px; height:3px; border-radius:2px; display:inline-block; vertical-align:middle; margin-right:6px; }
   .dp-trend-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; align-items:start; }
@@ -73,7 +75,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     <div class="dp-trend-options">
       <label>开始时间<input id="dpTrendStart" type="datetime-local"></label>
       <label>结束时间<input id="dpTrendEnd" type="datetime-local"></label>
-      <label>最大绘图点数<input id="dpTrendMaxPoints" type="number" min="100" max="100000" value="30000"></label>
+      <label>最大绘图点数<input id="dpTrendMaxPoints" type="number" min="100" max="100000" value="100000"></label>
     </div>
     <div class="actions">
       <button id="dpTrendToAnalysis" type="button" class="secondary">将当前窗口设为分析期</button>
@@ -108,7 +110,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   let lastTrend = null;
   let hasDraggedTrendSelection = false;
   let resizeTimer = null;
-  const selectionThresholdPixels = 3;
 
   function availableTags() {
     return Array.from($("trendTags")?.options || []).map((option) => option.value).filter(Boolean);
@@ -171,7 +172,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       start: $("dpTrendStart").value,
       end: $("dpTrendEnd").value,
       display_mode: "raw",
-      max_points: Number($("dpTrendMaxPoints").value || 30000),
+      max_points: Number($("dpTrendMaxPoints").value || 100000),
       purpose,
     };
     return api("/api/trend", {
@@ -225,7 +226,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     }
     $("dpTrendStart").value = localTime(defaults.trend_default_start);
     $("dpTrendEnd").value = localTime(defaults.trend_default_end);
-    $("dpTrendMaxPoints").value = "30000";
+    $("dpTrendMaxPoints").value = "100000";
     hasDraggedTrendSelection = false;
     if (lastTrend) renderTrendChart(lastTrend);
     syncToLegacy(chosen(trendIds));
@@ -269,15 +270,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     return local.toISOString().slice(0, 16);
   }
 
-  function currentTrendSelection(timeStart, timeEnd) {
-    const start = timestampMilliseconds($("dpTrendStart").value);
-    const end = timestampMilliseconds($("dpTrendEnd").value);
-    if (start === null || end === null || start === end) return null;
-    const earlier = Math.min(start, end);
-    const later = Math.max(start, end);
-    return earlier >= timeStart && later <= timeEnd ? {start:earlier, end:later} : null;
-  }
-
   function setTrendWindowFromSelection(start, end) {
     const earlier = Math.min(start, end);
     const later = Math.max(start, end);
@@ -296,11 +288,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       return;
     }
     const mode = $("dpTrendAxisMode").value;
-    const width = Math.max(720, Math.floor(container.getBoundingClientRect().width || 960));
-    const height = 320;
-    const pad = {left:76, right:mode === "independent" ? 76 : 28, top:32, bottom:46};
-    const shared = valueRange(series.flatMap((item) => item.points.map((point) => finiteNumber(point.y))));
-    const ranges = series.map((item) => mode === "shared" ? shared : valueRange(item.points.map((point) => finiteNumber(point.y))));
     const timestamps = series.flatMap((item) => item.points.map((point) => timestampMilliseconds(point.x)).filter((value) => value !== null));
     if (!timestamps.length) {
       container.className = "dp-chart empty";
@@ -309,98 +296,151 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     }
     const timeStart = Math.min(...timestamps);
     const timeEnd = Math.max(...timestamps);
-    const plotWidth = width-pad.left-pad.right;
-    const timeToX = (milliseconds) => pad.left + (milliseconds-timeStart) / Math.max(1, timeEnd-timeStart) * plotWidth;
-    const xToTime = (position) => timeStart + (position-pad.left) / Math.max(1, plotWidth) * (timeEnd-timeStart);
-    const y = (value, range) => pad.top + (1 - (value - range.min) / Math.max(1e-12, range.max - range.min)) * (height - pad.top - pad.bottom);
-    const tickRange = mode === "shared" ? shared : ranges[0];
-    const grid = axisTicks(tickRange).map((tick) => {
-      const py = y(tick, tickRange);
-      return `<line x1="${pad.left}" x2="${width-pad.right}" y1="${py}" y2="${py}" stroke="#edf1f5"/><text x="${pad.left-8}" y="${py}" text-anchor="end" dominant-baseline="middle" font-size="11" fill="#5f6b7a">${formatAxis(tick)}</text>`;
-    }).join("");
-    const rightTicks = mode === "independent" && ranges.length > 1 ? axisTicks(ranges[1]).map((tick) => {
-      const py = y(tick, ranges[1]);
-      return `<text x="${width-pad.right+8}" y="${py}" text-anchor="start" dominant-baseline="middle" font-size="11" fill="#5f6b7a">${formatAxis(tick)}</text>`;
-    }).join("") : "";
-    const paths = series.map((item, seriesIndex) => {
-      const segments = [];
-      let current = [];
+    if (!globalThis.Plotly) {
+      container.className = "dp-chart empty";
+      container.textContent = "Plotly 未加载，无法绘制趋势图。";
+      return;
+    }
+    const traces = series.map((item, seriesIndex) => {
+      const x = [];
+      const y = [];
       item.points.forEach((point) => {
         const value = finiteNumber(point.y);
-        if (point.physical_gap_start && current.length) { segments.push(current); current = []; }
         const pointTime = timestampMilliseconds(point.x);
-        if (value === null || pointTime === null) { if (current.length) segments.push(current); current = []; return; }
-        current.push(`${timeToX(pointTime).toFixed(2)},${y(value, ranges[seriesIndex]).toFixed(2)}`);
+        // Plotly has no notion of physical time gaps, so every physical segment
+        // break and every missing value becomes an explicit null break point.
+        if (point.physical_gap_start && x.length) { x.push(null); y.push(null); }
+        if (value === null || pointTime === null) { x.push(pointTime); y.push(null); return; }
+        x.push(pointTime);
+        y.push(value);
       });
-      if (current.length) segments.push(current);
-      return segments.map((points) => `<polyline points="${points.join(" ")}" fill="none" stroke="${colors[seriesIndex % colors.length]}" stroke-width="2.1"/>`).join("");
-    }).join("");
-    const firstTime = series[0].points[0]?.x || "";
-    const lastTime = series[0].points.at(-1)?.x || "";
-    const exclusionMarkup = (state.excludedWindows || []).map((window) => {
+      return {
+        type: "scattergl",
+        mode: "lines",
+        x,
+        y,
+        name: item.name,
+        connectgaps: false,
+        yaxis: axisName(seriesIndex, mode),
+        line: {color: colors[seriesIndex % colors.length], width: 1.6},
+        hoverinfo: "x+y+name",
+      };
+    });
+    const note = mode === "shared" ? "同一 Y 轴：所有曲线使用同一数值范围" : "独立 Y 轴：各曲线按自身范围缩放，仅比较趋势形态";
+    const layout = {
+      margin: {left: 68, right: mode === "independent" && series.length > 1 ? 60 : 24, top: 30, bottom: 40},
+      height: 320,
+      showlegend: false,
+      hovermode: "x unified",
+      dragmode: "select",
+      selectdirection: "h",
+      paper_bgcolor: "#fff",
+      plot_bgcolor: "#fff",
+      font: {size: 11, color: "#5f6b7a"},
+      annotations: [{text: note, x: 0, y: 1.08, xref: "paper", yref: "paper", showarrow: false, font: {size: 12, color: "#5f6b7a"}}],
+      xaxis: {type: "date", range: [timeStart, timeEnd], gridcolor: "#edf1f5", zeroline: false, showspikes: false},
+      yaxis: {gridcolor: "#edf1f5", zeroline: false, autorange: true},
+      shapes: trendExclusionShapes(),
+    };
+    const initialSelection = hasDraggedTrendSelection ? currentTrendSelectionShape() : null;
+    if (initialSelection) layout.shapes = layout.shapes.concat([initialSelection]);
+    series.forEach((item, seriesIndex) => {
+      if (mode !== "independent" || seriesIndex < 1) return;
+      // Only the first independent axis is labelled (right side); the rest overlay
+      // it to keep 4 curves readable while hover still reports real values.
+      const labelled = seriesIndex === 1;
+      const axis = {
+        overlaying: labelled ? undefined : "y",
+        side: labelled ? "right" : "left",
+        anchor: labelled ? "free" : undefined,
+        position: labelled ? 1 : undefined,
+        showticklabels: labelled,
+        showgrid: false,
+        zeroline: false,
+        title: labelled ? item.name : undefined,
+      };
+      const limits = data.axis_limits?.[item.name];
+      if (limits) { axis.range = [limits.minimum, limits.maximum]; }
+      layout[`yaxis${seriesIndex + 1}`] = axis;
+    });
+    if (mode === "independent" && series.length === 1) { layout.yaxis.title = series[0].name; }
+    const config = {displayModeBar: true, modeBarButtonsToRemove: ["toImage", "sendDataToCloud"], displaylogo: false, responsive: true, scrollZoom: false};
+    container.className = "dp-chart";
+    container.textContent = "";
+    globalThis.Plotly.react(container, traces, layout, config).then((plot) => {
+      plot.removeAllListeners("plotly_selected");
+      plot.removeAllListeners("plotly_deselect");
+      plot.on("plotly_selected", (event) => {
+        const range = event?.range?.x;
+        if (!range || range.length < 2) return;
+        setTrendWindowFromSelection(range[0], range[1]);
+        hasDraggedTrendSelection = true;
+        applySelectionShape(range[0], range[1]);
+        setStatus("已按选区设置当前趋势窗口；候选与训练窗口未改变。", "success");
+      });
+      plot.on("plotly_deselect", () => applySelectionShape());
+      plot.on("plotly_relayout", (event) => {
+        // Pure zoom/pan stays visual only; dpTrendStart/dpTrendEnd are untouched here.
+        if (event?.["xaxis.autorange"]) applySelectionShape();
+      });
+    });
+  }
+
+  function axisName(seriesIndex, mode) {
+    if (mode === "shared" || seriesIndex === 0) return "y";
+    return `y${seriesIndex + 1}`;
+  }
+
+  function trendExclusionShapes() {
+    return (state.excludedWindows || []).map((window) => {
       const start = timestampMilliseconds(window.start);
       const end = timestampMilliseconds(window.end);
-      if (start === null || end === null || end < timeStart || start > timeEnd) return "";
-      const visibleStart = Math.max(start, timeStart);
-      const visibleEnd = Math.min(end, timeEnd);
-      return `<rect data-trend-exclusion x="${timeToX(visibleStart)}" y="${pad.top}" width="${Math.max(0, timeToX(visibleEnd) - timeToX(visibleStart))}" height="${height-pad.top-pad.bottom}" fill="#dc2626" fill-opacity=".16" pointer-events="none"/>`;
-    }).join("");
-    const selection = hasDraggedTrendSelection ? currentTrendSelection(timeStart, timeEnd) : null;
-    const selectionMarkup = selection ? `<g data-trend-selection pointer-events="none"><rect x="${timeToX(selection.start)}" y="${pad.top}" width="${Math.max(0, timeToX(selection.end) - timeToX(selection.start))}" height="${height-pad.top-pad.bottom}" fill="#176b87" fill-opacity=".18"/><line data-trend-selection-edge="start" x1="${timeToX(selection.start)}" x2="${timeToX(selection.start)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/><line data-trend-selection-edge="end" x1="${timeToX(selection.end)}" x2="${timeToX(selection.end)}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#176b87" stroke-width="1.5"/></g>` : '<g data-trend-selection pointer-events="none" visibility="hidden"><rect y="0" height="0" fill="#176b87" fill-opacity=".18"/><line data-trend-selection-edge="start"/><line data-trend-selection-edge="end"/></g>';
-    const note = mode === "shared" ? "同一 Y 轴：所有曲线使用同一数值范围" : "独立 Y 轴：各曲线按自身范围缩放，仅比较趋势形态";
-    container.className = "dp-chart";
-    container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="多变量趋势图"><rect width="${width}" height="${height}" fill="#fff"/>${exclusionMarkup}${grid}<line x1="${pad.left}" x2="${width-pad.right}" y1="${height-pad.bottom}" y2="${height-pad.bottom}" stroke="#9aa4b2"/><line x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#9aa4b2"/>${mode === "independent" ? `<line x1="${width-pad.right}" x2="${width-pad.right}" y1="${pad.top}" y2="${height-pad.bottom}" stroke="#9aa4b2"/>` : ""}${rightTicks}<text x="${pad.left}" y="18" font-size="12" fill="#5f6b7a">${escapeHtml(note)}</text>${paths}${selectionMarkup}<rect id="dpTrendSelectionHitbox" x="${pad.left}" y="${pad.top}" width="${width-pad.left-pad.right}" height="${height-pad.top-pad.bottom}" fill="transparent" style="cursor:crosshair;touch-action:none"/><text x="${pad.left}" y="${height-10}" font-size="10" fill="#5f6b7a">${escapeHtml(displayTime(firstTime))}</text><text x="${width-pad.right}" y="${height-10}" text-anchor="end" font-size="10" fill="#5f6b7a">${escapeHtml(displayTime(lastTime))}</text></svg>`;
-    if (!(timeEnd > timeStart)) return;
-    const svg = container.querySelector("svg");
-    const hitbox = $("dpTrendSelectionHitbox");
-    const selectionGroup = svg.querySelector("[data-trend-selection]");
-    const selectionArea = selectionGroup.querySelector("rect");
-    const selectionEdges = selectionGroup.querySelectorAll("[data-trend-selection-edge]");
-    const positionFromEvent = (event) => {
-      const bounds = svg.getBoundingClientRect();
-      const position = (event.clientX - bounds.left) / Math.max(1, bounds.width) * width;
-      return Math.min(width-pad.right, Math.max(pad.left, position));
+      if (start === null || end === null) return null;
+      return {
+        type: "rect",
+        xref: "x",
+        yref: "paper",
+        x0: start,
+        x1: end,
+        y0: 0,
+        y1: 1,
+        fillcolor: "rgba(220,38,38,0.16)",
+        line: {width: 0},
+        layer: "below",
+      };
+    }).filter(Boolean);
+  }
+
+  function applySelectionShape(start, end) {
+    const plot = $("dpTrendChart");
+    if (!plot || !plot.layout) return;
+    const shapes = trendExclusionShapes();
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      shapes.push(selectionShape(start, end));
+    }
+    globalThis.Plotly.relayout(plot, {shapes});
+  }
+
+  function selectionShape(start, end) {
+    return {
+      type: "rect",
+      xref: "x",
+      yref: "paper",
+      x0: start,
+      x1: end,
+      y0: 0,
+      y1: 1,
+      fillcolor: "rgba(23,107,135,0.18)",
+      line: {color: "#176b87", width: 1.5},
+      layer: "above",
     };
-    const drawSelection = (start, end) => {
-      const left = Math.min(timeToX(start), timeToX(end));
-      const right = Math.max(timeToX(start), timeToX(end));
-      selectionGroup.removeAttribute("visibility");
-      selectionArea.setAttribute("x", left);
-      selectionArea.setAttribute("y", pad.top);
-      selectionArea.setAttribute("width", right-left);
-      selectionArea.setAttribute("height", height-pad.top-pad.bottom);
-      selectionEdges[0].setAttribute("x1", left); selectionEdges[0].setAttribute("x2", left);
-      selectionEdges[0].setAttribute("y1", pad.top); selectionEdges[0].setAttribute("y2", height-pad.bottom);
-      selectionEdges[1].setAttribute("x1", right); selectionEdges[1].setAttribute("x2", right);
-      selectionEdges[1].setAttribute("y1", pad.top); selectionEdges[1].setAttribute("y2", height-pad.bottom);
-    };
-    const restoreSelection = () => {
-      const current = currentTrendSelection(timeStart, timeEnd);
-      if (current) drawSelection(current.start, current.end);
-      else selectionGroup.setAttribute("visibility", "hidden");
-    };
-    let dragStart = null;
-    hitbox.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      dragStart = positionFromEvent(event);
-      hitbox.setPointerCapture?.(event.pointerId);
-      event.preventDefault();
-    });
-    hitbox.addEventListener("pointermove", (event) => {
-      if (dragStart === null) return;
-      drawSelection(xToTime(dragStart), xToTime(positionFromEvent(event)));
-    });
-    hitbox.addEventListener("pointerup", (event) => {
-      if (dragStart === null) return;
-      const dragEnd = positionFromEvent(event);
-      const start = dragStart;
-      dragStart = null;
-      if (Math.abs(dragEnd-start) < selectionThresholdPixels) return restoreSelection();
-      setTrendWindowFromSelection(xToTime(start), xToTime(dragEnd));
-      hasDraggedTrendSelection = true;
-      restoreSelection();
-    });
-    hitbox.addEventListener("pointercancel", () => { dragStart = null; restoreSelection(); });
+  }
+
+  function currentTrendSelectionShape() {
+    const start = timestampMilliseconds($("dpTrendStart").value);
+    const end = timestampMilliseconds($("dpTrendEnd").value);
+    if (start === null || end === null || start === end) return null;
+    return selectionShape(Math.min(start, end), Math.max(start, end));
   }
 
   function renderStatCard(tag, stats, histogram, color) {
@@ -499,20 +539,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     return Number.isFinite(number) ? number : null;
   }
 
-  function valueRange(values) {
-    const finite = values.map(finiteNumber).filter((value) => value !== null);
-    if (!finite.length) return {min:0,max:1};
-    let min = Math.min(...finite), max = Math.max(...finite);
-    if (min === max) { const pad = Math.max(Math.abs(min)*.05, 1e-6); min -= pad; max += pad; }
-    else { const pad = (max-min)*.08; min -= pad; max += pad; }
-    return {min,max};
-  }
-
-  function axisTicks(range, count=5) {
-    const step = (range.max-range.min)/Math.max(1,count-1);
-    return Array.from({length:count},(_,index)=>range.min+step*index);
-  }
-
   function formatAxis(value) {
     if (!Number.isFinite(value)) return "—";
     const abs = Math.abs(value);
@@ -529,7 +555,12 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   if (trendTab) trendTab.addEventListener("click", () => requestAnimationFrame(syncFromLegacy));
   $("dpTrendAxisMode").addEventListener("change", () => { if (lastTrend) renderTrendChart(lastTrend); });
   window.addEventListener("resize", () => { if (!lastTrend) return; clearTimeout(resizeTimer); resizeTimer = setTimeout(() => renderTrendChart(lastTrend), 120); });
-  globalThis.refreshTrendExcludedWindows = () => { if (lastTrend) renderTrendChart(lastTrend); };
+  globalThis.refreshTrendExcludedWindows = () => {
+    if (!lastTrend || !$("dpTrendChart")?.layout) return;
+    // Only exclusion overlays change here; keep the current Plotly zoom/selection view.
+    const selection = hasDraggedTrendSelection ? currentTrendSelectionShape() : null;
+    globalThis.Plotly.relayout($("dpTrendChart"), {shapes: trendExclusionShapes().concat(selection ? [selection] : [])});
+  };
   syncFromLegacy();
 })();
 </script>
@@ -701,7 +732,7 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if missing:
         raise ValueError(f"找不到趋势Tag：{', '.join(missing)}")
     try:
-        max_points = int(payload.get("max_points", 30000))
+        max_points = int(payload.get("max_points", 100000))
     except (TypeError, ValueError) as error:
         raise ValueError("最大绘图点数必须是整数") from error
     max_points = min(100000, max(100, max_points))

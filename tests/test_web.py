@@ -1674,7 +1674,8 @@ def test_final_web_formats_displayed_timestamps_with_a_space():
     assert '.replace("T"," ")' in html
     assert 'displayTime(window.start)' in html
     assert 'displayTime(rows[0].timestamp)' in html
-    assert 'displayTime(firstTime)' in html
+    # The trend chart now uses a Plotly date axis, which formats its own ticks.
+    assert 'xaxis: {type: "date"' in html
     assert 'el("analysisStart").value=localTime' in html
     assert 'row.timestamp.slice(0,19)' not in html
 

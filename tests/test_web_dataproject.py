@@ -4,6 +4,7 @@ import inspect
 import re
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -66,8 +67,10 @@ def test_missing_values_are_not_converted_to_zero_by_frontend_contract() -> None
 def test_trend_selection_fill_is_consistent_before_and_after_drag() -> None:
     html = web_dataproject.INDEX_HTML
 
-    assert '<rect y="0" height="0" fill="#176b87" fill-opacity=".18"/>' in html
-    assert 'height="${height-pad.top-pad.bottom}" fill="#176b87" fill-opacity=".18"/><line data-trend-selection-edge' in html
+    assert 'fillcolor: "rgba(23,107,135,0.18)"' in html
+    assert 'function selectionShape(start, end)' in html
+    assert 'xref: "x"' in html
+    assert 'yref: "paper"' in html
 
 
 def test_cli_serve_uses_dataproject_web_entry() -> None:
@@ -224,6 +227,74 @@ def test_old_trend_payload_path_is_delegated(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     assert web_dataproject.trend_payload({"tags": ["A"]}) is sentinel
+
+
+def _trend_request(frame: pd.DataFrame, **overrides: object) -> dict:
+    payload = {
+        "purpose": "trend",
+        "file_id": "ignored-by-test",
+        "timestamp_column": "TIME",
+        "tags": ["A"],
+        "tag_configs": {},
+        "sample_interval_minutes": 1,
+        "smoothing_window_minutes": 0,
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+        "start": frame.TIME.iloc[0].isoformat(),
+        "end": frame.TIME.iloc[-1].isoformat(),
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_trend_default_max_points_is_100000_and_keeps_full_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row_count = 40000
+    frame = pd.DataFrame(
+        {
+            "TIME": pd.date_range("2026-01-01", periods=row_count, freq="min"),
+            "A": np.arange(row_count, dtype=float),
+        }
+    )
+    monkeypatch.setattr(
+        web_dataproject.base_web,
+        "_load_required_upload",
+        lambda payload, columns, prefix: _loaded(frame.loc[:, ["TIME", *columns]]),
+    )
+
+    result = web_dataproject.trend_payload(_trend_request(frame))
+
+    assert result["max_points"] == 100000
+    # A window below the 100000 default must be shown in full, not downsampled.
+    assert result["raw_rows"] == row_count
+    assert result["rows_count"] == row_count
+    assert len(result["series"][0]["points"]) == row_count
+
+
+def test_trend_max_points_fallback_still_uses_downsample_for_oversized_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row_count = 2500
+    frame = pd.DataFrame(
+        {
+            "TIME": pd.date_range("2026-01-01", periods=row_count, freq="min"),
+            "A": np.arange(row_count, dtype=float),
+        }
+    )
+    monkeypatch.setattr(
+        web_dataproject.base_web,
+        "_load_required_upload",
+        lambda payload, columns, prefix: _loaded(frame.loc[:, ["TIME", *columns]]),
+    )
+
+    result = web_dataproject.trend_payload(_trend_request(frame, max_points=200))
+
+    assert result["max_points"] == 200
+    assert result["raw_rows"] == row_count
+    assert result["rows_count"] <= 200
+    # Statistics stay based on the full current window, not the downsampled view.
+    assert result["statistics"]["A"]["current"]["sample_count"] == row_count
 
 
 def test_dataproject_trend_does_not_label_resampled_values_as_raw(

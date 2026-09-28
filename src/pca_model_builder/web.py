@@ -101,6 +101,9 @@ UPLOADS_DIR = WEB_DATA_DIR / "uploads"
 RUNS_DIR = WEB_DATA_DIR / "runs"
 MAX_REQUEST_BODY_BYTES = 200 * 1024 * 1024
 MAX_CHART_POINTS = 1200
+
+# Vendored plotly.js bundle; served from /assets so the Web UI never needs CDN or network access.
+PLOTLY_JS_PATH = Path(__file__).with_name("plotly.min.js")
 MAX_XLSX_BODY_BYTES = MAX_TAG_CONFIG_BYTES
 MAX_STATE_EXPLORATION_RUNS = 8
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -2372,6 +2375,11 @@ class _Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self._send_json({"status": "ok", "port": self.server.server_port})
             return
+        if parsed.path == "/assets/plotly.min.js":
+            self._send_bytes(
+                PLOTLY_JS_PATH.read_bytes(), "application/javascript; charset=utf-8", 200
+            )
+            return
         if parsed.path == "/download/tag-config-template":
             try:
                 query = parse_qs(parsed.query)
@@ -2774,6 +2782,8 @@ INDEX_HTML = r"""<!doctype html>
      @media (max-width:1050px) { .exploration-controls.performance-controls { grid-template-columns:repeat(3,minmax(0,1fr)); } }
      @media (max-width:760px) { .chart-grid,.validation-box,.exploration-controls,.trend-controls { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
   </style>
+  <!-- Vendored plotly.js v4.1.1 (MIT, see plotly.min.js.LICENSE); local asset, no CDN. -->
+  <script src="/assets/plotly.min.js"></script>
 </head>
 <body>
   <header>
@@ -3105,7 +3115,7 @@ function renderExcludedWindows() {
 function exclusionOverlapsTraining(window) { const start=Date.parse(window.start), end=Date.parse(window.end); return state.trainingWindows.some(training=>start<=Date.parse(training.end)&&Date.parse(training.start)<=end); }
 function addExcludedWindow(source,start,end,sourceRef=null,comment="") { if(!start||!end||!Number.isFinite(Date.parse(start))||!Number.isFinite(Date.parse(end))||Date.parse(start)>Date.parse(end)) { setStatus("排除窗口需要有效的开始和结束时间。","warning"); return; } const window={id:`excluded-${candidateId()}`,start,end,source,comment}; state.excludedWindows=mergeExcludedWindows([...state.excludedWindows,window]); renderExcludedWindows(); globalThis.refreshTrendExcludedWindows?.(); globalThis.showWorkflowStage?.("candidatePanel"); const overlaps=exclusionOverlapsTraining(window); setStatus(overlaps?"排除窗口已加入；不会修改已有训练窗口。请删除关联训练窗口后重新确认候选。":"排除窗口已加入；确认候选时将据此切分训练窗口。",overlaps?"warning":"success"); }
 function removeExcludedWindow(windowId) { state.excludedWindows=state.excludedWindows.filter(window=>window.id!==windowId); renderExcludedWindows(); globalThis.refreshTrendExcludedWindows?.(); setStatus("排除窗口已删除；已有训练窗口未被修改，如需重新切分请先删除关联训练窗口后重新确认。","warning"); }
-function showCandidateTrend(window) { el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); }
+function showCandidateTrend(window) { el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); requestAnimationFrame(()=>requestAnimationFrame(()=>{ const draw=el("dpDrawTrend"); if(draw&&!draw.disabled) draw.click(); })); }
 function renderCandidateWindows() {
   const container=el("candidateWindows"); container.replaceChildren();
   if(!state.candidateWindows.length) { container.innerHTML='<div class="empty">尚无候选窗口。</div>'; if(state.exploration) renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); return; }

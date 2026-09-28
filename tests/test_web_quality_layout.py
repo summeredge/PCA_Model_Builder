@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import shutil
@@ -81,13 +82,10 @@ def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
     )[0]
 
     for marker in (
-        'id="dpTrendSelectionHitbox"',
-        'data-trend-selection',
-        "const timeToX = (milliseconds)",
-        "const xToTime = (position)",
-        "const selectionThresholdPixels = 3;",
-        "if (Math.abs(dragEnd-start) < selectionThresholdPixels) return restoreSelection();",
-        "setTrendWindowFromSelection(xToTime(start), xToTime(dragEnd));",
+        'selectdirection: "h"',
+        'dragmode: "select"',
+        'plot.on("plotly_selected"',
+        "setTrendWindowFromSelection(range[0], range[1]);",
         '$("dpTrendStart").value = datetimeLocalValue(earlier);',
         '$("dpTrendEnd").value = datetimeLocalValue(later);',
         '$("trendStart").value = $("dpTrendStart").value;',
@@ -98,18 +96,68 @@ def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
     assert "const earlier = Math.min(start, end);" in html
     assert "const later = Math.max(start, end);" in html
     assert "const pointTime = timestampMilliseconds(point.x);" in trend_source
-    assert "timeToX(pointTime).toFixed(2)" in trend_source
-    assert "timeToX(selection.start)" in trend_source
-    assert "const exclusionMarkup = (state.excludedWindows || [])" in trend_source
-    assert "data-trend-exclusion" in trend_source
-    assert "${exclusionMarkup}${grid}" in trend_source
-    assert "refreshTrendExcludedWindows = () => { if (lastTrend) renderTrendChart(lastTrend); }" in html
-    assert "xToTime(dragStart)" in trend_source
+    assert "(state.excludedWindows || [])" in trend_source
+    assert "trendExclusionShapes" in trend_source
+    assert "globalThis.refreshTrendExcludedWindows = () =>" in html
+    assert "globalThis.Plotly.relayout" in html
     assert "item.points.forEach((point) =>" in trend_source
     assert "maxLength" not in trend_source
     assert "index / Math.max(1, maxLength - 1)" not in trend_source
-    assert "point.physical_gap_start && current.length" in trend_source
-    assert "(timeEnd-timeStart)" in html
+
+
+def test_trend_chart_uses_local_plotly_scattergl_without_svg_curves() -> None:
+    html = web_model_results.INDEX_HTML
+    trend_source = html.split("function renderTrendChart(data)", 1)[1].split(
+        "function renderStatCard", 1
+    )[0]
+
+    assert 'src="/assets/plotly.min.js"' in html
+    assert "cdn.plot.ly" not in html
+    assert 'type: "scattergl"' in trend_source
+    assert 'mode: "lines"' in trend_source
+    assert "connectgaps: false" in trend_source
+    assert "globalThis.Plotly.react(container, traces, layout, config)" in trend_source
+    # The trend curve must no longer be drawn with hand-written SVG/polyline.
+    assert "<polyline" not in trend_source
+    assert "<svg" not in trend_source
+    assert "timeToX" not in trend_source
+    assert "xToTime" not in trend_source
+
+
+def test_trend_physical_gap_becomes_an_explicit_plotly_break_point() -> None:
+    trend_source = web_model_results.INDEX_HTML.split(
+        "function renderTrendChart(data)", 1
+    )[1].split("function renderStatCard", 1)[0]
+
+    assert "if (point.physical_gap_start && x.length) { x.push(null); y.push(null); }" in trend_source
+    assert "if (value === null || pointTime === null) { x.push(pointTime); y.push(null); return; }" in trend_source
+
+
+def test_trend_zoom_and_pan_do_not_change_the_current_window_inputs() -> None:
+    trend_source = web_model_results.INDEX_HTML.split(
+        "function renderTrendChart(data)", 1
+    )[1].split("function renderStatCard", 1)[0]
+
+    relayout = trend_source.split('plot.on("plotly_relayout"', 1)[1].split("});", 1)[0]
+
+    assert 'dpTrendStart").value' not in relayout
+    assert 'dpTrendEnd").value' not in relayout
+    assert "setTrendWindowFromSelection" not in relayout
+
+
+def test_plotly_bundle_is_vendored_and_served_without_network_dependency() -> None:
+    from pca_model_builder import web
+
+    assert web.PLOTLY_JS_PATH.is_file()
+    bundle = web.PLOTLY_JS_PATH.read_text(encoding="utf-8", errors="ignore")
+    assert bundle.startswith("/**")
+    assert "plotly.js v" in bundle[:200]
+    assert (web.PLOTLY_JS_PATH.with_name("plotly.min.js.LICENSE")).is_file()
+
+    source = inspect.getsource(web._Handler.do_GET)
+
+    assert 'parsed.path == "/assets/plotly.min.js"' in source
+    assert 'PLOTLY_JS_PATH.read_bytes()' in source
 
 
 def test_trend_reset_restores_uploaded_defaults_without_clearing_windows() -> None:
@@ -118,14 +166,14 @@ def test_trend_reset_restores_uploaded_defaults_without_clearing_windows() -> No
         '$("dpDrawScatter").addEventListener', 1
     )[0]
 
-    assert 'id="dpTrendMaxPoints" type="number" min="100" max="100000" value="30000"' in html
+    assert 'id="dpTrendMaxPoints" type="number" min="100" max="100000" value="100000"' in html
     assert html.index('id="dpTrendToExclusion"') < html.index('id="dpTrendReset"')
     assert "趋势复位" in html
     assert "defaults?.trend_default_start" in reset_source
     assert "defaults?.trend_default_end" in reset_source
     assert "localTime(defaults.trend_default_start)" in reset_source
     assert "localTime(defaults.trend_default_end)" in reset_source
-    assert '$("dpTrendMaxPoints").value = "30000";' in reset_source
+    assert '$("dpTrendMaxPoints").value = "100000";' in reset_source
     assert "hasDraggedTrendSelection = false;" in reset_source
     assert "if (lastTrend) renderTrendChart(lastTrend);" in reset_source
     assert "syncToLegacy(chosen(trendIds));" in reset_source
@@ -1016,6 +1064,62 @@ def test_data_inspection_has_visible_progress_and_timeout() -> None:
     assert "setBusy(button,false" in inspect_source
     assert "function ensureInspectionPageReady()" in html
     assert "await response.json()" in html
+
+
+def test_candidate_and_training_view_trend_reloads_the_window_without_mutation() -> None:
+    html = web_model_results.INDEX_HTML
+    body = html.split("function showCandidateTrend(window)", 1)[1].split(
+        "function renderCandidateWindows", 1
+    )[0]
+    view_source = f"function showCandidateTrend(window){body}"
+
+    # The trend request must actually run again for the selected window.
+    assert "requestAnimationFrame" in view_source
+    assert 'el("dpDrawTrend")' in view_source
+    assert ".click()" in view_source
+    # Pure navigation: no candidate/training/exclusion state may be touched.
+    assert "state.candidateWindows" not in view_source
+    assert "state.trainingWindows" not in view_source
+    assert "state.excludedWindows" not in view_source
+    assert "confirmCandidateWindow" not in view_source
+    # The window itself is set before switching to the trend panel.
+    assert 'el("dpTrendStart").value=localTime(window.start)' in view_source
+    assert 'el("dpTrendEnd").value=localTime(window.end)' in view_source
+
+    _run_web_javascript(
+        f"""
+        const functionSource = {json.dumps(view_source)};
+        const elements = new Map([
+          ["trendStart", {{value: ""}}],
+          ["trendEnd", {{value: ""}}],
+          ["dpTrendStart", {{value: ""}}],
+          ["dpTrendEnd", {{value: ""}}],
+          ["dpDrawTrend", {{disabled: false, clicks: 0, click() {{ this.clicks += 1; }}}}],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{candidateWindows: [], trainingWindows: [], excludedWindows: []}};
+        let panelClicks = 0;
+        const frames = [];
+        globalThis.requestAnimationFrame = fn => frames.push(fn);
+        globalThis.document = {{
+          querySelector: () => ({{click: () => {{ panelClicks += 1; }}}}),
+        }};
+        function localTime(value) {{ return value.slice(0, 16); }}
+        function setStatus() {{}}
+        eval(functionSource);
+
+        showCandidateTrend({{start: "2026-01-01T10:00:00", end: "2026-01-01T12:00:00"}});
+        if (el("dpTrendStart").value !== "2026-01-01T10:00") throw new Error("start not set");
+        if (el("dpTrendEnd").value !== "2026-01-01T12:00") throw new Error("end not set");
+        if (panelClicks !== 1) throw new Error("trend panel not opened");
+        if (el("dpDrawTrend").clicks !== 0) throw new Error("drew before panel settled");
+        while (frames.length) frames.shift()();
+        if (el("dpDrawTrend").clicks !== 1) throw new Error("trend was not reloaded");
+        if (state.candidateWindows.length || state.trainingWindows.length || state.excludedWindows.length) {{
+          throw new Error("window state was mutated");
+        }}
+        """
+    )
 
 
 def test_candidate_confirmation_is_separate_from_training_windows() -> None:
