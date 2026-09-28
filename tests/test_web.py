@@ -648,6 +648,18 @@ def test_web_rejects_xlsx_as_csv_encoding_and_keeps_one_upload_control(
     assert '<option value="ascii">' not in web.INDEX_HTML
 
 
+def test_tag_config_save_button_matches_template_download_button_width():
+    html = web_model_results.INDEX_HTML
+
+    assert '<button id="saveTagConfig" class="secondary">保存当前</button>' in html
+    assert "保存当前Tag配置" not in html
+    # 两个按钮共用同一个宽度变量，避免后续只改一处导致宽度再次不一致。
+    assert html.count("min-width:var(--batch-action-width);") == 2
+    assert "--batch-action-width:119px;" in html
+    assert "#engineeringPanel #saveTagConfig {" in html
+    assert "justify-self:start;" in html
+
+
 def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls():
     html = web_model_results.INDEX_HTML
     for element_id in (
@@ -947,7 +959,7 @@ def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
         ]
         # 散点图与时间轴在左列内上下相邻，优选区域统计占右列整行。
         assert grid.index('id="explorationPcChart"') < grid.index('id="explorationTimeline"')
-        assert grid.count("chart-card") == 3
+        assert grid.count('<div class="chart-card">') == 3
         assert '<div class="chart-grid">' not in grid
         # 左列是独立容器：散点图与时间轴同属 .exploration-result-column。
         column = grid.split('<div class="exploration-result-column">', 1)[1].split(
@@ -957,6 +969,15 @@ def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
         assert 'id="explorationTimeline"' in column
         assert "优选运行区域质量统计" not in column
         assert column.index("Cluster PC1 / PC2 与中心") < column.index("Cluster 时间轴")
+        # 优选区域工具与 PC 标题同行并右对齐，不再单独占一行。
+        head = column.split('<div class="chart-card-head">', 1)[1].split("</div></div>", 1)[
+            0
+        ]
+        assert "Cluster PC1 / PC2 与中心" in head
+        assert 'class="exploration-region-tools"' in head
+        assert column.index('<div class="chart-card-head">') < column.index(
+            'id="explorationPcChart"'
+        )
         # Cluster 摘要表保持在两行结果之后并占满整行。
         assert html.index('<div class="exploration-result-grid">') < html.index(
             "Cluster 摘要表"
@@ -985,9 +1006,12 @@ def test_preferred_region_statistics_use_a_compact_scoped_metric_style():
         assert ".region-stats .metrics { grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:8px; }" in html
         assert ".region-stats table { font-size:12px; }" in html
         assert ".region-stats th, .region-stats td { padding:6px 8px; }" in html
-        assert ".region-stats { max-height:none; min-height:430px; margin-top:55px; padding:10px; }" in html
-        # 单列断点下释放固定宽度和顶部偏移，避免窄屏出现大片空白。
-        assert "@media (max-width:1050px) { .region-stats { min-height:0; margin-top:0; } }" in html
+        # 统计区高度由内容决定：不设最小高度、不留固定顶部偏移。
+        assert ".region-stats { max-height:none; padding:10px; }" in html
+        region_stats_rule = html.split(".region-stats {", 1)[1].split("}", 1)[0]
+        assert "min-height" not in region_stats_rule
+        assert "margin-top" not in region_stats_rule
+        assert ".region-stats { min-height:0; margin-top:0; }" not in html
         summary = html.split("function renderExplorationRegionSummary(data)", 1)[1].split(
             "function renderExplorationRegionControls", 1
         )[0]
@@ -2157,7 +2181,9 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     assert shared.index('id="firstOrderAlpha"') < shared.index('id="gapThreshold"')
     assert shared.index('id="gapThreshold"') < shared.index('id="maxLag"')
     assert shared.index('id="maxLag"') < shared.index('id="lagStep"')
-    assert shared.index('id="stateFilterConditions"') < shared.index('id="lagStep"')
+    # 状态过滤块按图2布局：最大 Lag、Lag 步长与添加按钮同排，条件列表紧随其后。
+    assert shared.index('id="lagStep"') < shared.index('id="addStateFilterCondition"')
+    assert shared.index('id="addStateFilterCondition"') < shared.index('id="stateFilterConditions"')
     for field_id in ("varianceThreshold", "components", "modelName"):
         assert f'id="{field_id}"' not in shared
     assert 'class="model-name-field"' in model
@@ -2170,6 +2196,22 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     ) < model.index('id="preprocessingPreview"')
     assert 'class="preprocessing-preview-area"' in model
     assert 'class="row advanced-preprocessing-row"' not in html
+    # 共享预处理五项同排一列，列宽按内容收敛而不是等分撑满。
+    preprocessing_row_start = shared.index('class="row preprocessing-parameter-row"')
+    preprocessing_row_end = shared.index("</div>", preprocessing_row_start)
+    preprocessing_row = shared[preprocessing_row_start:preprocessing_row_end]
+    for field_id in (
+        "sampleInterval",
+        "resamplingMethod",
+        "filterMethod",
+        "firstOrderAlpha",
+        "smoothingWindow",
+        "gapThreshold",
+    ):
+        assert f'id="{field_id}"' in preprocessing_row, field_id
+    assert ".shared-preprocessing .preprocessing-parameter-row" in html
+    assert "grid-template-columns:repeat(5,minmax(0,1fr))" in html
+    assert ".shared-preprocessing .preprocessing-parameter-row { grid-template-columns:minmax(0,1fr); }" in html
     assert model.count('id="preprocessingPreviewButton"') == 1
     assert model.count('id="preprocessingPreview"') == 1
     assert 'id="preprocessingPreviewWindow"' not in shared

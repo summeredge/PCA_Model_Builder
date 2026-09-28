@@ -17,13 +17,14 @@ _BASE_TREND_PAYLOAD = base_web.trend_payload
 _DATAPROJECT_TREND_CSS = r"""
 <style id="dataprojectTrendStyle">
   .dp-trend-controls { display:grid; grid-template-columns:repeat(4,minmax(120px,1fr)) 150px auto; gap:10px; align-items:end; }
-  .dp-trend-options { display:grid; grid-template-columns:repeat(3,minmax(160px,1fr)); gap:10px; align-items:end; }
-  .dp-chart { min-height:520px; height:520px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:hidden; resize:vertical; }
+  .dp-trend-bar { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+  .dp-trend-bar > label { flex:1 1 180px; max-width:240px; min-width:0; }
+  .dp-trend-bar > button { flex:0 0 auto; padding:8px 12px; font-size:13px; white-space:nowrap; }
+  .dp-chart { min-height:660px; height:660px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:hidden; resize:vertical; }
   .dp-chart.empty { height:auto; resize:none; }
   .dp-chart .plotly, .dp-chart .svg-container, .dp-chart .gl-container { width:100%!important; height:100%!important; }
   .dp-chart .modebar { top:2px; right:2px; }
   .dp-chart .js-plotly-plot .plotly .cursor-crosshair { cursor:crosshair; }
-  .dp-chart .rangeselector, .dp-chart .rangeslider { background:#f8fafc; }
   .dp-trend-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; align-items:start; }
   .dp-trend-stat-card { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:10px; }
   .dp-trend-stat-card h3 { margin:0 0 8px; font-size:12px; overflow-wrap:anywhere; }
@@ -44,7 +45,7 @@ _DATAPROJECT_TREND_CSS = r"""
   .dp-scatter-chart canvas { display:block; }
   .dp-inline-help { color:var(--muted); font-size:12px; line-height:1.45; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:#f8fafc; }
   @media (max-width:1050px) { .dp-trend-controls { grid-template-columns:repeat(3,minmax(120px,1fr)); } .dp-trend-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-  @media (max-width:760px) { .dp-trend-controls,.dp-trend-options,.dp-scatter-controls,.dp-trend-stats { grid-template-columns:1fr; } }
+  @media (max-width:760px) { .dp-trend-controls,.dp-scatter-controls,.dp-trend-stats { grid-template-columns:1fr; } .dp-trend-bar > label { max-width:none; } }
 </style>
 """
 
@@ -72,12 +73,10 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       <label>Y 轴<select id="dpTrendAxisMode"><option value="shared">同一 Y 轴</option><option value="independent">独立 Y 轴</option></select></label>
       <button id="dpDrawTrend" type="button" disabled>显示趋势</button>
     </div>
-    <div class="dp-trend-options">
+    <div class="dp-trend-bar">
       <label>开始时间<input id="dpTrendStart" type="datetime-local"></label>
       <label>结束时间<input id="dpTrendEnd" type="datetime-local"></label>
       <label>最大绘图点数<input id="dpTrendMaxPoints" type="number" min="100" max="100000" value="100000"></label>
-    </div>
-    <div class="actions">
       <button id="dpTrendToAnalysis" type="button" class="secondary">将当前窗口设为分析期</button>
       <button id="dpTrendToReference" type="button" class="secondary">加入候选窗口</button>
       <button id="dpTrendToExclusion" type="button" class="secondary">加入排除窗口</button>
@@ -357,25 +356,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
         gridcolor: "#edf1f5",
         zeroline: false,
         showspikes: false,
-        rangeslider: {visible: true, thickness: 0.06},
-        rangeselector: {
-          buttons: [
-            {count: 1, label: "1h", step: "hour", stepmode: "backward"},
-            {count: 8, label: "8h", step: "hour", stepmode: "backward"},
-            {count: 24, label: "24h", step: "hour", stepmode: "backward"},
-            {count: 7, label: "7d", step: "day", stepmode: "backward"},
-            {step: "all", label: "全部"},
-          ],
-          x: 0,
-          y: 1.005,
-          xanchor: "left",
-          yanchor: "bottom",
-          bgcolor: "#f8fafc",
-          activecolor: "#176b87",
-          bordercolor: "#d8dee8",
-          borderwidth: 1,
-          font: {size: 10},
-        },
       },
       yaxis: {gridcolor: "#edf1f5", zeroline: false, autorange: true},
       shapes: trendExclusionShapes(),

@@ -2756,6 +2756,7 @@ INDEX_HTML = r"""<!doctype html>
     .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .chart-card { display:grid; gap:7px; min-width:0; }
     .chart-card h3 { margin:0; font-size:14px; }
+    .chart-card-head { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
     .chart { height:260px; border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
     /* PC1/PC2 scatter is WebGL rendered; the overlay only hosts the region ellipse drag. */
     .exploration-pc-canvas, .exploration-pc-overlay { position:absolute; inset:0; width:100%; height:100%; }
@@ -2793,7 +2794,7 @@ INDEX_HTML = r"""<!doctype html>
      .exploration-timeline svg { display:block; width:100%; height:auto; min-height:190px; }
      .exploration-timeline .timeline-note { margin:0; padding:9px 10px; color:var(--muted); font-size:12px; line-height:1.45; }
      .chart-note { margin:0; color:var(--muted); font-size:12px; line-height:1.45; }
-     .region-stats { max-height:none; min-height:430px; margin-top:55px; padding:10px; }
+     .region-stats { max-height:none; padding:10px; }
      .region-stats .metrics { grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:8px; }
      .region-stats .metric { min-height:0; padding:7px 9px; }
      .region-stats .metric strong { font-size:16px; line-height:1.2; }
@@ -2804,7 +2805,6 @@ INDEX_HTML = r"""<!doctype html>
      .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
      @media (max-width:1050px) { main { grid-template-columns:1fr; } }
      @media (max-width:1050px) { .exploration-result-grid { grid-template-columns:minmax(0,1fr); } }
-     @media (max-width:1050px) { .region-stats { min-height:0; margin-top:0; } }
      @media (max-width:1050px) { .exploration-controls.performance-controls { grid-template-columns:repeat(3,minmax(0,1fr)); } }
      @media (max-width:760px) { .chart-grid,.validation-box,.exploration-controls,.trend-controls { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
   </style>
@@ -2844,14 +2844,11 @@ INDEX_HTML = r"""<!doctype html>
         <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>
         <h3>训练窗口</h3><div id="trainingWindows" class="table-wrap"><div class="empty">尚无已确认训练窗口。</div></div>
         <div class="help">只有此处的 training_windows 会参与质量检查和训练。</div>
-        <div class="row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label></div>
-        <div class="row"><label>滤波方法<select id="filterMethod"><option value="none" selected>不滤波</option><option value="first_order">一阶低通滤波</option><option value="trailing_mean">移动平均</option></select></label><label hidden>一阶滤波 alpha<input id="firstOrderAlpha" type="number" min="0" max="1" step="any" placeholder="例如 0.2" disabled></label><label hidden>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10" disabled></label></div>
-        <div class="row"><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label></div>
+        <div class="row preprocessing-parameter-row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label><label>滤波方法<select id="filterMethod"><option value="none" selected>不滤波</option><option value="first_order">一阶低通滤波</option><option value="trailing_mean">移动平均</option></select></label><label hidden>一阶滤波 alpha<input id="firstOrderAlpha" type="number" min="0" max="1" step="any" placeholder="例如 0.2" disabled></label><label hidden>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10" disabled></label><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label></div>
         <div class="sub-title">状态过滤条件</div>
+        <div class="row state-filter-parameter-row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label><button id="addStateFilterCondition" class="secondary" type="button" disabled>添加状态过滤条件</button></div>
         <div id="stateFilterConditions" class="condition-list"><span class="help">把 Tag 角色设为“状态过滤”后，可在此配置上下限；多个条件按 AND 组合。状态过滤 Tag 不进入 PCA 连续输入。</span></div>
-        <div class="actions"><button id="addStateFilterCondition" class="secondary" disabled>添加状态过滤条件</button></div>
         <div class="row"><label>预览训练窗口<select id="preprocessingPreviewWindow" disabled></select></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>
-        <div class="row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
          <h3>建模质量检查</h3>
@@ -2904,7 +2901,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="row"><label>工程下限<input id="engineeringMin" type="number" step="any"></label><label>工程上限<input id="engineeringMax" type="number" step="any"></label></div>
             <div class="row"><label>正常下限<input id="normalMin" type="number" step="any"></label><label>正常上限<input id="normalMax" type="number" step="any"></label></div>
             <div class="row"><label>报警下限<input id="alarmMin" type="number" step="any"></label><label>报警上限<input id="alarmMax" type="number" step="any"></label></div>
-            <button id="saveTagConfig" class="secondary">保存当前Tag配置</button>
+            <button id="saveTagConfig" class="secondary">保存当前</button>
           </div>
         </div>
         <div id="qualityPanel" class="inner-panel">
@@ -2946,7 +2943,7 @@ INDEX_HTML = r"""<!doctype html>
           <div id="explorationLossSummary" class="table-wrap"></div>
           <div class="exploration-result-grid">
             <div class="exploration-result-column">
-              <div class="chart-card"><h3>Cluster PC1 / PC2 与中心</h3><div class="exploration-region-tools"><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
+              <div class="chart-card"><div class="chart-card-head"><h3>Cluster PC1 / PC2 与中心</h3><div class="exploration-region-tools"><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
               <div class="chart-card"><h3>Cluster 时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
             </div>
             <div class="chart-card"><h3>优选运行区域质量统计</h3><div id="explorationRegionSummary" class="table-wrap region-stats"><div class="empty">尚未定义优选运行区域。</div></div></div>

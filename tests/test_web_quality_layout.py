@@ -334,16 +334,19 @@ def test_trend_layout_drops_the_in_plot_note_and_grows_the_curve_area() -> None:
     assert "height: 320" not in trend_source
 
 
-def test_trend_supports_rangeslider_and_rangeselector_without_touching_the_window() -> None:
+def test_trend_drops_rangeslider_and_rangeselector_without_touching_the_window() -> None:
     trend_source = web_model_results.INDEX_HTML.split(
         "function renderTrendChart(data)", 1
     )[1].split("function renderStatCard", 1)[0]
     xaxis_block = trend_source.split("xaxis: {", 1)[1].split("yaxis: {", 1)[0]
 
-    assert "rangeslider: {visible: true" in xaxis_block
-    assert "rangeselector: {" in xaxis_block
+    # The zoom-slider axis and the 1h/8h/24h buttons only steal plot area.
+    assert "rangeslider" not in xaxis_block
+    assert "rangeselector" not in xaxis_block
     for label in ("1h", "8h", "24h", "7d", "全部"):
-        assert f'label: "{label}"' in xaxis_block
+        assert f'label: "{label}"' not in xaxis_block
+    # The freed space becomes chart height.
+    assert ".dp-chart { min-height:660px; height:660px;" in web_model_results.INDEX_HTML
 
     # Browsing controls are visual only: they must not write the business window.
     relayout = trend_source.split('plot.on("plotly_relayout"', 1)[1].split("});", 1)[0]
@@ -799,8 +802,8 @@ def test_workbench_assembly_uses_field_anchors_not_copied_parameter_markup() -> 
 def test_workbench_parameter_rows_allow_nonsemantic_div_attributes() -> None:
     base_html = web_model_results.quality_app.INDEX_HTML
     changed_html = base_html.replace(
-        '<div class="row"><label>目标采样周期（分钟）',
-        '<div data-test="stable" class="row compact"><label>目标采样周期（分钟）',
+        '<div class="row preprocessing-parameter-row"><label>目标采样周期（分钟）',
+        '<div data-test="stable" class="row compact preprocessing-parameter-row"><label>目标采样周期（分钟）',
         1,
     )
 

@@ -65,6 +65,9 @@ _FORM_ALIGNMENT_STYLE = r"""
     height:var(--control-height);
     white-space:nowrap;
   }
+  #engineeringPanel .batch-config .actions > .download {
+    min-width:var(--batch-action-width);
+  }
   #engineeringPanel .batch-config .actions > label.secondary {
     display:grid;
     grid-template-rows:auto 42px;
@@ -133,6 +136,9 @@ _FORM_ALIGNMENT_STYLE = r"""
   #engineeringPanel #saveTagConfig {
     min-height:var(--control-height);
     margin-top:var(--space-1);
+    /* 与批量配置区的下载按钮等宽：两者共用 min-width，文本变长也不会让下方按钮超出上方宽度。 */
+    min-width:var(--batch-action-width);
+    justify-self:start;
   }
 
   @media (max-width:900px) {
@@ -145,6 +151,11 @@ _FORM_ALIGNMENT_STYLE = r"""
     #engineeringPanel .batch-config .actions > .download,
     #engineeringPanel .batch-config .actions > button {
       width:100%;
+    }
+    /* 窄屏下上方按钮被拉满网格列，改为与“保存当前”一起保持同宽，避免两者宽度不同。 */
+    #engineeringPanel .batch-config .actions > .download,
+    #engineeringPanel #saveTagConfig {
+      width:var(--batch-action-width);
     }
   }
 </style>
@@ -170,6 +181,8 @@ _APPLE_DESIGN_STYLE = r"""
     --abnormal:#da1e28;
     --control-height:42px;
     --control-radius:6px;
+    /* 批量配置区下载按钮的实测自然宽度，下方“保存当前”对齐到同宽。 */
+    --batch-action-width:119px;
     --space-1:8px;
     --space-2:12px;
     --space-3:16px;
@@ -509,6 +522,16 @@ _WORKBENCH_UI_STYLE = r"""
   .model-name-field { min-width:0; }
   .filter-parameter-control > label { min-width:0; }
   .model-name-field { grid-column:span 2; }
+  /* 共享预处理五项同排；列宽按内容收敛并左对齐，避免等分后每个输入框过宽。 */
+  .shared-preprocessing .preprocessing-parameter-row {
+    grid-template-columns:repeat(5,minmax(0,1fr));
+  }
+  /* 状态过滤块：最大 Lag、Lag 步长与“添加状态过滤条件”同排，按内容收敛列宽并贴底对齐。 */
+  .shared-preprocessing .state-filter-parameter-row {
+    grid-template-columns:repeat(3,max-content);
+    justify-content:start;
+  }
+  .shared-preprocessing .state-filter-parameter-row > * { min-width:0; }
   .preprocessing-preview-controls {
     display:grid;
     grid-template-columns:minmax(0,1fr) max-content;
@@ -617,6 +640,8 @@ _WORKBENCH_UI_STYLE = r"""
     section { padding:var(--panel-padding); }
     .data-preparation-grid { grid-template-columns:minmax(0,1fr); }
     .row { grid-template-columns:minmax(0,1fr); }
+    .shared-preprocessing .preprocessing-parameter-row { grid-template-columns:minmax(0,1fr); }
+    .shared-preprocessing .state-filter-parameter-row { grid-template-columns:minmax(0,1fr); }
     .candidate-manager .row { grid-template-columns:minmax(0,1fr); }
     .candidate-manager .candidate-window-row { grid-template-columns:minmax(0,1fr); }
     .candidate-manager .row > button { width:100%; }
