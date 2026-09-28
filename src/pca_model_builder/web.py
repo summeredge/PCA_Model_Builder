@@ -863,6 +863,12 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
         exploration["cluster_series"],
         config.sample_interval_minutes,
     )
+    # The PC1/PC2 chart is WebGL accelerated, so it can draw the full state
+    # space. Only PC1/PC2/cluster are needed there, so keep the payload narrow
+    # instead of re-sending timestamps and segment ids for every sample.
+    response["cluster_series_full"] = _exploration_scatter_series(
+        exploration["cluster_series"]
+    )
     response = _with_data_usage(
         response, loaded, len(selected), len(response["cluster_series"])
     )
@@ -1231,6 +1237,18 @@ def _exploration_series(
                 None if target_status is None or pd.isna(target_status) else bool(target_status)
             )
     return result
+
+
+def _exploration_scatter_series(series: pd.DataFrame) -> list[dict[str, Any]]:
+    """Serialise the full state space for the WebGL PC1/PC2 scatter chart."""
+    return [
+        {
+            "cluster_id": str(row.cluster_id),
+            "pc1": float(row.pc1),
+            "pc2": float(row.pc2),
+        }
+        for row in series.itertuples(index=False)
+    ]
 
 
 def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2739,6 +2757,14 @@ INDEX_HTML = r"""<!doctype html>
     .chart-card { display:grid; gap:7px; min-width:0; }
     .chart-card h3 { margin:0; font-size:14px; }
     .chart { height:260px; border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
+    /* PC1/PC2 scatter is WebGL rendered; the overlay only hosts the region ellipse drag. */
+    .exploration-pc-canvas, .exploration-pc-overlay { position:absolute; inset:0; width:100%; height:100%; }
+    #explorationPcChart { position:relative; }
+    /* The Plotly modebar sits above its own canvas, so only the overlay needs to
+       stay underneath it while ellipse selection is armed. */
+    #explorationPcChart .modebar-container { z-index:2; }
+    .exploration-pc-overlay { z-index:1; pointer-events:none; }
+    #explorationPcChart .empty { position:static; }
     .chart svg { width:100%; height:100%; display:block; }
     .empty { display:grid; place-items:center; min-height:120px; color:var(--muted); border:1px dashed var(--line); border-radius:7px; padding:18px; text-align:center; }
     .variance { display:flex; gap:5px; align-items:flex-end; height:130px; padding:10px; border:1px solid var(--line); border-radius:7px; overflow-x:auto; }
@@ -2899,7 +2925,7 @@ INDEX_HTML = r"""<!doctype html>
             <label>随机种子<input id="explorationRandomState" type="number" step="1" value="0"></label>
             <label>每个 Cluster 候选数量<input id="explorationCandidateCount" type="number" min="1" value="3"></label>
             <label>候选最小时长（分钟）<input id="explorationMinimumDuration" type="number" min="1" value="30"></label>
-            <label>最大显示点数<input id="explorationMaximumPlotPoints" type="number" min="2" value="1200"></label>
+            <label>时间轴最大抽样点数<input id="explorationMaximumPlotPoints" type="number" min="2" value="1200" title="仅限制状态时间轴与返回序列的抽样点数；PC1/PC2 散点始终绘制全部完整样本。"></label>
             <button id="stateExplorationButton" type="button" disabled>运行状态探索</button>
           </div>
           <div class="exploration-controls performance-controls">
@@ -2920,7 +2946,7 @@ INDEX_HTML = r"""<!doctype html>
           <div id="explorationLossSummary" class="table-wrap"></div>
           <div class="exploration-result-grid">
             <div class="exploration-result-column">
-              <div class="chart-card"><h3>Cluster PC1 / PC2 与中心</h3><div class="exploration-region-tools"><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">散点经过代表性抽样，仅用于观察空间分布；性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
+              <div class="chart-card"><h3>Cluster PC1 / PC2 与中心</h3><div class="exploration-region-tools"><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
               <div class="chart-card"><h3>Cluster 时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
             </div>
             <div class="chart-card"><h3>优选运行区域质量统计</h3><div id="explorationRegionSummary" class="table-wrap region-stats"><div class="empty">尚未定义优选运行区域。</div></div></div>
@@ -3032,7 +3058,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, explorationRevision:0, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, explorationRevision:0, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, preferredRegionPlot:null, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -3276,7 +3302,7 @@ function explorationClusterColor(clusterId) { return EXPLORATION_CLUSTER_PALETTE
 function renderStateExploration(data) {
   el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
-  el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("显示点数",`${data.returned_point_count}/${data.full_point_count}`);
+  el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("完整样本",data.full_point_count)+metric("绘制点数",(data.cluster_series_full||data.cluster_series||[]).length);
   const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
   renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationRegionSummary(data); renderExplorationRegionControls(); renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[],data.preferred_region_candidates||[]);
 }
@@ -3302,23 +3328,60 @@ function renderExplorationRegionControls() {
   select.classList.toggle("active",state.preferredRegionDrawing); select.setAttribute("aria-pressed",String(state.preferredRegionDrawing));
 }
 function renderExplorationPcChart(data) {
-  const rows=data.cluster_series||[]; const container=el("explorationPcChart"); if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
-  const width=760,height=260,pad=34; const finiteRows=rows.filter(row=>Number.isFinite(Number(row.pc1))&&Number.isFinite(Number(row.pc2))); if(!finiteRows.length){container.innerHTML='<div class="empty">无可展示的有限 PC1/PC2 序列。</div>';return;} const xs=finiteRows.map(row=>Number(row.pc1)),ys=finiteRows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad),y=value=>height/2-value/maxY*(height/2-pad);
-  const points=finiteRows.map(row=>{const color=explorationClusterColor(row.cluster_id);return `<circle class="exploration-pc-point" cx="${x(Number(row.pc1)).toFixed(2)}" cy="${y(Number(row.pc2)).toFixed(2)}" r="3" fill="${color}" fill-opacity=".75"></circle>`;}).join("");
-  const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>{const cx=x(Number(center[0])),cy=y(Number(center[1])),color=explorationClusterColor(cluster);return `<g stroke="${color}" stroke-width="2"><line x1="${cx-7}" x2="${cx+7}" y1="${cy}" y2="${cy}"/><line x1="${cx}" x2="${cx}" y1="${cy-7}" y2="${cy+7}"/><title>${escapeHtml(cluster)} 中心</title></g>`;}).join("");
-  const legend=[...new Set(rows.map(row=>row.cluster_id))].map(cluster=>{const number=explorationClusterNumber(cluster);return `<text x="${pad+(number-1)*88}" y="16" fill="${explorationClusterColor(cluster)}" font-size="10">● ${escapeHtml(cluster)}</text>`;}).join("");
-  const region=state.preferredRegion||data.preferred_region||{}; const regionEllipses=(region.ellipses||[]).map((ellipse,index)=>{const cx=x(Number(ellipse.center_pc1)),cy=y(Number(ellipse.center_pc2)),rx=Math.abs(Number(ellipse.radius_pc1)/maxX*(width/2-pad)),ry=Math.abs(Number(ellipse.radius_pc2)/maxY*(height/2-pad));return `<ellipse data-preferred-region-ellipse="${index+1}" cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" rx="${rx.toFixed(2)}" ry="${ry.toFixed(2)}" fill="#176b87" fill-opacity=".08" stroke="#176b87" stroke-width="2" vector-effect="non-scaling-stroke"><title>优选运行区域椭圆 ${index+1}</title></ellipse>`;}).join("");
-  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster PC1 PC2 散点图">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${regionEllipses}${points}${centers}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
-  const svg=container.querySelector("svg"); if(!state.preferredRegionDrawing||!svg) return; svg.style.cursor="crosshair";
-  const clearPreview=()=>svg.querySelector("ellipse[data-preferred-region-preview]")?.remove();
-  const svgPoint=event=>{try { const matrix=svg.getScreenCTM?.()?.inverse?.(); if(!matrix) return null; const point=svg.createSVGPoint?.(); if(!point) return null; point.x=event.clientX; point.y=event.clientY; const userPoint=point.matrixTransform(matrix); if(!Number.isFinite(userPoint.x)||!Number.isFinite(userPoint.y)) return null; return{x:Math.max(0,Math.min(width,userPoint.x)),y:Math.max(0,Math.min(height,userPoint.y))}; } catch(error) { return null; }};
-  const setPreview=(start,end)=>{let preview=svg.querySelector("ellipse[data-preferred-region-preview]"); if(!preview){preview=document.createElementNS("http://www.w3.org/2000/svg","ellipse");preview.dataset.preferredRegionPreview="true";preview.setAttribute("fill","#176b87");preview.setAttribute("fill-opacity",".08");preview.setAttribute("stroke","#176b87");preview.setAttribute("stroke-width","2");preview.setAttribute("stroke-dasharray","5 3");preview.setAttribute("pointer-events","none");svg.append(preview);} preview.setAttribute("cx",((start.x+end.x)/2).toFixed(2));preview.setAttribute("cy",((start.y+end.y)/2).toFixed(2));preview.setAttribute("rx",(Math.abs(end.x-start.x)/2).toFixed(2));preview.setAttribute("ry",(Math.abs(end.y-start.y)/2).toFixed(2));};
+  // The full state space is WebGL rendered, so no DOM node exists per sample.
+  // cluster_series is the sampled timeline series; cluster_series_full is the
+  // complete state space used here and the only field that may carry every row.
+  const rows=data.cluster_series_full||data.cluster_series||[]; const container=el("explorationPcChart");
+  const finiteRows=rows.filter(row=>Number.isFinite(Number(row.pc1))&&Number.isFinite(Number(row.pc2)));
+  if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
+  if(!finiteRows.length){container.innerHTML='<div class="empty">无可展示的有限 PC1/PC2 序列。</div>';return;}
+  if(!globalThis.Plotly){container.innerHTML='<div class="empty">Plotly 未加载，无法绘制散点图。</div>';return;}
+  const byCluster=new Map();
+  finiteRows.forEach(row=>{const cluster=String(row.cluster_id); if(!byCluster.has(cluster)) byCluster.set(cluster,{x:[],y:[]}); const bucket=byCluster.get(cluster); bucket.x.push(Number(row.pc1)); bucket.y.push(Number(row.pc2));});
+  const traces=[...byCluster.entries()].map(([cluster,bucket])=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:cluster,marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hovertemplate:`${cluster}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
+  const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>({cluster,x:Number(center[0]),y:Number(center[1])})).filter(item=>Number.isFinite(item.x)&&Number.isFinite(item.y));
+  if(centers.length) traces.push({type:"scatter",mode:"markers+text",x:centers.map(item=>item.x),y:centers.map(item=>item.y),text:centers.map(item=>item.cluster),textposition:"top center",textfont:{size:10},showlegend:false,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:centers.map(item=>explorationClusterColor(item.cluster)),line:{width:1,color:"#ffffff"}},"meta":"center"});
+  const layout={autosize:true,hovermode:"closest",dragmode:"pan",margin:{l:46,r:14,t:10,b:40},paper_bgcolor:"#fff",plot_bgcolor:"#fff",font:{size:11,color:"#5f6c7b"},xaxis:{title:"PC1",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},yaxis:{title:"PC2",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},shapes:explorationRegionShapes()};
+  const config={displayModeBar:true,modeBarButtons:[["zoom2d","pan2d","resetScale2d"]],displaylogo:false,responsive:true,scrollZoom:false};
+  container.innerHTML='<div class="exploration-pc-canvas"></div><svg class="exploration-pc-overlay" role="img" aria-label="优选运行区域椭圆"></svg>';
+  const canvas=container.querySelector(".exploration-pc-canvas"), overlay=container.querySelector(".exploration-pc-overlay");
+  globalThis.Plotly.react(canvas,traces,layout,config).then(plot=>{ state.preferredRegionPlot=plot; bindExplorationRegionOverlay(plot,overlay); });
+}
+function refreshExplorationRegionPlot() {
+  // Region edits only change the ellipses, so repaint the shapes on the live
+  // plot instead of re-serialising every state sample into a new WebGL scene.
+  const plot=state.preferredRegionPlot; if(!plot||!globalThis.Plotly) return false;
+  globalThis.Plotly.relayout(plot,{shapes:explorationRegionShapes()}); return true;
+}
+function rebindExplorationRegionOverlay() {
+  // Replace the overlay node so repeated toggles cannot stack duplicate drag
+  // handlers on the same element.
+  const plot=state.preferredRegionPlot, container=el("explorationPcChart"), current=container?.querySelector(".exploration-pc-overlay");
+  if(!plot||!current) return false;
+  const overlay=document.createElementNS("http://www.w3.org/2000/svg","svg");
+  overlay.setAttribute("class","exploration-pc-overlay"); overlay.setAttribute("role","img"); overlay.setAttribute("aria-label","优选运行区域椭圆");
+  current.replaceWith(overlay); bindExplorationRegionOverlay(plot,overlay); return true;
+}
+function explorationRegionShapes() {
+  const region=state.preferredRegion||state.exploration?.preferred_region||{};
+  return (region.ellipses||[]).filter(ellipse=>Number.isFinite(Number(ellipse.center_pc1))&&Number.isFinite(Number(ellipse.center_pc2))&&Number.isFinite(Number(ellipse.radius_pc1))&&Number.isFinite(Number(ellipse.radius_pc2))).map(ellipse=>({type:"circle",xref:"x",yref:"y",x0:Number(ellipse.center_pc1)-Math.abs(Number(ellipse.radius_pc1)),x1:Number(ellipse.center_pc1)+Math.abs(Number(ellipse.radius_pc1)),y0:Number(ellipse.center_pc2)-Math.abs(Number(ellipse.radius_pc2)),y1:Number(ellipse.center_pc2)+Math.abs(Number(ellipse.radius_pc2)),fillcolor:"rgba(23,107,135,0.08)",line:{color:"#176b87",width:2}}));
+}
+function bindExplorationRegionOverlay(plot,overlay) {
+  if(!state.preferredRegionDrawing){overlay.style.pointerEvents="none"; overlay.replaceChildren(); return;}
+  overlay.style.pointerEvents="auto"; overlay.style.cursor="crosshair";
+  const clearPreview=()=>overlay.querySelector("ellipse[data-preferred-region-preview]")?.remove();
+  // Plotly owns scaling, zoom and pan, so the overlay only converts pixels to
+  // data coordinates through the live axis transform instead of its own viewBox.
+  // p2c takes plot-area pixels, so the axis offset (margin plus domain shift) has
+  // to be removed first; that offset moves on resize and keeps ellipses aligned.
+  const plotPoint=event=>{try { const box=overlay.getBoundingClientRect(); const layout=plot._fullLayout; if(!layout) return null; const xAxis=layout.xaxis,yAxis=layout.yaxis; if(!xAxis||!yAxis) return null; const x=event.clientX-box.left-(xAxis._offset||0),y=event.clientY-box.top-(yAxis._offset||0); const pc1=xAxis.p2c(x),pc2=yAxis.p2c(y); if(!Number.isFinite(pc1)||!Number.isFinite(pc2)) return null; return{x:event.clientX-box.left,y:event.clientY-box.top,pc1,pc2}; } catch(error) { return null; }};
+  const setPreview=(start,end)=>{let preview=overlay.querySelector("ellipse[data-preferred-region-preview]"); if(!preview){preview=document.createElementNS("http://www.w3.org/2000/svg","ellipse");preview.dataset.preferredRegionPreview="true";preview.setAttribute("fill","#176b87");preview.setAttribute("fill-opacity",".08");preview.setAttribute("stroke","#176b87");preview.setAttribute("stroke-width","2");preview.setAttribute("stroke-dasharray","5 3");preview.setAttribute("pointer-events","none");overlay.append(preview);} preview.setAttribute("cx",((start.x+end.x)/2).toFixed(2));preview.setAttribute("cy",((start.y+end.y)/2).toFixed(2));preview.setAttribute("rx",(Math.abs(end.x-start.x)/2).toFixed(2));preview.setAttribute("ry",(Math.abs(end.y-start.y)/2).toFixed(2));};
   let start=null;
-  const finish=event=>{if(!start)return; const point=svgPoint(event); if(!point){clearPreview(); start=null; return;} clearPreview(); const firstPc={pc1:(start.x-width/2)/(width/2-pad)*maxX,pc2:(height/2-start.y)/(height/2-pad)*maxY},lastPc={pc1:(point.x-width/2)/(width/2-pad)*maxX,pc2:(height/2-point.y)/(height/2-pad)*maxY}; start=null; const ellipse={center_pc1:(firstPc.pc1+lastPc.pc1)/2,center_pc2:(firstPc.pc2+lastPc.pc2)/2,radius_pc1:Math.abs(lastPc.pc1-firstPc.pc1)/2,radius_pc2:Math.abs(lastPc.pc2-firstPc.pc2)/2}; if(ellipse.radius_pc1<=0||ellipse.radius_pc2<=0){setStatus("椭圆需要在 PC1 和 PC2 方向都有正宽度。","warning");return;} updateExplorationPreferredRegion([...(state.preferredRegion?.ellipses||[]),ellipse]);};
-  svg.addEventListener("mousedown",event=>{if(event.button!==0)return; const point=svgPoint(event); if(!point){start=null; clearPreview(); return;} start=point; event.preventDefault();});
-  svg.addEventListener("mousemove",event=>{if(!start)return; const point=svgPoint(event); if(!point){clearPreview(); start=null; return;} setPreview(start,point);});
-  svg.addEventListener("mouseup",finish);
-  svg.addEventListener("mouseleave",event=>{if(event.buttons===0){clearPreview(); start=null;}});
+  const finish=event=>{if(!start)return; const point=plotPoint(event); if(!point){clearPreview(); start=null; return;} clearPreview(); const ellipse={center_pc1:(start.pc1+point.pc1)/2,center_pc2:(start.pc2+point.pc2)/2,radius_pc1:Math.abs(point.pc1-start.pc1)/2,radius_pc2:Math.abs(point.pc2-start.pc2)/2}; start=null; if(ellipse.radius_pc1<=0||ellipse.radius_pc2<=0){setStatus("椭圆需要在 PC1 和 PC2 方向都有正宽度。","warning");return;} updateExplorationPreferredRegion([...(state.preferredRegion?.ellipses||[]),ellipse]);};
+  overlay.addEventListener("mousedown",event=>{if(event.button!==0)return; const point=plotPoint(event); if(!point){start=null; clearPreview(); return;} start=point; event.preventDefault();});
+  overlay.addEventListener("mousemove",event=>{if(!start)return; const point=plotPoint(event); if(!point){clearPreview(); start=null; return;} setPreview(start,point);});
+  overlay.addEventListener("mouseup",finish);
+  overlay.addEventListener("mouseleave",event=>{if(event.buttons===0){clearPreview(); start=null;}});
 }
 function explorationTimelineTick(value) { const time=new Date(value); return `${String(time.getMonth()+1).padStart(2,"0")}/${String(time.getDate()).padStart(2,"0")} ${String(time.getHours()).padStart(2,"0")}:${String(time.getMinutes()).padStart(2,"0")}`; }
 function renderExplorationTimeline(rows,candidates) {
@@ -3352,7 +3415,7 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
   el("explorationPreferredRegionCandidates").innerHTML=preferredHead+(preferredBody||'<tr><td colspan="14">暂无满足最小时长的优选区域连续候选。</td></tr>')+"</tbody></table>";
  }
 
-function resetExplorationRegion() { state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; renderExplorationRegionControls(); }
+function resetExplorationRegion() { state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; state.preferredRegionPlot=null; renderExplorationRegionControls(); }
 function confirmedExplorationSourceRefs() { return new Set(state.trainingWindows.map(window=>String(window.source_ref||"")).filter(Boolean)); }
 function invalidateExploration(reason) {
   state.explorationRevision+=1;
@@ -3369,7 +3432,7 @@ async function updateExplorationPreferredRegion(ellipses) {
   const runId=state.exploration?.exploration_run_id; if(!runId) return;
   const previous=state.preferredRegion, previousCandidates=state.exploration.preferred_region_candidates||[], previousDecisions=state.exploration.candidate_decisions||[], request=++state.preferredRegionRequest, updateSeq=++state.preferredRegionUpdateSeq;
   const previousPreferredIds=new Set(previousCandidates.map(item=>item.candidate_id));
-  state.preferredRegion={ellipses}; state.exploration={...state.exploration,preferred_region_candidates:[],candidate_decisions:previousDecisions.filter(item=>!previousPreferredIds.has(item.candidate_id)&&!String(item.candidate_id).startsWith("preferred-region-candidate-"))}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],[]);
+  state.preferredRegion={ellipses}; state.exploration={...state.exploration,preferred_region_candidates:[],candidate_decisions:previousDecisions.filter(item=>!previousPreferredIds.has(item.candidate_id)&&!String(item.candidate_id).startsWith("preferred-region-candidate-"))}; if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],[]);
   try {
     const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/preferred-region`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({exploration_run_id:runId,ellipses,preferred_region_update_seq:updateSeq})});
     if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
@@ -3377,13 +3440,13 @@ async function updateExplorationPreferredRegion(ellipses) {
       state.preferredRegion=data.preferred_region||data;
       state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||[]};
       if(Number.isInteger(Number(data.preferred_region_update_seq))) state.preferredRegionUpdateSeq=Math.max(state.preferredRegionUpdateSeq,Number(data.preferred_region_update_seq));
-      renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus("优选运行区域已同步到服务端最新版本。","warning"); return;
+      if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus("优选运行区域已同步到服务端最新版本。","warning"); return;
     }
     if(Number.isInteger(Number(data.preferred_region_update_seq))) state.preferredRegionUpdateSeq=Math.max(state.preferredRegionUpdateSeq,Number(data.preferred_region_update_seq));
-    state.preferredRegion=data.preferred_region||data; state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||state.exploration.candidate_decisions||[]}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(`优选运行区域已更新：${state.preferredRegion.selected_sample_count} 个完整样本。` ,"success");
+    state.preferredRegion=data.preferred_region||data; state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||state.exploration.candidate_decisions||[]}; if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(`优选运行区域已更新：${state.preferredRegion.selected_sample_count} 个完整样本。` ,"success");
   } catch(error) {
     if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
-    state.preferredRegion=previous; state.exploration={...state.exploration,preferred_region_candidates:previousCandidates,candidate_decisions:previousDecisions}; renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(error.message,"error");
+    state.preferredRegion=previous; state.exploration={...state.exploration,preferred_region_candidates:previousCandidates,candidate_decisions:previousDecisions}; if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(error.message,"error");
   }
 }
 
@@ -3568,12 +3631,12 @@ el("stateExplorationButton").addEventListener("click", async () => {
   try {
     const data=await api("/api/state-exploration/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(stateExplorationPayload())});
     if(explorationRevision!==state.explorationRevision) { setStatus("建模 Tag、预处理或状态过滤条件已变化，本次状态探索结果已丢弃，请重新运行。","warning"); return; }
-    state.exploration=data; resetExplorationRegion(); renderStateExploration(data); document.querySelector('[data-panel="stateExplorationPanel"]').click(); setStatus(`状态探索完成：${data.full_point_count} 个完整样本，返回 ${data.returned_point_count} 个显示点。候选仅供工程师比较。`,"success");
+    state.exploration=data; resetExplorationRegion(); renderStateExploration(data); document.querySelector('[data-panel="stateExplorationPanel"]').click(); setStatus(`状态探索完成：${data.full_point_count} 个完整样本，PC1/PC2 散点绘制全部完整样本；时间轴返回 ${data.returned_point_count} 个抽样点。候选仅供工程师比较。`,"success");
   } catch(error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
 
-el("explorationRegionSelect").addEventListener("click",()=>{ if(!state.exploration) return; state.preferredRegionDrawing=!state.preferredRegionDrawing; renderExplorationRegionControls(); renderExplorationPcChart(state.exploration); setStatus(state.preferredRegionDrawing?"椭圆选择已开启：在 PC1/PC2 图中拖动绘制优选运行区域。":"椭圆选择已关闭。","info"); });
+el("explorationRegionSelect").addEventListener("click",()=>{ if(!state.exploration) return; state.preferredRegionDrawing=!state.preferredRegionDrawing; renderExplorationRegionControls(); if(!refreshExplorationRegionPlot()||!rebindExplorationRegionOverlay()) renderExplorationPcChart(state.exploration); setStatus(state.preferredRegionDrawing?"椭圆选择已开启：在 PC1/PC2 图中拖动绘制优选运行区域。":"椭圆选择已关闭。","info"); });
 el("explorationRegionDelete").addEventListener("click",()=>{ const ellipses=state.preferredRegion?.ellipses||[]; if(ellipses.length) updateExplorationPreferredRegion(ellipses.slice(0,-1)); });
 el("explorationRegionClear").addEventListener("click",()=>{ if((state.preferredRegion?.ellipses||[]).length) updateExplorationPreferredRegion([]); });
 

@@ -43,6 +43,18 @@ def _run_node_javascript(source: str) -> dict:
     return json.loads(result.stdout)
 
 
+def _pc_renderer_source() -> str:
+    return web.INDEX_HTML.split("function renderExplorationPcChart(data)", 1)[1].split(
+        "function explorationTimelineTick", 1
+    )[0]
+
+
+def _pc_overlay_source() -> str:
+    source = web.INDEX_HTML
+    start = source.index("function bindExplorationRegionOverlay(plot,overlay)")
+    return source[start : source.index("function explorationTimelineTick", start)]
+
+
 def _history_frame() -> pd.DataFrame:
     rng = np.random.default_rng(42)
     timestamps = pd.date_range("2026-01-01", periods=180, freq="5min")
@@ -873,38 +885,29 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
         assert "性能达标分布" not in html
         assert "◎ 外圈：性能达标" not in html
         assert "淡化点：未达标或无有效性能值" not in html
-        assert "散点经过代表性抽样，仅用于观察空间分布；性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
+        assert "PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
         assert "优选区域：" in html
         assert "椭圆选择" in html
         assert "删除上一个" in html
         assert "清除区域" in html
         assert "explorationPcMode" not in html
         assert "renderExplorationPcModeControls" not in html
-    renderer = web.INDEX_HTML.split("function renderExplorationPcChart(data)", 1)[1].split(
-        "function explorationTimelineTick", 1
-    )[0]
-    point_layers = renderer.split("const points=", 1)[1].split("const centers=", 1)[0]
-    assert 'class="exploration-pc-point"' in point_layers
-    assert 'fill-opacity=".75"' in point_layers
-    assert "row.performance_target_met" not in point_layers
-    assert "<title>" not in point_layers
+    renderer = _pc_renderer_source()
+    # The complete state space is drawn by WebGL, never by one DOM node per row.
+    assert 'type:"scattergl",mode:"markers"' in renderer
+    assert "marker:{size:5,color:explorationClusterColor(cluster),opacity:.75}" in renderer
+    assert 'class="exploration-pc-point"' not in renderer
+    assert "<circle" not in renderer
+    assert "row.performance_target_met" not in renderer
     assert "performanceMode" not in renderer
     assert "targetHalos" not in renderer
     assert "targetLegend" not in renderer
     assert "exploration-pc-target-halo" not in renderer
+    # Cluster centers keep their own trace and stay out of region selection.
     assert "const centers=Object.entries(data.cluster_centers||{})" in renderer
-    assert "const legend=[...new Set(rows.map(row=>row.cluster_id))]" in renderer
-    assert "${regionEllipses}${points}${centers}" in renderer
-    assert "svg.getScreenCTM?.()?.inverse?.()" in renderer
-    assert "svg.createSVGPoint?.()" in renderer
-    assert "point.matrixTransform(matrix)" in renderer
-    assert "Math.min(rect.width/width,rect.height/height)" not in renderer
-    assert "offsetX" not in renderer
-    assert "offsetY" not in renderer
-    for event_name in ("mousedown", "mousemove", "mouseup"):
-        assert f'svg.addEventListener("{event_name}"' in renderer
-    assert renderer.count("const point=svgPoint(event)") == 3
-    assert "if(!point){clearPreview(); start=null; return;}" in renderer
+    assert 'type:"scatter",mode:"markers+text"' in renderer
+    assert 'symbol:"cross"' in renderer
+    assert 'showlegend:false' in renderer
 
 
 def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
@@ -921,8 +924,9 @@ def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
     assert "preferred-region" in html
     assert "center_pc1" in html
     assert "radius_pc2" in html
-    assert "getScreenCTM" in html
-    assert "createSVGPoint" in html
+    # Region selection now converts through the live Plotly axis transform.
+    assert "p2c" in html
+    assert "_offset" in html
     assert "state.preferredRegionRequest" in html
     assert "preferredRegionUpdateSeq:0" in html
     assert "preferred_region_update_seq:updateSeq" in html
@@ -1005,76 +1009,137 @@ def test_preferred_region_statistics_use_a_compact_scoped_metric_style():
     assert ".region-stats { width:540px; max-width:100%; }" in web_model_results.INDEX_HTML
 
 
-def test_preferred_region_pointer_uses_svg_ctm_for_drag_center():
-    renderer = web.INDEX_HTML.split("function renderExplorationPcChart(data)", 1)[1].split(
-        "function explorationTimelineTick", 1
-    )[0]
-    matrix_source = "const width=760,height=260; const svgPoint=event=>" + renderer.split(
-        "const svgPoint=event=>", 1
-    )[1].split("const setPreview", 1)[0] + "; return svgPoint;"
-    point_source = (
-        "function pcPoint(x,y,maxX,maxY){return{"
-        "pc1:(x-380)/(380-34)*maxX,pc2:(130-y)/(130-34)*maxY};"
-        "}"
-        "function dragEllipse(start,end,maxX=10,maxY=6){const firstPc=pcPoint(start.x,start.y,maxX,maxY),"
-        "lastPc=pcPoint(end.x,end.y,maxX,maxY);return{center_pc1:(firstPc.pc1+lastPc.pc1)/2,"
-        "center_pc2:(firstPc.pc2+lastPc.pc2)/2,radius_pc1:Math.abs(lastPc.pc1-firstPc.pc1)/2,"
-        "radius_pc2:Math.abs(lastPc.pc2-firstPc.pc2)/2};}"
-    )
-    result = _run_node_javascript(
-        """
-        const matrixSource = __MATRIX_SOURCE__;
-        const pointSource = __POINT_SOURCE__;
-        const createSvgPoint = svg => new Function("svg", matrixSource)(svg);
-        eval(pointSource);
-        const matrix=(scaleX,scaleY,translateX,translateY)=>({
-          inverse:()=>({
-            transform:point=>({x:(point.x-translateX)/scaleX,y:(point.y-translateY)/scaleY})
-          })
-        });
-        const screenToUser=(transform,clientX,clientY)=>({
-          clientX,clientY,screenCTM:transform,point:null,
-          getScreenCTM:()=>transform,
-          createSVGPoint:()=>({x:0,y:0,matrixTransform(matrix){return matrix.transform(this);}})
-        });
-        const viewBox={width:760,height:260};
-        const startUser={x:214,y:78},endUser={x:526,y:172};
-        const cases=[
-          {name:"wide",screenCTM:matrix(.35,.7,42,-84),clientX:116.9,clientY:-29.4,endClientX:226.1,endClientY:36.4},
-          {name:"tall",screenCTM:matrix(.7,.35,7,-30),clientX:156.8,clientY:-2.7,endClientX:375.2,endClientY:30.2},
-        ];
-        const converted=cases.map(item=>{
-          const startSvg=screenToUser(item.screenCTM,item.clientX,item.clientY);
-          const endSvg=screenToUser(item.screenCTM,item.endClientX,item.endClientY);
-          const start=createSvgPoint(startSvg)(startSvg),end=createSvgPoint(endSvg)(endSvg);
-          const saved=dragEllipse(start,end);
-          return {name:item.name,point:start,end,previewCenter:{x:(start.x+end.x)/2,y:(start.y+end.y)/2},saved,
-            savedVisual:{x:380+saved.center_pc1/10*(380-34),y:130-saved.center_pc2/6*(130-34)}};
-        });
-        const noCtmSvg={clientX:0,clientY:0,getScreenCTM:()=>null,createSVGPoint:()=>null};
-        const noCtm=createSvgPoint(noCtmSvg)(noCtmSvg);
-        process.stdout.write(JSON.stringify({converted,expectedStart:startUser,expectedEnd:endUser,viewBox,noCtm}));
-        """
-        .replace("__MATRIX_SOURCE__", json.dumps(matrix_source))
-        .replace("__POINT_SOURCE__", json.dumps(point_source))
-    )
+def test_exploration_sampling_labels_are_scoped_to_the_timeline():
+    html = web.INDEX_HTML
+    # maximum_plot_points only limits the sampled timeline/series payload, so the
+    # label must not read as a limit on the WebGL PC1/PC2 scatter any more.
+    assert '<label>时间轴最大抽样点数<input id="explorationMaximumPlotPoints"' in html
+    assert "最大显示点数<input id=\"explorationMaximumPlotPoints\"" not in html
+    assert "仅限制状态时间轴与返回序列的抽样点数" in html
+    # The run summary must say the scatter draws everything and name the sample
+    # count as timeline-only, instead of implying the analysis used the sample.
+    status = html.split('el("stateExplorationButton").addEventListener', 1)[1]
+    assert "PC1/PC2 散点绘制全部完整样本" in status
+    assert "时间轴返回 ${data.returned_point_count} 个抽样点" in status
+    assert "返回 ${data.returned_point_count} 个显示点。" not in status
+    # The overview metrics report both counts with explicit wording.
+    assert 'metric("完整样本",data.full_point_count)' in html
+    assert 'metric("绘制点数",(data.cluster_series_full||data.cluster_series||[]).length)' in html
+    assert 'metric("显示点数",' not in html
 
-    assert result["viewBox"] == {"width": 760, "height": 260}
-    for item in result["converted"]:
-        assert item["point"] == pytest.approx(result["expectedStart"])
-        assert item["end"] == pytest.approx(result["expectedEnd"])
-        assert item["point"] == pytest.approx(result["converted"][0]["point"])
-        assert item["end"] == pytest.approx(result["converted"][0]["end"])
-        assert 0 <= item["point"]["x"] <= 760
-        assert 0 <= item["point"]["y"] <= 260
-        assert item["previewCenter"] == pytest.approx(
-            {"x": (item["point"]["x"] + item["end"]["x"]) / 2,
-             "y": (item["point"]["y"] + item["end"]["y"]) / 2}
-        )
-        assert item["savedVisual"] == pytest.approx(item["previewCenter"])
-        assert item["saved"]["radius_pc1"] == pytest.approx(156 / 346 * 10)
-        assert item["saved"]["radius_pc2"] == pytest.approx(47 / 96 * 6)
-    assert result["noCtm"] is None
+
+def test_preferred_region_pointer_uses_svg_ctm_for_drag_center():
+    renderer = _pc_renderer_source()
+    overlay = _pc_overlay_source()
+    # Plotly owns scale, zoom, pan and resize, so the overlay converts pixels
+    # through the live axis transform instead of re-deriving a viewBox scale.
+    assert "xAxis.p2c(x)" in overlay
+    assert "yAxis.p2c(y)" in overlay
+    # p2c takes plot-area pixels, so the axis offset must be removed first.
+    assert "(xAxis._offset||0)" in overlay
+    assert "(yAxis._offset||0)" in overlay
+    assert "getScreenCTM" not in overlay
+    assert "createSVGPoint" not in overlay
+    assert "maxX" not in overlay
+    assert "maxY" not in overlay
+    for event_name in ("mousedown", "mousemove", "mouseup"):
+        assert f'overlay.addEventListener("{event_name}"' in overlay
+    assert overlay.count("const point=plotPoint(event)") == 3
+    assert "if(!point){clearPreview(); start=null; return;}" in overlay
+    assert "bindExplorationRegionOverlay(plot,overlay)" in renderer
+    # Region edits repaint shapes on the live plot; a full re-render would
+    # re-serialise every state sample into a brand new WebGL scene.
+    assert "refreshExplorationRegionPlot()" in renderer
+    assert "globalThis.Plotly.relayout(plot,{shapes:explorationRegionShapes()})" in renderer
+    assert 'type:"circle",xref:"x",yref:"y"' in web.INDEX_HTML
+    result = _run_pc_drag_javascript(overlay)
+
+    # The ellipse a drag produces must re-project onto exactly the dragged
+    # pixels under the initial view, the zoomed view, the panned view and after a
+    # resize that moved the plot-area offset. A missing _offset fails the last two.
+    for item in result["cases"]:
+        assert item["ellipse"] is not None, item["name"]
+        assert item["reproject"] == pytest.approx(item["pixels"]), item["name"]
+    assert result["cases"][0]["ellipse"] == pytest.approx(
+        {
+            # drag x 100..300 px minus the 46 px plot offset over x range
+            # [-5,5] across 700 px, and drag y 60..160 px minus the 10 px plot
+            # offset over y range [-3,3] across 220 px.
+            "center_pc1": -2.8,
+            "center_pc2": -0.2727272727,
+            "radius_pc1": 1.4285714286,
+            "radius_pc2": 1.3636363636,
+        }
+    )
+    # A drag with no width on one axis is rejected instead of posting a region.
+    assert result["degenerate"] is None
+    assert result["degenerateStatus"] == "椭圆需要在 PC1 和 PC2 方向都有正宽度。"
+
+
+def _run_pc_drag_javascript(overlay_source: str) -> dict:
+    """Run the shipped overlay binding against Plotly-shaped axis transforms."""
+    harness = (
+        """
+        const state={preferredRegion:{ellipses:[]},preferredRegionDrawing:true,exploration:{preferred_region:{}}};
+        let posted=null, statusText=null;
+        function setStatus(message){statusText=message;}
+        function updateExplorationPreferredRegion(ellipses){posted=ellipses[0];}
+        const document={createElementNS:()=>({dataset:{},attrs:{},setAttribute(k,v){this.attrs[k]=v;}})};
+        function makeOverlay(box){
+          const preview={attrs:{},removed:false,setAttribute(k,v){this.attrs[k]=v;},remove(){this.removed=true;}};
+          return {style:{},listeners:{},box,preview,
+            getBoundingClientRect:()=>({left:box.left,top:box.top}),
+            querySelector:sel=>sel.includes("preview")?preview:null,
+            append:node=>{this.appended=node;}, replaceChildren(){},
+            addEventListener(n,f){this.listeners[n]=f;}};
+        }
+        // plotly linear axis: c2p(v) = _m*(v - range0) and p2c(px) = range0 + px/_m,
+        // both in plot-area pixels. _offset (margin + domain shift) is the plot
+        // area position inside the container and is deliberately excluded, so the
+        // overlay has to subtract it before calling p2c.
+        function makePlot(rangeX,rangeY,lengthX,lengthY,offsetX,offsetY){
+          const axis=(range,length,offset)=>{
+            const m=length/(range[1]-range[0]), b=range[0];
+            return {_offset:offset, p2c:px=>b+px/m, c2p:v=>(v-b)*m};
+          };
+          return {_fullLayout:{xaxis:axis(rangeX,lengthX,offsetX),yaxis:axis(rangeY,lengthY,offsetY)}};
+        }
+        __OVERLAY__
+        function drag(plot,box,startPx,endPx){
+          const overlay=makeOverlay(box);
+          posted=null; statusText=null;
+          bindExplorationRegionOverlay(plot,overlay);
+          const at=p=>({clientX:p[0]+box.left,clientY:p[1]+box.top});
+          overlay.listeners.mousedown({button:0,...at(startPx),preventDefault(){}});
+          overlay.listeners.mousemove(at(endPx));
+          overlay.listeners.mouseup(at(endPx));
+          // Project the stored data ellipse back to plot-area pixels, and measure
+          // the dragged pixels in the same space, to prove the round trip is exact.
+          const reproject=posted?{
+            x0:plot._fullLayout.xaxis.c2p(posted.center_pc1-posted.radius_pc1),
+            x1:plot._fullLayout.xaxis.c2p(posted.center_pc1+posted.radius_pc1),
+            y0:plot._fullLayout.yaxis.c2p(posted.center_pc2-posted.radius_pc2),
+            y1:plot._fullLayout.yaxis.c2p(posted.center_pc2+posted.radius_pc2),
+          }:null;
+          return {overlay, ellipse:posted, status:statusText, reproject,
+                  pixels:{x0:startPx[0]-plot._fullLayout.xaxis._offset,
+                          x1:endPx[0]-plot._fullLayout.xaxis._offset,
+                          y0:startPx[1]-plot._fullLayout.yaxis._offset,
+                          y1:endPx[1]-plot._fullLayout.yaxis._offset}};
+        }
+        const base=makePlot([-5,5],[-3,3],700,220,46,10), box={left:46,top:10};
+        const startPx=[100,60], endPx=[300,160];
+        const cases=[
+          {name:"initial",...drag(base,box,startPx,endPx)},
+          {name:"zoomed",...drag(makePlot([-2.5,2.5],[-1.5,1.5],700,220,46,10),box,startPx,endPx)},
+          {name:"panned",...drag(makePlot([1,11],[2,8],700,220,46,10),box,startPx,endPx)},
+          {name:"resized",...drag(makePlot([-5,5],[-3,3],380,140,52,24),{left:52,top:24},startPx,endPx)},
+        ];
+        const degenerate=drag(base,box,startPx,startPx);
+        process.stdout.write(JSON.stringify({cases,degenerate:degenerate.ellipse,degenerateStatus:degenerate.status}));
+        """
+    ).replace("__OVERLAY__", overlay_source)
+    return _run_node_javascript(harness)
 
 
 def test_preferred_region_api_uses_union_and_full_cached_series():
@@ -2956,6 +3021,15 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
     run_id = result["exploration_run_id"]
     assert result["full_point_count"] >= len(result["cluster_series"])
     assert result["returned_point_count"] <= 12
+    # The WebGL scatter draws the whole state space, not the sampled series.
+    assert len(result["cluster_series_full"]) == result["full_point_count"]
+    assert len(result["cluster_series_full"]) > len(result["cluster_series"])
+    assert all(
+        set(row) == {"cluster_id", "pc1", "pc2"} for row in result["cluster_series_full"]
+    )
+    assert {row["cluster_id"] for row in result["cluster_series_full"]} == {
+        row["cluster_id"] for row in result["cluster_series"]
+    }
     assert result["data_usage"]["loaded_column_count"] == 5
     assert result["performance_candidates"]
     assert result["preprocessing_summary"]["dynamic_feature_count"] == 3
