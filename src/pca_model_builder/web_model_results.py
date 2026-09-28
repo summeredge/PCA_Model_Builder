@@ -366,20 +366,20 @@ _APPLE_DESIGN_STYLE = r"""
   .status.success { background:#e8f5e9; color:#0e6027; border-color:#24a148; }
   .status.warning, .notice { background:#fff8e1; color:#6f4e00; border-color:#f1c21b; }
   .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
-  #candidatePanel #modelQualityStatus,
-  #candidatePanel #qualityButton {
+  #modelPanel #modelQualityStatus,
+  #modelPanel #qualityButton {
     width:fit-content;
     height:42px;
     min-height:42px;
     justify-self:start;
   }
-  #candidatePanel #modelQualityStatus {
+  #modelPanel #modelQualityStatus {
     display:inline-flex;
     align-items:center;
     max-width:100%;
   }
   /* 质量状态与按钮并排成一行，仅作文字提示，不再占用卡片色块。 */
-  #candidatePanel #modelQualityStatus {
+  #modelPanel #modelQualityStatus {
     width:auto;
     min-width:72px;
     height:auto;
@@ -390,7 +390,7 @@ _APPLE_DESIGN_STYLE = r"""
     border:0;
     box-shadow:none;
   }
-  #candidatePanel #currentTagQuality { max-width:1200px; }
+  #modelPanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:6px; }
   .tag-row.selected { background:#edf5ff; }
   .metric { padding:24px; }
@@ -468,7 +468,7 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step.complete .workflow-step-status { color:var(--green); }
   .data-preparation-grid { display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:var(--space-3); align-items:stretch; }
   .data-preparation-grid > .group { align-content:start; }
-  .candidate-manager, .training-preparation, .training-configuration { border-color:#bfd7ef; }
+  .candidate-manager, .shared-preprocessing, .training-configuration { border-color:#bfd7ef; }
   .candidate-manager .row { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .candidate-manager .row > * { min-width:0; }
   /* 候选时间/备注/按钮四项同排；时间控件需要更多宽度，备注与按钮更窄。 */
@@ -484,7 +484,7 @@ _WORKBENCH_UI_STYLE = r"""
   .advanced-candidate-tools { border-top:1px solid var(--line); padding-top:var(--space-2); }
   .advanced-candidate-tools > summary { color:var(--muted); cursor:pointer; font-size:13px; font-weight:600; }
   .advanced-candidate-tools .candidate-tool-tabs { margin-top:var(--space-2); }
-  .training-preparation { display:grid; gap:var(--space-2); }
+  .shared-preprocessing, .training-configuration { display:grid; gap:var(--space-2); }
   .panel.active { padding:var(--space-1) 0 var(--space-4); }
   .panel.active > h3 { margin:var(--space-1) 0 0; }
   .advanced-parameters {
@@ -509,8 +509,14 @@ _WORKBENCH_UI_STYLE = r"""
   .model-name-field { min-width:0; }
   .filter-parameter-control > label { min-width:0; }
   .model-name-field { grid-column:span 2; }
-  .advanced-preprocessing-row { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .preprocessing-preview-controls { margin-top:var(--space-2); }
+  .preprocessing-preview-controls {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) max-content;
+    gap:var(--space-2);
+    align-items:end;
+    margin-top:var(--space-2);
+  }
+  .preprocessing-preview-controls > label { min-width:0; }
   .preprocessing-preview-area,
   .preprocessing-preview-area #preprocessingPreview { width:100%; min-width:0; }
   .preprocessing-preview-area #preprocessingPreview { margin-top:var(--space-2); }
@@ -877,7 +883,7 @@ def _row_containing_unique_field(html: str, field_id: str, description: str) -> 
     raise ValueError(f"无法固定Web工作台结构：{description}参数行")
 
 
-def _candidate_manager_html() -> str:
+def _candidate_manager_html(training_data_section: str) -> str:
     return """      <div class="group candidate-manager">
         <div class="group-title">正常状态候选窗口</div>
         <div class="help">手工选择、趋势选择和状态探索候选统一进入此列表。候选默认待确认，不会自动参与训练。</div>
@@ -886,7 +892,7 @@ def _candidate_manager_html() -> str:
         <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
         <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>
         <div class="help">排除窗口仅在确认候选时切分新的训练窗口，不会修改已生成的训练窗口。</div>
-      </div>"""
+%s      </div>""" % training_data_section
 
 
 def _workflow_sidebar_html() -> str:
@@ -961,67 +967,76 @@ def _stabilize_workbench_html(html: str) -> str:
     _, training_section = _split_at_unique_anchor(
         candidate_section, training_windows_anchor, "训练窗口"
     )
-    parameter_group = (
-        parameter_prefix.replace(
-            '<div class="group-title">3. 参考状态与 DPCA 参数</div>',
-            '<div class="group-title">模型训练配置（参考状态与 DPCA 参数）</div>',
-            1,
-        )
-        + training_windows_anchor
-        + training_section
-    )
-    training_window_start = _unique_anchor_index(
-        parameter_group, training_windows_anchor, "已确认训练窗口"
-    )
-    training_parameter_start = _row_containing_unique_field(
-        parameter_group, "sampleInterval", "训练参数"
+    training_section = training_windows_anchor + training_section
+    sample_interval_anchor = _row_containing_unique_field(
+        training_section, "sampleInterval", "共享预处理参数"
     )[0]
-    training_data_section = parameter_group[
-        training_window_start:training_parameter_start
-    ].rstrip()
+    model_configuration_anchor = _row_containing_unique_field(
+        training_section, "varianceThreshold", "PCA 模型配置"
+    )[0]
+    training_data_section = training_section[:sample_interval_anchor]
+    shared_preprocessing_section = training_section[
+        sample_interval_anchor:model_configuration_anchor
+    ]
+    shared_preprocessing_section = "        " + shared_preprocessing_section.lstrip()
+    training_data_section = training_data_section.rstrip() + "\n"
+    training_parameter_tail = training_section[model_configuration_anchor:]
+    shared_preprocessing_section = shared_preprocessing_section.replace(
+        '<div class="sub-title">状态过滤条件</div>',
+        '<div class="sub-title">状态过滤条件（只选择角色为“状态过滤”的 Tag）</div>',
+        1,
+    )
+    preview_window_label = _label_for_unique_field(
+        shared_preprocessing_section, "preprocessingPreviewWindow", "预览训练窗口"
+    )
+    preview_button = _element_with_unique_id(
+        shared_preprocessing_section, "preprocessingPreviewButton", "button", "预处理预览按钮"
+    )
+    preview_area = _element_with_unique_id(
+        shared_preprocessing_section, "preprocessingPreview", "div", "预处理预览区域"
+    )
+    preview_row, preview_row_end = _row_containing_unique_field(
+        shared_preprocessing_section, "preprocessingPreviewButton", "预处理预览"
+    )
+    shared_preprocessing_section = (
+        shared_preprocessing_section[:preview_row]
+        + shared_preprocessing_section[preview_row_end:]
+    ).rstrip()
     parameter_group = (
-        parameter_group[:training_window_start]
-        + parameter_group[training_parameter_start:]
+        '      <div class="group shared-preprocessing">\n'
+        '        <div class="group-title">分析与建模共享参数</div>\n'
+        '        <div class="help">这些参数同时用于趋势浏览、状态探索、独立聚类、建模质量检查和正式训练；正式训练沿用同一套取值，不再重复配置。</div>\n'
+        + shared_preprocessing_section
+        + '\n      </div>'
     )
-    parameter_group = parameter_group.replace(
-        '<div class="group">', '<div class="group training-configuration">', 1
-    )
-    parameter_ids = ("sampleInterval", "filterMethod", "firstOrderAlpha", "gapThreshold", "maxLag", "varianceThreshold")
+    parameter_ids = ("sampleInterval", "resamplingMethod", "filterMethod", "firstOrderAlpha", "smoothingWindow", "gapThreshold", "maxLag", "lagStep")
     field_rows = {
         field_id: _row_containing_unique_field(parameter_group, field_id, field_id)
         for field_id in parameter_ids
     }
     if list(field_rows.values()) != sorted(field_rows.values()):
         raise ValueError("无法固定Web工作台结构：训练参数行")
-    quality_start = parameter_group.rfind(
+    quality_start = training_parameter_tail.rfind(
         "        <h3>",
         0,
-        _unique_anchor_index(parameter_group, 'id="modelQualityStatus"', "建模质量检查"),
+        _unique_anchor_index(training_parameter_tail, 'id="modelQualityStatus"', "建模质量检查"),
     )
     if quality_start == -1:
         raise ValueError("无法固定Web工作台结构：建模质量检查标题")
     training_action_start = _unique_anchor_index(
-        parameter_group,
+        training_parameter_tail,
         '        <div class="actions"><button id="trainExploratoryButton"',
         "训练操作",
     )
-    quality_section = parameter_group[quality_start:training_action_start].rstrip()
-    training_actions_section = parameter_group[training_action_start:].rstrip()
-    common_rows = (
+    quality_section = training_parameter_tail[quality_start:training_action_start].rstrip()
+    training_actions_section = training_parameter_tail[training_action_start:].rstrip()
+    model_configuration_rows = (
         '        <div class="training-parameter-grid">\n'
         '          <div class="model-name-field">\n'
-        f'            {_label_for_unique_field(parameter_group, "modelName", "模型名称")}\n'
+        f'            {_label_for_unique_field(training_parameter_tail, "modelName", "模型名称")}\n'
         '          </div>\n'
-        f'          {_label_for_unique_field(parameter_group, "sampleInterval", "目标采样周期")}\n'
-        f'          {_label_for_unique_field(parameter_group, "filterMethod", "滤波方法")}\n'
-        '          <div class="filter-parameter-control">\n'
-        f'            {_label_for_unique_field(parameter_group, "firstOrderAlpha", "一阶滤波 alpha")}\n'
-        f'            {_label_for_unique_field(parameter_group, "smoothingWindow", "滤波窗口")}\n'
-        '          </div>\n'
-        f'          {_label_for_unique_field(parameter_group, "maxLag", "最大Lag")}\n'
-        f'          {_label_for_unique_field(parameter_group, "lagStep", "Lag步长")}\n'
-        f'          {_label_for_unique_field(parameter_group, "varianceThreshold", "累计解释率")}\n'
-        f'          {_label_for_unique_field(parameter_group, "components", "主元数")}\n'
+        f'          {_label_for_unique_field(training_parameter_tail, "varianceThreshold", "累计解释率")}\n'
+        f'          {_label_for_unique_field(training_parameter_tail, "components", "主元数")}\n'
         '        </div>\n'
     )
     training_data_summary = (
@@ -1029,26 +1044,25 @@ def _stabilize_workbench_html(html: str) -> str:
         '需重新执行建模质量检查后显示训练数据摘要。'
         '</div>\n'
     )
-    advanced_rows = (
-        '        <details class="advanced-parameters">\n'
-        '          <summary>高级预处理与 DPCA 参数</summary>\n'
-        '          <div class="help">执行顺序保持为时间检查、缺口识别、重采样、数据检查、因果滤波、Lag 扩展和标准化。</div>\n'
-        f'          <div class="row advanced-preprocessing-row">{_label_for_unique_field(parameter_group, "resamplingMethod", "重采样方法")}{_label_for_unique_field(parameter_group, "gapThreshold", "物理缺口阈值")}</div>\n'
-        + f'          <div class="preprocessing-preview-controls">{_element_with_unique_id(parameter_group, "preprocessingPreviewButton", "button", "预处理预览按钮")}</div>\n'
-        + f'          <div class="preprocessing-preview-area">{_element_with_unique_id(parameter_group, "preprocessingPreview", "div", "预处理预览区域")}</div>\n'
-        + '        </details>\n'
+    preprocessing_preview_section = (
+        '        <div class="preprocessing-preview-controls">'
+        f'{preview_window_label}{preview_button}'
+        '</div>\n'
+        f'        <div class="preprocessing-preview-area">{preview_area}</div>\n'
     )
-    parameter_group = (
-        parameter_group[: field_rows["sampleInterval"][0]]
-        + common_rows
+    model_configuration_group = (
+        '      <div class="group training-configuration">\n'
+        '        <div class="group-title">PCA 模型配置与训练</div>\n'
         + training_data_summary
-        + advanced_rows
+        + quality_section
+        + preprocessing_preview_section
+        + model_configuration_rows
         + training_actions_section
     )
     exploratory_button = _element_with_unique_id(
-        parameter_group, "trainExploratoryButton", "button", "探索模型入口"
+        model_configuration_group, "trainExploratoryButton", "button", "探索模型入口"
     )
-    parameter_group = parameter_group.replace(exploratory_button, "", 1)
+    model_configuration_group = model_configuration_group.replace(exploratory_button, "", 1)
     exploratory_tools = (
         '        <details class="advanced-parameters exploratory-model-tools">\n'
         '          <summary>高级操作：建立探索模型</summary>\n'
@@ -1061,10 +1075,10 @@ def _stabilize_workbench_html(html: str) -> str:
     exploratory_notice = (
         '        <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>'
     )
-    if parameter_group.count(exploratory_notice) != 1:
+    if model_configuration_group.count(exploratory_notice) != 1:
         raise ValueError("无法固定Web工作台结构：探索模型入口")
-    parameter_group = parameter_group.replace(exploratory_notice, exploratory_tools, 1)
-    if 'id="candidateWindows"' in parameter_group:
+    model_configuration_group = model_configuration_group.replace(exploratory_notice, exploratory_tools, 1)
+    if 'id="candidateWindows"' in parameter_group + model_configuration_group:
         raise ValueError("无法固定候选窗口或训练参数区域")
     status_area = (status_marker + status_area).replace(
         'class="status info" role="status" aria-live="polite"',
@@ -1152,16 +1166,6 @@ def _stabilize_workbench_html(html: str) -> str:
             '        </details>',
         )
     )
-    training_preparation_panel = "\n".join(
-        (
-            '      <div class="group training-preparation">',
-            '        <div class="group-title">已确认训练窗口及训练集质量/组成检查</div>',
-            training_data_section,
-            quality_section,
-            '      </div>',
-        )
-    )
-
     validated_download = _element_with_unique_id(
         validation_panel, "validatedModelDownload", "a", "已验证模型下载入口"
     )
@@ -1187,10 +1191,10 @@ def _stabilize_workbench_html(html: str) -> str:
             '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势与分析范围</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
             '        </div>',
+            parameter_group,
             *candidate_panels,
             advanced_candidate_tools,
-            _candidate_manager_html(),
-            training_preparation_panel,
+            _candidate_manager_html(training_data_section),
             '      </div>',
         )
     )
@@ -1200,7 +1204,7 @@ def _stabilize_workbench_html(html: str) -> str:
     model_panel_content = model_panel_lines[0].split("\n", 1)
     if len(model_panel_content) != 2:
         raise ValueError("无法固定模型训练页面结构")
-    model_panel = f"{model_panel_content[0]}\n{parameter_group}\n{model_panel_content[1]}\n      </div>"
+    model_panel = f"{model_panel_content[0]}\n{model_configuration_group}\n{model_panel_content[1]}\n      </div>"
     static_main = "\n".join(
         (
             "  <main>",
