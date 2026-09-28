@@ -18,12 +18,12 @@ _DATAPROJECT_TREND_CSS = r"""
 <style id="dataprojectTrendStyle">
   .dp-trend-controls { display:grid; grid-template-columns:repeat(4,minmax(120px,1fr)) 150px auto; gap:10px; align-items:end; }
   .dp-trend-options { display:grid; grid-template-columns:repeat(3,minmax(160px,1fr)); gap:10px; align-items:end; }
-  .dp-chart { min-height:280px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:hidden; }
-  .dp-chart .plotly, .dp-chart .svg-container, .dp-chart .gl-container { width:100%!important; height:320px; }
+  .dp-chart { min-height:520px; height:520px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:hidden; resize:vertical; }
+  .dp-chart.empty { height:auto; resize:none; }
+  .dp-chart .plotly, .dp-chart .svg-container, .dp-chart .gl-container { width:100%!important; height:100%!important; }
   .dp-chart .modebar { top:2px; right:2px; }
   .dp-chart .js-plotly-plot .plotly .cursor-crosshair { cursor:crosshair; }
-  .dp-legend { display:flex; justify-content:center; gap:16px; flex-wrap:wrap; color:var(--muted); font-size:12px; }
-  .dp-swatch { width:18px; height:3px; border-radius:2px; display:inline-block; vertical-align:middle; margin-right:6px; }
+  .dp-chart .rangeselector, .dp-chart .rangeslider { background:#f8fafc; }
   .dp-trend-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; align-items:start; }
   .dp-trend-stat-card { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:10px; }
   .dp-trend-stat-card h3 { margin:0 0 8px; font-size:12px; overflow-wrap:anywhere; }
@@ -84,7 +84,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       <button id="dpTrendReset" type="button" class="secondary">趋势复位</button>
     </div>
     <div id="dpTrendChart" class="dp-chart empty">选择 1 到 4 个数据后点击“显示趋势”。</div>
-    <div id="dpTrendLegend" class="dp-legend"></div>
     <div id="dpTrendStats" class="dp-trend-stats"><div class="empty">选择数据并点击“显示趋势”后显示统计摘要。</div></div>
     <section class="dp-scatter-section">
       <h2>XY 散点矩阵</h2>
@@ -197,7 +196,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     } catch (error) {
       $("dpTrendChart").className = "dp-chart empty";
       $("dpTrendChart").textContent = error.message || String(error);
-      $("dpTrendLegend").replaceChildren();
       $("dpTrendStats").innerHTML = '<div class="empty">没有可展示的统计摘要。</div>';
       setStatus(error.message || String(error), "error");
     } finally {
@@ -256,7 +254,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
 
   function renderTrendPage(data) {
     renderTrendChart(data);
-    $("dpTrendLegend").innerHTML = data.series.map((item, index) => `<span><i class="dp-swatch" style="background:${colors[index % colors.length]}"></i>${escapeHtml(item.name)}</span>`).join("");
     $("dpTrendStats").innerHTML = data.series.map((item, index) => renderStatCard(item.name, data.statistics[item.name]?.current, data.histograms[item.name], colors[index % colors.length])).join("");
   }
 
@@ -337,19 +334,49 @@ _DATAPROJECT_TREND_SCRIPT = r"""
         hoverinfo: "x+y+name",
       };
     });
-    const note = mode === "shared" ? "同一 Y 轴：所有曲线使用同一数值范围" : "独立 Y 轴：各曲线按自身范围缩放，仅比较趋势形态";
+    // Plot area follows the container so the curve region is as large as possible.
+    const height = Math.max(420, Math.floor(container.clientHeight || 520));
     const layout = {
-      margin: {left: 68, right: mode === "independent" && series.length > 1 ? 60 : 24, top: 30, bottom: 40},
-      height: 320,
-      showlegend: false,
+      margin: {left: 55, right: mode === "independent" && series.length > 1 ? 55 : 40, top: 10, bottom: 60},
+      height,
+      // Horizontal legend under the plot keeps the trend area free of labels.
+      showlegend: true,
+      legend: {orientation: "h", x: 0, y: -0.15, yanchor: "top", font: {size: 11}},
       hovermode: "x unified",
       dragmode: "select",
       selectdirection: "h",
       paper_bgcolor: "#fff",
       plot_bgcolor: "#fff",
       font: {size: 11, color: "#5f6b7a"},
-      annotations: [{text: note, x: 0, y: 1.08, xref: "paper", yref: "paper", showarrow: false, font: {size: 12, color: "#5f6b7a"}}],
-      xaxis: {type: "date", range: [timeStart, timeEnd], gridcolor: "#edf1f5", zeroline: false, showspikes: false},
+      xaxis: {
+        type: "date",
+        range: [timeStart, timeEnd],
+        // Industrial trend viewers show month/day and hour/minute only.
+        tickformat: "%m/%d %H:%M",
+        hoverformat: "%m/%d %H:%M",
+        gridcolor: "#edf1f5",
+        zeroline: false,
+        showspikes: false,
+        rangeslider: {visible: true, thickness: 0.06},
+        rangeselector: {
+          buttons: [
+            {count: 1, label: "1h", step: "hour", stepmode: "backward"},
+            {count: 8, label: "8h", step: "hour", stepmode: "backward"},
+            {count: 24, label: "24h", step: "hour", stepmode: "backward"},
+            {count: 7, label: "7d", step: "day", stepmode: "backward"},
+            {step: "all", label: "全部"},
+          ],
+          x: 0,
+          y: 1.005,
+          xanchor: "left",
+          yanchor: "bottom",
+          bgcolor: "#f8fafc",
+          activecolor: "#176b87",
+          bordercolor: "#d8dee8",
+          borderwidth: 1,
+          font: {size: 10},
+        },
+      },
       yaxis: {gridcolor: "#edf1f5", zeroline: false, autorange: true},
       shapes: trendExclusionShapes(),
     };
@@ -372,7 +399,16 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       layout[`yaxis${seriesIndex + 1}`] = axis;
     });
     if (mode === "independent" && series.length === 1) { layout.yaxis.title = series[0].name; }
-    const config = {displayModeBar: true, modeBarButtonsToRemove: ["toImage", "sendDataToCloud"], displaylogo: false, responsive: true, scrollZoom: false};
+    // Keep only the everyday trend controls: zoom in/out, box select, pan, reset.
+    const config = {
+      displayModeBar: true,
+      // Single source of truth for the toolbar: exactly zoom, pan, box select
+      // and reset. A removal list on top of this whitelist is a no-op.
+      modeBarButtons: [["zoom2d", "pan2d", "select2d", "resetScale2d"]],
+      displaylogo: false,
+      responsive: true,
+      scrollZoom: false,
+    };
     container.className = "dp-chart";
     container.textContent = "";
     globalThis.Plotly.react(container, traces, layout, config).then((plot) => {

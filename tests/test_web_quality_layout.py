@@ -316,6 +316,90 @@ def test_independent_y_axes_all_overlay_the_main_axis() -> None:
     assert "axis.range = [limits.minimum, limits.maximum]" in axis_block
 
 
+def test_trend_layout_drops_the_in_plot_note_and_grows_the_curve_area() -> None:
+    trend_source = web_model_results.INDEX_HTML.split(
+        "function renderTrendChart(data)", 1
+    )[1].split("function renderStatCard", 1)[0]
+
+    # The Y axis mode hint belongs to the controls, not the plot area.
+    assert "annotations:" not in trend_source
+    assert "同一 Y 轴：所有曲线使用同一数值范围" not in trend_source
+    assert "独立 Y 轴：各曲线按自身范围缩放" not in trend_source
+
+    assert "margin: {left: 55" in trend_source
+    assert "top: 10" in trend_source
+    assert "bottom: 60" in trend_source
+    # Height follows the container instead of a hard-coded value.
+    assert "height = Math.max(420, Math.floor(container.clientHeight || 520));" in trend_source
+    assert "height: 320" not in trend_source
+
+
+def test_trend_supports_rangeslider_and_rangeselector_without_touching_the_window() -> None:
+    trend_source = web_model_results.INDEX_HTML.split(
+        "function renderTrendChart(data)", 1
+    )[1].split("function renderStatCard", 1)[0]
+    xaxis_block = trend_source.split("xaxis: {", 1)[1].split("yaxis: {", 1)[0]
+
+    assert "rangeslider: {visible: true" in xaxis_block
+    assert "rangeselector: {" in xaxis_block
+    for label in ("1h", "8h", "24h", "7d", "全部"):
+        assert f'label: "{label}"' in xaxis_block
+
+    # Browsing controls are visual only: they must not write the business window.
+    relayout = trend_source.split('plot.on("plotly_relayout"', 1)[1].split("});", 1)[0]
+    assert 'dpTrendStart").value' not in relayout
+    assert 'dpTrendEnd").value' not in relayout
+    assert "setTrendWindowFromSelection" not in relayout
+    # Only box selection writes the window.
+    assert "setTrendWindowFromSelection(range[0], range[1]);" in trend_source
+
+
+def test_trend_modebar_keeps_only_everyday_controls() -> None:
+    trend_source = web_model_results.INDEX_HTML.split(
+        "function renderTrendChart(data)", 1
+    )[1].split("function renderStatCard", 1)[0]
+    config = trend_source.split("const config = {", 1)[1].split("};", 1)[0]
+
+    # The whitelist is the single source of truth: zoom, pan, box select, reset.
+    assert 'modeBarButtons: [["zoom2d", "pan2d", "select2d", "resetScale2d"]]' in config
+    # A removal list on top of the whitelist is a no-op and must not drift from it.
+    assert "modeBarButtonsToRemove" not in config
+    for absent in ("toImage", "sendDataToCloud", "zoomIn2d", "zoomOut2d", "autoScale2d"):
+        assert absent not in config
+    assert "displaylogo: false" in config
+    assert "scrollZoom: false" in config
+
+
+def test_trend_axis_and_hover_use_the_short_industrial_time_format() -> None:
+    trend_source = web_model_results.INDEX_HTML.split(
+        "function renderTrendChart(data)", 1
+    )[1].split("function renderStatCard", 1)[0]
+    xaxis_block = trend_source.split("xaxis: {", 1)[1].split("yaxis: {", 1)[0]
+
+    assert 'tickformat: "%m/%d %H:%M"' in xaxis_block
+    assert 'hoverformat: "%m/%d %H:%M"' in xaxis_block
+    assert 'hovermode: "x unified"' in trend_source
+    # No year, seconds or ISO strings in the displayed format.
+    assert "%Y" not in xaxis_block
+    assert "%S" not in xaxis_block
+
+
+def test_trend_legend_is_horizontal_and_replaces_the_duplicate_html_legend() -> None:
+    html = web_model_results.INDEX_HTML
+    trend_source = html.split("function renderTrendChart(data)", 1)[1].split(
+        "function renderStatCard", 1
+    )[0]
+
+    assert 'legend: {orientation: "h", x: 0, y: -0.15' in trend_source
+    assert "showlegend: true" in trend_source
+    # The old hand-drawn legend would duplicate the Plotly one. (A dangling
+    # `.dp-legend` CSS rule may remain in web_model_results.py styling; only the
+    # markup and the renderer must be gone.)
+    assert 'id="dpTrendLegend"' not in html
+    assert "dpTrendLegend" not in html
+    assert "dp-swatch" not in html
+
+
 def test_plotly_bundle_is_vendored_and_served_without_network_dependency() -> None:
     from pca_model_builder import web
 
