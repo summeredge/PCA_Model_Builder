@@ -93,8 +93,12 @@ def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
     ):
         assert marker in html
 
-    assert "const earlier = Math.min(start, end);" in html
-    assert "const later = Math.max(start, end);" in html
+    # Plotly date axes return date strings, so ranges are normalised to epoch
+    # milliseconds before ordering.
+    assert "const first = timestampMilliseconds(start);" in html
+    assert "const second = timestampMilliseconds(end);" in html
+    assert "const earlier = Math.min(first, second);" in html
+    assert "const later = Math.max(first, second);" in html
     assert "const pointTime = timestampMilliseconds(point.x);" in trend_source
     assert "(state.excludedWindows || [])" in trend_source
     assert "trendExclusionShapes" in trend_source
@@ -143,6 +147,173 @@ def test_trend_zoom_and_pan_do_not_change_the_current_window_inputs() -> None:
     assert 'dpTrendStart").value' not in relayout
     assert 'dpTrendEnd").value' not in relayout
     assert "setTrendWindowFromSelection" not in relayout
+
+
+def _trend_window_harness() -> str:
+    """Extract the real time helpers so their behaviour can be executed."""
+    html = web_model_results.INDEX_HTML
+    start = html.index("function timestampMilliseconds")
+    end = html.index("function renderTrendChart")
+    return html[start:end]
+
+
+def _timestamp_milliseconds_source() -> str:
+    """The shipped timestamp parser, extracted verbatim."""
+    html = web_model_results.INDEX_HTML
+    return "function timestampMilliseconds" + html.split("function timestampMilliseconds", 1)[1].split(
+        "function datetimeLocalValue", 1
+    )[0]
+
+
+def test_timestamp_parser_normalises_space_separated_plotly_dates() -> None:
+    source = _timestamp_milliseconds_source()
+
+    assert 'text.includes(" ") && !text.includes("T")' in source
+    assert 'text.replace(" ", "T")' in source
+    assert 'value.includes("T") || value.includes("-")' not in source
+
+    # The space-between-date-and-time form must be converted explicitly rather
+    # than relying on lenient Date.parse handling.
+    _run_web_javascript(
+        f"""
+        // Observe what the parser actually hands to Date.parse: engines accept a
+        // space separator leniently, so only the explicit "T" rewrite proves the
+        // conversion happens here and is not left to runtime leniency.
+        const realParse = Date.parse;
+        const seen = [];
+        Date.parse = value => {{ seen.push(value); return realParse(value); }};
+        {source}
+
+        const iso = realParse("2026-01-01T10:00:00");
+        const cases = [
+          ["2026-01-01 10:00:00.000", iso],
+          ["2026-01-01T10:00:00", iso],
+          ["2026-01-01 01:15:44.5946", realParse("2026-01-01T01:15:44.5946")],
+          [1767225600000, 1767225600000],
+        ];
+        for (const [input, expected] of cases) {{
+          const actual = timestampMilliseconds(input);
+          if (actual !== expected) {{
+            throw new Error(`${{JSON.stringify(input)}} -> ${{actual}}, expected ${{expected}}`);
+          }}
+        }}
+        for (const bad of ["", "   ", "not-a-date", null, undefined, NaN, {{}}]) {{
+          if (timestampMilliseconds(bad) !== null) {{
+            throw new Error(`${{JSON.stringify(bad)}} should be null`);
+          }}
+        }}
+        if (seen[0] !== "2026-01-01T10:00:00.000") {{
+          throw new Error("space separator was not rewritten to T: " + seen[0]);
+        }}
+        if (seen[1] !== "2026-01-01T10:00:00") {{
+          throw new Error("ISO string must be passed through unchanged: " + seen[1]);
+        }}
+        """
+    )
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        # Plotly date axes return date strings, not epoch milliseconds.
+        ("2026-01-01 10:00:00.000", "2026-01-01 12:00:00.000", ("2026-01-01T10:00", "2026-01-01T12:00")),
+        ("2026-01-01T10:00:00", "2026-01-01T12:00:00", ("2026-01-01T10:00", "2026-01-01T12:00")),
+        # Reverse drag must normalise to chronological order.
+        ("2026-01-01T12:00:00", "2026-01-01T10:00:00", ("2026-01-01T10:00", "2026-01-01T12:00")),
+        ("2026-01-01 12:00:00.000", "2026-01-01 10:00:00.000", ("2026-01-01T10:00", "2026-01-01T12:00")),
+    ],
+)
+def test_trend_selection_accepts_date_strings_and_reverse_drag(
+    start: str, end: str, expected: tuple[str, str]
+) -> None:
+    _run_web_javascript(
+        f"""
+        const elements = new Map([
+          ["dpTrendStart", {{value: ""}}],
+          ["dpTrendEnd", {{value: ""}}],
+          ["trendStart", {{value: ""}}],
+          ["trendEnd", {{value: ""}}],
+        ]);
+        const $ = id => elements.get(id);
+        {_trend_window_harness()}
+
+        setTrendWindowFromSelection({json.dumps(start)}, {json.dumps(end)});
+        const results = [
+          [$("dpTrendStart").value, $("dpTrendEnd").value],
+          [$("trendStart").value, $("trendEnd").value],
+        ];
+        if (JSON.stringify(results) !== JSON.stringify([{json.dumps(list(expected))}, {json.dumps(list(expected))}])) {{
+          throw new Error("unexpected window: " + JSON.stringify(results));
+        }}
+        """
+    )
+
+
+def test_trend_selection_rejects_invalid_ranges_without_writing_inputs() -> None:
+    _run_web_javascript(
+        f"""
+        const elements = new Map([
+          ["dpTrendStart", {{value: "2026-01-01T00:00"}}],
+          ["dpTrendEnd", {{value: "2026-01-01T01:00"}}],
+          ["trendStart", {{value: "2026-01-01T00:00"}}],
+          ["trendEnd", {{value: "2026-01-01T01:00"}}],
+        ]);
+        const $ = id => elements.get(id);
+        {_trend_window_harness()}
+
+        setTrendWindowFromSelection("not-a-date", null);
+        if ($("dpTrendStart").value !== "2026-01-01T00:00") throw new Error("invalid start overwrote input");
+        if ($("dpTrendEnd").value !== "2026-01-01T01:00") throw new Error("invalid end overwrote input");
+        """
+    )
+
+
+def test_trend_selection_shape_is_drawn_for_date_string_ranges() -> None:
+    html = web_model_results.INDEX_HTML
+    body = html.split("function applySelectionShape(start, end)", 1)[1].split(
+        "function selectionShape", 1
+    )[0]
+    # Reuse the shipped parser so a bug cannot hide in both places at once.
+    parser = _timestamp_milliseconds_source()
+    helpers = """
+      const shapes = [];
+      const relayouts = [];
+      globalThis.Plotly = {relayout: (target, update) => relayouts.push(update)};
+      function trendExclusionShapes() { return []; }
+      function selectionShape(x0, x1) { return {x0, x1}; }
+    """
+    _run_web_javascript(
+        f"""
+        const plot = {{layout: {{}}}};
+        const $ = id => id === "dpTrendChart" ? plot : null;
+        {parser}
+        {helpers}
+        function applySelectionShape(start, end) {{{body}}}
+
+        applySelectionShape("2026-01-01 10:00:00.000", "2026-01-01 12:00:00.000");
+        const drawn = relayouts.at(-1).shapes;
+        if (drawn.length !== 1) throw new Error("selection rectangle missing for date strings");
+        if (drawn[0].x0 > drawn[0].x1) throw new Error("selection rectangle not normalised");
+        if (Date.parse("2026-01-01T10:00:00") !== drawn[0].x0) throw new Error("wrong selection start");
+        """
+    )
+
+
+def test_independent_y_axes_all_overlay_the_main_axis() -> None:
+    trend_source = web_model_results.INDEX_HTML.split(
+        "function renderTrendChart(data)", 1
+    )[1].split("function renderStatCard", 1)[0]
+
+    axis_block = trend_source.split("series.forEach((item, seriesIndex) => {", 1)[1].split(
+        "});", 1
+    )[0]
+
+    assert 'overlaying: "y"' in axis_block
+    assert "overlaying: labelled ? undefined" not in axis_block
+    assert 'showticklabels: labelled' in axis_block
+    assert 'const labelled = seriesIndex === 1;' in axis_block
+    # Independent axes keep their own real range instead of being normalized.
+    assert "axis.range = [limits.minimum, limits.maximum]" in axis_block
 
 
 def test_plotly_bundle_is_vendored_and_served_without_network_dependency() -> None:

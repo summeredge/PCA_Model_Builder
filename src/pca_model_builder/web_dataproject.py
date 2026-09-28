@@ -261,7 +261,15 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   }
 
   function timestampMilliseconds(value) {
-    const milliseconds = Date.parse(value);
+    // Plotly date axes hand back date strings ("2026-01-01 01:15:44.5946")
+    // while numeric axes hand back epoch milliseconds; accept both.
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value !== "string" || !value.trim()) return null;
+    const text = value.trim();
+    // Already ISO ("2026-01-01T10:00:00"), or a Plotly date string whose date and
+    // time are separated by a space ("2026-01-01 01:15:44.5946"): normalise that
+    // single separator to "T" instead of relying on lenient Date.parse behaviour.
+    const milliseconds = Date.parse(text.includes(" ") && !text.includes("T") ? text.replace(" ", "T") : text);
     return Number.isFinite(milliseconds) ? milliseconds : null;
   }
 
@@ -271,8 +279,11 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   }
 
   function setTrendWindowFromSelection(start, end) {
-    const earlier = Math.min(start, end);
-    const later = Math.max(start, end);
+    const first = timestampMilliseconds(start);
+    const second = timestampMilliseconds(end);
+    if (first === null || second === null) return;
+    const earlier = Math.min(first, second);
+    const later = Math.max(first, second);
     $("dpTrendStart").value = datetimeLocalValue(earlier);
     $("dpTrendEnd").value = datetimeLocalValue(later);
     if ($("trendStart")) $("trendStart").value = $("dpTrendStart").value;
@@ -346,18 +357,15 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     if (initialSelection) layout.shapes = layout.shapes.concat([initialSelection]);
     series.forEach((item, seriesIndex) => {
       if (mode !== "independent" || seriesIndex < 1) return;
-      // Only the first independent axis is labelled (right side); the rest overlay
-      // it to keep 4 curves readable while hover still reports real values.
+      // Every independent axis overlays the main y axis. Only the first one is
+      // labelled (right side) so 4 curves stay readable; hover keeps real values.
       const labelled = seriesIndex === 1;
       const axis = {
-        overlaying: labelled ? undefined : "y",
+        overlaying: "y",
         side: labelled ? "right" : "left",
-        anchor: labelled ? "free" : undefined,
-        position: labelled ? 1 : undefined,
         showticklabels: labelled,
         showgrid: false,
         zeroline: false,
-        title: labelled ? item.name : undefined,
       };
       const limits = data.axis_limits?.[item.name];
       if (limits) { axis.range = [limits.minimum, limits.maximum]; }
@@ -415,8 +423,10 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     const plot = $("dpTrendChart");
     if (!plot || !plot.layout) return;
     const shapes = trendExclusionShapes();
-    if (Number.isFinite(start) && Number.isFinite(end)) {
-      shapes.push(selectionShape(start, end));
+    const first = timestampMilliseconds(start);
+    const second = timestampMilliseconds(end);
+    if (first !== null && second !== null) {
+      shapes.push(selectionShape(Math.min(first, second), Math.max(first, second)));
     }
     globalThis.Plotly.relayout(plot, {shapes});
   }
