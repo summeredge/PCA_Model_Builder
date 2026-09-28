@@ -81,12 +81,26 @@ def test_static_panels_own_their_existing_controls() -> None:
         "candidateWindows": "candidatePanel",
         "excludedWindows": "candidatePanel",
         "trainingWindows": "candidatePanel",
-        "sampleInterval": "modelPanel",
-        "maxLag": "modelPanel",
-        "qualityButton": "candidatePanel",
-        "modelQualityStatus": "candidatePanel",
-        "currentTagQuality": "candidatePanel",
-        "modelQualityResults": "candidatePanel",
+        "sampleInterval": "candidatePanel",
+        "resamplingMethod": "candidatePanel",
+        "filterMethod": "candidatePanel",
+        "firstOrderAlpha": "candidatePanel",
+        "smoothingWindow": "candidatePanel",
+        "gapThreshold": "candidatePanel",
+        "maxLag": "candidatePanel",
+        "lagStep": "candidatePanel",
+        "stateFilterConditions": "candidatePanel",
+        "addStateFilterCondition": "candidatePanel",
+        "preprocessingPreviewWindow": "modelPanel",
+        "preprocessingPreviewButton": "modelPanel",
+        "preprocessingPreview": "modelPanel",
+        "qualityButton": "modelPanel",
+        "modelQualityStatus": "modelPanel",
+        "currentTagQuality": "modelPanel",
+        "modelQualityResults": "modelPanel",
+        "modelName": "modelPanel",
+        "varianceThreshold": "modelPanel",
+        "components": "modelPanel",
         "trainButton": "modelPanel",
         "validateButton": "validationPanel",
         "validationDecisionStatus": "validationPanel",
@@ -97,6 +111,33 @@ def test_static_panels_own_their_existing_controls() -> None:
 
     for element_id, panel_id in expected_parent.items():
         assert panel_id in parser.ancestors_by_id[element_id]
+
+
+def test_each_shared_preprocessing_control_keeps_one_unique_id() -> None:
+    parser = _workbench()
+
+    for element_id in (
+        "sampleInterval",
+        "resamplingMethod",
+        "filterMethod",
+        "firstOrderAlpha",
+        "smoothingWindow",
+        "gapThreshold",
+        "maxLag",
+        "lagStep",
+        "stateFilterConditions",
+        "addStateFilterCondition",
+        "preprocessingPreviewWindow",
+        "preprocessingPreviewButton",
+        "preprocessingPreview",
+        "qualityButton",
+        "modelQualityStatus",
+        "modelQualityResults",
+        "modelName",
+        "varianceThreshold",
+        "components",
+    ):
+        assert web_model_results.INDEX_HTML.count(f'id="{element_id}"') == 1, element_id
 
 
 def test_workbench_script_only_updates_static_stage_state() -> None:

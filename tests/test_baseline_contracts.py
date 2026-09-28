@@ -28,7 +28,8 @@ def test_final_web_keeps_chinese_workflow_labels_and_separate_statistics() -> No
     for text in (
         "历史数据",
         "建模 Tag",
-        "参考状态与 DPCA 参数",
+        "分析与建模共享参数",
+        "PCA 模型配置与训练",
         "建立探索模型",
         "建立正常状态候选模型",
         "运行状态聚类辅助",

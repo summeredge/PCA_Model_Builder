@@ -342,30 +342,30 @@ def test_final_web_preprocessing_notice_matches_schema5_invalid_row_policy() -> 
 
 def test_training_parameters_split_common_and_advanced_fields() -> None:
     html = web_model_results.INDEX_HTML
-    config_start = html.index('<div class="group training-configuration">')
-    advanced_start = html.index('<details class="advanced-parameters">', config_start)
-    advanced_end = html.index('</details>', advanced_start)
-    common_source = html[config_start:advanced_start]
-    advanced_source = html[advanced_start:advanced_end]
+    shared_start = html.index('<div class="group shared-preprocessing">')
+    shared_end = html.index('</div>\n      <div id="trendPanel"', shared_start)
+    shared_source = html[shared_start:shared_end]
+    model_start = html.index('<div class="group training-configuration">')
+    model_end = html.index('<details class="advanced-parameters exploratory-model-tools">', model_start)
+    model_source = html[model_start:model_end]
 
-    assert '<details class="advanced-parameters" open>' not in html
-    assert html.count('<details class="advanced-parameters">') == 1
     for field_id in (
         "sampleInterval",
+        "resamplingMethod",
         "filterMethod",
         "firstOrderAlpha",
         "smoothingWindow",
+        "gapThreshold",
         "maxLag",
         "lagStep",
-        "varianceThreshold",
-        "components",
-        "modelName",
+        "stateFilterConditions",
+        "addStateFilterCondition",
     ):
-        assert f'id="{field_id}"' in common_source
-        assert f'id="{field_id}"' not in advanced_source
-    for field_id in ("resamplingMethod", "gapThreshold"):
-        assert f'id="{field_id}"' in advanced_source
-        assert f'id="{field_id}"' not in common_source
+        assert f'id="{field_id}"' in shared_source, field_id
+        assert f'id="{field_id}"' not in model_source, field_id
+    for field_id in ("varianceThreshold", "components", "modelName"):
+        assert f'id="{field_id}"' in model_source, field_id
+        assert f'id="{field_id}"' not in shared_source, field_id
     for field_id in (
         "sampleInterval",
         "resamplingMethod",
@@ -380,6 +380,21 @@ def test_training_parameters_split_common_and_advanced_fields() -> None:
         "modelName",
     ):
         assert html.count(f'id="{field_id}"') == 1
+    # 建模质量检查与预处理预览必须回到模型训练阶段，而不是留在候选阶段。
+    for field_id in (
+        "preprocessingPreviewWindow",
+        "preprocessingPreviewButton",
+        "preprocessingPreview",
+        "qualityButton",
+        "modelQualityStatus",
+        "modelQualityResults",
+    ):
+        assert f'id="{field_id}"' in model_source, field_id
+        assert f'id="{field_id}"' not in shared_source, field_id
+    assert "高级预处理与 DPCA 参数" not in html
+    assert "模型训练配置（参考状态与 DPCA 参数）" not in html
+    assert "分析与建模共享参数" in shared_source
+    assert "PCA 模型配置与训练" in model_source
 
 
 def test_training_configuration_precedes_model_results() -> None:
@@ -535,17 +550,19 @@ def test_workbench_parameter_rows_allow_nonsemantic_div_attributes() -> None:
     )
 
     html = web_model_results._stabilize_workbench_html(changed_html)
-    config_start = html.index('<div class="group training-configuration">')
-    advanced_start = html.index('<details class="advanced-parameters">', config_start)
-    advanced_end = html.index('</details>', advanced_start)
-    common_source = html[config_start:advanced_start]
-    advanced_source = html[advanced_start:advanced_end]
+    shared_start = html.index('<div class="group shared-preprocessing">')
+    shared_source = html[shared_start : html.index('</div>\n      <div id="trendPanel"', shared_start)]
+    model_start = html.index('<div class="group training-configuration">')
+    model_source = html[
+        model_start : html.index('<details class="advanced-parameters exploratory-model-tools">', model_start)
+    ]
 
-    for field_id in ("sampleInterval", "filterMethod", "firstOrderAlpha", "smoothingWindow", "maxLag", "lagStep", "varianceThreshold", "components", "modelName"):
-        assert f'id="{field_id}"' in common_source
-        assert f'id="{field_id}"' not in advanced_source
-    for field_id in ("resamplingMethod", "gapThreshold"):
-        assert f'id="{field_id}"' in advanced_source
+    for field_id in ("sampleInterval", "resamplingMethod", "filterMethod", "firstOrderAlpha", "smoothingWindow", "gapThreshold", "maxLag", "lagStep"):
+        assert f'id="{field_id}"' in shared_source
+        assert f'id="{field_id}"' not in model_source
+    for field_id in ("varianceThreshold", "components", "modelName"):
+        assert f'id="{field_id}"' in model_source
+        assert f'id="{field_id}"' not in shared_source
     for field_id in (
         "sampleInterval", "resamplingMethod", "filterMethod", "firstOrderAlpha", "smoothingWindow", "gapThreshold",
         "maxLag", "lagStep", "varianceThreshold", "components", "modelName",
@@ -633,7 +650,7 @@ def test_final_web_uses_read_only_candidate_status_and_non_training_conversion()
     assert "/decisions" not in html
 
 
-def test_model_quality_check_is_in_the_normal_state_candidate_stage() -> None:
+def test_model_quality_check_is_in_the_model_training_stage() -> None:
     html = web_model_results.INDEX_HTML
     candidate_start = html.index('<div id="candidatePanel"')
     model_start = html.index('<div id="modelPanel"')
@@ -641,20 +658,47 @@ def test_model_quality_check_is_in_the_normal_state_candidate_stage() -> None:
     candidate_source = html[candidate_start:model_start]
     model_source = html[model_start:model_end]
 
-    assert "执行建模质量检查" in candidate_source
-    assert 'id="modelQualityStatus"' in candidate_source
-    assert 'id="modelQualityResults"' in candidate_source
-    assert candidate_source.index('id="qualityButton"') < candidate_source.index('id="modelQualityStatus"')
-    assert candidate_source.index('id="modelQualityStatus"') < candidate_source.index('id="trainingCompositionReview"')
+    assert "执行建模质量检查" in model_source
+    assert 'id="modelQualityStatus"' in model_source
+    assert 'id="modelQualityResults"' in model_source
+    assert model_source.index('id="qualityButton"') < model_source.index('id="modelQualityStatus"')
+    assert model_source.index('id="modelQualityStatus"') < model_source.index('id="trainingCompositionReview"')
     assert 'id="modelTrainingDataSummary"' in model_source
     assert 'id="trainButton"' in model_source
-    assert 'id="qualityButton"' not in model_source
+    # 质量检查依赖 training_windows + 共享预处理 + Tag 配置，只能出现在模型训练阶段。
+    assert 'id="qualityButton"' not in candidate_source
+    assert 'id="modelQualityResults"' not in candidate_source
     assert "上传后基础数据检查" in html
     assert "此处仅展示整体历史数据的时间轴与原始逐列检查结果" in html
     assert "column_profiles" in html
     assert "有效数值" in html
     assert "状态 / 建议" in html
-    assert "已失效" not in html
+    # 不使用“stale 徽标”方案：配置变化后直接清空旧状态探索结果。
+    assert "stale" not in html.lower()
+    assert "已失效" not in html.split("<script>", 1)[0]
+
+
+def test_model_training_stage_reads_summary_quality_preview_then_parameters() -> None:
+    html = web_model_results.INDEX_HTML
+    model_start = html.index('<div id="modelPanel"')
+    model_end = html.index('<div id="validationPanel"', model_start)
+    model_source = html[model_start:model_end]
+    order = [
+        'id="modelTrainingDataSummary"',
+        'id="qualityButton"',
+        'id="modelQualityStatus"',
+        'id="modelQualityResults"',
+        'id="preprocessingPreviewWindow"',
+        'id="preprocessingPreviewButton"',
+        'id="preprocessingPreview"',
+        'id="modelName"',
+        'id="varianceThreshold"',
+        'id="components"',
+        'id="trainButton"',
+    ]
+    positions = [model_source.index(item) for item in order]
+
+    assert positions == sorted(positions)
 
 
 def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
@@ -662,18 +706,20 @@ def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     candidate_start = html.index('<div id="candidatePanel"')
     model_start = html.index('<div id="modelPanel"', candidate_start)
     candidate_source = html[candidate_start:model_start]
+    model_source = html[model_start : html.index('<div id="validationPanel"', model_start)]
 
     for element_id in ("qualityButton", "modelQualityStatus", "currentTagQuality"):
-        assert f'id="{element_id}"' in candidate_source
-    assert "#candidatePanel #modelQualityStatus," in html
-    assert "#candidatePanel #qualityButton {" in html
-    assert "#candidatePanel #modelQualityStatus {" in html
+        assert f'id="{element_id}"' in model_source
+        assert f'id="{element_id}"' not in candidate_source
+    assert "#modelPanel #modelQualityStatus," in html
+    assert "#modelPanel #qualityButton {" in html
+    assert "#modelPanel #modelQualityStatus {" in html
     assert "height:42px;" in html
     assert "min-height:42px;" in html
-    assert "#candidatePanel #modelQualityStatus {" in html
-    assert "max-width:100%;" in html.split("#candidatePanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
+    assert "#modelPanel #modelQualityStatus {" in html
+    assert "max-width:100%;" in html.split("#modelPanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
     # 状态与按钮并排成一行，纯文字提示，不占色块；宽度随文案自适应避免长错误被裁切。
-    status_style = html.rsplit("#candidatePanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
+    status_style = html.rsplit("#modelPanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
     assert "background:#ffffff;" in status_style
     assert "border:0;" in status_style
     assert "margin-top:-55px;" in status_style
@@ -681,10 +727,10 @@ def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     assert "min-width:72px;" in status_style
     assert "width:auto;" in status_style
     assert "min-height:42px;" in status_style
-    assert "#candidatePanel #currentTagQuality { max-width:1200px; }" in html
-    assert "#modelPanel #modelQualityStatus" not in html
-    assert "#modelPanel #qualityButton" not in html
-    assert "#modelPanel #currentTagQuality" not in html
+    assert "#modelPanel #currentTagQuality { max-width:1200px; }" in html
+    assert "#candidatePanel #modelQualityStatus" not in html
+    assert "#candidatePanel #qualityButton" not in html
+    assert "#candidatePanel #currentTagQuality" not in html
 
 
 def test_model_training_summary_reuses_quality_totals_and_clears_on_invalidation() -> None:
@@ -1178,6 +1224,285 @@ def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPat
 
     assert cli_entry.main(["train"]) == 0
     assert cli_entry.cli._serve is original
+
+
+def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> None:
+    html = web_model_results.INDEX_HTML
+    render_source = "function renderPreprocessingPreviewWindow" + html.split(
+        "function renderPreprocessingPreviewWindow", 1
+    )[1].split("function selectedPreprocessingPreviewWindow", 1)[0]
+    handler_source = html.split(
+        'el("preprocessingPreviewButton").addEventListener("click",async()=>{', 1
+    )[1].split("function preprocessingPreviewTags(data)", 1)[0]
+
+    # 选项只来自 enabled === true 的训练窗口，默认第一个启用窗口。
+    assert "state.trainingWindows.filter(window=>window.enabled)" in render_source
+    assert "state.preprocessingPreviewWindowId=enabled[0]?.id||null" in render_source
+    assert "没有启用的训练窗口" in render_source
+    assert "select.disabled=!enabled.length; button.disabled=!enabled.length;" in render_source
+    # 请求的 start/end 来自训练窗口，不再隐式读取 trendStart/trendEnd。
+    assert "start:window.start,end:window.end" in handler_source
+    assert 'el("trendStart")' not in handler_source
+    assert 'el("trendEnd")' not in handler_source
+    assert "没有启用的训练窗口，无法预览预处理。" in handler_source
+    assert "state.trainingWindows.find(window=>window.enabled&&window.id===state.preprocessingPreviewWindowId)" in html
+    # 训练窗口增删改启停后同步刷新选择器。
+    assert "function renderTrainingWindows()" in html
+    render_training = html.split("function renderTrainingWindows()", 1)[1].split(
+        "async function updateTrainingWindows", 1
+    )[0]
+    assert "renderPreprocessingPreviewWindow();" in render_training
+    # UI 明确显示当前预览的是哪个训练窗口。
+    preview_render = html.split("function renderPreprocessingPreview()", 1)[1].split(
+        "function preprocessingPreviewStages", 1
+    )[0]
+    assert "预览训练窗口：" in preview_render
+
+    _run_web_javascript(
+        f"""
+        const renderSource = {json.dumps(render_source)};
+        const makeOption = () => ({{value:"", textContent:"", disabled:false, selected:false}});
+        const makeSelect = () => ({{
+          children:[], disabled:false, value:"",
+          replaceChildren(){{ this.children.length = 0; }},
+          append(node){{ this.children.push(node); if(node.selected) this.value=node.value; }},
+        }});
+        const elements = new Map([
+          ["preprocessingPreviewWindow", makeSelect()],
+          ["preprocessingPreviewButton", {{disabled:false}}],
+          ["preprocessingPreview", {{className:"", textContent:""}}],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{trainingWindows:[], preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null}};
+        const displayTime = value => value;
+        globalThis.document = {{createElement: tag => tag === "option" ? makeOption() : makeSelect()}};
+        eval(renderSource);
+
+        // 没有启用训练窗口：禁止预览并给出明确提示。
+        renderPreprocessingPreviewWindow();
+        if(!el("preprocessingPreviewWindow").disabled) throw new Error("select should be disabled");
+        if(!el("preprocessingPreviewButton").disabled) throw new Error("button should be disabled");
+        if(!el("preprocessingPreviewWindow").children[0].textContent.includes("没有启用的训练窗口"))
+          throw new Error("missing empty hint");
+
+        // 三个训练窗口、两个启用：默认选第一个启用窗口。
+        state.trainingWindows=[
+          {{id:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00", enabled:true}},
+          {{id:"training-b", start:"2026-01-01T13:00", end:"2026-01-01T15:00", enabled:false}},
+          {{id:"training-c", start:"2026-01-01T16:00", end:"2026-01-01T18:00", enabled:true}},
+        ];
+        state.preprocessingPreview={{data:{{}}, tags:["A"]}};
+        renderPreprocessingPreviewWindow();
+        if(state.preprocessingPreviewWindowId!=="training-a") throw new Error("default window wrong");
+        const options=el("preprocessingPreviewWindow").children;
+        if(options.length!==2) throw new Error("disabled window must not be listed");
+        if(options[0].value!=="training-a"||options[1].value!=="training-c") throw new Error("wrong options");
+        if(!el("preprocessingPreviewWindow").children[0].textContent.includes("training-a"))
+          throw new Error("option text must show the window id and range");
+        if(state.preprocessingPreview!==null) throw new Error("stale preview must be dropped");
+        if(el("preprocessingPreviewButton").disabled) throw new Error("button must be enabled");
+
+        // 切换到第二个启用窗口后，解析出的 start/end 来自该窗口。
+        state.preprocessingPreviewWindowId="training-c";
+        """
+    )
+
+    resolve_source = "function selectedPreprocessingPreviewWindow" + html.split(
+        "function selectedPreprocessingPreviewWindow", 1
+    )[1].split("function windowSummary", 1)[0]
+    _run_web_javascript(
+        f"""
+        const resolveSource = {json.dumps(resolve_source)};
+        const state = {{trainingWindows:[
+          {{id:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00", enabled:true}},
+          {{id:"training-c", start:"2026-01-01T16:00", end:"2026-01-01T18:00", enabled:true}},
+        ]}};
+        eval(resolveSource);
+
+        state.preprocessingPreviewWindowId="training-c";
+        const chosen=selectedPreprocessingPreviewWindow();
+        if(chosen.id!=="training-c") throw new Error("explicit selection ignored");
+        if(chosen.start!=="2026-01-01T16:00"||chosen.end!=="2026-01-01T18:00") throw new Error("wrong range");
+        state.preprocessingPreviewWindowId="training-removed";
+        if(selectedPreprocessingPreviewWindow().id!=="training-a") throw new Error("fallback wrong");
+        state.preprocessingPreviewWindowId="training-c";
+        state.trainingWindows=[{{id:"training-a", enabled:true}},{{id:"training-c", enabled:false}}];
+        if(selectedPreprocessingPreviewWindow().id!=="training-a") throw new Error("must fall back to an enabled window");
+        state.trainingWindows=[{{id:"training-a", enabled:false}}];
+        if(selectedPreprocessingPreviewWindow()!==null) throw new Error("no enabled window must resolve to null");
+        """
+    )
+
+
+def test_preprocessing_preview_window_selector_ignores_trend_range() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert 'el("preprocessingPreviewWindow").addEventListener("change"' in html
+    assert "state.preprocessingPreviewWindowId=el(\"preprocessingPreviewWindow\").value" in html
+    # 趋势浏览时间范围与预处理预览互不影响。
+    trend_handler = html.split('el("trendButton").addEventListener("click",async()=>{', 1)[1].split(
+        'el("preprocessingPreviewButton")', 1
+    )[0]
+    assert "preprocessingPreviewWindowId" not in trend_handler
+
+
+def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> None:
+    html = web_model_results.INDEX_HTML
+    function_source = "function invalidateExploration" + html.split(
+        "function invalidateExploration", 1
+    )[1].split("async function updateExplorationPreferredRegion", 1)[0]
+
+    assert 'startsWith("state-exploration-")' in function_source
+    assert "state.exploration=null" in function_source
+    assert "resetExplorationRegion()" in function_source
+    assert "invalidateQuality(reason" in function_source
+    # 已确认训练窗口不因探索失效而删除。
+    assert "state.trainingWindows=state.trainingWindows.filter" not in function_source
+
+    # 建模 Tag、Tag role、共享预处理 / Lag、状态过滤条件变化都会调用它。
+    for marker in (
+        'invalidateExploration("建模Tag已修改")',
+        'invalidateExploration("Tag工程配置或角色已修改")',
+        'invalidateExploration("预处理参数已修改")',
+        'invalidateExploration("状态过滤条件已修改")',
+    ):
+        assert marker in html, marker
+    # 旧探索结果不能再加入候选窗口。
+    convert = html.split('el("convertExplorationCandidates").addEventListener("click", () => {', 1)[1].split(
+        "el(\"clusterButton\")", 1
+    )[0]
+    assert "if(!state.exploration)" in convert
+    assert "请重新运行状态探索后再加入候选" in convert
+
+    _run_web_javascript(
+        f"""
+        const functionSource = {json.dumps(function_source)};
+        const elements = new Map([
+          ["explorationEmpty", {{hidden:false, textContent:""}}],
+          ["explorationContent", {{hidden:false}}],
+          ["explorationClusterCandidates", {{replaceChildren(){{this.n=0;}}}}],
+          ["explorationPerformanceCandidates", {{replaceChildren(){{this.n=0;}}}}],
+          ["explorationPreferredRegionCandidates", {{replaceChildren(){{this.n=0;}}}}],
+        ]);
+        const el = id => elements.get(id);
+        const state = {{
+          exploration:{{exploration_run_id:"run-1"}}, preferredRegion:{{ellipses:[{{}}]}},
+          preferredRegionDrawing:true, preferredRegionRequest:3, preferredRegionUpdateSeq:2,
+          candidateWindows:[
+            {{id:"manual-1", source_ref:null}},
+            {{id:"explore-1", source_ref:"state-exploration-run-1-cluster-1"}},
+            {{id:"explore-2", source_ref:"state-exploration-run-1-region-2"}},
+            {{id:"explore-3", source_ref:"cluster-manual-1"}},
+          ],
+          trainingWindows:[{{id:"training-keep-1", enabled:true, source_ref:"state-exploration-run-1-cluster-9"}}],
+        }};
+        const qualityCalls = [];
+        function renderCandidateWindows() {{}}
+        function renderExplorationRegionControls() {{}}
+        function invalidateQuality(reason) {{ qualityCalls.push(reason); }}
+        function resetExplorationRegion() {{
+          state.preferredRegion=null; state.preferredRegionDrawing=false;
+          state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0;
+          renderExplorationRegionControls();
+        }}
+        eval(functionSource);
+
+        invalidateExploration("预处理参数已修改");
+        if(state.exploration!==null) throw new Error("exploration not cleared");
+        if(state.preferredRegion!==null||state.preferredRegionDrawing!==false) throw new Error("region not reset");
+        if(state.preferredRegionRequest!==4) throw new Error("request counter not bumped");
+        if(!el("explorationContent").hidden) throw new Error("content still visible");
+        if(!el("explorationEmpty").textContent.includes("预处理参数已修改")) throw new Error("empty hint missing");
+        const left=state.candidateWindows.map(item=>item.id);
+        if(JSON.stringify(left)!==JSON.stringify(["manual-1","explore-3"])) throw new Error("wrong candidates left: "+JSON.stringify(left));
+        if(state.trainingWindows.length!==1) throw new Error("training windows were removed");
+        if(JSON.stringify(qualityCalls)!==JSON.stringify(["预处理参数已修改"])) throw new Error("quality not invalidated");
+        """
+    )
+
+
+def test_state_filter_editor_only_offers_state_filter_tags_and_serializes_bounds() -> None:
+    html = web_model_results.INDEX_HTML
+    payload_source = "function stateFilterPayload" + html.split("function stateFilterPayload", 1)[1].split(
+        "function commonPayload", 1
+    )[0]
+    common_source = html.split("function commonPayload", 1)[1].split("function candidateId", 1)[0]
+    tags_source = "function stateFilterTags" + html.split("function stateFilterTags", 1)[1].split(
+        "function addStateFilterCondition", 1
+    )[0]
+
+    # commonPayload 把当前条件序列化为 state_filters。
+    assert "state_filters:stateFilterPayload()" in common_source
+    # 只能选择 role 为 state_filter 的 Tag。
+    assert 'state.registry[tag]?.role==="state_filter"' in tags_source
+    # 同一 Tag 不重复配置；上下限至少一个；role 改离后阻止使用。
+    assert "seen.has(column)" in payload_source
+    assert "重复配置" in payload_source
+    assert '至少需要下限或上限' in payload_source
+    assert 'role!=="state_filter"' in payload_source
+    assert "minimum:minimum===\"\"?null:Number(minimum)" in payload_source
+    assert "maximum:maximum===\"\"?null:Number(maximum)" in payload_source
+    # normal_min/normal_max 仍只用于工程解释，不能被当作状态过滤上下限。
+    assert "normalMin" not in payload_source
+    assert "normalMax" not in payload_source
+    # 状态过滤条件变化同时失效探索与质量检查。
+    assert 'remove.addEventListener("click",()=>{ row.remove(); invalidateExploration("状态过滤条件已修改"); })' in html
+    assert 'invalidateExploration("状态过滤条件已修改")' in html
+
+
+def test_state_filter_payload_builds_and_filters_in_the_browser() -> None:
+    html = web_model_results.INDEX_HTML
+    payload_source = "function stateFilterPayload" + html.split("function stateFilterPayload", 1)[1].split(
+        "function commonPayload", 1
+    )[0]
+
+    _run_web_javascript(
+        """
+        const payloadSource = %s;
+        const registry = {MODE:{role:"state_filter"}, LOAD:{role:"state_filter"}, TEMP:{role:"continuous_input"}};
+        const state = {registry};
+        const field = value => ({value});
+        const row = (column, minimum, maximum) => ({
+          querySelector: selector =>
+            selector.includes("column") ? field(column)
+            : selector.includes("minimum") ? field(minimum)
+            : field(maximum),
+        });
+        const scenarios = [];
+        const run = rows => {
+          globalThis.document = {querySelectorAll: () => rows};
+          eval(payloadSource);
+          return stateFilterPayload();
+        };
+        scenarios.push(run([row("MODE","10","")]));
+        scenarios.push(run([row("MODE","","20")]));
+        scenarios.push(run([row("MODE","10","20"), row("LOAD","5","6")]));
+        const errorOf = (rows, reg) => {
+          state.registry = reg || registry;
+          try { run(rows); return ""; } catch(error) { return error.message; }
+        };
+        const empty = errorOf([row("MODE","","")]);
+        const duplicated = errorOf([row("MODE","1","2"), row("MODE","3","4")]);
+        const roleChanged = errorOf([row("TEMP","1","2")]);
+        const expected = [
+          [{column:"MODE", minimum:10, maximum:null}],
+          [{column:"MODE", minimum:null, maximum:20}],
+          [{column:"MODE", minimum:10, maximum:20}, {column:"LOAD", minimum:5, maximum:6}],
+        ];
+        if(JSON.stringify(scenarios)!==JSON.stringify(expected)) throw new Error(JSON.stringify(scenarios));
+        if(!empty.includes("至少需要下限或上限")) throw new Error("empty bounds not rejected: "+empty);
+        if(!duplicated.includes("重复配置")) throw new Error("duplicate not rejected: "+duplicated);
+        if(!roleChanged.includes("状态过滤")) throw new Error("role change not rejected: "+roleChanged);
+        """
+        % json.dumps(payload_source)
+    )
+
+
+def test_state_filter_tags_never_enter_continuous_model_tags() -> None:
+    html = web_model_results.INDEX_HTML
+    selected_source = html.split("function selectedTags()", 1)[1].split("function numberValue", 1)[0]
+
+    assert '(state.registry[tag]?.role||"continuous_input")==="continuous_input"' in selected_source
 
 
 def test_state_exploration_performance_controls_share_one_row() -> None:

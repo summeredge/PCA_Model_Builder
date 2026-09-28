@@ -783,12 +783,12 @@ def test_final_web_workbench_orders_lifecycle_and_downgrades_exploratory_entries
     candidate_positions = [
         candidate.index(item)
         for item in (
+            'id="sampleInterval"',
             'id="trendPanel"',
             'id="stateExplorationPanel"',
             'id="explorationClusterCandidates"',
             'id="candidateWindows"',
             'id="trainingWindows"',
-            'id="trainingCompositionReview"',
         )
     ]
     assert candidate_positions == sorted(candidate_positions)
@@ -805,15 +805,24 @@ def test_final_web_workbench_orders_lifecycle_and_downgrades_exploratory_entries
     model = html[html.index('<div id="modelPanel"') : html.index('<div id="validationPanel"')]
     for field_id in (
         'id="modelName"',
-        'id="sampleInterval"',
-        'id="maxLag"',
         'id="varianceThreshold"',
         'id="components"',
         'id="modelTrainingDataSummary"',
+        'id="qualityButton"',
+        'id="modelQualityResults"',
+        'id="trainingCompositionReview"',
+        'id="preprocessingPreviewWindow"',
+        'id="preprocessingPreviewButton"',
+        'id="preprocessingPreview"',
         'id="trainButton"',
         'id="modelContent"',
     ):
         assert field_id in model
+    for field_id in ('id="sampleInterval"', 'id="maxLag"', 'id="lagStep"'):
+        assert field_id not in model
+    # 已确认训练窗口留在候选阶段；质量检查与预处理预览留在模型训练阶段。
+    assert 'id="trainingCompositionReview"' not in candidate
+    assert 'id="qualityButton"' not in candidate
     assert model.index('id="trainButton"') < model.index('id="modelContent"')
     assert model.index('id="trainButton"') < model.index('id="trainExploratoryButton"')
     assert 'class="advanced-parameters exploratory-model-tools"' in model
@@ -2063,33 +2072,42 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
 
 def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     html = web_model_results.INDEX_HTML
-    training = html.split('class="training-parameter-grid"', 1)[1].split(
-        '<details class="advanced-parameters">', 1
-    )[0]
-    advanced = html.split('<details class="advanced-parameters">', 1)[1].split(
-        "</details>", 1
-    )[0]
+    shared_start = html.index('<div class="group shared-preprocessing">')
+    shared = html[shared_start : html.index('</div>\n      <div id="trendPanel"', shared_start)]
+    model_start = html.index('<div class="group training-configuration">')
+    model = html[
+        model_start : html.index(
+            '<details class="advanced-parameters exploratory-model-tools">', model_start
+        )
+    ]
 
     assert 'class="training-parameter-grid"' in html
     assert "grid-template-columns:repeat(3,minmax(0,1fr))" in html
     assert "@media (max-width:1100px)" in html
     for field_id in ("lagStep", "components"):
-        assert f'id="{field_id}"' in training
-        assert f'id="{field_id}"' not in advanced
         assert html.count(f'id="{field_id}"') == 1
-    assert training.index('id="modelName"') < training.index('id="maxLag"') < training.index(
-        'id="lagStep"'
-    ) < training.index('id="varianceThreshold"') < training.index('id="components"')
-    assert 'class="model-name-field"' in training
-    assert advanced.index('id="resamplingMethod"') < advanced.index(
-        'id="gapThreshold"'
-    ) < advanced.index('id="preprocessingPreviewButton"') < advanced.index(
-        'id="preprocessingPreview"'
+    # 共享预处理参数（采样/重采样/滤波/Gap/Lag/状态过滤）全部前移到候选阶段。
+    assert shared.index('id="sampleInterval"') < shared.index('id="resamplingMethod"')
+    assert shared.index('id="filterMethod"') < shared.index('id="firstOrderAlpha"')
+    assert shared.index('id="firstOrderAlpha"') < shared.index('id="gapThreshold"')
+    assert shared.index('id="gapThreshold"') < shared.index('id="maxLag"')
+    assert shared.index('id="maxLag"') < shared.index('id="lagStep"')
+    assert shared.index('id="stateFilterConditions"') < shared.index('id="lagStep"')
+    for field_id in ("varianceThreshold", "components", "modelName"):
+        assert f'id="{field_id}"' not in shared
+    assert 'class="model-name-field"' in model
+    assert model.index('id="modelName"') < model.index('id="varianceThreshold"') < model.index(
+        'id="components"'
     )
-    assert 'class="row advanced-preprocessing-row"' in advanced
-    assert 'class="preprocessing-preview-area"' in advanced
-    assert advanced.count('id="preprocessingPreviewButton"') == 1
-    assert advanced.count('id="preprocessingPreview"') == 1
+    # 预处理预览改挂在模型训练阶段，并显式选择训练窗口。
+    assert model.index('id="preprocessingPreviewWindow"') < model.index(
+        'id="preprocessingPreviewButton"'
+    ) < model.index('id="preprocessingPreview"')
+    assert 'class="preprocessing-preview-area"' in model
+    assert 'class="row advanced-preprocessing-row"' not in html
+    assert model.count('id="preprocessingPreviewButton"') == 1
+    assert model.count('id="preprocessingPreview"') == 1
+    assert 'id="preprocessingPreviewWindow"' not in shared
     assert html.count('id="resamplingMethod"') == 1
     assert html.count('id="gapThreshold"') == 1
 
@@ -2568,7 +2586,8 @@ def test_web_quality_tab_shows_selected_tag_and_trend_axis_uses_payload_limits()
 
     assert "function renderCurrentTagQuality()" in html
     assert "尚未执行建模质量检查。" in html
-    assert "已失效" not in html
+    # 采用直接失效并清空旧探索结果，不引入“已失效/stale”徽标展示。
+    assert "stale" not in html.lower()
     for field in (
         "sample_count",
         "valid_count",
