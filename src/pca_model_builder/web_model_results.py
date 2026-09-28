@@ -234,6 +234,21 @@ _APPLE_DESIGN_STYLE = r"""
   }
   textarea { height:auto; min-height:84px; padding:10px 12px; line-height:1.45; resize:vertical; }
   input[type=range] { height:24px; min-height:24px; padding:0; }
+  /* Checkbox 默认继承 42px 控件高度会撑破表格行，统一收敛到可点击的 16px 方块。 */
+  input[type=checkbox] {
+    width:16px;
+    height:16px;
+    min-height:16px;
+    max-height:16px;
+    padding:0;
+    margin:0;
+    border:1px solid var(--line);
+    border-radius:3px;
+    accent-color:var(--accent);
+    vertical-align:middle;
+    cursor:pointer;
+  }
+  input[type=checkbox]:disabled { cursor:not-allowed; }
   select[multiple] { height:auto; min-height:132px; padding:8px 10px; }
   input[type=file] { padding:0 10px; }
   input:focus, select:focus, textarea:focus {
@@ -363,13 +378,26 @@ _APPLE_DESIGN_STYLE = r"""
     align-items:center;
     max-width:100%;
   }
+  /* 质量状态与按钮并排成一行，仅作文字提示，不再占用卡片色块。 */
+  #candidatePanel #modelQualityStatus {
+    width:auto;
+    min-width:72px;
+    height:auto;
+    min-height:42px;
+    margin-top:-55px;
+    margin-left:150px;
+    background:#ffffff;
+    border:0;
+    box-shadow:none;
+  }
   #candidatePanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:6px; }
   .tag-row.selected { background:#edf5ff; }
   .metric { padding:24px; }
-  .metrics { grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; }
-  .metric { min-width:0; padding:14px 12px; }
-  .metric strong { font-size:28px; font-weight:600; line-height:1.1; letter-spacing:0; white-space:nowrap; }
+  .metrics { grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:8px; }
+  .metric { min-width:0; padding:10px 11px; }
+  .metric strong { font-size:22px; font-weight:600; line-height:1.15; letter-spacing:0; }
+  .metric span { font-size:12px; line-height:1.35; }
   .chart-card { gap:12px; }
   .chart-card h3 { margin:0; }
   .chart, .dp-chart, .trend-chart { background:var(--panel); }
@@ -377,7 +405,7 @@ _APPLE_DESIGN_STYLE = r"""
   .variance-bar { background:var(--accent); }
   .variance-bar.selected { background:var(--green); }
   .table-wrap, .exploration-timeline { border:1px solid var(--line); }
-  th, td { border-bottom-color:var(--line); padding:12px 16px; }
+  th, td { border-bottom-color:var(--line); padding:8px 12px; }
   th { background:var(--line-soft); color:var(--text); font-weight:600; }
   a:not(.download) { color:var(--accent); }
   #engineeringPanel #tagComment { resize:vertical; }
@@ -401,7 +429,8 @@ _APPLE_DESIGN_STYLE = r"""
 
 _WORKBENCH_UI_STYLE = r"""
 <style id="workbenchUiStyle">
-  main { grid-template-columns:280px minmax(0,1fr); align-items:start; }
+  /* 侧栏收窄到 218px，把余量让给右侧结果区（约 1350px），保证表格与图表少换行。 */
+  main { grid-template-columns:218px minmax(0,1fr); align-items:start; }
   .workflow-sidebar { position:sticky; top:var(--space-3); display:grid; gap:var(--space-2); padding:var(--panel-padding); }
   .workflow-sidebar-title { margin:0; font-size:17px; font-weight:600; }
   .workflow-steps { display:grid; gap:var(--space-1); }
@@ -442,6 +471,11 @@ _WORKBENCH_UI_STYLE = r"""
   .candidate-manager, .training-preparation, .training-configuration { border-color:#bfd7ef; }
   .candidate-manager .row { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .candidate-manager .row > * { min-width:0; }
+  /* 候选时间/备注/按钮四项同排；时间控件需要更多宽度，备注与按钮更窄。 */
+  .candidate-manager .candidate-window-row {
+    grid-template-columns:minmax(0,1.5fr) minmax(0,1.5fr) minmax(0,1.4fr) max-content;
+  }
+  .candidate-manager .candidate-window-row > label { min-width:0; }
   .candidate-tool-tabs { display:flex; gap:var(--space-1); flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); padding-bottom:var(--space-2); }
   .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
@@ -533,14 +567,38 @@ _WORKBENCH_UI_STYLE = r"""
   #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
   .validation-box, .exploration-controls { align-items:end; }
   .validation-box > button, .exploration-controls > button, .validation-box > .download, .exploration-controls > .download { align-self:end; }
+  /* 标签换行时输入框仍需贴底对齐，否则同一行控件高低不齐。 */
+  .exploration-controls > label { display:grid; align-content:start; }
   .candidate-tool-tabs .candidate-tool-tab { height:var(--control-height); }
   .panel > .actions, .inner-panel > .actions { margin-top:var(--space-1); }
   .issue-card, .notice, .status, .metric, .chart-card, .table-wrap, .empty, .validation-box, .exploration-controls { min-width:0; }
   .issue-card, .notice { padding:var(--space-2); }
-  .metric { min-height:104px; align-content:start; }
+  .metric { min-height:64px; align-content:start; }
   .chart-card { gap:var(--space-2); }
   .chart-grid { align-items:stretch; }
   .table-wrap { width:100%; }
+  /* 优选运行区域统计按固定 540px 列宽排布，不随右侧列拉伸。 */
+  .region-stats { width:540px; max-width:100%; }
+  /* 表头与短状态值不逐字换行；窄表由 .table-wrap 横向滚动承接。 */
+  .table-wrap th { white-space:nowrap; }
+  /* 列宽按内容取值，避免日期被压成多行；宽度不足时由 .table-wrap 横向滚动。 */
+  .table-wrap table { width:max-content; min-width:100%; }
+  .table-wrap td:has(> .status-label),
+  .table-wrap td:has(> input[type=checkbox]) { white-space:nowrap; text-align:center; }
+  tr:has(> td > input[type=checkbox]) > td:nth-child(2) { white-space:nowrap; }
+  /* 状态探索结果表统一居中：表头、单元格（含复选框、状态、数值列）都在单元格内水平居中；仅限本面板，不影响其他阶段表格。 */
+  #stateExplorationPanel table th, #stateExplorationPanel table td { text-align:center; }
+  /* 候选表内的勾选与备注控件按单元格密度收敛，不继承 42px 全高控件。 */
+  .exploration-candidate-select { display:inline-block; }
+  .exploration-candidate-comment {
+    width:100%;
+    min-width:120px;
+    height:30px;
+    min-height:30px;
+    padding:0 8px;
+    font-size:12px;
+    text-align:center;
+  }
   @media (max-width:1050px) {
     main { grid-template-columns:minmax(0,1fr); }
     .workflow-sidebar { position:static; }
@@ -554,6 +612,7 @@ _WORKBENCH_UI_STYLE = r"""
     .data-preparation-grid { grid-template-columns:minmax(0,1fr); }
     .row { grid-template-columns:minmax(0,1fr); }
     .candidate-manager .row { grid-template-columns:minmax(0,1fr); }
+    .candidate-manager .candidate-window-row { grid-template-columns:minmax(0,1fr); }
     .candidate-manager .row > button { width:100%; }
     .candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }
     .candidate-tool-tabs > * { flex:0 0 auto; width:auto; }
@@ -565,7 +624,7 @@ _WORKBENCH_UI_STYLE = r"""
     .tabs > *, .inner-tabs > * { flex:1 1 0; width:auto; min-width:0; }
     .validation-box > *, .exploration-controls > * { width:100%; }
     .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .metric strong { font-size:22px; }
+    .metric strong { font-size:20px; }
     .table-wrap { max-width:100%; }
   }
   @media (max-width:1100px) {
@@ -822,7 +881,7 @@ def _candidate_manager_html() -> str:
     return """      <div class="group candidate-manager">
         <div class="group-title">正常状态候选窗口</div>
         <div class="help">手工选择、趋势选择和状态探索候选统一进入此列表。候选默认待确认，不会自动参与训练。</div>
-        <div class="row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
+        <div class="row candidate-window-row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
         <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
         <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>

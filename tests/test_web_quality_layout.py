@@ -185,7 +185,7 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert "transform:scale(.95);" not in html
     assert ".tab, .inner-tab" in html
     assert "background:transparent;" in html
-    assert "main { grid-template-columns:280px minmax(0,1fr); align-items:start; }" in html
+    assert "main { grid-template-columns:218px minmax(0,1fr); align-items:start; }" in html
     assert "grid-template-columns:630px minmax(0,1fr);" not in html
     assert ".controls, .controls .group { min-width:0; }" in html
     assert "max-width:100%;" in html
@@ -194,8 +194,13 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert "#engineeringPanel #tagRole," in html
     assert "height:42px;" in html
     assert "height:30px;" in html
-    assert "grid-template-columns:repeat(6,minmax(0,1fr));" in html
-    assert "font-size:28px;" in html
+    assert "grid-template-columns:repeat(auto-fit,minmax(132px,1fr));" in html
+    assert "font-size:22px;" in html
+    assert ".metric { min-height:64px; align-content:start; }" in html
+    assert "th, td { border-bottom-color:var(--line); padding:8px 12px; }" in html
+    assert "input[type=checkbox] {" in html
+    assert "accent-color:var(--accent);" in html
+    assert ".exploration-candidate-comment {" in html
     assert "#tagOptions .tag-row" in html
     assert "height:30px;" in html
     assert "grid-template-columns:22px minmax(0,1fr) max-content;" in html
@@ -515,6 +520,23 @@ def test_supported_web_entrypoints_use_model_results_page() -> None:
 def test_final_web_entry_exposes_candidate_window_manager() -> None:
     html = web_model_results.INDEX_HTML
 
+    row = html.split('<div class="row candidate-window-row">', 1)[1].split(
+        "</div>", 1
+    )[0]
+    for element_id in (
+        'id="candidateStart"',
+        'id="candidateEnd"',
+        'id="candidateComment"',
+        'id="addManualCandidate"',
+    ):
+        assert element_id in row
+    assert row.count("<label>") == 3
+    # 候选时间、备注与按钮四项同排，按钮按文案宽度收缩。
+    assert ".candidate-manager .candidate-window-row {" in html
+    assert "grid-template-columns:minmax(0,1.5fr) minmax(0,1.5fr) minmax(0,1.4fr) max-content;" in html
+    # 窄屏仍回落为单列，避免时间控件被压扁。
+    assert ".candidate-manager .candidate-window-row { grid-template-columns:minmax(0,1fr); }" in html
+
     for element_id in (
         'id="candidateStart"',
         'id="candidateEnd"',
@@ -602,6 +624,15 @@ def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     assert "min-height:42px;" in html
     assert "#candidatePanel #modelQualityStatus {" in html
     assert "max-width:100%;" in html.split("#candidatePanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
+    # 状态与按钮并排成一行，纯文字提示，不占色块；宽度随文案自适应避免长错误被裁切。
+    status_style = html.rsplit("#candidatePanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
+    assert "background:#ffffff;" in status_style
+    assert "border:0;" in status_style
+    assert "margin-top:-55px;" in status_style
+    assert "margin-left:150px;" in status_style
+    assert "min-width:72px;" in status_style
+    assert "width:auto;" in status_style
+    assert "min-height:42px;" in status_style
     assert "#candidatePanel #currentTagQuality { max-width:1200px; }" in html
     assert "#modelPanel #modelQualityStatus" not in html
     assert "#modelPanel #qualityButton" not in html
@@ -1045,12 +1076,51 @@ def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPat
     assert cli_entry.cli._serve is original
 
 
+def test_state_exploration_performance_controls_share_one_row() -> None:
+    for html in (web_model_results.INDEX_HTML,):
+        row = html.split('<div class="exploration-controls performance-controls">', 1)[1].split(
+            "</div>", 1
+        )[0]
+        for element_id in (
+            'id="explorationPerformanceTag"',
+            'id="explorationPerformanceDirection"',
+            'id="explorationTargetMin"',
+            'id="explorationTargetMax"',
+            'id="explorationPerformanceMinimumDuration"',
+            'id="explorationPerformanceCandidateCount"',
+        ):
+            assert element_id in row
+        assert row.count("<label>") == 6
+        assert ".exploration-controls.performance-controls { grid-template-columns:repeat(6,minmax(0,1fr)); }" in html
+        assert "@media (max-width:1050px) { .exploration-controls.performance-controls { grid-template-columns:repeat(3,minmax(0,1fr)); } }" in html
+        # 标签换行时输入框仍贴底对齐，避免同一行控件高低不齐。
+        assert ".exploration-controls > label { display:grid; align-content:start; }" in html
+
+
 def test_workbench_tables_map_all_runtime_statuses_and_align_numeric_cells() -> None:
     html = web_model_results.INDEX_HTML
 
     assert ".table-wrap td.numeric" in html
     assert '#stateExplorationPanel .exploration-controls { border:0; }' in html
     assert "#explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }" in html
+    # 状态探索结果表统一居中；.numeric 的右对齐在本面板内被覆盖。
+    assert "#stateExplorationPanel table th, #stateExplorationPanel table td { text-align:center; }" in html
+    assert html.index("#stateExplorationPanel table th") > html.index(".table-wrap td.numeric")
+    comment_rule = html.split(".exploration-candidate-comment {", 1)[1].split("}", 1)[0]
+    assert "text-align:center;" in comment_rule
+    # 居中规则只覆盖状态探索面板内的表格，其他阶段表格不受影响。
+    panel_start = html.index('<div id="stateExplorationPanel"')
+    panel_end = html.index('<div id="clusterPanel"', panel_start)
+    panel = html[panel_start:panel_end]
+    for element_id in (
+        'id="explorationClusterTable"',
+        'id="explorationClusterCandidates"',
+        'id="explorationPerformanceCandidates"',
+        'id="explorationPreferredRegionCandidates"',
+    ):
+        assert element_id in panel
+    for outside in ('id="candidateWindows"', 'id="trainingWindows"', 'id="clusterTable"'):
+        assert html.index(outside) < panel_start or html.index(outside) > panel_end
     assert "font-variant-numeric:tabular-nums;" in html
     for status, label in (
         ("pending", "待决策"),

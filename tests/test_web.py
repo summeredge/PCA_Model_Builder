@@ -2,6 +2,9 @@ import json
 import inspect
 from io import BytesIO
 from pathlib import Path
+import shutil
+import subprocess
+import textwrap
 import zipfile
 
 import numpy as np
@@ -22,6 +25,22 @@ from pca_model_builder.training import build_training_matrix
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TXT_FIXTURE = Path(__file__).parent / "fixtures" / "u400ph_desensitized.txt"
+
+
+def _run_node_javascript(source: str) -> dict:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for SVG coordinate regression tests")
+    result = subprocess.run(
+        [node, "-e", textwrap.dedent(source)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    return json.loads(result.stdout)
 
 
 def _history_frame() -> pd.DataFrame:
@@ -803,7 +822,7 @@ def test_final_web_workbench_orders_lifecycle_and_downgrades_exploratory_entries
 def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     html = web.INDEX_HTML
     timeline = html.split("function renderExplorationTimeline(rows,candidates)", 1)[1].split(
-        "function explorationTimelineDetails", 1
+        "function renderExplorationClusterTable", 1
     )[0]
 
     assert "const EXPLORATION_CLUSTER_PALETTE" in html
@@ -815,9 +834,18 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "物理连续段断点" in timeline
     assert "候选窗口" in timeline
     assert "candidate.candidate_id" in timeline
-    assert "显示点之间的时间跨度可能来自抽样" in timeline
-    assert "explorationTimelineDetails(ordered)" in timeline
-    assert '<details><summary>查看显示抽样点明细</summary>' in html
+    assert "显示点之间的时间跨度可能来自抽样" not in timeline
+    assert "查看显示抽样点明细" not in html
+    assert "explorationTimelineDetails" not in html
+    assert "timeline-detail" not in html
+    assert "exploration-timeline details" not in html
+    assert "exploration-timeline summary" not in html
+    assert timeline.rstrip().endswith("}")
+    # 常规分支只输出 SVG，不再附加说明段落；单点分支保留自身的空状态说明。
+    assert timeline.count('<p class="timeline-note">') == 1
+    assert "时间轴基于状态探索显示序列" in timeline
+    assert "显示点之间的时间跨度可能来自抽样" not in html
+    assert "<details>" not in timeline
     assert '.map((value,index)=>`' in timeline
     assert 'text-anchor="${index===0?"start":index===3?"end":"middle"}"' in timeline
     assert 'index===0?"start"' in timeline
@@ -858,6 +886,16 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
     assert "const centers=Object.entries(data.cluster_centers||{})" in renderer
     assert "const legend=[...new Set(rows.map(row=>row.cluster_id))]" in renderer
     assert "${regionEllipses}${points}${centers}" in renderer
+    assert "svg.getScreenCTM?.()?.inverse?.()" in renderer
+    assert "svg.createSVGPoint?.()" in renderer
+    assert "point.matrixTransform(matrix)" in renderer
+    assert "Math.min(rect.width/width,rect.height/height)" not in renderer
+    assert "offsetX" not in renderer
+    assert "offsetY" not in renderer
+    for event_name in ("mousedown", "mousemove", "mouseup"):
+        assert f'svg.addEventListener("{event_name}"' in renderer
+    assert renderer.count("const point=svgPoint(event)") == 3
+    assert "if(!point){clearPreview(); start=null; return;}" in renderer
 
 
 def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
@@ -874,13 +912,160 @@ def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
     assert "preferred-region" in html
     assert "center_pc1" in html
     assert "radius_pc2" in html
-    assert "getBoundingClientRect" in html
+    assert "getScreenCTM" in html
+    assert "createSVGPoint" in html
     assert "state.preferredRegionRequest" in html
     assert "preferredRegionUpdateSeq:0" in html
     assert "preferred_region_update_seq:updateSeq" in html
     assert "data.applied===false" in html
     assert "完整有效样本占比" in html
     assert "区域稳定性" in html
+
+
+def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
+    for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
+        grid = html.split('<div class="exploration-result-grid">', 1)[1].split(
+            "Cluster 摘要表", 1
+        )[0]
+        positions = [
+            grid.index('id="explorationPcChart"'),
+            grid.index('id="explorationRegionSummary"'),
+            grid.index('id="explorationTimeline"'),
+        ]
+        # 散点图与时间轴在左列内上下相邻，优选区域统计占右列整行。
+        assert grid.index('id="explorationPcChart"') < grid.index('id="explorationTimeline"')
+        assert grid.count("chart-card") == 3
+        assert '<div class="chart-grid">' not in grid
+        # 左列是独立容器：散点图与时间轴同属 .exploration-result-column。
+        column = grid.split('<div class="exploration-result-column">', 1)[1].split(
+            '<div class="chart-card"><h3>优选运行区域质量统计</h3>', 1
+        )[0]
+        assert 'id="explorationPcChart"' in column
+        assert 'id="explorationTimeline"' in column
+        assert "优选运行区域质量统计" not in column
+        assert column.index("Cluster PC1 / PC2 与中心") < column.index("Cluster 时间轴")
+        # Cluster 摘要表保持在两行结果之后并占满整行。
+        assert html.index('<div class="exploration-result-grid">') < html.index(
+            "Cluster 摘要表"
+        )
+        assert html.index('id="explorationClusterTable"') > html.index(
+            'id="explorationTimeline"'
+        )
+        assert html.index('id="explorationClusterTable"') < html.index(
+            'id="explorationClusterCandidates"'
+        )
+
+    css = web_model_results.INDEX_HTML
+    assert ".exploration-result-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,540px); gap:12px; align-items:start; }" in css
+    assert ".exploration-result-column { display:grid; gap:var(--space-2); min-width:0; align-content:start; }" in css
+    assert "@media (max-width:1050px) { .exploration-result-grid { grid-template-columns:minmax(0,1fr); } }" in css
+    assert "exploration-result-grid > .chart-card:nth-child(3)" not in css
+
+
+def test_preferred_region_statistics_use_a_compact_scoped_metric_style():
+    for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
+        assert 'class="table-wrap region-stats"' in html
+        # 仅优选区域统计使用紧凑样式，全局 .metric 保持原样。
+        assert ".region-stats .metric { min-height:0; padding:7px 9px; }" in html
+        assert ".region-stats .metric strong { font-size:16px; line-height:1.2; }" in html
+        assert ".region-stats .metric span { font-size:11px; }" in html
+        assert ".region-stats .metrics { grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:8px; }" in html
+        assert ".region-stats table { font-size:12px; }" in html
+        assert ".region-stats th, .region-stats td { padding:6px 8px; }" in html
+        assert ".region-stats { max-height:none; min-height:430px; margin-top:55px; padding:10px; }" in html
+        # 单列断点下释放固定宽度和顶部偏移，避免窄屏出现大片空白。
+        assert "@media (max-width:1050px) { .region-stats { min-height:0; margin-top:0; } }" in html
+        summary = html.split("function renderExplorationRegionSummary(data)", 1)[1].split(
+            "function renderExplorationRegionControls", 1
+        )[0]
+        # 字段与计算方式保持不变。
+        for label in (
+            "优选区域样本",
+            "完整有效样本占比",
+            "最大 Cluster 占比",
+            "区域稳定性",
+            "连续候选数",
+            "性能有效样本",
+            "性能达标样本",
+            "性能达标率",
+            "性能中位数",
+        ):
+            assert label in summary
+        assert 'data.performance_config?.direction==="target_range"' in summary
+    # 固定列宽写在工作台样式表中，用于覆盖后加载的 .table-wrap { width:100% }。
+    assert ".region-stats { width:540px; max-width:100%; }" in web_model_results.INDEX_HTML
+
+
+def test_preferred_region_pointer_uses_svg_ctm_for_drag_center():
+    renderer = web.INDEX_HTML.split("function renderExplorationPcChart(data)", 1)[1].split(
+        "function explorationTimelineTick", 1
+    )[0]
+    matrix_source = "const width=760,height=260; const svgPoint=event=>" + renderer.split(
+        "const svgPoint=event=>", 1
+    )[1].split("const setPreview", 1)[0] + "; return svgPoint;"
+    point_source = (
+        "function pcPoint(x,y,maxX,maxY){return{"
+        "pc1:(x-380)/(380-34)*maxX,pc2:(130-y)/(130-34)*maxY};"
+        "}"
+        "function dragEllipse(start,end,maxX=10,maxY=6){const firstPc=pcPoint(start.x,start.y,maxX,maxY),"
+        "lastPc=pcPoint(end.x,end.y,maxX,maxY);return{center_pc1:(firstPc.pc1+lastPc.pc1)/2,"
+        "center_pc2:(firstPc.pc2+lastPc.pc2)/2,radius_pc1:Math.abs(lastPc.pc1-firstPc.pc1)/2,"
+        "radius_pc2:Math.abs(lastPc.pc2-firstPc.pc2)/2};}"
+    )
+    result = _run_node_javascript(
+        """
+        const matrixSource = __MATRIX_SOURCE__;
+        const pointSource = __POINT_SOURCE__;
+        const createSvgPoint = svg => new Function("svg", matrixSource)(svg);
+        eval(pointSource);
+        const matrix=(scaleX,scaleY,translateX,translateY)=>({
+          inverse:()=>({
+            transform:point=>({x:(point.x-translateX)/scaleX,y:(point.y-translateY)/scaleY})
+          })
+        });
+        const screenToUser=(transform,clientX,clientY)=>({
+          clientX,clientY,screenCTM:transform,point:null,
+          getScreenCTM:()=>transform,
+          createSVGPoint:()=>({x:0,y:0,matrixTransform(matrix){return matrix.transform(this);}})
+        });
+        const viewBox={width:760,height:260};
+        const startUser={x:214,y:78},endUser={x:526,y:172};
+        const cases=[
+          {name:"wide",screenCTM:matrix(.35,.7,42,-84),clientX:116.9,clientY:-29.4,endClientX:226.1,endClientY:36.4},
+          {name:"tall",screenCTM:matrix(.7,.35,7,-30),clientX:156.8,clientY:-2.7,endClientX:375.2,endClientY:30.2},
+        ];
+        const converted=cases.map(item=>{
+          const startSvg=screenToUser(item.screenCTM,item.clientX,item.clientY);
+          const endSvg=screenToUser(item.screenCTM,item.endClientX,item.endClientY);
+          const start=createSvgPoint(startSvg)(startSvg),end=createSvgPoint(endSvg)(endSvg);
+          const saved=dragEllipse(start,end);
+          return {name:item.name,point:start,end,previewCenter:{x:(start.x+end.x)/2,y:(start.y+end.y)/2},saved,
+            savedVisual:{x:380+saved.center_pc1/10*(380-34),y:130-saved.center_pc2/6*(130-34)}};
+        });
+        const noCtmSvg={clientX:0,clientY:0,getScreenCTM:()=>null,createSVGPoint:()=>null};
+        const noCtm=createSvgPoint(noCtmSvg)(noCtmSvg);
+        process.stdout.write(JSON.stringify({converted,expectedStart:startUser,expectedEnd:endUser,viewBox,noCtm}));
+        """
+        .replace("__MATRIX_SOURCE__", json.dumps(matrix_source))
+        .replace("__POINT_SOURCE__", json.dumps(point_source))
+    )
+
+    assert result["viewBox"] == {"width": 760, "height": 260}
+    for item in result["converted"]:
+        assert item["point"] == pytest.approx(result["expectedStart"])
+        assert item["end"] == pytest.approx(result["expectedEnd"])
+        assert item["point"] == pytest.approx(result["converted"][0]["point"])
+        assert item["end"] == pytest.approx(result["converted"][0]["end"])
+        assert 0 <= item["point"]["x"] <= 760
+        assert 0 <= item["point"]["y"] <= 260
+        assert item["previewCenter"] == pytest.approx(
+            {"x": (item["point"]["x"] + item["end"]["x"]) / 2,
+             "y": (item["point"]["y"] + item["end"]["y"]) / 2}
+        )
+        assert item["savedVisual"] == pytest.approx(item["previewCenter"])
+        assert item["saved"]["radius_pc1"] == pytest.approx(156 / 346 * 10)
+        assert item["saved"]["radius_pc2"] == pytest.approx(47 / 96 * 6)
+    assert result["noCtm"] is None
 
 
 def test_preferred_region_api_uses_union_and_full_cached_series():
