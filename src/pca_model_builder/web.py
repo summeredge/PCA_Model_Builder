@@ -24,7 +24,9 @@ import pandas as pd
 from .clustering import cluster_model_scores, cluster_operating_states
 from .state_exploration import (
     ExplorationConfig,
+    PerformanceConfig,
     _preferred_region_candidates,
+    _target_range_status,
     evaluate_preferred_region,
     run_state_exploration,
 )
@@ -336,9 +338,23 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(excluded, list)
         else []
     )
+    performance_config = _training_performance_config(payload, tags)
     loaded = _load_required_upload(
         payload,
-        list(dict.fromkeys([*tags, *excluded_tags, *_state_filter_columns(payload)])),
+        list(
+            dict.fromkeys(
+                [
+                    *tags,
+                    *excluded_tags,
+                    *_state_filter_columns(payload),
+                    *(
+                        [performance_config.performance_tag]
+                        if performance_config is not None
+                        else []
+                    ),
+                ]
+            )
+        ),
         "找不到 Tag：",
     )
     parsed = loaded.frame
@@ -405,6 +421,12 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     with _web_stage("scoring"):
         scores = model.score(dynamic)
+    performance_target = _training_performance_target(
+        parsed,
+        timestamp_column,
+        dynamic,
+        performance_config,
+    )
     result = {
         "run_id": run_id,
         "model_name": model_name,
@@ -425,7 +447,8 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "t2_limits": _limit_payload(model.t2_limits),
         "q_limits": _limit_payload(model.q_limits),
         "status_counts": _status_counts(scores),
-        "scores": _score_payload(scores),
+        "scores": _score_payload(scores, performance_target),
+        "performance_target_available": performance_target is not None,
         "model_download": f"/download/model?run_id={run_id}",
     }
     return _with_data_usage(
@@ -2241,7 +2264,61 @@ def _status_counts(scores: pd.DataFrame) -> dict[str, int]:
     return {status: int(counts.get(status, 0)) for status in ("normal", "attention", "abnormal")}
 
 
-def _score_payload(scores: pd.DataFrame) -> list[dict[str, Any]]:
+def _training_performance_target(
+    parsed: pd.DataFrame,
+    timestamp_column: str,
+    dynamic: pd.DataFrame,
+    performance_config: PerformanceConfig | None,
+) -> pd.Series | None:
+    """Reuse the exploration performance judgement on training samples.
+
+    Returns a ``True``/``False``/``None`` series aligned to ``dynamic`` where
+    ``None`` means the performance value was missing or non-finite.  Returns
+    ``None`` when no usable performance judgement exists, so the score plot can
+    disable the performance colour mode.
+    """
+    if performance_config is None or performance_config.direction != "target_range":
+        return None
+    tag = performance_config.performance_tag
+    if tag not in parsed.columns:
+        return None
+    timestamps = pd.to_datetime(parsed[timestamp_column], errors="coerce")
+    indexed = pd.DataFrame(
+        {timestamp_column: timestamps, tag: parsed[tag]}, index=parsed.index
+    ).dropna(subset=[timestamp_column])
+    values = pd.to_numeric(
+        indexed.set_index(timestamp_column)[tag].reindex(dynamic.index), errors="coerce"
+    ).astype(float)
+    status = _target_range_status(values, performance_config)
+    return status if status.notna().any() else None
+
+
+def _training_performance_config(
+    payload: dict[str, Any], tags: Sequence[str]
+) -> PerformanceConfig | None:
+    """Build the training performance judgement from the shared payload field.
+
+    Rejects a performance tag that also enters the training PCA, mirroring the
+    state exploration guard, so performance never leaks into model fitting.
+    """
+    value = _performance_config_payload(payload)
+    if value is None:
+        return None
+    performance_tag = str(value.get("performance_tag", "")).strip()
+    if not performance_tag:
+        return None
+    if performance_tag in tags:
+        raise ValueError(f"性能 Tag {performance_tag} 不得同时进入训练 PCA")
+    try:
+        return PerformanceConfig(**value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"性能达标判定配置无效：{error}") from error
+
+
+def _score_payload(
+    scores: pd.DataFrame,
+    performance_target: pd.Series | None = None,
+) -> list[dict[str, Any]]:
     positions = _chart_positions(scores, MAX_CHART_POINTS)
     rows = scores.iloc[positions]
     pc_columns = [column for column in scores.columns if column.startswith("pc")]
@@ -2258,6 +2335,11 @@ def _score_payload(scores: pd.DataFrame) -> list[dict[str, Any]]:
             "status": str(row.status),
         }
         record.update({column: float(row[column]) for column in pc_columns})
+        if performance_target is not None:
+            value = performance_target.get(timestamp)
+            record["performance_target_met"] = (
+                None if value is None or pd.isna(value) else bool(value)
+            )
         result.append(record)
     return result
 
@@ -2987,7 +3069,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="chart-card"><h3>训练期 T²</h3><div id="t2Chart" class="chart"></div></div>
             <div class="chart-card"><h3>训练期 SPE/Q</h3><div id="speChart" class="chart"></div></div>
           </div>
-          <div class="chart-card"><h3>主元得分 PC1 / PC2</h3><div id="scoreChart" class="chart"></div></div>
+          <div class="chart-card"><div class="chart-card-head"><h3>主元得分 PC1 / PC2</h3><div class="exploration-region-tools"><label>着色方式<select id="scoreColorMode"><option value="default">默认</option><option value="time">时间</option><option value="performance">性能状态</option></select></label></div></div><div id="scoreChart" class="chart"></div><p id="scoreChartNote" class="chart-note">默认按 T²/SPE 综合状态着色；切换着色方式只改变视觉编码，PC 坐标、样本数量和筛选范围不变。</p></div>
           <div class="legend"><span><i class="swatch" style="background:var(--accent)"></i>统计量</span><span><i class="swatch" style="background:var(--attention)"></i>95% 边界</span><span><i class="swatch" style="background:var(--abnormal)"></i>99% 边界</span></div>
           <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a></div>
           <div id="modelLifecycleNotice" class="notice"></div>
@@ -3290,10 +3372,11 @@ function performanceConditionPayload() {
 }
 function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>state.selectedModelTags.delete(tag)); invalidateModellingResults("性能筛选列已从建模Tag取消"); renderTagList(); }
 function syncExplorationPerformanceSelection() { const performanceTag=explorationPerformanceTag(); const changed=performanceTag&&state.selectedModelTags.delete(performanceTag); if(changed) invalidateModellingResults("状态探索性能 Tag 已从建模Tag取消"); if(state.inspection) renderTagList(); }
+function performanceConfigPayload() { const performanceTag=explorationPerformanceTag(); return performanceTag?{performance_tag:performanceTag,direction:el("explorationPerformanceDirection").value,target_min:optionalNumber("explorationTargetMin"),target_max:optionalNumber("explorationTargetMax"),minimum_duration_minutes:numberValue("explorationPerformanceMinimumDuration"),candidate_count:numberValue("explorationPerformanceCandidateCount")}:null; }
 function stateExplorationPayload() {
   const performanceTag=explorationPerformanceTag(); syncExplorationPerformanceSelection(); const tags=selectedTags().filter(tag=>tag!==performanceTag); if(tags.length<2) throw new Error("至少选择两个连续 Tag。");
   const payload={...commonPayload(),tags,exploration_start:el("explorationStart").value,exploration_end:el("explorationEnd").value,exploration_config:{cluster_count:numberValue("explorationClusterCount"),random_state:numberValue("explorationRandomState"),candidate_count_per_cluster:numberValue("explorationCandidateCount"),minimum_candidate_duration_minutes:numberValue("explorationMinimumDuration"),maximum_plot_points:numberValue("explorationMaximumPlotPoints")}};
-  if(performanceTag) payload.performance_config={performance_tag:performanceTag,direction:el("explorationPerformanceDirection").value,target_min:optionalNumber("explorationTargetMin"),target_max:optionalNumber("explorationTargetMax"),minimum_duration_minutes:numberValue("explorationPerformanceMinimumDuration"),candidate_count:numberValue("explorationPerformanceCandidateCount")};
+  const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
   return payload;
 }
 function explorationClusterNumber(clusterId) { const match=String(clusterId).match(/(\d+)$/); return match?Number(match[1]):1; }
@@ -3677,6 +3760,7 @@ async function trainModel(modelPurpose) {
   try {
     const components=el("components").value.trim();
     const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
+    const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
@@ -3858,8 +3942,19 @@ function renderTraining(data) {
   const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>item.message||`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
   data.explained_variance.slice(0,30).forEach((value,index)=>{ const bar=document.createElement("div"); bar.className=`variance-bar ${index<data.n_components?"selected":""}`; bar.style.height=`${Math.max(3,value/max*95)}px`; const label=document.createElement("span"); label.textContent=`${(value*100).toFixed(0)}%`; bar.title=`PC${index+1}: ${(value*100).toFixed(2)}%`; bar.append(label); variance.append(bar); });
-  lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download;
+  lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download;
 }
+
+function syncScoreColorModes(rows) {
+  const select=el("scoreColorMode"); if(!select) return;
+  const performance=select.querySelector('option[value="performance"]');
+  if(performance) { performance.disabled=!scorePerfAvailable(rows||[]); performance.title=performance.disabled?"当前模型没有可用的性能状态字段。":""; }
+  const timeOption=select.querySelector('option[value="time"]');
+  if(timeOption) timeOption.disabled=!(rows||[]).length;
+  if(select.value==="performance"&&performance?.disabled) select.value="default";
+}
+
+el("scoreColorMode").addEventListener("change",()=>{ const rows=state.training?.scores||[]; scoreScatter(el("scoreChart"),rows); });
 
 function renderTrainingWindowSummary(windows) {
   const container=el("trainingWindowSummary"); container.replaceChildren();
@@ -3908,9 +4003,21 @@ function lineChart(container, rows, field, limits, label) {
   container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${label}趋势"><line x1="${pad.l}" x2="${pad.l}" y1="${pad.t}" y2="${height-pad.b}" stroke="#bcc6d1"/><line x1="${pad.l}" x2="${width-pad.r}" y1="${height-pad.b}" y2="${height-pad.b}" stroke="#bcc6d1"/>${limitLine(limits["95"],"#d19a20","95%")}${limitLine(limits["99"],"#cf3f36","99%")}<polyline points="${points}" fill="none" stroke="#176b87" stroke-width="2" vector-effect="non-scaling-stroke"/><text x="4" y="${pad.t+8}" fill="#5f6c7b" font-size="10">${max.toFixed(2)}</text><text x="${pad.l}" y="${height-8}" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows[0].timestamp))}</text><text x="${width-pad.r}" y="${height-8}" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows.at(-1).timestamp))}</text></svg>`;
 }
 
-function scoreScatter(container, rows) {
+function scoreColorMode() { return el("scoreColorMode")?.value||"default"; }
+function scorePerfAvailable(rows) { return rows.some(row=>row.performance_target_met!==undefined&&row.performance_target_met!==null); }
+function scorePerfColor(value) { return value===true?"#16845b":value===false?"#cf3f36":"#9aa7b4"; }
+function scoreTimeColor(fraction) { const stops=[[24,98,180],[99,142,216],[176,214,238],[238,190,140],[214,96,77]]; const scaled=Math.max(0,Math.min(1,Number(fraction)||0))*(stops.length-1); const low=Math.floor(scaled),high=Math.min(stops.length-1,low+1),mix=scaled-low; const rgb=stops[low].map((value,index)=>Math.round(value+(stops[high][index]-value)*mix)); return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`; }
+function scoreScatter(container, rows, mode=scoreColorMode()) {
   if (!rows.length || !("pc1" in rows[0]) || !("pc2" in rows[0])) { container.innerHTML='<div class="empty">当前模型不足两个保留主元。</div>'; return; }
-  const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad); const colors={normal:"#16845b",attention:"#d19a20",abnormal:"#cf3f36"}; const circles=rows.map(row=>`<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${colors[row.status]}" fill-opacity=".72"/>`).join(""); container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="PC1与PC2得分散点"><line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${circles}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
+  const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad);
+  let legend="",note="",top=0; let shade=(row)=>{ const colors={normal:"#16845b",attention:"#d19a20",abnormal:"#cf3f36"}; return {fill:colors[row.status],tip:null}; };
+  if(mode==="performance"&&scorePerfAvailable(rows)) { shade=row=>({fill:scorePerfColor(row.performance_target_met),tip:`\n性能状态：${row.performance_target_met===true?"达标":row.performance_target_met===false?"未达标":"无有效性能数据"}`}); const met=rows.filter(row=>row.performance_target_met===true).length,unmet=rows.filter(row=>row.performance_target_met===false).length; legend=`<text x="${pad}" y="15" fill="#16845b" font-size="10">● 达标 ${met}</text><text x="${pad+92}" y="15" fill="#cf3f36" font-size="10">● 未达标 ${unmet}</text>`; note="按现有目标范围性能判定着色；性能变量不参与 PCA。"; top=22; }
+  else if(mode==="time") { const times=rows.map(row=>new Date(row.timestamp).getTime()).filter(value=>Number.isFinite(value)); const first=Math.min(...times),last=Math.max(...times),span=last-first||1; shade=row=>{const time=new Date(row.timestamp).getTime(); const fraction=Number.isFinite(time)?(time-first)/span:null; return {fill:fraction===null?"#9aa7b4":scoreTimeColor(fraction),tip:`\n时间：${escapeHtml(displayTime(row.timestamp,19))}`};}; legend=`<defs><linearGradient id="scoreTimeGradient" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="rgb(24,98,180)"/><stop offset="1" stop-color="rgb(214,96,77)"/></linearGradient></defs><rect x="${pad}" y="8" width="150" height="8" rx="4" fill="url(#scoreTimeGradient)"/><text x="${pad}" y="27" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows.reduce((a,b)=>new Date(a.timestamp)<=new Date(b.timestamp)?a:b).timestamp))}</text><text x="${pad+150}" y="27" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows.reduce((a,b)=>new Date(a.timestamp)>=new Date(b.timestamp)?a:b).timestamp))}</text>`; note="按样本时间从早到晚连续着色，颜色由蓝到红表示时间推进。"; top=32; }
+  else if(mode==="performance") { container.innerHTML='<div class="empty">当前模型没有可用的性能状态字段；请先在状态探索中配置目标范围性能 Tag 后重新训练。</div>'; return; }
+  else note="默认按 T²/SPE 综合状态着色（正常/关注/异常）。";
+  const circles=rows.map(row=>{ const paint=shade(row); const tip=paint.tip===null?"":`<title>状态：${escapeHtml(displayUiValue(row.status))}${escapeHtml(paint.tip)}</title>`; return `<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${paint.fill}" fill-opacity=".72">${tip}</circle>`; }).join("");
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height+top}" role="img" aria-label="PC1与PC2得分散点">${legend}<g transform="translate(0,${top})"><line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${circles}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></g></svg>`;
+  const noteNode=el("scoreChartNote"); if(noteNode) noteNode.textContent=`${note} 切换着色方式只改变视觉编码，PC 坐标、样本数量和筛选范围不变。`;
 }
 
 function clusterScatter(container, rows) {

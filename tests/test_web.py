@@ -1,6 +1,7 @@
 import json
 import inspect
 from io import BytesIO
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -5048,3 +5049,260 @@ def _rewrite_model_schema(path: Path, schema_version: int) -> None:
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as package:
         package.writestr("manifest.json", json.dumps(manifest))
         package.writestr("arrays.npz", arrays)
+
+
+def _score_renderer_source() -> str:
+    source = web.INDEX_HTML
+    start = source.index("function scoreColorMode()")
+    return source[start : source.index("function clusterScatter", start)]
+
+
+SCORE_ROWS = [
+    {
+        "timestamp": "2026-01-01T%02d:%02d:00" % (index // 12, (index % 12) * 5),
+        "pc1": float(index),
+        "pc2": float(-index),
+        "status": "normal" if index % 3 else "abnormal",
+        "performance_target_met": None if index % 5 == 0 else index % 2 == 0,
+    }
+    for index in range(12)
+]
+
+
+def _score_circle_positions(svg: str) -> list[tuple[str, str]]:
+    circles = svg.split("<circle ")[1:]
+    return [
+        (item.split('cx="')[1].split('"')[0], item.split('cy="')[1].split('"')[0])
+        for item in circles
+    ]
+
+
+def _render_score_svg(mode: str, rows: list[dict] | None = None) -> dict:
+    """Render the score chart in a minimal DOM and report the produced SVG."""
+    helpers = web.INDEX_HTML.split("function displayTime", 1)[1].split(chr(10), 1)[0]
+    escape_source = web.INDEX_HTML.split("function escapeHtml", 1)[1].split(
+        chr(10), 1
+    )[0]
+    ui_value_source = web.INDEX_HTML.split("function displayUiValue", 1)[1].split(
+        chr(10), 1
+    )[0]
+    harness = (
+        "const elements={};"
+        "const el=id=>elements[id]||(elements[id]={id,value:null,innerHTML:'',textContent:'',"
+        "querySelector:()=>null});"
+        + "function escapeHtml"
+        + escape_source
+        + "function displayUiValue"
+        + ui_value_source
+        + "function displayTime"
+        + helpers
+        + _score_renderer_source()
+        + "const rows=JSON.parse(process.env.SCORE_ROWS);"
+        "const container=el('scoreChart');"
+        "scoreScatter(container,rows,'" + mode + "');"
+        "process.stdout.write(JSON.stringify({"
+        "svg:container.innerHTML,note:el('scoreChartNote').textContent}));"
+    )
+    previous = os.environ.get("SCORE_ROWS")
+    os.environ["SCORE_ROWS"] = json.dumps(SCORE_ROWS if rows is None else rows)
+    try:
+        return _run_node_javascript(harness)
+    finally:
+        if previous is None:
+            os.environ.pop("SCORE_ROWS", None)
+        else:
+            os.environ["SCORE_ROWS"] = previous
+
+
+def test_score_chart_exposes_color_mode_selector_next_to_the_plot():
+    for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
+        card = html.split('id="scoreChart"', 1)[0].rsplit('<div class="chart-card">', 1)[-1]
+
+        assert 'id="scoreColorMode"' in card
+        for value, label in (
+            ("default", "默认"),
+            ("time", "时间"),
+            ("performance", "性能状态"),
+        ):
+            assert '<option value="%s">%s</option>' % (value, label) in card
+        assert 'id="scoreChartNote"' in html
+
+
+def test_score_chart_default_mode_keeps_existing_status_colours_and_geometry():
+    rendered = _render_score_svg("default")
+    source = _score_renderer_source()
+
+    # The pre-existing status palette and coordinate mapping stay untouched.
+    assert 'normal:"#16845b",attention:"#d19a20",abnormal:"#cf3f36"' in source
+    assert "const x=value=>width/2+value/maxX*(width/2-pad)" in source
+    assert rendered["svg"].count("<circle") == len(SCORE_ROWS)
+    assert 'fill="#16845b"' in rendered["svg"]
+    assert 'fill="#cf3f36"' in rendered["svg"]
+    # Default mode keeps its original look: no legend, no tooltip, no resize.
+    assert "●" not in rendered["svg"]
+    assert "scoreTimeGradient" not in rendered["svg"]
+    assert "<title>" not in rendered["svg"]
+    assert 'viewBox="0 0 760 250"' in rendered["svg"]
+    assert 'fill="rgb' not in rendered["svg"]
+
+
+def test_score_chart_modes_keep_point_count_and_pc_coordinates_identical():
+    modes = {
+        mode: _render_score_svg(mode)["svg"]
+        for mode in ("default", "time", "performance")
+    }
+
+    positions = {mode: _score_circle_positions(svg) for mode, svg in modes.items()}
+    assert positions["default"] == positions["time"] == positions["performance"]
+    assert len(positions["default"]) == len(SCORE_ROWS)
+    for svg in modes.values():
+        assert svg.count("<circle") == len(SCORE_ROWS)
+
+
+def test_score_chart_time_mode_uses_continuous_scale_and_shows_sample_time():
+    rendered = _render_score_svg("time")
+    svg = rendered["svg"]
+
+    assert 'linearGradient id="scoreTimeGradient"' in svg
+    assert "2026-01-01 00:00" in svg
+    assert "2026-01-01 00:55" in svg
+    assert "时间：2026-01-01 00:00" in svg
+    # Earliest sample is the cold end of the scale, latest sample the warm end.
+    assert 'fill="rgb(24,98,180)"' in svg
+    assert 'fill="rgb(214,96,77)"' in svg
+    # A continuous scale gives intermediate samples intermediate colours.
+    fills = [item.split('fill="')[1].split('"')[0] for item in svg.split("<circle ")[1:]]
+    assert len(set(fills)) >= 5
+
+
+def test_score_chart_performance_mode_legend_counts_match_sample_statuses():
+    rendered = _render_score_svg("performance")
+    svg = rendered["svg"]
+    met = sum(row["performance_target_met"] is True for row in SCORE_ROWS)
+    unmet = sum(row["performance_target_met"] is False for row in SCORE_ROWS)
+
+    assert met and unmet
+    assert "● 达标 %d" % met in svg
+    assert "● 未达标 %d" % unmet in svg
+    assert 'fill="#16845b"' in svg
+    assert 'fill="#cf3f36"' in svg
+    assert "性能状态：达标" in svg
+    assert "性能状态：未达标" in svg
+    assert "性能状态：无有效性能数据" in svg
+
+
+def test_score_chart_performance_mode_is_unavailable_without_metadata():
+    rows = [
+        {key: value for key, value in row.items() if key != "performance_target_met"}
+        for row in SCORE_ROWS
+    ]
+    rendered = _render_score_svg("performance", rows)
+
+    assert "没有可用的性能状态字段" in rendered["svg"]
+    assert "<circle" not in rendered["svg"]
+    # Missing metadata must not disturb the other two modes.
+    assert _render_score_svg("default", rows)["svg"].count("<circle") == len(rows)
+    assert _render_score_svg("time", rows)["svg"].count("<circle") == len(rows)
+
+
+def test_score_color_mode_toggle_rerenders_the_existing_chart_only():
+    html = web.INDEX_HTML
+
+    assert html.count('id="scoreChart"') == 1
+    assert html.count("function scoreScatter") == 1
+    assert "performance.disabled=!scorePerfAvailable(rows||[])" in html
+    assert 'el("scoreColorMode").addEventListener("change"' in html
+    assert "scoreScatter(el(\"scoreChart\"),rows); });" in html
+
+
+def test_train_payload_marks_performance_target_without_changing_scores(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    history["PERF"] = np.where(np.arange(len(history)) % 4 == 0, 9.0, 3.0)
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    common = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5,
+        "smoothing_window_minutes": 10,
+        "max_lag_minutes": 10,
+        "lag_step_minutes": 5,
+        "model_name": "UNIT_DPCA_V1",
+        "performance_config": {
+            "performance_tag": "PERF",
+            "direction": "target_range",
+            "target_min": 1.5,
+            "target_max": 4.5,
+        },
+    }
+
+    with_performance = web.train_payload(common)
+    without_performance = web.train_payload({**common, "performance_config": None})
+
+    assert with_performance["performance_target_available"] is True
+    assert all("performance_target_met" in row for row in with_performance["scores"])
+    assert {row["performance_target_met"] for row in with_performance["scores"]} == {
+        True,
+        False,
+    }
+    met = sum(
+        row["performance_target_met"] is True for row in with_performance["scores"]
+    )
+    assert 0 < met < len(with_performance["scores"])
+
+    # Without performance metadata the field is absent and the mode is disabled.
+    assert without_performance["performance_target_available"] is False
+    assert all(
+        "performance_target_met" not in row for row in without_performance["scores"]
+    )
+
+    # Colouring must not touch PCA, T2, SPE, PC coordinates or the sample set.
+    assert without_performance["training_rows"] == with_performance["training_rows"]
+    assert without_performance["n_components"] == with_performance["n_components"]
+    assert without_performance["explained_variance"] == with_performance["explained_variance"]
+    assert without_performance["t2_limits"] == with_performance["t2_limits"]
+    assert without_performance["q_limits"] == with_performance["q_limits"]
+    assert without_performance["status_counts"] == with_performance["status_counts"]
+    for plain, coloured in zip(without_performance["scores"], with_performance["scores"]):
+        assert plain["timestamp"] == coloured["timestamp"]
+        assert plain["pc1"] == coloured["pc1"]
+        assert plain["pc2"] == coloured["pc2"]
+        assert plain["t2"] == coloured["t2"]
+        assert plain["spe"] == coloured["spe"]
+        assert plain["status"] == coloured["status"]
+
+
+def test_train_payload_rejects_performance_tag_inside_training_pca(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+
+    with pytest.raises(ValueError, match="不得同时进入训练 PCA"):
+        web.train_payload(
+            {
+                "file_id": uploaded["file_id"],
+                "timestamp_column": "time",
+                "tags": ["A", "B", "C"],
+                "normal_start": history.time.iloc[0].isoformat(),
+                "normal_end": history.time.iloc[-1].isoformat(),
+                "sample_interval_minutes": 5,
+                "model_name": "UNIT_DPCA_V1",
+                "performance_config": {
+                    "performance_tag": "B",
+                    "direction": "target_range",
+                    "target_min": 0.0,
+                    "target_max": 1.0,
+                },
+            }
+        )
