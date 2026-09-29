@@ -43,16 +43,20 @@ _FORM_ALIGNMENT_STYLE = r"""
     max-width:100%;
     min-width:0;
     display:grid;
+    grid-template-columns:minmax(0,1fr);
     gap:var(--space-2);
   }
   #engineeringPanel .batch-config-title {
-    font-size:16px;
+    font-size:14px;
     font-weight:600;
     line-height:1.4;
   }
   #engineeringPanel .batch-config .actions {
     display:grid;
-    grid-template-columns:max-content minmax(260px,1fr) max-content max-content max-content;
+    /* 中间列是文件选择框，宽度必须可收缩到 0：1100px 视口下侧栏占 260px 后
+       内容区只剩 713px，而四个 max-content 按钮 + 48px gap 固定占 509px，
+       任何正的 minmax 下限都会让容器撑破并造成整页横向滚动。 */
+    grid-template-columns:max-content minmax(0,1fr) max-content max-content max-content;
     gap:var(--space-2);
     align-items:end;
   }
@@ -141,22 +145,26 @@ _FORM_ALIGNMENT_STYLE = r"""
     justify-self:start;
   }
 
-  @media (max-width:900px) {
+  /* 断点与工作台主布局（1050px）对齐：主布局塌成单列后，批量配置也必须同时收敛，
+     否则 900~1050px 之间会同时出现“侧栏横条 + 批量配置两列硬切”的混合密度。
+     窄屏改回 intrinsic-width 横向优先 + 自然换行：2 列网格会把三个固定宽按钮
+     硬塞进两格，首行只剩一个 119px 下载按钮、右列空置，且行高 63/42 混排。 */
+  @media (max-width:1050px) {
     #engineeringPanel .batch-config .actions {
-      grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+      display:flex;
+      flex-wrap:wrap;
+      align-items:flex-end;
+      gap:var(--space-2);
     }
-    #engineeringPanel .batch-config .actions > label.secondary {
-      grid-column:1 / -1;
+    #engineeringPanel .batch-config .actions > * {
+      flex:0 0 auto;
+      width:auto;
     }
-    #engineeringPanel .batch-config .actions > .download,
-    #engineeringPanel .batch-config .actions > button {
-      width:100%;
-    }
-    /* 窄屏下上方按钮被拉满网格列，改为与“保存当前”一起保持同宽，避免两者宽度不同。 */
-    #engineeringPanel .batch-config .actions > .download,
-    #engineeringPanel #saveTagConfig {
-      width:var(--batch-action-width);
-    }
+    #engineeringPanel .batch-config .actions > label.secondary { flex:1 1 240px; }
+  }
+  @media (max-width:760px) {
+    /* 最窄一档让文件选择控件独占一行。 */
+    #engineeringPanel .batch-config .actions > label.secondary { flex:1 1 100%; }
   }
 </style>
 """
@@ -202,7 +210,9 @@ _APPLE_DESIGN_STYLE = r"""
   }
   header { padding:16px clamp(20px,3vw,40px); background:#000000; border-bottom:0; color:#ffffff; }
   h1 { margin:0 0 4px; font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
-  h2 { font-size:34px; font-weight:600; line-height:1.1; letter-spacing:0; }
+  /* Application UI 里的 h2 与 h3 同级：34px 是营销页标题尺寸，会与工作台内
+     25 个 21px 小节标题产生不必要的量级跳跃，破坏层级扫描。 */
+  h2 { font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
   h3 { font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
   h4 { font-size:17px; font-weight:600; line-height:1.24; letter-spacing:0; }
   .subtitle, .help, label, .legend, .dp-legend { color:var(--muted); }
@@ -397,11 +407,24 @@ _APPLE_DESIGN_STYLE = r"""
     min-width:72px;
     height:auto;
     min-height:42px;
-    margin-top:-55px;
-    margin-left:150px;
     background:#ffffff;
     border:0;
     box-shadow:none;
+  }
+  /* 按钮与状态块由父容器排布：宽度随内容自适应，空间不足才换行，不再用负 margin 硬挤到同一行。 */
+  #modelPanel .quality-action-row {
+    display:flex;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:var(--space-2);
+    min-width:0;
+  }
+  #modelPanel .quality-action-row > * { min-width:0; max-width:100%; }
+  /* flex-basis auto：短文案与按钮同排；长错误文案占满剩余空间后自动换到下一行，
+     宽度不再由视口决定（fit-content 会把长文案拉到 1354px 满宽，可读性差）。 */
+  #modelPanel .quality-action-row > #modelQualityStatus {
+    flex:1 1 auto;
+    width:auto;
   }
   #modelPanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:6px; }
@@ -431,7 +454,7 @@ _APPLE_DESIGN_STYLE = r"""
     h1 { font-size:21px; }
     main { padding:12px; }
     section { padding:var(--panel-padding); }
-    h2 { font-size:34px; }
+    h2 { font-size:21px; }
     button, .download, input, select, textarea { height:var(--control-height); min-height:var(--control-height); }
     textarea, select[multiple] { height:auto; }
     .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
@@ -442,9 +465,22 @@ _APPLE_DESIGN_STYLE = r"""
 
 _WORKBENCH_UI_STYLE = r"""
 <style id="workbenchUiStyle">
-  /* 侧栏收窄到 218px，把余量让给右侧结果区（约 1350px），保证表格与图表少换行。 */
-  main { grid-template-columns:218px minmax(0,1fr); align-items:start; }
-  .workflow-sidebar { position:sticky; top:var(--space-3); display:grid; gap:var(--space-2); padding:var(--panel-padding); }
+  /* 侧栏宽度是「步骤正文列宽」的上限约束：step 三列 30px + 74px 正文 + 24px 状态
+     在 218px 时正文只剩 74px，「正常状态候选」折 2 行、「下一步：仅已验证模型可冻结
+     并导出部署包」折 4 行。收到 260px 后正文列 116px，标题基本单行。 */
+  main { grid-template-columns:260px minmax(0,1fr); align-items:start; }
+  /* sticky 侧栏必须自己限高：5 个步骤卡合计约 592px，视口高度低于该值时
+     侧栏会被裁在视口外且随页面滚走，底部步骤（冻结与部署）无法访问。 */
+  .workflow-sidebar {
+    position:sticky;
+    top:var(--space-3);
+    display:grid;
+    gap:var(--space-2);
+    padding:var(--panel-padding);
+    max-height:calc(100vh - var(--space-4));
+    overflow-y:auto;
+    overscroll-behavior-y:contain;
+  }
   .workflow-sidebar-title { margin:0; font-size:17px; font-weight:600; }
   .workflow-steps { display:grid; gap:var(--space-1); }
   .workflow-step {
@@ -553,6 +589,10 @@ _WORKBENCH_UI_STYLE = r"""
     gap:var(--space-1);
     border-left:4px solid var(--accent);
   }
+  /* 运行日志是全局唯一的操作反馈入口，但位置固定在结果区顶部：进入模型训练等
+     后置阶段后，错误提示与触发它的控件相距近 800px，必须滚回顶部才看得到。
+     保持 DOM 位置不变（仍由 aria-live 播报），改由脚本在阶段切换时把日志
+     滚入视野：sticky 会遮挡滚动路径上的小节标题，不是合适的方案。 */
   .operation-log::before {
     content:"运行日志";
     color:inherit;
@@ -586,7 +626,13 @@ _WORKBENCH_UI_STYLE = r"""
   .table-wrap tbody tr:hover { background:#f7fbff; }
   .table-wrap th:first-child, .table-wrap td:first-child { position:sticky; left:0; z-index:1; }
   .table-wrap th:first-child { background:var(--line-soft); }
-  .table-wrap td:first-child { background:inherit; }
+  /* 固定首列必须自带不透明底色：tr/table 背景是透明的，继承过来仍是透明，
+     横向滚动时右邻列文字会直接透过 sticky 列叠印在一起。 */
+  .table-wrap td:first-child {
+    background:var(--panel);
+    box-shadow:1px 0 0 var(--line);
+  }
+  .table-wrap tbody tr:hover td:first-child { background:#f7fbff; }
   .table-wrap td.numeric {
     text-align:right;
     font-variant-numeric:tabular-nums;
@@ -596,6 +642,16 @@ _WORKBENCH_UI_STYLE = r"""
   #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
   .validation-box, .exploration-controls { align-items:end; }
   .validation-box > button, .exploration-controls > button, .validation-box > .download, .exploration-controls > .download { align-self:end; }
+  /* 验证/探索表单里的按钮是 Command，不是 Choice Option：默认按内容取宽，
+     不该被 minmax(130px,1fr) 拉成整列宽，否则与相邻输入框同宽、失去按钮识别度。 */
+  .validation-box > button, .validation-box > .download {
+    justify-self:start;
+    width:auto;
+  }
+  .exploration-controls > button, .exploration-controls > .download {
+    justify-self:start;
+    width:auto;
+  }
   /* 标签换行时输入框仍需贴底对齐，否则同一行控件高低不齐。 */
   .exploration-controls > label { display:grid; align-content:start; }
   .candidate-tool-tabs .candidate-tool-tab { height:var(--control-height); }
@@ -631,12 +687,15 @@ _WORKBENCH_UI_STYLE = r"""
   @media (max-width:1050px) {
     main { grid-template-columns:minmax(0,1fr); }
     .workflow-sidebar { position:static; }
-    .workflow-steps { grid-template-columns:repeat(5,minmax(190px,1fr)); overflow-x:auto; }
+    /* 单列布局下侧栏横条是导航，不该靠横向滚动藏步骤：5×190px 的硬下限在 900px
+       视口装不下（容器 855px），第 5 步「冻结与部署」被推到滚动区外。
+       改用 auto-fit 换行，步骤数与当前位置始终完整可见。 */
+    .workflow-steps { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
   }
   @media (max-width:760px) {
     main { grid-template-columns:minmax(0,1fr); padding:var(--space-2); gap:var(--space-2); }
     .workflow-sidebar { position:static; padding:var(--space-3); }
-    .workflow-steps { grid-template-columns:repeat(5,minmax(190px,1fr)); overflow-x:auto; overscroll-behavior-inline:contain; }
+    .workflow-steps { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
     section { padding:var(--panel-padding); }
     .data-preparation-grid { grid-template-columns:minmax(0,1fr); }
     .row { grid-template-columns:minmax(0,1fr); }
@@ -706,6 +765,14 @@ document.addEventListener("DOMContentLoaded", () => {
       button.setAttribute("aria-selected", String(selected));
       button.querySelector(".workflow-step-status").textContent = button.classList.contains("complete") ? "已完成" : selected ? "当前" : "待开始";
     });
+    // 运行日志固定在结果区顶部，进入后置阶段后它与操作点相距近 800px，
+    // 错误提示会看不见。切阶段时把日志滚进视野；sticky 会遮挡滚动路径上的
+    // 小节标题，不是合适的方案。只在日志完全不在视野内时才滚动。
+    const log = document.getElementById("status");
+    if (log) {
+      const logRect = log.getBoundingClientRect();
+      if (logRect.bottom < 0 || logRect.top > innerHeight) log.scrollIntoView({ block: "start" });
+    }
   };
   workflowSteps.querySelectorAll(".workflow-step").forEach(button => button.addEventListener("click", () => globalThis.showWorkflowStage(button.dataset.panel)));
   globalThis.showWorkflowStage("configPanel");
@@ -737,6 +804,27 @@ document.addEventListener("DOMContentLoaded", () => {
       peers.forEach(peer => peer.setAttribute("aria-selected", String(peer === button)));
     });
   });
+
+  // tablist 的键盘契约：左右方向键在同组 tab 间移动焦点（并切换选中）。
+  // 此前三组 tablist 只能靠 Tab 逐个跳，键盘用户无法快速切换阶段。
+  const wireTablistKeys = (tablist) => {
+    if (!tablist) return;
+    tablist.addEventListener("keydown", (event) => {
+      const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+      if (!tabs.length) return;
+      const index = tabs.indexOf(document.activeElement);
+      if (index < 0) return;
+      const step = event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? 1
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+        ? -1
+        : 0;
+      if (!step) return;
+      event.preventDefault();
+      tabs[(index + step + tabs.length) % tabs.length].focus();
+    });
+  };
+  document.querySelectorAll('[role="tablist"]').forEach(wireTablistKeys);
 
   const labels = {
     normal:"正常", usable:"可用", attention:"关注", review:"需确认",

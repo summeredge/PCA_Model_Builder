@@ -2708,6 +2708,9 @@ INDEX_HTML = r"""<!doctype html>
     .status.warning { background:#fff4d6; color:#8a5a00; border-color:#f3d58c; }
     .status.error { background:#fee9e7; color:#991b1b; border-color:#f5c2bd; }
     .help { color:var(--muted); font-size:12px; line-height:1.45; }
+    /* .muted 已在标记与 JS 中使用（预处理预览的未执行/需重算提示），此前无对应规则，
+       文本回退到 body 正文色，与相邻 .help 说明文字层级不一致。 */
+    .muted { color:var(--muted); }
     .tag-options { display:grid; gap:5px; max-height:260px; overflow:auto; padding:8px; background:#fff; border:1px solid var(--line); border-radius:6px; }
     .tag-options label { display:flex; align-items:center; gap:6px; color:var(--text); overflow:hidden; }
     .tag-options input { width:auto; min-height:auto; }
@@ -2852,8 +2855,10 @@ INDEX_HTML = r"""<!doctype html>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
         <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
          <h3>建模质量检查</h3>
+         <div class="quality-action-row">
          <button id="qualityButton" class="secondary" disabled>执行建模质量检查</button>
          <div id="modelQualityStatus" class="status info" role="status">未检查</div>
+         </div>
          <div id="modelQualityResults">
           <h3>训练集组成审查</h3>
           <div id="trainingCompositionReview" class="empty">执行建模质量检查后显示训练集组成。</div>

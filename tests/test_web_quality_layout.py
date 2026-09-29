@@ -454,7 +454,7 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert 'data-inner="batchPanel"' not in html
     assert "#engineeringPanel .batch-config .actions" in html
     assert (
-        "grid-template-columns:max-content minmax(260px,1fr) "
+        "grid-template-columns:max-content minmax(0,1fr) "
         "max-content max-content max-content;"
     ) in html
     assert "#engineeringPanel .batch-config .actions > label.secondary" in html
@@ -467,7 +467,8 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert "#engineeringPanel #tagRole" in html
     assert "#engineeringPanel #tagComment" in html
     assert "@media (max-width:900px)" in html
-    assert "grid-column:1 / -1;" in html
+    # 窄屏下文件选择控件独占一行：grid 两列形态用 grid-column，flex 形态用 flex-basis。
+    assert "flex:1 1 100%;" in html
     assert html.rindex("#engineeringPanel .batch-config .actions") > html.index(
         ".actions { display:flex"
     )
@@ -491,7 +492,10 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert "transform:scale(.95);" not in html
     assert ".tab, .inner-tab" in html
     assert "background:transparent;" in html
-    assert "main { grid-template-columns:218px minmax(0,1fr); align-items:start; }" in html
+    # 侧栏宽度必须给步骤正文留够一行标题：218px 时正文列仅 74px，「正常状态候选」
+    # 折 2 行、「下一步：仅已验证模型可冻结并导出部署包」折 4 行。260px 保留紧凑
+    # 导航同时让正文列达到 116px，仍远小于已被禁用的 630px。
+    assert "main { grid-template-columns:260px minmax(0,1fr); align-items:start; }" in html
     assert "grid-template-columns:630px minmax(0,1fr);" not in html
     assert ".controls, .controls .group { min-width:0; }" in html
     assert "max-width:100%;" in html
@@ -980,11 +984,19 @@ def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     status_style = html.rsplit("#modelPanel #modelQualityStatus {", 1)[1].split("}", 1)[0]
     assert "background:#ffffff;" in status_style
     assert "border:0;" in status_style
-    assert "margin-top:-55px;" in status_style
-    assert "margin-left:150px;" in status_style
+    # 并排由父容器完成：负 margin(-55px/-150px) 是导致按钮被状态块水平重叠 146px
+    # 的根因，改为 .quality-action-row 的 flex 排布后不得再出现任何负偏移。
+    assert "margin-top:-55px;" not in status_style
+    assert "margin-left:150px;" not in status_style
     assert "min-width:72px;" in status_style
     assert "width:auto;" in status_style
     assert "min-height:42px;" in status_style
+    assert "#modelPanel .quality-action-row {" in html
+    row_style = html.rsplit("#modelPanel .quality-action-row {", 1)[1].split("}", 1)[0]
+    assert "display:flex;" in row_style
+    assert "flex-wrap:wrap;" in row_style
+    assert "align-items:center;" in row_style
+    assert 'class="quality-action-row"' in model_source
     assert "#modelPanel #currentTagQuality { max-width:1200px; }" in html
     assert "#candidatePanel #modelQualityStatus" not in html
     assert "#candidatePanel #qualityButton" not in html

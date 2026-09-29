@@ -18,7 +18,11 @@ _DATAPROJECT_TREND_CSS = r"""
 <style id="dataprojectTrendStyle">
   .dp-trend-controls { display:grid; grid-template-columns:repeat(4,minmax(120px,1fr)) 150px auto; gap:10px; align-items:end; }
   .dp-trend-bar { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
-  .dp-trend-bar > label { flex:1 1 180px; max-width:240px; min-width:0; }
+  /* 三个时间/点数输入的 flex base 决定这一行是否换行：原 180px + max 240px 在
+     1366px 视口就需要 1222px，实际容器只有 1012px，1366/1320/1280 都会折成两行。
+     收到 140px / 180px 后单行门槛降到 1366px 视口（容器 970px ≥ 需求 922px），
+     1280px 视口容器仅 884px，内容真实超限，按 fit-first 允许换行。 */
+  .dp-trend-bar > label { flex:1 1 140px; max-width:180px; min-width:0; }
   .dp-trend-bar > button { flex:0 0 auto; padding:8px 12px; font-size:13px; white-space:nowrap; }
   .dp-chart { min-height:660px; height:660px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:hidden; resize:vertical; }
   .dp-chart.empty { height:auto; resize:none; }
