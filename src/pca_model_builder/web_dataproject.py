@@ -81,7 +81,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       <label>开始时间<input id="dpTrendStart" type="datetime-local"></label>
       <label>结束时间<input id="dpTrendEnd" type="datetime-local"></label>
       <label>最大绘图点数<input id="dpTrendMaxPoints" type="number" min="100" max="100000" value="100000"></label>
-      <button id="dpTrendToAnalysis" type="button" class="secondary">将当前窗口设为分析期</button>
+      <button id="dpTrendToAnalysis" type="button" class="secondary">设为分析范围</button>
       <button id="dpTrendToReference" type="button" class="secondary">加入候选窗口</button>
       <button id="dpTrendToExclusion" type="button" class="secondary">加入排除窗口</button>
       <button id="dpTrendReset" type="button" class="secondary">趋势复位</button>
@@ -209,7 +209,9 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   $("dpTrendToAnalysis").addEventListener("click", () => {
     $("analysisStart").value = $("dpTrendStart").value;
     $("analysisEnd").value = $("dpTrendEnd").value;
-    setStatus("当前趋势窗口已设置为分析期。", "success");
+    if ($("explorationStart")) $("explorationStart").value = $("dpTrendStart").value;
+    if ($("explorationEnd")) $("explorationEnd").value = $("dpTrendEnd").value;
+    setStatus("当前趋势窗口已设为候选分析范围，状态探索、聚类和条件筛选将共用此范围。", "success");
   });
 
   $("dpTrendToReference").addEventListener("click", () => {

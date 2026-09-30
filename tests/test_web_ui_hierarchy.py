@@ -12,7 +12,9 @@ class _WorkbenchParser(HTMLParser):
         super().__init__()
         self._stack: list[tuple[str, dict[str, str]]] = []
         self.ancestors_by_id: dict[str, tuple[str, ...]] = {}
+        self.ids: list[str] = []
         self.workflow_steps: list[dict[str, str]] = []
+        self.candidate_tools: list[tuple[str, tuple[str, ...]]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
@@ -20,6 +22,7 @@ class _WorkbenchParser(HTMLParser):
             self._stack.append((tag, attributes))
         element_id = attributes.get("id")
         if element_id:
+            self.ids.append(element_id)
             ancestors = self._stack[:-1] if tag not in self._VOID_ELEMENTS else self._stack
             self.ancestors_by_id[element_id] = tuple(
                 item[1]["id"] for item in ancestors if item[1].get("id")
@@ -28,6 +31,11 @@ class _WorkbenchParser(HTMLParser):
             self.workflow_steps.append(
                 {"panel": attributes.get("data-panel", ""), "text": ""}
             )
+        if "candidate-tool-tab" in attributes.get("class", "").split():
+            self.candidate_tools.append((
+                attributes.get("data-panel", ""),
+                tuple(item[1]["id"] for item in self._stack if item[1].get("id")),
+            ))
 
     def handle_endtag(self, tag: str) -> None:
         if self._stack and self._stack[-1][0] == tag:
@@ -82,6 +90,13 @@ def test_static_panels_own_their_existing_controls() -> None:
         "excludedWindows": "candidatePanel",
         "trainingWindows": "candidatePanel",
         "sampleInterval": "candidatePanel",
+        "analysisStart": "candidatePanel",
+        "analysisEnd": "candidatePanel",
+        "performanceConditions": "performancePanel",
+        "addPerformanceCondition": "performancePanel",
+        "performanceButton": "performancePanel",
+        "clusterCount": "clusterPanel",
+        "clusterButton": "clusterPanel",
         "resamplingMethod": "candidatePanel",
         "filterMethod": "candidatePanel",
         "firstOrderAlpha": "candidatePanel",
@@ -102,15 +117,76 @@ def test_static_panels_own_their_existing_controls() -> None:
         "varianceThreshold": "modelPanel",
         "components": "modelPanel",
         "trainButton": "modelPanel",
+        "loadingChart": "modelPanel",
+        "componentLoadings": "modelPanel",
+        "modelStructureComparison": "modelPanel",
         "validateButton": "validationPanel",
         "validationDecisionStatus": "validationPanel",
         "validatedModelDownload": "releasePanel",
         "freezeDeployment": "releasePanel",
         "deploymentModelDownload": "releasePanel",
+        "frozenReplay": "releasePanel",
     }
 
     for element_id, panel_id in expected_parent.items():
         assert panel_id in parser.ancestors_by_id[element_id]
+
+
+def test_candidate_tools_share_one_level_and_analysis_range() -> None:
+    parser = _workbench()
+    html = web_model_results.INDEX_HTML
+
+    assert [panel for panel, _ in parser.candidate_tools] == [
+        "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"
+    ]
+    assert all(parent == ("candidatePanel",) for _, parent in parser.candidate_tools)
+    assert len(parser.ids) == len(set(parser.ids))
+    assert 'id="explorationStart"' not in html
+    assert 'id="explorationEnd"' not in html
+    assert 'data-panel="statePanels"' not in html
+    assert 'exploration_start:(el("explorationStart")||el("analysisStart")).value' in html
+    assert 'exploration_end:(el("explorationEnd")||el("analysisEnd")).value' in html
+    assert 'analysis_start:el("analysisStart").value' in html
+    assert 'analysis_end:el("analysisEnd").value' in html
+    assert '$("analysisStart").value = $("dpTrendStart").value' in html
+    assert '$("analysisEnd").value = $("dpTrendEnd").value' in html
+
+
+def test_training_validation_and_release_follow_decision_order() -> None:
+    html = web_model_results.INDEX_HTML
+    model = html[html.index('<div id="modelPanel"'):html.index('<div id="validationPanel"')]
+    validation = html[html.index('<div id="validationPanel"'):html.index('<div id="releasePanel"')]
+    release = html[html.index('<div id="releasePanel"'):]
+
+    assert [model.index(label) for label in (
+        "① 训练准备", "② 建模质量检查", "③ PCA / DPCA 模型配置",
+        "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
+        'id="scoreChart"', 'id="loadingChart"', 'id="componentLoadings"',
+        'id="t2Chart"', 'id="speChart"', 'id="modelStructureComparison"',
+        'id="modelDownload"',
+    )] == sorted(model.index(label) for label in (
+        "① 训练准备", "② 建模质量检查", "③ PCA / DPCA 模型配置",
+        "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
+        'id="scoreChart"', 'id="loadingChart"', 'id="componentLoadings"',
+        'id="t2Chart"', 'id="speChart"', 'id="modelStructureComparison"',
+        'id="modelDownload"',
+    ))
+    assert validation.index('id="validateButton"') < validation.index('id="validationMetrics"') < validation.index('id="validationMetricDetails"') < validation.index('id="recordValidationDecision"')
+    assert release.index('id="validatedModelDownload"') < release.index('id="freezeDeployment"') < release.index('id="frozenModelDownload"') < release.index('id="frozenReplay"')
+    assert 'id="modelPreprocessingSummary"' in model
+    assert '<section id="frozenReplay" class="chart-card" hidden>' in release
+    assert 'replayButton.disabled = !canReplay || replayButton.textContent === "回放中…"' in html
+
+
+def test_model_results_only_fill_static_workbench_containers() -> None:
+    source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
+    html = web_model_results.INDEX_HTML
+
+    for element_id in ("loadingChart", "componentLoadings", "modelStructureComparison", "frozenReplay"):
+        assert html.count(f'id="{element_id}"') == 1
+    assert "insertAdjacentElement(" not in source
+    assert "releasePanel.append(" not in source
+    assert 'document.getElementById("loadingChart")' in source
 
 
 def test_each_shared_preprocessing_control_keeps_one_unique_id() -> None:

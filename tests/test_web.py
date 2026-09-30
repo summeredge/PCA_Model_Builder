@@ -148,7 +148,7 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     ):
         assert element_id in web.INDEX_HTML
     assert 'id="tagConfigList"' not in web.INDEX_HTML
-    for tab_name in ("Tag配置", "趋势浏览", "状态辅助", "模型训练", "验证结果"):
+    for tab_name in ("Tag配置", "趋势浏览", "聚类辅助", "条件筛选", "模型训练", "验证结果"):
         assert tab_name in web.INDEX_HTML
     assert '<button id="trainButton" disabled>' in web.INDEX_HTML
     assert "function formField(" in web.INDEX_HTML
@@ -157,28 +157,22 @@ def test_web_uses_port_distinct_from_dataproject_and_exposes_workflow():
     assert 'id="varianceThreshold" type="number" min="0.01" max="0.99"' in web.INDEX_HTML
 
 
-def test_web_places_performance_conditions_in_cluster_configuration():
-    for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
-        cluster_setup = html.split('<div id="clusterPanel"', 1)[1].split(
-            '<div id="clusterEmpty"', 1
-        )[0]
-        performance_setup = html.split('<div id="performancePanel"', 1)[1].split(
-            '<div id="performanceEmpty"', 1
-        )[0]
+def test_final_web_places_conditions_in_their_own_candidate_tool():
+    html = web_model_results.INDEX_HTML
+    cluster_setup = html.split('<div id="clusterPanel"', 1)[1].split(
+        '<div id="performancePanel"', 1
+    )[0]
+    performance_setup = html.split('<div id="performancePanel"', 1)[1].split(
+        '<div class="group candidate-manager"', 1
+    )[0]
 
-        assert cluster_setup.index('id="clusterButton"') < cluster_setup.index(
-            'id="performanceConditions"'
-        )
-        assert '<div class="sub-title">性能条件筛选</div>' in cluster_setup
-        for element_id in (
-            'id="performanceConditions"',
-            'id="addPerformanceCondition"',
-            'id="performanceButton"',
-        ):
-            assert html.count(element_id) == 1
-            assert element_id in cluster_setup
-            assert element_id not in performance_setup
-        assert "全部条件按AND组合；性能列只用于筛选，不会自动进入PCA。" in cluster_setup
+    assert 'id="clusterButton"' in cluster_setup
+    assert 'id="performanceConditions"' not in cluster_setup
+    assert '<div class="sub-title">多变量工程条件筛选</div>' in performance_setup
+    assert "筛选列会取消建模勾选" in performance_setup
+    for element_id in ("performanceConditions", "addPerformanceCondition", "performanceButton"):
+        assert html.count(f'id="{element_id}"') == 1
+        assert f'id="{element_id}"' in performance_setup
 
 
 def test_upload_reads_only_file_header_and_basic_metadata(tmp_path, monkeypatch):
@@ -819,14 +813,17 @@ def test_final_web_workbench_orders_lifecycle_and_downgrades_exploratory_entries
     ]
     assert candidate_positions == sorted(candidate_positions)
     state_panel = candidate[
-        candidate.index('<div id="stateExplorationPanel"') : candidate.index(
-            '<details class="advanced-candidate-tools"'
-        )
+        candidate.index('<div id="stateExplorationPanel"') : candidate.index('<div id="clusterPanel"')
     ]
     assert state_panel.index('id="explorationPerformanceCandidateCount"') < state_panel.index(
         'id="stateExplorationButton"'
     )
-    assert 'data-panel="statePanels"' in candidate
+    assert 'data-panel="statePanels"' not in candidate
+    assert [candidate.index(f'data-panel="{panel}"') for panel in (
+        "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"
+    )] == sorted(candidate.index(f'data-panel="{panel}"') for panel in (
+        "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"
+    ))
 
     model = html[html.index('<div id="modelPanel"') : html.index('<div id="validationPanel"')]
     for field_id in (
@@ -1798,13 +1795,15 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
     )
 
     assert 'src="/assets/model-results.js"' in html
-    assert "选择已训练候选模型" in source
+    assert "选择已训练候选模型" in html
     assert "选择 2—4 个已训练候选模型" not in source
     for text in (
         "模型结构与参数比较",
         "不能替代独立验证",
         "不会自动评分、推荐、验证或改变模型状态",
-        'id="modelComparisonRuns"',
+    ):
+        assert text in html
+    for text in (
         "/api/model-comparison",
         "解释率累计曲线",
         "原始Tag平方载荷能量",
@@ -1812,6 +1811,7 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
         "当前为探索草稿模型；仅正常状态候选模型显示候选模型结构诊断。",
     ):
         assert text in source
+    assert html.count('id="modelComparisonRuns"') == 1
     assert "最佳模型" not in source
 
 
@@ -2128,8 +2128,6 @@ def test_final_web_candidate_deletion_frontend_guards_and_refreshes_comparison_s
     )
 
     for text in (
-        'id="deleteModelsButton"',
-        "删除所选候选模型",
         "/api/model-candidates/delete",
         "当前正在使用的候选模型不能删除",
         "deletion_block_reason",
@@ -2137,6 +2135,8 @@ def test_final_web_candidate_deletion_frontend_guards_and_refreshes_comparison_s
         "refreshCandidateOptions(state.runId)",
     ):
         assert text in source
+    assert 'id="deleteModelsButton"' in web_model_results.INDEX_HTML
+    assert "删除所选候选模型" in web_model_results.INDEX_HTML
     assert "模型比较需要选择 2—4 个候选模型。" in source
     assert source.index("当前正在使用的候选模型不能删除") < source.index(
         'fetch("/api/model-candidates/delete"'
@@ -2173,7 +2173,7 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
 def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     html = web_model_results.INDEX_HTML
     shared_start = html.index('<div class="group shared-preprocessing">')
-    shared = html[shared_start : html.index('</div>\n      <div id="trendPanel"', shared_start)]
+    shared = html[shared_start : html.index('<div class="candidate-tool-tabs"', shared_start)]
     model_start = html.index('<div class="group training-configuration">')
     model = html[
         model_start : html.index(

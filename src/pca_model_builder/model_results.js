@@ -2,66 +2,11 @@
   "use strict";
 
   const modelContent = document.getElementById("modelContent");
-  const releasePanel = document.getElementById("releasePanel");
   if (!modelContent || typeof window.renderTraining !== "function") return;
 
   const SVG_NS = "http://www.w3.org/2000/svg";
-  const scoreCard = document.getElementById("scoreChart")?.closest(".chart-card");
-  if (!scoreCard || !scoreCard.parentNode) return;
-
-  const section = document.createElement("div");
-  section.className = "chart-card";
-  const title = document.createElement("h3");
-  title.textContent = "PC1 / PC2 原始Tag聚合载荷图";
-  const note = document.createElement("div");
-  note.className = "help";
-  note.textContent = "每条连线从原点连接到一个原始Tag的PC1/PC2聚合载荷；全部Lag按带符号L2能量聚合。连线方向和长度用于解释模型结构，不等同于异常贡献或工艺根因。";
-  const chart = document.createElement("div");
-  chart.id = "loadingChart";
-  chart.className = "chart empty";
-  chart.textContent = "完成DPCA训练后显示载荷图。";
-  section.append(title, note, chart);
-
-  const projectionGrid = document.createElement("div");
-  projectionGrid.className = "model-projection-grid";
-  scoreCard.parentNode.insertBefore(projectionGrid, scoreCard);
-  projectionGrid.append(scoreCard, section);
-
-  const componentLoadingsCard = document.createElement("section");
-  componentLoadingsCard.className = "chart-card";
-  componentLoadingsCard.id = "componentLoadings";
-  componentLoadingsCard.innerHTML = `
-    <h3>主元组成 / Loadings</h3>
-    <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，不等同于 T²/SPE 异常贡献。</div>
-    <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>`;
-  projectionGrid.insertAdjacentElement("afterend", componentLoadingsCard);
-
-  const diagnosticCard = document.createElement("section");
-  diagnosticCard.className = "chart-card";
-  diagnosticCard.id = "modelStructureComparison";
-  diagnosticCard.innerHTML = `
-    <h3>模型结构与参数比较</h3>
-    <div class="help">诊断用于辅助工程师选择模型结构，不能替代独立验证；不会自动评分、推荐、验证或改变模型状态。</div>
-    <div id="singleModelDiagnostic" class="help">完成正常状态候选模型训练后显示结构诊断。</div>
-    <div id="modelCandidateStatus" class="help" role="status" aria-live="polite">正在加载候选模型…</div>
-    <label class="secondary">选择已训练候选模型
-      <select id="modelComparisonRuns" multiple size="5" aria-label="候选模型比较"></select>
-    </label>
-    <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button><button id="deleteModelsButton" class="danger" type="button">删除所选候选模型</button></div>
-    <div id="modelComparisonResult" class="help">比较只读取已保存的正常状态候选模型包。</div>`;
-  componentLoadingsCard.insertAdjacentElement("afterend", diagnosticCard);
-
-  const replayCard = document.createElement("section");
-  replayCard.className = "chart-card";
-  replayCard.id = "frozenReplay";
-  replayCard.innerHTML = `
-    <h3>冻结模型历史回放</h3>
-    <div class="notice">历史回放用于检查冻结模型在历史数据上的表现，不属于独立验证，不改变模型状态。</div>
-    <div class="validation-box"><label>回放开始<input id="frozenReplayStart" type="datetime-local"></label><label>回放结束<input id="frozenReplayEnd" type="datetime-local"></label><button id="frozenReplayButton" type="button">执行冻结模型回放</button></div>
-    <div id="frozenReplaySummary" class="help">请先完成工程冻结，再选择历史区间执行回放。</div>
-    <div class="chart-grid"><div class="chart-card"><h3>T² / SPE 限值比趋势</h3><div id="frozenReplayTrend" class="chart empty">尚无回放结果。</div></div><div class="chart-card"><h3>状态统计</h3><div id="frozenReplayStatus" class="help">尚无回放结果。</div></div></div>
-    <div class="actions"><a id="frozenReplayScoresDownload" class="download" href="#" hidden>下载完整评分 CSV</a><a id="frozenReplaySummaryDownload" class="download" href="#" hidden>下载回放摘要</a><a id="frozenReplayContributionsDownload" class="download" href="#" hidden>下载贡献记录</a></div>`;
-  releasePanel.append(replayCard);
+  const chart = document.getElementById("loadingChart");
+  if (!chart || !document.getElementById("componentLoadingsContent") || !document.getElementById("modelStructureComparison") || !document.getElementById("frozenReplay")) return;
 
   document.getElementById("frozenReplayButton").addEventListener("click", async () => {
     const button = document.getElementById("frozenReplayButton");

@@ -605,7 +605,7 @@ def test_final_web_preprocessing_notice_matches_schema5_invalid_row_policy() -> 
 def test_training_parameters_split_common_and_advanced_fields() -> None:
     html = web_model_results.INDEX_HTML
     shared_start = html.index('<div class="group shared-preprocessing">')
-    shared_end = html.index('</div>\n      <div id="trendPanel"', shared_start)
+    shared_end = html.index('<div class="candidate-tool-tabs"', shared_start)
     shared_source = html[shared_start:shared_end]
     model_start = html.index('<div class="group training-configuration">')
     model_end = html.index('<details class="advanced-parameters exploratory-model-tools">', model_start)
@@ -687,9 +687,11 @@ def test_frozen_replay_is_mounted_in_the_release_stage() -> None:
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
     ).read_text(encoding="utf-8")
 
-    assert 'const releasePanel = document.getElementById("releasePanel");' in source
-    assert "releasePanel.append(replayCard);" in source
-    assert 'diagnosticCard.insertAdjacentElement("afterend", replayCard)' not in source
+    html = web_model_results.INDEX_HTML
+    release = html[html.index('<div id="releasePanel"'):]
+    assert release.count('id="frozenReplay"') == 1
+    assert release.index('id="freezeDeployment"') < release.index('id="frozenReplay"')
+    assert 'releasePanel.append(replayCard)' not in source
 
 
 def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:
@@ -697,8 +699,8 @@ def test_loading_plot_uses_origin_lines_without_arrowheads() -> None:
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
     ).read_text(encoding="utf-8")
 
-    assert "原始Tag聚合载荷图" in source
-    assert "每条连线从原点连接到" in source
+    assert "原始Tag聚合载荷图" in web_model_results.INDEX_HTML
+    assert "每条连线从原点连接到" in web_model_results.INDEX_HTML
     assert "addLine(svg, originX, originY, endX, endY" in source
     assert "PC1载荷" in source
     assert "PC2载荷" in source
@@ -716,8 +718,10 @@ def test_model_score_and_loading_plots_use_side_by_side_grid() -> None:
     ).read_text(encoding="utf-8")
     html = web_model_results.INDEX_HTML
 
-    assert 'projectionGrid.className = "model-projection-grid"' in source
-    assert "projectionGrid.append(scoreCard, section);" in source
+    model = html[html.index('<div id="modelPanel"'):html.index('<div id="validationPanel"')]
+    projection = model[model.index('class="model-projection-grid"'):model.index('id="componentLoadings"')]
+    assert projection.index('id="scoreChart"') < projection.index('id="loadingChart"')
+    assert 'projectionGrid.append(scoreCard, section)' not in source
     assert 'id="modelResultsStyle"' in html
     assert "grid-template-columns:minmax(0,1fr) minmax(0,1fr);" in html
     assert ".model-projection-grid #scoreChart svg" in html
@@ -733,19 +737,19 @@ def test_component_loadings_show_first_six_in_responsive_grid() -> None:
     ).read_text(encoding="utf-8")
     html = web_model_results.INDEX_HTML
 
-    assert 'componentLoadingsCard.id = "componentLoadings"' in source
-    assert 'id="componentLoadingsContent"' in source
+    assert html.count('id="componentLoadings"') == 1
+    assert html.count('id="componentLoadingsContent"') == 1
     assert "renderComponentLoadings(data.loading_plot?.component_loadings)" in source
     assert "component.top_loadings" in source
     assert "components.slice(0, 6).forEach((component, index) =>" in source
-    assert "仅显示前 6 个主元。" in source
+    assert "仅显示前 6 个主元。" in html
     assert "Top ${topRows.length} 原始变量（同一Tag的全部Lag已聚合）" in source
     assert "查看全部" not in source
     assert "component-loading-full" not in source
     assert "聚合 loading 强度" in source
     assert "cell(formatLoading(Number(row?.aggregated_loading)))" in source
-    assert "T²/SPE 异常贡献" in source
-    assert "componentLoadingsCard.insertAdjacentElement(\"afterend\", diagnosticCard);" in source
+    assert "T²/SPE 异常贡献" in html
+    assert html.index('id="componentLoadings"') < html.index('id="modelStructureComparison"')
     assert "grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));" in html
     assert "#componentLoadings .component-loading-table" in html
 
@@ -816,7 +820,7 @@ def test_workbench_parameter_rows_allow_nonsemantic_div_attributes() -> None:
 
     html = web_model_results._stabilize_workbench_html(changed_html)
     shared_start = html.index('<div class="group shared-preprocessing">')
-    shared_source = html[shared_start : html.index('</div>\n      <div id="trendPanel"', shared_start)]
+    shared_source = html[shared_start : html.index('<div class="candidate-tool-tabs"', shared_start)]
     model_start = html.index('<div class="group training-configuration">')
     model_source = html[
         model_start : html.index('<details class="advanced-parameters exploratory-model-tools">', model_start)
@@ -1301,14 +1305,14 @@ def test_final_web_model_lifecycle_copy_matches_actual_model_semantics() -> None
     assert "renderValidation(state.validation);" in decision_source
 
 
-def test_validation_engineer_confirmation_precedes_validation_metrics() -> None:
+def test_validation_evidence_precedes_engineer_confirmation() -> None:
     html = web_model_results.INDEX_HTML
 
     summary = html.index("<h3>验证状态摘要</h3>")
     confirmation = html.index('id="recordValidationDecision"')
     metrics = html.index("<h3>验证指标</h3>")
 
-    assert summary < confirmation < metrics
+    assert summary < metrics < confirmation
 
 
 def test_candidate_actions_do_not_replace_the_training_window() -> None:

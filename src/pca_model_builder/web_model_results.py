@@ -91,20 +91,20 @@ _FORM_ALIGNMENT_STYLE = r"""
   }
   #engineeringPanel .batch-config #importSummary { margin-top:var(--space-2); }
 
-  #clusterPanel .group { gap:var(--space-2); }
-  #clusterPanel .row {
+  #clusterPanel .group, #performancePanel .group { gap:var(--space-2); }
+  #clusterPanel .row, #performancePanel .row {
     column-gap:var(--space-2);
     align-items:start;
   }
-  #clusterPanel .row > label {
+  #clusterPanel .row > label, #performancePanel .row > label {
     min-width:0;
     align-content:start;
   }
-  #clusterPanel .row input {
+  #clusterPanel .row input, #performancePanel .row input {
     min-height:var(--control-height);
     height:var(--control-height);
   }
-  #clusterPanel #clusterButton {
+  #clusterPanel #clusterButton, #performancePanel #performanceButton {
     align-self:end;
     min-height:var(--control-height);
     height:var(--control-height);
@@ -515,8 +515,10 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step-status { align-self:start; color:var(--muted); font-size:12px; white-space:nowrap; }
   .workflow-step.active .workflow-step-status { color:var(--accent); font-weight:600; }
   .workflow-step.complete .workflow-step-status { color:var(--green); }
-  .data-preparation-grid { display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:var(--space-3); align-items:stretch; }
-  .data-preparation-grid > .group { align-content:start; }
+  .tag-workspace { display:grid; grid-template-columns:minmax(230px,.8fr) minmax(0,1.2fr); gap:var(--space-3); align-items:start; }
+  .tag-workspace > *, .tag-detail { min-width:0; }
+  #configPanel > .group { margin-bottom:var(--space-3); }
+  #configPanel > #qualityPanel { display:grid; gap:var(--space-2); margin-top:var(--space-4); }
   .candidate-manager, .shared-preprocessing, .training-configuration { border-color:#bfd7ef; }
   .candidate-manager .row { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .candidate-manager .row > * { min-width:0; }
@@ -530,9 +532,8 @@ _WORKBENCH_UI_STYLE = r"""
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   .candidate-tool-panel { display:none; gap:var(--space-3); }
   .candidate-tool-panel.active { display:grid; }
-  .advanced-candidate-tools { border-top:1px solid var(--line); padding-top:var(--space-2); }
-  .advanced-candidate-tools > summary { color:var(--muted); cursor:pointer; font-size:13px; font-weight:600; }
-  .advanced-candidate-tools .candidate-tool-tabs { margin-top:var(--space-2); }
+  .candidate-analysis-range { display:grid; grid-template-columns:repeat(2,minmax(0,240px)); gap:var(--space-2); }
+  .candidate-analysis-range > label { min-width:0; }
   .shared-preprocessing, .training-configuration { display:grid; gap:var(--space-2); }
   .panel.active { padding:var(--space-1) 0 var(--space-4); }
   .panel.active > h3 { margin:var(--space-1) 0 0; }
@@ -697,7 +698,8 @@ _WORKBENCH_UI_STYLE = r"""
     .workflow-sidebar { position:static; padding:var(--space-3); }
     .workflow-steps { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
     section { padding:var(--panel-padding); }
-    .data-preparation-grid { grid-template-columns:minmax(0,1fr); }
+    .tag-workspace { grid-template-columns:minmax(0,1fr); }
+    .candidate-analysis-range { grid-template-columns:minmax(0,1fr); }
     .row { grid-template-columns:minmax(0,1fr); }
     .shared-preprocessing .preprocessing-parameter-row { grid-template-columns:minmax(0,1fr); }
     .shared-preprocessing .state-filter-parameter-row { grid-template-columns:minmax(0,1fr); }
@@ -742,15 +744,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const workflowSteps = document.getElementById("workflowSteps");
   const toolPanels = ["trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"].map(id => document.getElementById(id));
   const showCandidateTool = target => {
-    toolPanels.forEach(panel => panel.classList.toggle("active", target === "statePanels" ? ["clusterPanel", "performancePanel"].includes(panel.id) : panel.id === target));
+    toolPanels.forEach(panel => panel.classList.toggle("active", panel.id === target));
     document.querySelectorAll(".candidate-tool-tab").forEach(button => {
       const selected = button.dataset.panel === target;
       button.classList.toggle("active", selected);
       button.setAttribute("aria-selected", String(selected));
     });
   };
+  globalThis.showCandidateTool = showCandidateTool;
   document.querySelectorAll(".candidate-tool-tab").forEach(button => button.addEventListener("click", () => {
-    button.closest("details")?.setAttribute("open", "");
     globalThis.showWorkflowStage("candidatePanel");
     showCandidateTool(button.dataset.panel);
   }));
@@ -759,6 +761,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   globalThis.showWorkflowStage = target => {
     [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.toggle("active", panel.id === target));
+    if (target === "modelPanel") {
+      const fields = [["采样周期", "sampleInterval"], ["重采样", "resamplingMethod"], ["滤波", "filterMethod"], ["缺口阈值", "gapThreshold"], ["最大 Lag", "maxLag"], ["Lag 步长", "lagStep"]];
+      document.getElementById("modelPreprocessingSummary").textContent = fields.map(([label, id]) => {
+        const control = document.getElementById(id);
+        return `${label}：${control.selectedOptions?.[0]?.textContent || control.value || "默认"}`;
+      }).join(" · ");
+    }
     workflowSteps.querySelectorAll(".workflow-step").forEach(button => {
       const selected = button.dataset.panel === target;
       button.classList.toggle("active", selected);
@@ -788,6 +797,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const canRelease = !validatedDownload.hidden;
     document.getElementById("releaseEmpty").hidden = canRelease;
     document.getElementById("releaseContent").hidden = !canRelease;
+    const canReplay = !document.getElementById("frozenModelDownload").hidden;
+    const replay = document.getElementById("frozenReplay");
+    if (replay.hidden !== !canReplay) replay.hidden = !canReplay;
+    const replayButton = document.getElementById("frozenReplayButton");
+    replayButton.disabled = !canReplay || replayButton.textContent === "回放中…";
     workflowSteps.querySelectorAll(".workflow-step").forEach((button, index) => {
       button.classList.toggle("complete", completed[index]);
       button.querySelector(".workflow-step-status").textContent = completed[index] ? "已完成" : button.classList.contains("active") ? "当前" : "待开始";
@@ -999,9 +1013,12 @@ def _row_containing_unique_field(html: str, field_id: str, description: str) -> 
 
 
 def _candidate_manager_html(training_data_section: str) -> str:
+    training_data_section = training_data_section.replace(
+        '<h3>训练窗口</h3>', '<h3>已确认训练窗口</h3>', 1
+    )
     return """      <div class="group candidate-manager">
-        <div class="group-title">正常状态候选窗口</div>
-        <div class="help">手工选择、趋势选择和状态探索候选统一进入此列表。候选默认待确认，不会自动参与训练。</div>
+        <div class="group-title">正常状态候选管理</div>
+        <div class="help">趋势、状态探索、聚类和条件筛选仅提供证据；候选必须由工程师确认后才能进入训练。</div>
         <div class="row candidate-window-row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
         <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
@@ -1036,6 +1053,240 @@ def _workflow_sidebar_html() -> str:
 {buttons}
       </div>
     </section>"""
+
+
+def _model_results_content_html() -> str:
+    return """        <div id="modelContent" hidden>
+          <h3>训练结果概览</h3>
+          <div id="modelMetrics" class="metrics"></div>
+          <h3>训练窗口与连续段</h3><div id="trainingWindowSummary" class="table-wrap"></div>
+          <div id="trainingQualityWarnings" class="hint"></div>
+          <h3>模型结构</h3>
+          <h3>主元解释率</h3><div id="varianceChart" class="variance"></div>
+          <div class="model-projection-grid">
+            <div class="chart-card"><div class="chart-card-head"><h3>主元得分 PC1 / PC2</h3><div class="exploration-region-tools"><label>着色方式<select id="scoreColorMode"><option value="default">默认</option><option value="time">时间</option><option value="performance">性能状态</option></select></label></div></div><div id="scoreChart" class="chart"></div><p id="scoreChartNote" class="chart-note">默认按 T²/SPE 综合状态着色；切换着色方式只改变视觉编码，PC 坐标、样本数量和筛选范围不变。</p></div>
+            <div class="chart-card"><h3>PC1 / PC2 原始Tag聚合载荷图</h3><div class="help">每条连线从原点连接到一个原始Tag的PC1/PC2聚合载荷；全部Lag按带符号L2能量聚合。连线方向和长度用于解释模型结构，不等同于异常贡献或工艺根因。</div><div id="loadingChart" class="chart empty">完成DPCA训练后显示载荷图。</div></div>
+          </div>
+          <section id="componentLoadings" class="chart-card">
+            <h3>主元组成 / Loadings</h3>
+            <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，不等同于 T²/SPE 异常贡献。</div>
+            <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>
+          </section>
+          <h3>统计监测表现</h3>
+          <div class="chart-grid">
+            <div class="chart-card"><h3>训练期 T²</h3><div id="t2Chart" class="chart"></div></div>
+            <div class="chart-card"><h3>训练期 SPE/Q</h3><div id="speChart" class="chart"></div></div>
+          </div>
+          <div class="legend"><span><i class="swatch" style="background:var(--accent)"></i>统计量</span><span><i class="swatch" style="background:var(--attention)"></i>95% 边界</span><span><i class="swatch" style="background:var(--abnormal)"></i>99% 边界</span></div>
+          <h3>模型诊断</h3>
+          <section id="modelStructureComparison" class="chart-card">
+            <h3>模型结构与参数比较</h3>
+            <div class="help">诊断用于辅助工程师选择模型结构，不能替代独立验证；不会自动评分、推荐、验证或改变模型状态。</div>
+            <div id="singleModelDiagnostic" class="help">完成正常状态候选模型训练后显示结构诊断。</div>
+            <div id="modelCandidateStatus" class="help" role="status" aria-live="polite">正在加载候选模型…</div>
+            <label class="secondary">选择已训练候选模型<select id="modelComparisonRuns" multiple size="5" aria-label="候选模型比较"></select></label>
+            <div class="actions"><button id="compareModelsButton" type="button">比较所选候选模型</button><button id="deleteModelsButton" class="danger" type="button">删除所选候选模型</button></div>
+            <div id="modelComparisonResult" class="help">比较只读取已保存的正常状态候选模型包。</div>
+          </section>
+          <h3>模型文件</h3>
+          <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a></div>
+          <div id="modelLifecycleNotice" class="notice"></div>
+        </div>"""
+
+
+def _build_data_stage(config_panel: str, upload_group: str, tag_group: str) -> str:
+    """Keep the data source, Tag workspace, and raw inspection in task order."""
+    config_panel = config_panel.replace(
+        '<div class="inner-tabs">\n',
+        f'<h3>数据源与时间轴</h3>\n{upload_group}\n'
+        '        <h3>Tag 配置工作区</h3>\n'
+        '        <div class="inner-tabs">\n',
+        1,
+    ).replace(
+        '<h3 id="selectedTagTitle">',
+        f'<div class="tag-workspace">\n{tag_group}\n'
+        '          <div class="tag-detail"><h3 id="selectedTagTitle">',
+        1,
+    ).replace(
+        '        </div>\n        <div id="qualityPanel"',
+        '          </div>\n        </div>\n        </div>\n        <div id="qualityPanel"',
+        1,
+    )
+    config_panel = config_panel.replace(
+        '        <div class="inner-tabs">\n'
+        '          <button class="inner-tab active" data-inner="engineeringPanel">工程配置</button>\n'
+        '          <button class="inner-tab" data-inner="qualityPanel">基础数据检查</button>\n'
+        '        </div>\n',
+        '',
+        1,
+    ).replace('id="qualityPanel" class="inner-panel"', 'id="qualityPanel" class="inner-panel active"', 1)
+    return config_panel
+
+
+def _build_candidate_stage(parameter_group: str, training_data_section: str, trend_panel: str, state_panel: str, cluster_panel: str, performance_panel: str) -> str:
+    """Mount four peer discovery tools around one analysis range."""
+    analysis_range = _div_containing_unique_field(cluster_panel, "analysisStart", "候选分析范围")
+    cluster_panel = cluster_panel.replace(analysis_range, "", 1)
+    conditions_start = _unique_anchor_index(cluster_panel, '<div class="sub-title">性能条件筛选</div>', "条件筛选")
+    conditions_end = _unique_anchor_index(cluster_panel, '\n        </div>\n        <div id="clusterEmpty"', "聚类配置结束")
+    conditions = cluster_panel[conditions_start:conditions_end]
+    cluster_panel = cluster_panel[:conditions_start] + cluster_panel[conditions_end:]
+    conditions = conditions.replace('性能条件筛选', '多变量工程条件筛选', 1).replace(
+        '全部条件按AND组合；性能列只用于筛选，不会自动进入PCA。',
+        '全部条件按 AND 组合。筛选列会取消建模勾选，不自动进入 PCA；工程师可随后调整 Tag 角色和勾选。',
+        1,
+    )
+    performance_panel = performance_panel.replace(
+        '<div id="performancePanel" class="panel">',
+        '<div id="performancePanel" class="panel">\n'
+        '        <div class="group">\n          ' + conditions.strip() + '\n        </div>',
+        1,
+    )
+    candidate_panels = [
+        panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
+        for panel in (trend_panel, state_panel)
+    ]
+    candidate_panels[0] = candidate_panels[0].replace(
+        'class="candidate-tool-panel"', 'class="candidate-tool-panel active"', 1
+    )
+    other_candidate_panels = [
+        panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
+        for panel in (cluster_panel, performance_panel)
+    ]
+    candidate_panel = "\n".join(
+        (
+            '      <div id="candidatePanel" class="panel">',
+            '        <div class="group"><div class="group-title">候选分析范围</div>',
+            '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
+            '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。</div></div>',
+            parameter_group,
+            '        <div class="candidate-tool-tabs" role="tablist">',
+            '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="clusterPanel" role="tab" aria-selected="false">聚类辅助</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="performancePanel" role="tab" aria-selected="false">条件筛选</button>',
+            '        </div>',
+            *candidate_panels,
+            *other_candidate_panels,
+            _candidate_manager_html(training_data_section),
+            '      </div>',
+        )
+    )
+    return candidate_panel
+
+
+def _build_validation_and_release_stages(validation_panel: str) -> tuple[str, str]:
+    """Place engineering decisions after evidence and freezing after validation."""
+    validated_download = _element_with_unique_id(
+        validation_panel, "validatedModelDownload", "a", "已验证模型下载入口"
+    )
+    freeze_box = _div_containing_unique_field(
+        validation_panel, "frozenModelId", "冻结与部署入口"
+    )
+    frozen_download = _element_with_unique_id(
+        freeze_box, "frozenModelDownload", "a", "冻结模型下载"
+    )
+    deployment_download = _element_with_unique_id(
+        freeze_box, "deploymentModelDownload", "a", "部署模型下载"
+    )
+    freeze_box = freeze_box.replace(frozen_download, "", 1).replace(deployment_download, "", 1)
+    full_freeze_box = _div_containing_unique_field(
+        validation_panel, "frozenModelId", "冻结与部署入口"
+    )
+    validation_panel = validation_panel.replace(validated_download, "", 1).replace(full_freeze_box, "", 1)
+    decision_box = _div_containing_unique_field(
+        validation_panel, "recordValidationDecision", "工程师结论"
+    )
+    validation_panel = validation_panel.replace(decision_box, "", 1)
+    validation_button = _element_with_unique_id(
+        validation_panel, "validateButton", "button", "执行独立验证"
+    )
+    validation_panel = validation_panel.replace(validation_button, "", 1)
+    validation_table_end = '</tbody></table></div>\n        <div id="validationEmpty"'
+    if validation_panel.count(validation_table_end) != 1:
+        raise ValueError("无法固定验证窗口列表")
+    validation_panel = validation_panel.replace(
+        validation_table_end,
+        '</tbody></table></div>\n        <div class="actions">'
+        + validation_button.replace("回放独立验证期", "执行独立验证")
+        + '</div>\n        <div id="validationEmpty"',
+        1,
+    )
+    validation_panel = validation_panel.replace(
+        '<div id="validationPanel" class="panel">',
+        '<div id="validationPanel" class="panel">\n        <h3>① 验证设置</h3>',
+        1,
+    ).replace(
+        '<div id="validationContent" hidden>\n',
+        '<div id="validationContent" hidden>\n          <h3>② 验证证据</h3>\n',
+        1,
+    )
+    validation_downloads = _div_containing_unique_field(
+        validation_panel, "scoresDownload", "验证证据下载"
+    )
+    validation_panel = validation_panel.replace(
+        validation_downloads,
+        validation_downloads + '\n          <h3>③ 工程师结论</h3>\n          ' + decision_box,
+        1,
+    )
+    release_panel = f"""      <div id="releasePanel" class="panel">
+        <div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结与部署。</div>
+        <div id="releaseContent" hidden>
+          <h3>① 已验证模型</h3>
+          <div class="notice">冻结与部署导出沿用现有流程；frozen 表示工程冻结，不表示已经部署。</div>
+          <div class="actions">{validated_download}</div>
+          <h3>② 工程冻结</h3>
+{freeze_box}
+          <h3>③ 冻结结果</h3>
+          <div class="help">冻结后可下载 frozen 模型包与 deployment 模型包。</div>
+          <div class="actions">{frozen_download}{deployment_download}</div>
+          <section id="frozenReplay" class="chart-card" hidden>
+            <h3>④ 冻结模型历史回放</h3>
+            <div class="notice">历史回放仅检查冻结模型在历史数据上的表现，不属于独立验证，也不改变模型状态。</div>
+            <div class="validation-box"><label>回放开始<input id="frozenReplayStart" type="datetime-local"></label><label>回放结束<input id="frozenReplayEnd" type="datetime-local"></label><button id="frozenReplayButton" type="button" disabled>执行冻结模型回放</button></div>
+            <div id="frozenReplaySummary" class="help">请先完成工程冻结，再选择历史区间执行回放。</div>
+            <div class="chart-grid"><div class="chart-card"><h3>T² / SPE 限值比趋势</h3><div id="frozenReplayTrend" class="chart empty">尚无回放结果。</div></div><div class="chart-card"><h3>状态统计</h3><div id="frozenReplayStatus" class="help">尚无回放结果。</div></div></div>
+            <div class="actions"><a id="frozenReplayScoresDownload" class="download" href="#" hidden>下载完整评分 CSV</a><a id="frozenReplaySummaryDownload" class="download" href="#" hidden>下载回放摘要</a><a id="frozenReplayContributionsDownload" class="download" href="#" hidden>下载贡献记录</a></div>
+          </section>
+        </div>
+      </div>"""
+    return validation_panel, release_panel
+
+
+def _build_model_stage(model_panel: str, model_configuration_group: str) -> str:
+    existing_model_results = _required_html_match(
+        r'        <div id="modelContent" hidden>.*?\n        </div>',
+        model_panel,
+        "模型结果区域",
+    ).group()
+    model_panel = model_panel.replace(existing_model_results, _model_results_content_html(), 1)
+    model_panel_lines = model_panel.rsplit("\n", 1)
+    if len(model_panel_lines) != 2 or model_panel_lines[1] != "      </div>":
+        raise ValueError("无法固定模型训练结果区域")
+    model_panel_content = model_panel_lines[0].split("\n", 1)
+    if len(model_panel_content) != 2:
+        raise ValueError("无法固定模型训练页面结构")
+    model_panel = f"{model_panel_content[0]}\n{model_configuration_group}\n{model_panel_content[1]}\n      </div>"
+    return model_panel
+
+
+def _assemble_workbench(status_area: str, config_panel: str, candidate_panel: str, model_panel: str, validation_panel: str, release_panel: str) -> str:
+    return "\n".join(
+        (
+            "  <main>",
+            _workflow_sidebar_html(),
+            '    <section class="results">',
+            status_area,
+            config_panel,
+            candidate_panel,
+            model_panel,
+            validation_panel,
+            release_panel,
+            "    </section>",
+            "  </main>",
+        )
+    )
+
 
 
 def _stabilize_workbench_html(html: str) -> str:
@@ -1143,7 +1394,9 @@ def _stabilize_workbench_html(html: str) -> str:
         '        <div class="actions"><button id="trainExploratoryButton"',
         "训练操作",
     )
-    quality_section = training_parameter_tail[quality_start:training_action_start].rstrip()
+    quality_section = training_parameter_tail[quality_start:training_action_start].rstrip().replace(
+        '<h3>建模质量检查</h3>', '<h3>② 建模质量检查</h3>', 1
+    )
     training_actions_section = training_parameter_tail[training_action_start:].rstrip()
     model_configuration_rows = (
         '        <div class="training-parameter-grid">\n'
@@ -1158,6 +1411,7 @@ def _stabilize_workbench_html(html: str) -> str:
         '        <div id="modelTrainingDataSummary" class="notice">'
         '需重新执行建模质量检查后显示训练数据摘要。'
         '</div>\n'
+        '        <div id="modelPreprocessingSummary" class="help">共享预处理配置沿用候选页取值。</div>\n'
     )
     preprocessing_preview_section = (
         '        <div class="preprocessing-preview-controls">'
@@ -1168,10 +1422,13 @@ def _stabilize_workbench_html(html: str) -> str:
     model_configuration_group = (
         '      <div class="group training-configuration">\n'
         '        <div class="group-title">PCA 模型配置与训练</div>\n'
+        '        <h3>① 训练准备</h3>\n'
         + training_data_summary
         + preprocessing_preview_section
         + quality_section
+        + '        <h3>③ PCA / DPCA 模型配置</h3>\n'
         + model_configuration_rows
+        + '        <h3>④ 正式训练</h3>\n'
         + training_actions_section
     )
     exploratory_button = _element_with_unique_id(
@@ -1201,7 +1458,7 @@ def _stabilize_workbench_html(html: str) -> str:
         1,
     ).rstrip()
 
-    panel_markers = (
+    panel_ids = (
         "configPanel",
         "stateExplorationPanel",
         "trendPanel",
@@ -1210,19 +1467,17 @@ def _stabilize_workbench_html(html: str) -> str:
         "performancePanel",
         "validationPanel",
     )
-    panel_positions = []
-    for panel_id in panel_markers:
-        anchor = f'      <div id="{panel_id}"'
-        if results.count(anchor) != 1:
-            raise ValueError(f"无法固定Web工作台结构：{panel_id}锚点数量为{results.count(anchor)}")
-        panel_positions.append(results.index(anchor))
-    config_panel = results[panel_positions[0] : panel_positions[1]].rstrip()
-    state_panel = results[panel_positions[1] : panel_positions[2]].rstrip()
-    trend_panel = results[panel_positions[2] : panel_positions[3]].rstrip()
-    model_panel = results[panel_positions[3] : panel_positions[4]].rstrip()
-    cluster_panel = results[panel_positions[4] : panel_positions[5]].rstrip()
-    performance_panel = results[panel_positions[5] : panel_positions[6]].rstrip()
-    validation_panel = results[panel_positions[6] :].rstrip()
+    panels = {
+        panel_id: _div_containing_unique_field(results, panel_id, panel_id).rstrip()
+        for panel_id in panel_ids
+    }
+    config_panel = panels["configPanel"]
+    state_panel = panels["stateExplorationPanel"]
+    trend_panel = panels["trendPanel"]
+    model_panel = panels["modelPanel"]
+    cluster_panel = panels["clusterPanel"]
+    performance_panel = panels["performancePanel"]
+    validation_panel = panels["validationPanel"]
 
     state_exploration_button = _element_with_unique_id(
         state_panel, "stateExplorationButton", "button", "运行状态探索按钮"
@@ -1243,9 +1498,24 @@ def _stabilize_workbench_html(html: str) -> str:
         '        <div id="explorationEmpty"',
         1,
     )
+    for field_id in ("explorationStart", "explorationEnd"):
+        state_panel = state_panel.replace(
+            _label_for_unique_field(state_panel, field_id, "重复探索时间范围"), "", 1
+        )
     state_panel = state_panel.replace(
         '<div class="group-title">状态探索工作台</div>',
         '<div class="group-title">状态探索配置</div>',
+        1,
+    )
+    state_panel = state_panel.replace(
+        '<div class="exploration-controls">',
+        '<div class="sub-title">状态空间设置</div>\n          <div class="exploration-controls">',
+        1,
+    ).replace(
+        '<div class="exploration-controls performance-controls">',
+        '<div class="sub-title">性能评价（可选）</div>\n'
+        '          <div class="help">性能 Tag 仅用于状态探索后的 post-hoc 评价，不参与状态探索 PCA。</div>\n'
+        '          <div class="exploration-controls performance-controls">',
         1,
     )
     state_panel = state_panel.replace(
@@ -1254,87 +1524,11 @@ def _stabilize_workbench_html(html: str) -> str:
         1,
     )
 
-    config_panel = config_panel.replace(
-        '>\n',
-        f'>\n      <div class="data-preparation-grid">\n{upload_group}\n{tag_group}\n      </div>\n',
-        1,
-    )
-    candidate_panels = [
-        panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
-        for panel in (trend_panel, state_panel)
-    ]
-    candidate_panels[0] = candidate_panels[0].replace(
-        'class="candidate-tool-panel"', 'class="candidate-tool-panel active"', 1
-    )
-    advanced_candidate_panels = [
-        panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
-        for panel in (cluster_panel, performance_panel)
-    ]
-    advanced_candidate_tools = "\n".join(
-        (
-            '        <details class="advanced-candidate-tools">',
-            '          <summary>高级辅助：独立聚类与性能筛选</summary>',
-            '          <div class="candidate-tool-tabs" role="tablist">',
-            '            <button type="button" class="candidate-tool-tab" data-panel="statePanels" role="tab" aria-selected="false">打开高级辅助</button>',
-            '          </div>',
-            *advanced_candidate_panels,
-            '        </details>',
-        )
-    )
-    validated_download = _element_with_unique_id(
-        validation_panel, "validatedModelDownload", "a", "已验证模型下载入口"
-    )
-    freeze_box = _div_containing_unique_field(
-        validation_panel, "frozenModelId", "冻结与部署入口"
-    )
-    validation_panel = validation_panel.replace(validated_download, "", 1).replace(
-        freeze_box, "", 1
-    )
-    release_panel = f"""      <div id="releasePanel" class="panel">
-        <div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结与部署。</div>
-        <div id="releaseContent" hidden>
-          <h3>冻结与部署</h3>
-          <div class="notice">冻结与部署导出沿用现有流程；frozen 表示工程冻结，不表示已经部署。</div>
-          <div class="actions">{validated_download}</div>
-{freeze_box}
-        </div>
-      </div>"""
-    candidate_panel = "\n".join(
-        (
-            '      <div id="candidatePanel" class="panel">',
-            '        <div class="candidate-tool-tabs" role="tablist">',
-            '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势与分析范围</button>',
-            '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
-            '        </div>',
-            parameter_group,
-            *candidate_panels,
-            advanced_candidate_tools,
-            _candidate_manager_html(training_data_section),
-            '      </div>',
-        )
-    )
-    model_panel_lines = model_panel.rsplit("\n", 1)
-    if len(model_panel_lines) != 2 or model_panel_lines[1] != "      </div>":
-        raise ValueError("无法固定模型训练结果区域")
-    model_panel_content = model_panel_lines[0].split("\n", 1)
-    if len(model_panel_content) != 2:
-        raise ValueError("无法固定模型训练页面结构")
-    model_panel = f"{model_panel_content[0]}\n{model_configuration_group}\n{model_panel_content[1]}\n      </div>"
-    static_main = "\n".join(
-        (
-            "  <main>",
-            _workflow_sidebar_html(),
-            '    <section class="results">',
-            status_area,
-            config_panel,
-            candidate_panel,
-            model_panel,
-            validation_panel,
-            release_panel,
-            "    </section>",
-            "  </main>",
-        )
-    )
+    config_panel = _build_data_stage(config_panel, upload_group, tag_group)
+    candidate_panel = _build_candidate_stage(parameter_group, training_data_section, trend_panel, state_panel, cluster_panel, performance_panel)
+    validation_panel, release_panel = _build_validation_and_release_stages(validation_panel)
+    model_panel = _build_model_stage(model_panel, model_configuration_group)
+    static_main = _assemble_workbench(status_area, config_panel, candidate_panel, model_panel, validation_panel, release_panel)
     return html[: main_match.start()] + static_main + html[main_match.end() :]
 
 
