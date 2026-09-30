@@ -870,7 +870,11 @@ _MODEL_RESULTS_STYLE = r"""
   .model-projection-grid > .chart-card > .chart { flex:1 1 auto; min-height:420px; }
   .model-projection-grid #scoreChart svg,
   .model-projection-grid #loadingChart svg { width:100%; height:420px; display:block; }
-  #componentLoadings .component-loading-list { display:grid; gap:12px; }
+  #componentLoadings .component-loading-list {
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));
+    gap:12px;
+  }
   #componentLoadings .component-loading-item { border:1px solid var(--line); border-radius:6px; padding:12px; }
   #componentLoadings .component-loading-item h4 { margin:0 0 8px; }
   #componentLoadings .component-loading-table { width:100%; table-layout:fixed; }

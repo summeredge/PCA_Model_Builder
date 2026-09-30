@@ -32,7 +32,7 @@
   componentLoadingsCard.id = "componentLoadings";
   componentLoadingsCard.innerHTML = `
     <h3>主元组成 / Loadings</h3>
-    <div class="help">载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，不等同于 T²/SPE 异常贡献。</div>
+    <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，不等同于 T²/SPE 异常贡献。</div>
     <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>`;
   projectionGrid.insertAdjacentElement("afterend", componentLoadingsCard);
 
@@ -463,7 +463,7 @@
 
     const list = document.createElement("div");
     list.className = "component-loading-list";
-    components.forEach((component, index) => {
+    components.slice(0, 6).forEach((component, index) => {
       const item = document.createElement("section");
       item.className = "component-loading-item";
       const title = document.createElement("h4");
