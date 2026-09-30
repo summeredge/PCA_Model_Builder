@@ -3950,7 +3950,8 @@ function syncScoreColorModes(rows) {
   const performance=select.querySelector('option[value="performance"]');
   if(performance) { performance.disabled=!scorePerfAvailable(rows||[]); performance.title=performance.disabled?"当前模型没有可用的性能状态字段。":""; }
   const timeOption=select.querySelector('option[value="time"]');
-  if(timeOption) timeOption.disabled=!(rows||[]).length;
+  if(timeOption) { timeOption.disabled=!scoreTimeAvailable(rows||[]); timeOption.title=timeOption.disabled?"无可用时间数据":""; }
+  if(select.value==="time"&&timeOption?.disabled) select.value="default";
   if(select.value==="performance"&&performance?.disabled) select.value="default";
 }
 
@@ -4004,15 +4005,18 @@ function lineChart(container, rows, field, limits, label) {
 }
 
 function scoreColorMode() { return el("scoreColorMode")?.value||"default"; }
+function scoreTimestamp(row) { const value=row?.timestamp; return value==null||(typeof value==="string"&&!value.trim())?NaN:new Date(value).getTime(); }
+function scoreTimeAvailable(rows) { return rows.some(row=>Number.isFinite(scoreTimestamp(row))); }
 function scorePerfAvailable(rows) { return rows.some(row=>row.performance_target_met!==undefined&&row.performance_target_met!==null); }
 function scorePerfColor(value) { return value===true?"#16845b":value===false?"#cf3f36":"#9aa7b4"; }
 function scoreTimeColor(fraction) { const stops=[[24,98,180],[99,142,216],[176,214,238],[238,190,140],[214,96,77]]; const scaled=Math.max(0,Math.min(1,Number(fraction)||0))*(stops.length-1); const low=Math.floor(scaled),high=Math.min(stops.length-1,low+1),mix=scaled-low; const rgb=stops[low].map((value,index)=>Math.round(value+(stops[high][index]-value)*mix)); return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`; }
 function scoreScatter(container, rows, mode=scoreColorMode()) {
   if (!rows.length || !("pc1" in rows[0]) || !("pc2" in rows[0])) { container.innerHTML='<div class="empty">当前模型不足两个保留主元。</div>'; return; }
+  if(mode==="time"&&!scoreTimeAvailable(rows)) mode="default";
   const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad);
   let legend="",note="",top=0; let shade=(row)=>{ const colors={normal:"#16845b",attention:"#d19a20",abnormal:"#cf3f36"}; return {fill:colors[row.status],tip:null}; };
   if(mode==="performance"&&scorePerfAvailable(rows)) { shade=row=>({fill:scorePerfColor(row.performance_target_met),tip:`\n性能状态：${row.performance_target_met===true?"达标":row.performance_target_met===false?"未达标":"无有效性能数据"}`}); const met=rows.filter(row=>row.performance_target_met===true).length,unmet=rows.filter(row=>row.performance_target_met===false).length; legend=`<text x="${pad}" y="15" fill="#16845b" font-size="10">● 达标 ${met}</text><text x="${pad+92}" y="15" fill="#cf3f36" font-size="10">● 未达标 ${unmet}</text>`; note="按现有目标范围性能判定着色；性能变量不参与 PCA。"; top=22; }
-  else if(mode==="time") { const times=rows.map(row=>new Date(row.timestamp).getTime()).filter(value=>Number.isFinite(value)); const first=Math.min(...times),last=Math.max(...times),span=last-first||1; shade=row=>{const time=new Date(row.timestamp).getTime(); const fraction=Number.isFinite(time)?(time-first)/span:null; return {fill:fraction===null?"#9aa7b4":scoreTimeColor(fraction),tip:`\n时间：${escapeHtml(displayTime(row.timestamp,19))}`};}; legend=`<defs><linearGradient id="scoreTimeGradient" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="rgb(24,98,180)"/><stop offset="1" stop-color="rgb(214,96,77)"/></linearGradient></defs><rect x="${pad}" y="8" width="150" height="8" rx="4" fill="url(#scoreTimeGradient)"/><text x="${pad}" y="27" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows.reduce((a,b)=>new Date(a.timestamp)<=new Date(b.timestamp)?a:b).timestamp))}</text><text x="${pad+150}" y="27" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(rows.reduce((a,b)=>new Date(a.timestamp)>=new Date(b.timestamp)?a:b).timestamp))}</text>`; note="按样本时间从早到晚连续着色，颜色由蓝到红表示时间推进。"; top=32; }
+  else if(mode==="time") { const datedRows=rows.map(row=>({row,time:scoreTimestamp(row)})).filter(item=>Number.isFinite(item.time)); const times=datedRows.map(item=>item.time); const first=Math.min(...times),last=Math.max(...times),span=last-first||1; const earliest=datedRows.reduce((a,b)=>a.time<=b.time?a:b).row.timestamp,latest=datedRows.reduce((a,b)=>a.time>=b.time?a:b).row.timestamp; shade=row=>{const time=scoreTimestamp(row); const fraction=Number.isFinite(time)?(time-first)/span:null; return {fill:fraction===null?"#9aa7b4":scoreTimeColor(fraction),tip:`\n时间：${escapeHtml(displayTime(row.timestamp,19))}`};}; legend=`<defs><linearGradient id="scoreTimeGradient" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="rgb(24,98,180)"/><stop offset="1" stop-color="rgb(214,96,77)"/></linearGradient></defs><rect x="${pad}" y="8" width="150" height="8" rx="4" fill="url(#scoreTimeGradient)"/><text x="${pad}" y="27" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(earliest))}</text><text x="${pad+150}" y="27" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(latest))}</text>`; note="按样本时间从早到晚连续着色，颜色由蓝到红表示时间推进。"; top=32; }
   else if(mode==="performance") { container.innerHTML='<div class="empty">当前模型没有可用的性能状态字段；请先在状态探索中配置目标范围性能 Tag 后重新训练。</div>'; return; }
   else note="默认按 T²/SPE 综合状态着色（正常/关注/异常）。";
   const circles=rows.map(row=>{ const paint=shade(row); const tip=paint.tip===null?"":`<title>状态：${escapeHtml(displayUiValue(row.status))}${escapeHtml(paint.tip)}</title>`; return `<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${paint.fill}" fill-opacity=".72">${tip}</circle>`; }).join("");

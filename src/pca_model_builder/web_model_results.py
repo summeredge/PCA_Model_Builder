@@ -877,9 +877,7 @@ _MODEL_RESULTS_STYLE = r"""
   #componentLoadings .component-loading-table th:first-child,
   #componentLoadings .component-loading-table td:first-child { text-align:left; overflow-wrap:anywhere; }
   #componentLoadings .component-loading-table th:nth-child(2),
-  #componentLoadings .component-loading-table td:nth-child(2),
-  #componentLoadings .component-loading-table th:nth-child(3),
-  #componentLoadings .component-loading-table td:nth-child(3) { width:8em; text-align:right; white-space:nowrap; }
+  #componentLoadings .component-loading-table td:nth-child(2) { width:10em; text-align:right; white-space:nowrap; }
   #modelStructureComparison .model-variance-chart svg { display:block; width:100%; max-width:640px; height:auto; }
   #modelStructureComparison .model-variance-summary { display:flex; flex-wrap:wrap; gap:4px 14px; margin:0 0 10px; }
   #modelStructureComparison .model-energy-grid {

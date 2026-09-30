@@ -9,6 +9,16 @@ import numpy as np
 _DYNAMIC_FEATURE_PATTERN = re.compile(r"^(?P<tag>.+)__lag_(?P<lag>\d+)min$")
 
 
+def _original_tag_groups(feature_names: Sequence[str]) -> dict[str, list[int]]:
+    """Map each original Tag to its feature indices; non-lag features stand alone."""
+    groups: dict[str, list[int]] = {}
+    for index, feature_name in enumerate(feature_names):
+        name = str(feature_name)
+        match = _DYNAMIC_FEATURE_PATTERN.fullmatch(name)
+        groups.setdefault(match.group("tag") if match else name, []).append(index)
+    return groups
+
+
 def _signed_loading_energy(
     component: np.ndarray,
     indices: Sequence[int],
@@ -43,6 +53,7 @@ def _component_loading_payload(
     if components.ndim != 2 or components.shape[1] != len(feature_names):
         return []
 
+    groups = _original_tag_groups(feature_names)
     payload: list[dict[str, Any]] = []
     for index, component in enumerate(components):
         loadings = [
@@ -53,16 +64,25 @@ def _component_loading_payload(
             }
             for feature_name, value in zip(feature_names, component)
         ]
+        aggregated = [
+            {
+                "feature": tag,
+                "aggregated_loading": float(
+                    np.linalg.norm(np.asarray(component, dtype=float)[indices])
+                ),
+                "lag_feature_count": len(indices),
+            }
+            for tag, indices in groups.items()
+        ]
+        aggregated.sort(
+            key=lambda item: item["aggregated_loading"], reverse=True
+        )
         payload.append(
             {
                 "component": f"PC{index + 1}",
                 "explained_variance_ratio": _explained_variance_ratio(model, index),
                 "loadings": loadings,
-                "top_loadings": sorted(
-                    loadings,
-                    key=lambda item: item["absolute_loading"],
-                    reverse=True,
-                )[:10],
+                "top_loadings": aggregated[:10],
             }
         )
     return payload

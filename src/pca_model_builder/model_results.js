@@ -32,7 +32,7 @@
   componentLoadingsCard.id = "componentLoadings";
   componentLoadingsCard.innerHTML = `
     <h3>主元组成 / Loadings</h3>
-    <div class="help">载荷来自实际训练模型的 PCA components；正负号保留。按 |loading| 从大到小显示 Top 10，不等同于 T²/SPE 异常贡献。</div>
+    <div class="help">载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，不等同于 T²/SPE 异常贡献。</div>
     <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>`;
   projectionGrid.insertAdjacentElement("afterend", componentLoadingsCard);
 
@@ -469,14 +469,10 @@
       const title = document.createElement("h4");
       const name = component.component || `PC${index + 1}`;
       title.textContent = `${name} · explained variance ${formatExplainedVariance(component.explained_variance_ratio)}`;
-      const topRows = sortedLoadings(
-        Array.isArray(component.top_loadings) && component.top_loadings.length
-          ? component.top_loadings
-          : component.loadings,
-      ).slice(0, 10);
+      const topRows = sortedLoadings(component.top_loadings).slice(0, 10);
       const topTitle = document.createElement("div");
       topTitle.className = "help";
-      topTitle.textContent = `Top ${topRows.length} |loading| 变量`;
+      topTitle.textContent = `Top ${topRows.length} 原始变量（同一Tag的全部Lag已聚合）`;
       item.append(title, topTitle, componentLoadingTable(topRows));
       list.append(item);
     });
@@ -488,16 +484,13 @@
     container.className = "table-wrap";
     const table = document.createElement("table");
     table.className = "component-loading-table";
-    table.innerHTML = "<thead><tr><th>变量</th><th>loading</th><th>|loading|</th></tr></thead>";
+    table.innerHTML = "<thead><tr><th>原始变量</th><th>聚合 loading 强度</th></tr></thead>";
     const body = document.createElement("tbody");
     (Array.isArray(rows) ? rows : []).forEach(row => {
-      const loading = Number(row?.loading);
-      const magnitude = Number.isFinite(loading) ? Math.abs(loading) : Number(row?.absolute_loading);
       const tr = document.createElement("tr");
       tr.append(
         cell(row?.feature ?? "—"),
-        cell(formatLoading(loading)),
-        cell(formatLoading(magnitude)),
+        cell(formatLoading(Number(row?.aggregated_loading))),
       );
       body.append(tr);
     });
@@ -508,15 +501,13 @@
 
   function sortedLoadings(rows) {
     return (Array.isArray(rows) ? [...rows] : []).sort(
-      (left, right) => loadingMagnitude(right) - loadingMagnitude(left),
+      (left, right) => aggregatedLoading(right) - aggregatedLoading(left),
     );
   }
 
-  function loadingMagnitude(row) {
-    const loading = Number(row?.loading);
-    if (Number.isFinite(loading)) return Math.abs(loading);
-    const absolute = Number(row?.absolute_loading);
-    return Number.isFinite(absolute) ? absolute : 0;
+  function aggregatedLoading(row) {
+    const value = Number(row?.aggregated_loading);
+    return Number.isFinite(value) ? value : 0;
   }
 
   function formatExplainedVariance(value) {

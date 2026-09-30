@@ -3,6 +3,7 @@ import inspect
 from io import BytesIO
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import textwrap
@@ -1901,11 +1902,20 @@ def test_final_web_model_comparison_routes_only_read_saved_candidates(
         assert component["explained_variance_ratio"] == pytest.approx(
             trained_model.explained_variance_ratio[index]
         )
-        assert len(component["top_loadings"]) == min(10, len(trained_model.feature_names))
+        original_tags = {
+            re.sub(r"_+lag_\d+min$", "", name) for name in trained_model.feature_names
+        }
+        assert len(component["top_loadings"]) == min(10, len(original_tags))
+        assert {
+            item["feature"] for item in component["top_loadings"]
+        }.issubset(original_tags)
+        assert len({item["feature"] for item in component["top_loadings"]}) == len(
+            component["top_loadings"]
+        )
         assert [
-            item["absolute_loading"] for item in component["top_loadings"]
+            item["aggregated_loading"] for item in component["top_loadings"]
         ] == sorted(
-            (item["absolute_loading"] for item in component["top_loadings"]),
+            (item["aggregated_loading"] for item in component["top_loadings"]),
             reverse=True,
         )
     before = first_path.read_bytes(), first_path.stat().st_mtime_ns
@@ -5057,6 +5067,23 @@ def _score_renderer_source() -> str:
     return source[start : source.index("function clusterScatter", start)]
 
 
+def _sync_score_color_modes(rows: list[dict], selected: str = "time") -> dict:
+    source = web.INDEX_HTML
+    start = source.index("function syncScoreColorModes")
+    sync_source = source[start : source.index('\nel("scoreColorMode").addEventListener', start)]
+    harness = (
+        "const timeOption={disabled:false,title:''},performanceOption={disabled:false,title:''};"
+        f"const select={{value:{json.dumps(selected)},querySelector(selector){{return selector.includes('time')?timeOption:performanceOption}}}};"
+        "const el=()=>select;"
+        + _score_renderer_source()
+        + sync_source
+        + f"const rows={json.dumps(rows, ensure_ascii=False)};"
+        + "syncScoreColorModes(rows);"
+        + "process.stdout.write(JSON.stringify({mode:select.value,disabled:timeOption.disabled,title:timeOption.title}));"
+    )
+    return _run_node_javascript(harness)
+
+
 SCORE_ROWS = [
     {
         "timestamp": "2026-01-01T%02d:%02d:00" % (index // 12, (index % 12) * 5),
@@ -5175,6 +5202,42 @@ def test_score_chart_time_mode_uses_continuous_scale_and_shows_sample_time():
     assert len(set(fills)) >= 5
 
 
+def test_score_chart_time_mode_is_unavailable_without_any_valid_timestamp():
+    rows = [
+        {"pc1": 0, "pc2": 1, "status": "normal", "timestamp": None},
+        {"pc1": 1, "pc2": 0, "status": "abnormal"},
+        {"pc1": 2, "pc2": -1, "status": "normal", "timestamp": ""},
+        {"pc1": 3, "pc2": -2, "status": "abnormal", "timestamp": "not-a-timestamp"},
+    ]
+    state = _sync_score_color_modes(rows)
+    rendered = _render_score_svg("time", rows)
+
+    assert state == {"mode": "default", "disabled": True, "title": "无可用时间数据"}
+    assert 'viewBox="0 0 760 250"' in rendered["svg"]
+    assert rendered["svg"].count("<circle") == len(rows)
+    assert "scoreTimeGradient" not in rendered["svg"]
+    assert "Infinity" not in rendered["svg"]
+    assert "NaN" not in rendered["svg"]
+
+
+def test_score_chart_time_mode_keeps_valid_samples_and_downgrades_missing_times():
+    rows = [
+        {**SCORE_ROWS[0]},
+        {**SCORE_ROWS[5], "timestamp": None},
+        {**SCORE_ROWS[-1]},
+    ]
+    state = _sync_score_color_modes(rows)
+    rendered = _render_score_svg("time", rows)
+    svg = rendered["svg"]
+
+    assert state == {"mode": "time", "disabled": False, "title": ""}
+    assert 'linearGradient id="scoreTimeGradient"' in svg
+    assert "2026-01-01 00:00" in svg
+    assert "2026-01-01 00:55" in svg
+    fills = [item.split('fill="')[1].split('"')[0] for item in svg.split("<circle ")[1:]]
+    assert fills == ["rgb(24,98,180)", "#9aa7b4", "rgb(214,96,77)"]
+
+
 def test_score_chart_performance_mode_legend_counts_match_sample_statuses():
     rendered = _render_score_svg("performance")
     svg = rendered["svg"]
@@ -5211,8 +5274,11 @@ def test_score_color_mode_toggle_rerenders_the_existing_chart_only():
     assert html.count('id="scoreChart"') == 1
     assert html.count("function scoreScatter") == 1
     assert "performance.disabled=!scorePerfAvailable(rows||[])" in html
+    assert 'timeOption.disabled=!scoreTimeAvailable(rows||[])' in html
+    assert 'select.value==="time"&&timeOption?.disabled' in html
     assert 'el("scoreColorMode").addEventListener("change"' in html
     assert "scoreScatter(el(\"scoreChart\"),rows); });" in html
+    assert 'syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores);' in html
 
 
 def test_train_payload_marks_performance_target_without_changing_scores(

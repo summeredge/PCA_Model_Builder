@@ -727,7 +727,7 @@ def test_model_score_and_loading_plots_use_side_by_side_grid() -> None:
     assert 'insertAdjacentElement("afterend", section)' not in source
 
 
-def test_component_loadings_show_signed_top_ten_rows_only() -> None:
+def test_component_loadings_show_aggregated_top_ten_original_variables() -> None:
     source = (
         PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js"
     ).read_text(encoding="utf-8")
@@ -738,10 +738,11 @@ def test_component_loadings_show_signed_top_ten_rows_only() -> None:
     assert "renderComponentLoadings(data.loading_plot?.component_loadings)" in source
     assert "component.top_loadings" in source
     assert ".slice(0, 10)" in source
-    assert "Top ${topRows.length} |loading| 变量" in source
+    assert "Top ${topRows.length} 原始变量（同一Tag的全部Lag已聚合）" in source
     assert "查看全部" not in source
     assert "component-loading-full" not in source
-    assert "cell(formatLoading(loading))" in source
+    assert "聚合 loading 强度" in source
+    assert "cell(formatLoading(Number(row?.aggregated_loading)))" in source
     assert "T²/SPE 异常贡献" in source
     assert "componentLoadingsCard.insertAdjacentElement(\"afterend\", diagnosticCard);" in source
     assert "#componentLoadings .component-loading-table" in html
