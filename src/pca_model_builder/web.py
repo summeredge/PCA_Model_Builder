@@ -46,6 +46,7 @@ from .data_session import (
     normalize_column_names,
 )
 from .dpca import fit_dpca
+from .model_quality import model_quality_summary
 from .model_io import (
     copy_validated_model_package,
     export_deployment_package,
@@ -450,6 +451,10 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "status_counts": _status_counts(scores),
         "scores": _score_payload(scores, performance_target),
         "performance_target_available": performance_target is not None,
+        "model_quality": model_quality_summary(
+            model, scores, training_result.window_summaries,
+            config.sample_interval_minutes, model_purpose,
+        ),
         "model_download": f"/download/model?run_id={run_id}",
     }
     return _with_data_usage(
@@ -2896,7 +2901,7 @@ INDEX_HTML = r"""<!doctype html>
      /* 左列独立成栈，右侧高面板不再撑开第一行，时间轴紧贴散点图下方。 */
      .exploration-result-column { display:grid; gap:var(--space-2); min-width:0; align-content:start; }
      .exploration-timeline { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
-     .exploration-timeline svg { display:block; width:100%; height:auto; min-height:190px; }
+     .exploration-timeline svg { display:block; width:100%; height:auto; min-height:112px; }
      .exploration-timeline .timeline-note { margin:0; padding:9px 10px; color:var(--muted); font-size:12px; line-height:1.45; }
      .chart-note { margin:0; color:var(--muted); font-size:12px; line-height:1.45; }
      .region-stats { max-height:none; padding:10px; }
@@ -3504,19 +3509,17 @@ function bindExplorationRegionOverlay(plot,overlay) {
   overlay.addEventListener("mouseup",finish);
   overlay.addEventListener("mouseleave",event=>{if(event.buttons===0){clearPreview(); start=null;}});
 }
-function explorationTimelineTick(value) { const time=new Date(value); return `${String(time.getMonth()+1).padStart(2,"0")}/${String(time.getDate()).padStart(2,"0")} ${String(time.getHours()).padStart(2,"0")}:${String(time.getMinutes()).padStart(2,"0")}`; }
 function renderExplorationTimeline(rows,candidates) {
   const container=el("explorationTimeline"); const ordered=rows.map(row=>({...row,time:new Date(row.timestamp)})).filter(row=>Number.isFinite(row.time.getTime())).sort((left,right)=>left.time-right.time);
   if(!ordered.length){container.innerHTML='<div class="empty">暂无显示序列。</div>';return;}
   const first=ordered[0].time.getTime(),last=ordered[ordered.length-1].time.getTime();
   if(first===last){container.innerHTML='<div class="empty">仅有一个显示点，无法推断状态持续时间。</div><p class="timeline-note">时间轴基于状态探索显示序列；聚类计算仍使用全部有效样本。</p>';return;}
-  const width=760,height=188,left=94,right=18,statusTop=34,statusHeight=36,candidateTop=92,candidateHeight=16,axisY=136;
+  const width=760,height=84,left=94,right=18,statusTop=16,statusHeight=30,candidateTop=58,candidateHeight=12;
   const x=value=>left+(new Date(value).getTime()-first)/(last-first)*(width-left-right);
   const blocks=[]; const breaks=[];
   ordered.slice(0,-1).forEach((row,index)=>{const next=ordered[index+1]; const segmentBreak=next.break_before||next.segment_id!==row.segment_id; if(segmentBreak){breaks.push(`<line x1="${x(next.timestamp).toFixed(2)}" x2="${x(next.timestamp).toFixed(2)}" y1="${statusTop-5}" y2="${statusTop+statusHeight+5}" stroke="#64748b" stroke-dasharray="3 2"><title>物理连续段断点</title></line>`);return;} const start=x(row.timestamp),end=x(next.timestamp); if(end>start) blocks.push(`<rect x="${start.toFixed(2)}" y="${statusTop}" width="${(end-start).toFixed(2)}" height="${statusHeight}" fill="${explorationClusterColor(row.cluster_id)}"><title>${escapeHtml(row.cluster_id)}&#10;开始时间：${escapeHtml(displayTime(row.timestamp,19))}&#10;结束时间：${escapeHtml(displayTime(next.timestamp,19))}</title></rect>`);});
   const windows=(candidates||[]).map(candidate=>{const start=Math.max(first,new Date(candidate.start).getTime()),end=Math.min(last,new Date(candidate.end).getTime()); if(!Number.isFinite(start)||!Number.isFinite(end)||end<start) return ""; const windowX=left+(start-first)/(last-first)*(width-left-right),windowWidth=Math.max(1,(end-start)/(last-first)*(width-left-right)); return `<rect x="${windowX.toFixed(2)}" y="${candidateTop}" width="${windowWidth.toFixed(2)}" height="${candidateHeight}" fill="${explorationClusterColor(candidate.cluster_id)}" fill-opacity=".35" stroke="${explorationClusterColor(candidate.cluster_id)}" stroke-width="1.5"><title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(candidate.cluster_id)}&#10;开始时间：${escapeHtml(displayTime(candidate.start,19))}&#10;结束时间：${escapeHtml(displayTime(candidate.end,19))}</title></rect>`;}).join("");
-  const ticks=Array.from({length:4},(_,index)=>first+(last-first)*index/3).map((value,index)=>`<g><line x1="${(left+(value-first)/(last-first)*(width-left-right)).toFixed(2)}" x2="${(left+(value-first)/(last-first)*(width-left-right)).toFixed(2)}" y1="${axisY}" y2="${axisY+4}" stroke="#94a3b8"/><text x="${(left+(value-first)/(last-first)*(width-left-right)).toFixed(2)}" y="${axisY+17}" text-anchor="${index===0?"start":index===3?"end":"middle"}" fill="#5f6c7b" font-size="10">${escapeHtml(explorationTimelineTick(value))}</text></g>`).join("");
-  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster 状态时间轴"><text x="8" y="${statusTop+14}" fill="#334155" font-size="11">Cluster 状态</text><text x="8" y="${candidateTop+12}" fill="#334155" font-size="11">候选窗口</text><line x1="${left}" x2="${width-right}" y1="${axisY}" y2="${axisY}" stroke="#94a3b8"/>${blocks.join("")}${breaks.join("")}${windows}${ticks}</svg>`;
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster 状态时间轴"><text x="8" y="${statusTop+14}" fill="#334155" font-size="11">Cluster 状态</text><text x="8" y="${candidateTop+10}" fill="#334155" font-size="11">候选窗口</text>${blocks.join("")}${breaks.join("")}${windows}</svg>`;
 }
 function renderExplorationClusterTable(summaries) {
   const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); const values=[item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.performance_valid_count??"—",item.performance_target_count??"—",explorationPercent(item.performance_target_ratio),explorationNumber(item.performance_median,3),item.candidate_count]; values.forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});

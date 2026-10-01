@@ -161,14 +161,16 @@ def test_training_validation_and_release_follow_decision_order() -> None:
     assert [model.index(label) for label in (
         "① 训练准备", "② 建模质量检查", "③ PCA / DPCA 模型配置",
         "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
-        'id="scoreChart"', 'id="loadingChart"', 'id="componentLoadings"',
-        'id="t2Chart"', 'id="speChart"', 'id="modelStructureComparison"',
+        'id="modelQualitySummary"', 'id="componentLoadings"',
+        'id="modelTrainingDataQuality"', 'id="t2Chart"', 'id="speChart"',
+        'id="scoreChart"', 'id="loadingChart"', 'id="modelStructureComparison"',
         'id="modelDownload"',
     )] == sorted(model.index(label) for label in (
         "① 训练准备", "② 建模质量检查", "③ PCA / DPCA 模型配置",
         "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
-        'id="scoreChart"', 'id="loadingChart"', 'id="componentLoadings"',
-        'id="t2Chart"', 'id="speChart"', 'id="modelStructureComparison"',
+        'id="modelQualitySummary"', 'id="componentLoadings"',
+        'id="modelTrainingDataQuality"', 'id="t2Chart"', 'id="speChart"',
+        'id="scoreChart"', 'id="loadingChart"', 'id="modelStructureComparison"',
         'id="modelDownload"',
     ))
     assert validation.index('id="validateButton"') < validation.index('id="validationMetrics"') < validation.index('id="validationMetricDetails"') < validation.index('id="recordValidationDecision"')

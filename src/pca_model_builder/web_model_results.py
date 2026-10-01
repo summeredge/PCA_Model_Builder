@@ -978,6 +978,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
 _MODEL_RESULTS_STYLE = r"""
 <style id="modelResultsStyle">
+  .model-quality-copy, #modelTrainingDataQuality > p { max-width:72ch; }
+  .model-training-source-reference { overflow-wrap:anywhere; }
+  .model-overview-grid {
+    display:grid;
+    grid-template-columns:minmax(0,.9fr) minmax(0,1fr) minmax(0,1.3fr);
+    gap:14px;
+    align-items:start;
+  }
+  .model-overview-grid > .chart-card { min-width:0; margin:0; }
+  #modelQualitySummary { grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); }
   .model-projection-grid {
     display:grid;
     grid-template-columns:minmax(0,1fr) minmax(0,1fr);
@@ -1035,6 +1045,9 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-parameter-table td { white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
   #modelStructureComparison .model-parameter-table td.numeric,
   #modelStructureComparison .model-energy-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  @media (max-width:1599px) {
+    .model-overview-grid { grid-template-columns:1fr; }
+  }
   @media (max-width:1200px) {
     .model-projection-grid { grid-template-columns:1fr; }
     .model-projection-grid > .chart-card > .chart { min-height:360px; }
@@ -1168,26 +1181,44 @@ def _workflow_sidebar_html() -> str:
 def _model_results_content_html() -> str:
     return """        <div id="modelContent" hidden>
           <h3>训练结果概览</h3>
-          <div id="modelMetrics" class="metrics"></div>
-          <h3>训练窗口与连续段</h3><div id="trainingWindowSummary" class="table-wrap"></div>
-          <div id="trainingQualityWarnings" class="hint"></div>
-          <h3>模型结构</h3>
-          <h3>主元解释率</h3><div id="varianceChart" class="variance"></div>
-          <div class="model-projection-grid">
-            <div class="chart-card"><div class="chart-card-head"><h3>主元得分 PC1 / PC2</h3><div class="exploration-region-tools"><label>着色方式<select id="scoreColorMode"><option value="default">默认</option><option value="time">时间</option><option value="performance">性能状态</option></select></label></div></div><div id="scoreChart" class="chart"></div><p id="scoreChartNote" class="chart-note">默认按 T²/SPE 综合状态着色；切换着色方式只改变视觉编码，PC 坐标、样本数量和筛选范围不变。</p></div>
-            <div class="chart-card"><h3>PC1 / PC2 原始Tag聚合载荷图</h3><div class="help">每条连线从原点连接到一个原始Tag的PC1/PC2聚合载荷；全部Lag按带符号L2能量聚合。连线方向和长度用于解释模型结构，不等同于异常贡献或工艺根因。</div><div id="loadingChart" class="chart empty">完成DPCA训练后显示载荷图。</div></div>
+          <div class="model-overview-grid">
+            <section class="chart-card model-quality-conclusion" aria-labelledby="modelQualityTitle">
+              <h3 id="modelQualityTitle">模型质量判断</h3>
+              <div id="modelLifecycleNotice" class="notice model-quality-copy"></div>
+              <div id="modelEngineeringJudgment" class="model-quality-copy" aria-live="polite"></div>
+              <div id="modelQualityNotice" class="help model-quality-copy"></div>
+            </section>
+            <section class="chart-card model-structure-summary">
+              <h3>模型结构</h3>
+              <div id="modelMetrics" class="metrics"></div>
+              <div id="modelProjectionSummary" class="metric"></div>
+              <h4>主元解释率</h4><div id="varianceChart" class="variance"></div>
+            </section>
+            <section class="chart-card">
+              <h3>统计质量</h3>
+              <div id="modelQualitySummary" class="chart-grid" aria-live="polite"></div>
+            </section>
           </div>
           <section id="componentLoadings" class="chart-card">
-            <h3>主元组成 / Loadings</h3>
-            <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，不等同于 T²/SPE 异常贡献。</div>
+            <h3>主元贡献分析 / Loadings</h3>
+            <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，平方载荷占比以该主元全部变量的平方载荷总和为分母，不对 Top10 重新归一化，不等同于 T²/SPE 异常贡献。</div>
             <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>
           </section>
-          <h3>统计监测表现</h3>
+          <section class="chart-card">
+            <h3>训练数据组成</h3><div id="modelTrainingDataQuality"></div>
+            <h4>训练窗口与连续段</h4><div id="trainingWindowSummary" class="table-wrap"></div>
+            <div id="trainingQualityWarnings" class="hint"></div>
+          </section>
+          <h3>详细趋势和图表</h3>
           <div class="chart-grid">
             <div class="chart-card"><h3>训练期 T²</h3><div id="t2Chart" class="chart"></div></div>
             <div class="chart-card"><h3>训练期 SPE/Q</h3><div id="speChart" class="chart"></div></div>
           </div>
           <div class="legend"><span><i class="swatch" style="background:var(--accent)"></i>统计量</span><span><i class="swatch" style="background:var(--attention)"></i>95% 边界</span><span><i class="swatch" style="background:var(--abnormal)"></i>99% 边界</span></div>
+          <div class="model-projection-grid">
+            <div class="chart-card"><div class="chart-card-head"><h3>主元得分 PC1 / PC2</h3><div class="exploration-region-tools"><label>着色方式<select id="scoreColorMode"><option value="default">默认</option><option value="time">时间</option><option value="performance">性能状态</option></select></label></div></div><div id="scoreChart" class="chart"></div><p id="scoreChartNote" class="chart-note">默认按 T²/SPE 综合状态着色；切换着色方式只改变视觉编码，PC 坐标、样本数量和筛选范围不变。</p></div>
+            <div class="chart-card"><h3>PC1 / PC2 原始Tag聚合载荷图</h3><div class="help">每条连线从原点连接到一个原始Tag的PC1/PC2聚合载荷；全部Lag按带符号L2能量聚合。连线方向和长度用于解释模型结构，不等同于异常贡献或工艺根因。</div><div id="loadingChart" class="chart empty">完成DPCA训练后显示载荷图。</div></div>
+          </div>
           <h3>模型诊断</h3>
           <section id="modelStructureComparison" class="chart-card">
             <h3>模型结构与参数比较</h3>
@@ -1200,7 +1231,6 @@ def _model_results_content_html() -> str:
           </section>
           <h3>模型文件</h3>
           <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a></div>
-          <div id="modelLifecycleNotice" class="notice"></div>
         </div>"""
 
 

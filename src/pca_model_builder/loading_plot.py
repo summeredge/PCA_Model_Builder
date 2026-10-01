@@ -70,6 +70,9 @@ def _component_loading_payload(
                 "aggregated_loading": float(
                     np.linalg.norm(np.asarray(component, dtype=float)[indices])
                 ),
+                "loading_energy_share": float(
+                    np.square(component[indices]).sum() / np.square(component).sum()
+                ) if np.square(component).sum() > 0 else 0.0,
                 "lag_feature_count": len(indices),
             }
             for tag, indices in groups.items()

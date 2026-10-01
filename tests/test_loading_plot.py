@@ -55,6 +55,7 @@ def test_loading_plot_aggregates_all_lags_back_to_original_tags() -> None:
         0.5
     )
     assert component_loadings[0]["top_loadings"][0]["lag_feature_count"] == 2
+    assert component_loadings[0]["top_loadings"][0]["loading_energy_share"] == pytest.approx(0.25 / 0.30)
     assert points["TAG_A"]["pc1"] == pytest.approx(-0.5)
     assert points["TAG_A"]["pc2"] == pytest.approx(0.5)
     assert points["TAG_A"]["pc1_dominant_lag_minutes"] == 5
@@ -138,6 +139,10 @@ def test_component_loadings_group_all_lags_and_keep_top_ten_original_variables()
         np.hypot(0.05, -0.9)
     )
     assert first["top_loadings"][0]["lag_feature_count"] == 2
+    assert first["top_loadings"][0]["loading_energy_share"] == pytest.approx(
+        (0.05**2 + 0.9**2) / np.square(model.components[0]).sum()
+    )
+    assert sum(item["loading_energy_share"] for item in first["top_loadings"]) < 1
     assert all("_lag_" not in item["feature"] for item in first["top_loadings"])
     assert len({item["feature"] for item in first["top_loadings"]}) == 10
     assert [item["aggregated_loading"] for item in first["top_loadings"]] == sorted(

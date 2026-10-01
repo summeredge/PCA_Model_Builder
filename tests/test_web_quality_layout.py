@@ -781,15 +781,34 @@ def test_training_configuration_precedes_model_results() -> None:
     assert model_source.index('id="trainButton"') < model_source.index(
         'id="modelContent"'
     )
-    assert model_source.index('id="modelMetrics"') < model_source.index(
-        'id="trainingWindowSummary"'
+    result_sections = (
+        'id="modelEngineeringJudgment"',
+        'id="modelMetrics"',
+        'id="modelProjectionSummary"',
+        'id="varianceChart"',
+        'id="modelQualitySummary"',
+        'id="componentLoadings"',
+        'id="modelTrainingDataQuality"',
+        'id="trainingWindowSummary"',
+        'id="t2Chart"',
+        'id="speChart"',
+        'id="scoreChart"',
+        'id="loadingChart"',
+        'id="modelStructureComparison"',
     )
-    assert model_source.index('id="trainingWindowSummary"') < model_source.index(
-        'id="varianceChart"'
-    )
-    assert model_source.index('id="varianceChart"') < model_source.index(
-        'id="t2Chart"'
-    )
+    positions = [model_source.index(section) for section in result_sections]
+    assert positions == sorted(positions)
+    assert 'id="modelQualitySummary" class="chart-grid"' in model_source
+    assert "模型质量判断" in model_source
+    assert "统计质量" in model_source
+    assert "训练数据组成" in model_source
+    assert 'class="model-overview-grid"' in model_source
+    assert "grid-template-columns:minmax(0,.9fr) minmax(0,1fr) minmax(0,1.3fr);" in html
+    assert "@media (max-width:1599px)" in html
+    assert ".model-overview-grid { grid-template-columns:1fr; }" in html
+    assert "#modelQualitySummary { grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); }" in html
+    assert ".chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }" in html
+    assert ".chart-grid,.validation-box,.exploration-controls,.trend-controls { grid-template-columns:1fr; }" in html
 
 
 def test_frozen_replay_is_mounted_in_the_release_stage() -> None:
@@ -829,7 +848,7 @@ def test_model_score_and_loading_plots_use_side_by_side_grid() -> None:
     html = web_model_results.INDEX_HTML
 
     model = html[html.index('<div id="modelPanel"'):html.index('<div id="validationPanel"')]
-    projection = model[model.index('class="model-projection-grid"'):model.index('id="componentLoadings"')]
+    projection = model[model.index('class="model-projection-grid"'):model.index('id="modelStructureComparison"')]
     assert projection.index('id="scoreChart"') < projection.index('id="loadingChart"')
     assert 'projectionGrid.append(scoreCard, section)' not in source
     assert 'id="modelResultsStyle"' in html

@@ -29,6 +29,82 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TXT_FIXTURE = Path(__file__).parent / "fixtures" / "u400ph_desensitized.txt"
 
 
+def test_model_quality_api_uses_full_training_scores_before_chart_sampling(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(web, "MAX_CHART_POINTS", 7)
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    result = web_model_results.train_payload({
+        "file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(), "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 5,
+        "lag_step_minutes": 5, "model_name": "quality-candidate",
+    })
+    assert len(result["scores"]) <= 7
+    quality = result["model_quality"]
+    assert quality["training_samples"] == result["training_rows"] > 7
+    assert quality["statistics"]["spe"]["valid_samples"] == result["training_rows"]
+    assert quality["statistics"]["t2"]["limits"] == result["t2_limits"]
+    assert quality["pc1_pc2_explained_variance"] == pytest.approx(sum(result["explained_variance"][:2]))
+    assert sum(row["samples"] for row in quality["training_data"]["sources"]) == result["training_rows"]
+    assert quality["training_data"]["traceable_cluster_count"] is None
+    model, manifest = load_model_package(tmp_path / "runs" / result["run_id"] / "model.pcamodel")
+    config = web._preprocessing_config(manifest["config"])
+    dynamic = build_training_matrix(history, "time", ["A", "B", "C"], config, manifest["training_windows"]).dynamic
+    full_scores = model.score(dynamic)
+    for key in ("t2", "spe"):
+        assert quality["statistics"][key]["mean"] == pytest.approx(full_scores[key].mean())
+    assert manifest["model_status"] == "candidate"
+
+
+def test_model_quality_ui_renders_and_clears_stale_results():
+    source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
+    renderer = source[source.index("  function renderModelQuality("):source.index('  document.getElementById("compareModelsButton")')]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor() { this.children=[]; this.textContent=""; this.className=""; }
+        append(...items) { this.children.push(...items); }
+        replaceChildren(...items) { this.children=items; this.textContent=""; }
+        text() { return this.textContent + this.children.map(item=>item.text()).join(" "); }
+      }
+      const ids=["modelQualitySummary","modelProjectionSummary","modelTrainingDataQuality","modelEngineeringJudgment","modelQualityNotice"];
+      const nodes=Object.fromEntries(ids.map(id=>[id,new Element()]));
+      const document={getElementById:id=>nodes[id],createElement:()=>new Element()};
+      function displayTime(value) { return value; }
+      __RENDERER__
+      const statistic={valid_samples:100,invalid_samples:0,mean:0.5,limits:{95:2,99:3},exceedance_rates:{95:0.05,99:0.01},trend:"stable"};
+      const quality={training_samples:100,retained_explained_variance:0.82,pc1_pc2_explained_variance:0.65,statistics:{spe:statistic,t2:statistic},notice:"不能替代独立验证",rules:"经验规则",engineering_messages:["检查运行状态"],training_data:{effective_sample_hours:8.333,time_start:"2026-01-01",time_end:"2026-01-02",traceable_cluster_count:1,unattributed_samples:0,sources:[{label:"Cluster_001",source_ref:"<script>来源</script>",samples:100,share:1}]}};
+      renderModelQuality(quality,{covered_day_count:2,used_window_count:1,used_segment_count:1});
+      const filled=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
+      const statistics=nodes.modelQualitySummary.children.map(card=>({className:card.className,title:card.children[0].textContent}));
+      renderModelQuality(null);
+      const cleared=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
+      console.log(JSON.stringify({filled,cleared,statistics}));
+    """.replace("__RENDERER__", renderer))
+    assert "95% 超限比例" in result["filled"]["modelQualitySummary"]
+    assert "5.0%" in result["filled"]["modelQualitySummary"]
+    assert "65.0%" in result["filled"]["modelProjectionSummary"]
+    assert "Cluster_001" in result["filled"]["modelTrainingDataQuality"]
+    assert "100.0%" in result["filled"]["modelTrainingDataQuality"]
+    assert "有效训练样本：100" in result["filled"]["modelTrainingDataQuality"]
+    assert "8.333 h" in result["filled"]["modelTrainingDataQuality"]
+    assert "2026-01-01" in result["filled"]["modelTrainingDataQuality"]
+    assert "检查运行状态" in result["filled"]["modelEngineeringJudgment"]
+    assert "不能替代独立验证" in result["filled"]["modelQualityNotice"]
+    assert result["statistics"] == [
+        {"className": "chart-card", "title": "T²统计"},
+        {"className": "chart-card", "title": "SPE/Q统计"},
+    ]
+    assert "重新训练" in result["cleared"]["modelQualitySummary"]
+    assert "质量判断" in result["cleared"]["modelEngineeringJudgment"]
+    assert all(result["cleared"][key] == "" for key in ("modelProjectionSummary", "modelTrainingDataQuality", "modelQualityNotice"))
+    html = web_model_results.INDEX_HTML
+    for element_id in result["filled"]:
+        assert html.count(f'id="{element_id}"') == 1
+    assert html.index('id="modelEngineeringJudgment"') < html.index('id="modelMetrics"') < html.index('id="modelQualitySummary"') < html.index('id="componentLoadings"') < html.index('id="modelTrainingDataQuality"') < html.index('id="t2Chart"') < html.index('id="scoreChart"')
+
+
 def _run_node_javascript(source: str) -> dict:
     node = shutil.which("node")
     if node is None:
@@ -47,14 +123,14 @@ def _run_node_javascript(source: str) -> dict:
 
 def _pc_renderer_source() -> str:
     return web.INDEX_HTML.split("function renderExplorationPcChart(data)", 1)[1].split(
-        "function explorationTimelineTick", 1
+        "function renderExplorationTimeline(rows,candidates)", 1
     )[0]
 
 
 def _pc_overlay_source() -> str:
     source = web.INDEX_HTML
     start = source.index("function bindExplorationRegionOverlay(plot,overlay)")
-    return source[start : source.index("function explorationTimelineTick", start)]
+    return source[start : source.index("function renderExplorationTimeline(rows,candidates)", start)]
 
 
 def _history_frame() -> pd.DataFrame:
@@ -861,11 +937,46 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "function explorationClusterColor(clusterId)" in html
     assert "explorationClusterColor(row.cluster_id)" in html
     assert "renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[])" in html
+    assert "const width=760,height=84,left=94,right=18,statusTop=16,statusHeight=30,candidateTop=58,candidateHeight=12" in timeline
+    assert 'min-height:112px' in html
     assert '<svg viewBox="0 0 ${width} ${height}"' in timeline
     assert "next.break_before||next.segment_id!==row.segment_id" in timeline
     assert "物理连续段断点" in timeline
     assert "候选窗口" in timeline
     assert "candidate.candidate_id" in timeline
+    assert '<title>${escapeHtml(row.cluster_id)}&#10;开始时间：' in timeline
+    assert '<title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(candidate.cluster_id)}&#10;开始时间：' in timeline
+    assert "explorationTimelineTick" not in html
+    assert "${ticks}" not in timeline
+    renderer = html[
+        html.index("function renderExplorationTimeline(rows,candidates)"):
+        html.index("function renderExplorationClusterTable")
+    ]
+    rendered = _run_node_javascript(r"""
+      const container={innerHTML:""};
+      function el() { return container; }
+      function escapeHtml(value) { return String(value); }
+      function displayTime(value) { return String(value); }
+      function explorationClusterColor() { return "#7ab"; }
+      __RENDERER__
+      renderExplorationTimeline(
+        [
+          {timestamp:"2026-01-01T00:00:00",cluster_id:"Cluster_001",segment_id:"segment-1"},
+          {timestamp:"2026-01-01T01:00:00",cluster_id:"Cluster_001",segment_id:"segment-1"}
+        ],
+        [{candidate_id:"candidate-1",cluster_id:"Cluster_001",start:"2026-01-01T00:15:00",end:"2026-01-01T00:45:00"}]
+      );
+      const svg=container.innerHTML;
+      const labels=[...svg.matchAll(/<text\b[^>]*>(.*?)<\/text>/g)].map(match=>match[1]);
+      console.log(JSON.stringify({
+        labels,
+        rowTooltip:svg.includes("<title>Cluster_001&#10;开始时间：2026-01-01T00:00:00"),
+        candidateTooltip:svg.includes("<title>candidate-1&#10;Cluster_001&#10;开始时间：2026-01-01T00:15:00")
+      }));
+    """.replace("__RENDERER__", renderer))
+    assert rendered["labels"] == ["Cluster 状态", "候选窗口"]
+    assert rendered["rowTooltip"]
+    assert rendered["candidateTooltip"]
     assert "显示点之间的时间跨度可能来自抽样" not in timeline
     assert "查看显示抽样点明细" not in html
     assert "explorationTimelineDetails" not in html
@@ -878,11 +989,6 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "时间轴基于状态探索显示序列" in timeline
     assert "显示点之间的时间跨度可能来自抽样" not in html
     assert "<details>" not in timeline
-    assert '.map((value,index)=>`' in timeline
-    assert 'text-anchor="${index===0?"start":index===3?"end":"middle"}"' in timeline
-    assert 'index===0?"start"' in timeline
-    assert 'index===3?"end"' in timeline
-    assert ':"middle"' in timeline
     assert 'data.performance_config?.direction==="target_range"' in html
     assert 'stroke="#111827"' not in html
 
