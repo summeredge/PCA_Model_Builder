@@ -19,6 +19,7 @@ class OperatingStateClusters:
     cumulative_explained_variance: float
     centers: dict[int, np.ndarray]
     pc_columns: tuple[str, ...]
+    explained_variance_ratio: tuple[float, ...] = ()
 
 
 def cluster_operating_states(
@@ -67,6 +68,7 @@ def cluster_operating_states(
         cumulative_explained_variance=float(
             pca.explained_variance_ratio_[:selected].sum()
         ),
+        explained_variance_ratio=tuple(pca.explained_variance_ratio_[:selected]),
     )
 
 
@@ -90,6 +92,7 @@ def cluster_model_scores(
             model.explained_variance_ratio[: model.n_components].sum()
         ),
         random_state=random_state,
+        explained_variance_ratio=tuple(model.explained_variance_ratio[:model.n_components]),
     )
 
 
@@ -99,6 +102,7 @@ def _cluster_scores(
     sample_interval_minutes: int,
     cumulative_explained_variance: float,
     random_state: int = 0,
+    explained_variance_ratio: tuple[float, ...] = (),
 ) -> OperatingStateClusters:
     if not isinstance(scores.index, pd.DatetimeIndex):
         raise TypeError("cluster scores index must be a DatetimeIndex")
@@ -148,6 +152,7 @@ def _cluster_scores(
         cumulative_explained_variance=cumulative_explained_variance,
         centers={cluster: center.copy() for cluster, center in centers.items()},
         pc_columns=pc_columns,
+        explained_variance_ratio=explained_variance_ratio,
     )
 
 

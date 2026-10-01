@@ -2182,8 +2182,11 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     ]
 
     assert 'class="training-parameter-grid"' in html
-    assert "grid-template-columns:repeat(3,minmax(0,1fr))" in html
-    assert "@media (max-width:1100px)" in html
+    layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
+    desktop = layout.split("@media (max-width:760px)", 1)[0]
+    assert ".training-parameter-grid" in desktop
+    assert "flex-wrap:wrap;" in desktop
+    assert "1fr" not in desktop
     for field_id in ("lagStep", "components"):
         assert html.count(f'id="{field_id}"') == 1
     # 共享预处理参数（采样/重采样/滤波/Gap/Lag/状态过滤）全部前移到候选阶段。
@@ -2207,7 +2210,7 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     ) < model.index('id="preprocessingPreview"')
     assert 'class="preprocessing-preview-area"' in model
     assert 'class="row advanced-preprocessing-row"' not in html
-    # 共享预处理五项同排一列，列宽按内容收敛而不是等分撑满。
+    # 共享预处理字段保留在同一语义行，由通用内容流按可用宽度换行。
     preprocessing_row_start = shared.index('class="row preprocessing-parameter-row"')
     preprocessing_row_end = shared.index("</div>", preprocessing_row_start)
     preprocessing_row = shared[preprocessing_row_start:preprocessing_row_end]
@@ -2220,9 +2223,9 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
         "gapThreshold",
     ):
         assert f'id="{field_id}"' in preprocessing_row, field_id
-    assert ".shared-preprocessing .preprocessing-parameter-row" in html
-    assert "grid-template-columns:repeat(5,minmax(0,1fr))" in html
-    assert ".shared-preprocessing .preprocessing-parameter-row { grid-template-columns:minmax(0,1fr); }" in html
+    assert 'class="row preprocessing-parameter-row"' in preprocessing_row
+    assert ".shared-preprocessing .preprocessing-parameter-row { grid-template-columns:" not in html
+    assert "grid-template-columns:repeat(4,minmax(0,1fr)) max-content;" not in html
     assert model.count('id="preprocessingPreviewButton"') == 1
     assert model.count('id="preprocessingPreview"') == 1
     assert 'id="preprocessingPreviewWindow"' not in shared
@@ -2291,7 +2294,7 @@ def test_web_preprocessing_preview_uses_cached_single_tag_svg_comparison():
     preview_select_style = web_model_results.INDEX_HTML.split(
         ".preprocessing-preview-area #preprocessingPreviewTagSelect", 1
     )[1].split("}", 1)[0]
-    assert "width:300px" in preview_select_style
+    assert "width:min(100%,var(--field-tag-width))" in preview_select_style
     assert "min-width:0" in preview_select_style
     assert "max-width:100%" in preview_select_style
     assert "min-width:250px" not in preview_select_style

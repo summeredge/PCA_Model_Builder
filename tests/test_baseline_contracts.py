@@ -68,12 +68,17 @@ def test_final_web_exposes_distinct_model_semantics_and_warnings() -> None:
     for text in (
         "建立探索模型",
         "建立正常状态候选模型",
+        "探索模型仅用于兼容保留的状态空间/聚类辅助路径，不属于正常状态主流程。",
+    ):
+        assert text in html
+    for removed in (
         "探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。",
+        "探索模型不能执行独立验证，也不能作为正常状态模型。",
         "正常状态候选模型尚未验证，不能发布或用于部署。",
         "聚类结果必须由工程师判断，不能自动定义正常状态。",
         "探索模型和正常状态候选模型均不提供根因、因果或控制建议。",
     ):
-        assert text in html
+        assert removed not in html
     assert 'model_purpose:modelPurpose' in html
     assert 'trainModel("exploratory")' in html
     assert 'trainModel("normal_state")' in html

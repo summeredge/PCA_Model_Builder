@@ -21,6 +21,7 @@ import webbrowser
 import numpy as np
 import pandas as pd
 
+from .cluster_quality import analyze_cluster_quality
 from .clustering import cluster_model_scores, cluster_operating_states
 from .state_exploration import (
     ExplorationConfig,
@@ -1309,9 +1310,10 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
             [*tags, *state_columns],
         )
         try:
-            dynamic = preprocess_window(
-                indexed, tags, config, engineering_ranges(tag_configs)
-            ).dynamic
+            processed = preprocess_window(
+                indexed, tags, config, engineering_ranges(tag_configs), include_intermediates=True
+            )
+            dynamic = processed.dynamic
         except PreprocessingQualityError as error:
             raise WebStageError("quality_check", error) from error
         if dynamic.empty:
@@ -1323,7 +1325,7 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
             variance_threshold=float(payload.get("variance_threshold", 0.95)),
             sample_interval_minutes=config.sample_interval_minutes,
         )
-    response = _cluster_result_payload(result, config.sample_interval_minutes)
+    response = _cluster_result_payload(result, config.sample_interval_minutes, processed.resampled, tags)
     return _with_data_usage(response, loaded, len(analysis), len(response["points"]))
 
 
@@ -1360,9 +1362,10 @@ def _cluster_exploratory_payload(
     with _web_stage("preprocessing"):
         indexed = _indexed_tags(analysis, timestamp_column, [*tags, *state_columns])
         try:
-            dynamic = preprocess_window(
-                indexed, tags, config, engineering_ranges(tag_configs)
-            ).dynamic
+            processed = preprocess_window(
+                indexed, tags, config, engineering_ranges(tag_configs), include_intermediates=True
+            )
+            dynamic = processed.dynamic
         except PreprocessingQualityError as error:
             raise WebStageError("quality_check", error) from error
         if dynamic.empty:
@@ -1375,19 +1378,27 @@ def _cluster_exploratory_payload(
             sample_interval_minutes=config.sample_interval_minutes,
         )
     response = {
-        **_cluster_result_payload(result, config.sample_interval_minutes),
+        **_cluster_result_payload(result, config.sample_interval_minutes, processed.resampled, tags),
         "exploratory_run_id": exploratory_run_id,
     }
     return _with_data_usage(response, loaded, len(analysis), len(response["points"]))
 
 
-def _cluster_result_payload(result: Any, interval: int = 5) -> dict[str, Any]:
+def _cluster_result_payload(
+    result: Any, interval: int = 5, raw_data: pd.DataFrame | None = None,
+    feature_names: Sequence[str] = (),
+) -> dict[str, Any]:
     points = result.points
     if len(points) > MAX_CHART_POINTS:
         from .state_exploration import _display_points
 
         points = _display_points(points, MAX_CHART_POINTS, interval)
     return {
+        "cluster_quality": analyze_cluster_quality(
+            result.points.loc[:, list(result.pc_columns)], result.points["cluster"],
+            result.points.index, raw_data, feature_names, result.explained_variance_ratio, interval,
+            cluster_centers=result.centers,
+        ),
         "sample_count": len(result.points),
         "full_point_count": len(result.points),
         "returned_point_count": len(points),
@@ -2784,6 +2795,8 @@ INDEX_HTML = r"""<!doctype html>
     button.secondary { background:#e8edf3; color:var(--text); }
     button:disabled { opacity:.5; cursor:not-allowed; }
     .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    /* 命令按钮按内容取宽，不随容器拉伸：只有业务上明确设计为整行主操作的按钮才用 width:100%。 */
+    .actions > button, .actions > .download { flex:0 0 auto; width:auto; }
     .status { min-height:38px; padding:9px 10px; border-radius:7px; border:1px solid var(--line); color:var(--muted); white-space:pre-wrap; font-size:13px; }
     .status.info { background:#e8f4fa; color:#075985; border-color:#b9def0; }
     .status.success { background:#e4f5ed; color:#166534; border-color:#b9e4ce; }
@@ -2824,7 +2837,13 @@ INDEX_HTML = r"""<!doctype html>
     .compact-list { max-height:220px; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:7px; display:grid; gap:4px; }
     textarea { width:100%; min-height:70px; padding:7px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; }
     .condition-list { display:grid; gap:6px; }
-    .condition-row { display:grid; grid-template-columns:1.4fr 1fr 1fr auto; gap:6px; align-items:end; }
+    /* Grid 子项默认可收缩：长 Tag 名、长下拉文本由容器决定列宽，而不是反过来撑破容器。 */
+    .row > *, .exploration-controls > *, .validation-box > *, .condition-row > *, .training-parameter-grid > *, .trend-controls > * { min-width:0; }
+    input, select, textarea { max-width:100%; }
+    .condition-row { display:grid; grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) max-content; gap:6px; align-items:end; }
+    .condition-row input, .condition-row select { width:100%; min-width:0; }
+    /* 删除是行内命令按钮：单列窄屏下也保持 intrinsic 宽度，不被网格拉伸。 */
+    .condition-row > button { justify-self:start; width:auto; }
     .condition-row button { padding:8px 10px; }
     .sub-title { font-size:12px; font-weight:700; padding-top:3px; border-top:1px solid var(--line-soft); }
     .results { display:grid; gap:14px; min-width:0; align-content:start; }
@@ -2867,9 +2886,10 @@ INDEX_HTML = r"""<!doctype html>
     th { background:#eef2f6; }
     td.numeric { text-align:right; font-variant-numeric:tabular-nums; }
     .download { color:#fff; background:var(--green); padding:8px 11px; border-radius:6px; text-decoration:none; font-size:13px; }
-     .validation-box { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
-     .exploration-controls { display:grid; grid-template-columns:repeat(4,minmax(130px,1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
-     .exploration-controls.performance-controls { grid-template-columns:repeat(6,minmax(0,1fr)); }
+     /* 参数表按实际可用宽度自动排布：列数随容器变化，不预设每行控件数量。 */
+     .validation-box { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
+     .exploration-controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
+     .exploration-controls.performance-controls { grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); }
      .exploration-region-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
      .exploration-region-tools .active { background:var(--accent); color:#fff; }
      .exploration-result-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,540px); gap:12px; align-items:start; }
@@ -2890,7 +2910,6 @@ INDEX_HTML = r"""<!doctype html>
      .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
      @media (max-width:1050px) { main { grid-template-columns:1fr; } }
      @media (max-width:1050px) { .exploration-result-grid { grid-template-columns:minmax(0,1fr); } }
-     @media (max-width:1050px) { .exploration-controls.performance-controls { grid-template-columns:repeat(3,minmax(0,1fr)); } }
      @media (max-width:760px) { .chart-grid,.validation-box,.exploration-controls,.trend-controls { grid-template-columns:1fr; } .row,.condition-row { grid-template-columns:1fr; } }
   </style>
   <!-- Vendored plotly.js v4.1.1 (MIT, see plotly.min.js.LICENSE); local asset, no CDN. -->
@@ -2906,12 +2925,11 @@ INDEX_HTML = r"""<!doctype html>
       <div class="group">
         <div class="group-title">1. 历史数据</div>
         <label>CSV / XLSX / TXT 文件<input id="fileInput" type="file" accept=".csv,.xlsx,.txt,text/csv,text/plain,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label>
-        <div class="actions"><button id="uploadButton">上传并读取列</button><button id="resetButton" class="secondary">清空</button></div>
+        <div class="actions"><button id="uploadButton">上传并读取列</button><button id="resetButton" class="secondary">清空</button><button id="inspectButton" class="secondary" disabled>检查时间轴与数值列</button></div>
         <div class="row">
           <label>时间列<select id="timestampColumn"></select></label>
           <label>CSV 编码<select id="encoding"><option value="utf-8-sig">UTF-8-SIG</option><option value="gb18030">GB18030</option></select></label>
         </div>
-        <button id="inspectButton" class="secondary" disabled>检查时间轴与数值列</button>
       </div>
       <div class="group">
         <div class="group-title">2. 建模 Tag</div>
@@ -2935,7 +2953,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="stateFilterConditions" class="condition-list"><span class="help">把 Tag 角色设为“状态过滤”后，可在此配置上下限；多个条件按 AND 组合。状态过滤 Tag 不进入 PCA 连续输入。</span></div>
         <div class="row"><label>预览训练窗口<select id="preprocessingPreviewWindow" disabled></select></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
-        <label>模型名称<input id="modelName" value="D330_DPCA_Model_V1"></label>
+        <label>模型名称<input id="modelName" value="DPCA_Model_V1"></label>
          <h3>建模质量检查</h3>
          <div class="quality-action-row">
          <button id="qualityButton" class="secondary" disabled>执行建模质量检查</button>
@@ -2953,10 +2971,6 @@ INDEX_HTML = r"""<!doctype html>
           <div id="qualityIssues" class="empty">执行建模质量检查后，显示需要确认或阻止训练的 Tag。</div>
         </div>
         <div class="actions"><button id="trainExploratoryButton" class="secondary" disabled>建立探索模型</button><button id="trainButton" disabled>建立正常状态候选模型</button></div>
-        <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>
-        <div class="notice">正常状态候选模型尚未验证，不能发布或用于部署。</div>
-        <div class="notice">聚类结果必须由工程师判断，不能自动定义正常状态。</div>
-        <div class="notice">探索模型和正常状态候选模型均不提供根因、因果或控制建议。</div>
       </div>
       <div id="status" class="status info" role="status" aria-live="polite">请先上传 CSV。</div>
       <div class="help">时间戳重复、乱序或无法满足采样时间轴契约会阻断训练；建模 Tag 或启用状态过滤列中的缺失、非数字、NaN、Inf 在重采样后删除整行并重新分段；不插值、不补点、不自动修复异常值。</div>
@@ -3025,6 +3039,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="explorationEmpty" class="empty">运行状态探索后显示摘要、告警、PC1/PC2、Cluster 时间轴和候选窗口。</div>
         <div id="explorationContent" hidden>
           <h3>结果概览</h3>
+          <div id="explorationClusterQuality"></div>
           <div id="explorationOverview" class="metrics"></div>
           <div id="explorationWarnings" class="compact-list"><span class="help">暂无结构化告警。</span></div>
           <h3>预处理损失摘要</h3>
@@ -3089,6 +3104,8 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div id="clusterEmpty" class="empty">检查数据后，可对选定历史窗口生成运行状态聚类。</div>
         <div id="clusterContent" hidden>
+          <h3>结果概览</h3>
+          <div id="assistanceClusterQuality"></div>
           <div id="clusterMetrics" class="metrics"></div>
           <div class="chart-card"><h3>聚类状态空间 PC1 / PC2</h3><div id="clusterChart" class="chart"></div></div>
           <h3>Cluster 概览与代表性连续时段</h3>
@@ -3385,8 +3402,26 @@ function explorationNumber(value,digits=2) { return value===null||value===undefi
 function explorationPercent(value) { return value===null||value===undefined||!Number.isFinite(Number(value))?"—":`${(Number(value)*100).toFixed(1)}%`; }
 const EXPLORATION_CLUSTER_PALETTE=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
 function explorationClusterColor(clusterId) { return EXPLORATION_CLUSTER_PALETTE[(explorationClusterNumber(clusterId)-1)%EXPLORATION_CLUSTER_PALETTE.length]; }
+function renderClusterQuality(container, quality, perspective) {
+  if(!quality||quality.unavailable_reasons?.analysis) { container.innerHTML=`<div class="chart-card"><h3>聚类质量摘要</h3><div class="empty">${escapeHtml(quality?.unavailable_reasons?.analysis||"尚无聚类分析数据，请运行分析。")}</div></div>`; return; }
+  const reasons=quality.unavailable_reasons||{}, variance=quality.explained_variance||{};
+  const number=value=>typeof value==="number"&&Number.isFinite(value)?value.toFixed(3):"—";
+  const percent=value=>typeof value==="number"&&Number.isFinite(value)?`${(value*100).toFixed(1)}%`:"—";
+  const metrics=metric("Cluster 数量",quality.cluster_count)+metric("Silhouette Score",number(quality.silhouette_score))+metric("PC1贡献",percent(variance.pc1))+metric("PC2贡献",percent(variance.pc2));
+  const centers=(quality.centers||[]).map(item=>`<tr><td>${escapeHtml(item.cluster)}</td><td>${number(item.pc1)}</td><td>${number(item.pc2)}</td></tr>`).join("");
+  const features=(quality.top_features||[]).map(item=>`<li>${escapeHtml(item.tag)}（标准化差异 ${number(item.standardized_difference)}；原始均值差 ${number(item.mean_difference)}）</li>`).join("");
+  const temporal=quality.temporal_metrics;
+  const time=temporal?`<div class="metrics">${metric("平均持续时间",`${number(temporal.average_duration_hours)} h`)}${metric("最长连续时间",`${number(temporal.longest_duration_hours)} h`)}${metric("状态切换次数",temporal.state_switch_count)}</div><p class="help">按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。</p>`:`<div class="empty">${escapeHtml(reasons.temporal_metrics||"无时间数据")}</div>`;
+  const centerCard=`<div class="chart-card"><h3>Cluster中心与分离情况</h3><p>中心排列：${escapeHtml(quality.center_orientation)}</p><div class="table-wrap"><table><thead><tr><th>Cluster</th><th>PC1</th><th>PC2</th></tr></thead><tbody>${centers}</tbody></table></div><p class="help">中心方差占比达到80%时归为主要沿该主元；仅描述 PC1/PC2 平面。</p></div>`;
+  const featureCard=`<div class="chart-card"><h3>主要区分变量</h3>${features?`<ol>${features}</ol>`:`<div class="empty">${escapeHtml(reasons.top_features||"无有效建模 Tag")}</div>`}<p class="help">仅比较建模 Tag：Cluster 均值极差 / 全部有效样本标准差，Top5；表示统计差异，不表示因果。</p></div>`;
+  const timeCard=`<div class="chart-card"><h3>时间连续性</h3>${time}</div>`;
+  const title=perspective==="state_exploration"?"状态探索工程提示":"状态结构解释";
+  const details=perspective==="state_exploration"?centerCard+timeCard+featureCard:centerCard+featureCard+timeCard;
+  container.innerHTML=`<div class="chart-card"><h3>聚类质量摘要</h3><div class="metrics">${metrics}</div><p class="help">Silhouette 基于全部保留主元。${quality.silhouette_approximate?`大样本采用固定随机抽样近似（${quality.silhouette_sample_count} 点，覆盖全部 Cluster）。`:""}${escapeHtml(reasons.silhouette_score||"")} ${escapeHtml(reasons.explained_variance||"")}</p></div><div class="chart-card"><h3>${title}</h3><p>${escapeHtml(quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。")}</p><p class="help">弱分离提示阈值：Silhouette &lt; 0.25；连续变化提示：PC1贡献 ≥60% 且中心主要沿 PC1。</p></div>${details}`;
+}
 function renderStateExploration(data) {
   el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
+  renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration");
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
   el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("完整样本",data.full_point_count)+metric("绘制点数",(data.cluster_series_full||data.cluster_series||[]).length);
   const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
@@ -3913,6 +3948,7 @@ function renderPerformance(data) {
 
 function renderClustering(data) {
   el("clusterEmpty").hidden=true; el("clusterContent").hidden=false;
+  renderClusterQuality(el("assistanceClusterQuality"),data.cluster_quality,"cluster_assistance");
   el("clusterMetrics").innerHTML=metric("聚类动态样本",data.sample_count)+metric("状态空间主元",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("Cluster 数量",data.clusters.length);
   clusterScatter(el("clusterChart"),data.points);
   const body=el("clusterTable"); body.replaceChildren();

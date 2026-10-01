@@ -36,6 +36,153 @@ _SCATTER_RENDERER = re.compile(
     re.DOTALL,
 )
 
+_FORM_WIDTH_STYLE = r"""
+<style id="semanticFormWidthStyle">
+  /* 五类语义宽度仅约束控件；容器继续负责已有 Grid / flex-wrap 排布。 */
+  main {
+    --field-number-width:140px;
+    --field-select-width:220px;
+    --field-datetime-width:240px;
+    --field-tag-width:340px;
+    --field-text-width:420px;
+    --field-multiple-width:420px;
+  }
+  main :is(input, select, textarea) { min-width:0; max-width:100%; }
+  main .panel > *, main .inner-panel > * { min-width:0; max-width:100%; }
+  main input[type="number"] { width:min(100%,var(--field-number-width)); }
+  main select { width:min(100%,var(--field-select-width)); }
+  main input[type="datetime-local"] { width:min(100%,var(--field-datetime-width)); }
+  /* Tag、变量、列和窗口选择有长名称，使用同一宽度语义。 */
+  main select:is(#timestampColumn, #qualityTagSelect, #explorationPerformanceTag,
+    #labelColumn, #preprocessingPreviewTagSelect, #preprocessingPreviewWindow,
+    #dpTrendVar1, #dpTrendVar2, #dpTrendVar3, #dpTrendVar4) {
+    width:min(100%,var(--field-tag-width));
+  }
+  main select[multiple] { width:min(100%,var(--field-multiple-width)); }
+  main input:not([type]), main input[type="text"] {
+    width:min(100%,var(--field-text-width));
+  }
+  /* 明确的全宽例外：多行备注、搜索、文件上传和条件行内的单元格。 */
+  main textarea, main #tagSearch, main input[type="file"] { width:100%; }
+  main input[type="range"] { width:min(100%,var(--field-select-width)); }
+  /* 数据源字段按各自语义宽度紧凑左对齐，不各占半个工作台。 */
+  main .row:has(> label > #timestampColumn) {
+    display:flex; flex-wrap:wrap; align-items:end;
+  }
+  main .row:has(> label > #timestampColumn) > label { flex:0 1 var(--field-select-width); min-width:0; max-width:100%; }
+  main .row:has(> label > #timestampColumn) > label:has(> #timestampColumn) { flex-basis:var(--field-tag-width); }
+  /* 数据源：文件选择仍独占一行，上传/清空/检查与时间列、编码列共 5 个控件同排，
+     两个 select 按语义基准分掉剩余宽度。 */
+  @media (min-width:761px) {
+    main .group:has(#uploadButton) {
+      display:grid;
+      grid-template-columns:auto auto auto minmax(0,1fr) minmax(0,1fr);
+      align-items:end;
+    }
+    main .group:has(#uploadButton) > label { grid-column:1 / -1; }
+    main .group:has(#uploadButton) > :is(.actions, .row) { display:contents; }
+    main .group:has(#uploadButton) > :is(.actions, .row) > label > select { width:100%; }
+  }
+  @media (max-width:760px) {
+    main :is(input, select, textarea) { min-width:0; max-width:100%; }
+    main .row:has(> label > #timestampColumn) { display:grid; grid-template-columns:minmax(0,1fr); }
+  }
+</style>
+"""
+
+
+_FORM_LAYOUT_STYLE = r"""
+<style id="compactFormLayoutStyle">
+  main :is(.row, .condition-row, .validation-box, .exploration-controls,
+    .trend-controls, .dp-trend-controls, .dp-scatter-controls,
+    .training-parameter-grid, .quality-tag-controls) {
+    display:flex;
+    flex-wrap:wrap;
+    gap:var(--space-2);
+    justify-content:start;
+    align-items:end;
+  }
+  main :is(.row, .condition-row, .validation-box, .exploration-controls,
+    .trend-controls, .dp-trend-controls, .dp-scatter-controls,
+    .training-parameter-grid, .quality-tag-controls) > * {
+    min-width:0;
+    max-width:100%;
+  }
+  main :is(.row, .condition-row, .validation-box, .exploration-controls,
+    .trend-controls, .dp-trend-controls, .dp-scatter-controls,
+    .training-parameter-grid, .quality-tag-controls) > label { flex:0 0 auto; }
+  main :is(.row, .condition-row, .validation-box, .exploration-controls,
+    .trend-controls, .dp-trend-controls, .dp-scatter-controls,
+    .training-parameter-grid, .quality-tag-controls) > :is(button, .download) {
+    flex:0 0 auto;
+    width:auto;
+  }
+  main .condition-row > label:first-child > select,
+  main .dp-scatter-controls select { width:min(100%,var(--field-tag-width)); }
+  main .dp-trend-bar > label { flex:0 0 auto; max-width:none; }
+  main .preprocessing-preview-controls {
+    display:flex;
+    flex-wrap:wrap;
+    gap:var(--space-2);
+    justify-content:start;
+    align-items:end;
+    margin-top:var(--space-2);
+  }
+  main .preprocessing-preview-controls > label { flex:0 0 auto; }
+  main .preprocessing-preview-controls > div { flex:1 1 300px; min-width:0; max-width:100%; }
+  main #engineeringPanel .detail-fields {
+    display:flex;
+    flex-wrap:wrap;
+    gap:var(--space-1);
+    justify-content:start;
+    align-items:end;
+    max-width:none;
+  }
+  main #engineeringPanel .detail-fields > .row { display:contents; }
+  main #engineeringPanel .detail-fields label:has(> input:not([type])),
+  main #engineeringPanel .detail-fields label:has(> input[type="text"]),
+  main #engineeringPanel .detail-fields label:has(> select) { flex:0 1 var(--field-select-width); }
+  main #engineeringPanel .detail-fields label:has(> input[type="number"]) {
+    flex:0 0 var(--field-number-width);
+  }
+  main #engineeringPanel .detail-fields > .row > label { align-self:end; }
+  main #engineeringPanel .detail-fields label:has(> textarea) { flex:0 0 100%; width:100%; }
+  main #engineeringPanel .detail-fields > button,
+  main .candidate-manager .row > button,
+  main .dp-trend-bar > button,
+  main :is(.actions, .tag-toolbar, .exploration-region-tools, .candidate-tool-tabs,
+    .preprocessing-preview-controls) > button {
+    flex:0 0 auto;
+    width:auto;
+  }
+  @media (max-width:760px) {
+    main :is(.row, .condition-row, .validation-box, .exploration-controls,
+      .trend-controls, .dp-trend-controls, .dp-scatter-controls,
+      .training-parameter-grid, .quality-tag-controls) {
+      display:grid;
+      grid-template-columns:minmax(0,1fr);
+      justify-content:start;
+    }
+    main .exploration-controls.performance-controls { grid-template-columns:minmax(0,1fr); }
+    main :is(.row, .condition-row, .validation-box, .exploration-controls,
+      .trend-controls, .dp-trend-controls, .dp-scatter-controls,
+      .training-parameter-grid, .quality-tag-controls) > label { width:100%; }
+    main :is(.row, .condition-row, .validation-box, .exploration-controls,
+      .trend-controls, .dp-trend-controls, .dp-scatter-controls,
+      .training-parameter-grid, .quality-tag-controls,
+      .preprocessing-preview-controls) > :is(button, .download) {
+      justify-self:start;
+      width:auto;
+    }
+    main .preprocessing-preview-controls { display:grid; grid-template-columns:minmax(0,1fr); }
+    main #engineeringPanel .detail-fields { display:grid; grid-template-columns:minmax(0,1fr); }
+    main #engineeringPanel .detail-fields label:has(> textarea) { grid-column:1; }
+    main #engineeringPanel .detail-fields > button { justify-self:start; }
+  }
+</style>
+"""
+
+
 _FORM_ALIGNMENT_STYLE = r"""
 <style id="webFormAlignmentStyle">
   #engineeringPanel .batch-config {
@@ -52,16 +199,15 @@ _FORM_ALIGNMENT_STYLE = r"""
     line-height:1.4;
   }
   #engineeringPanel .batch-config .actions {
-    display:grid;
-    /* 中间列是文件选择框，宽度必须可收缩到 0：1100px 视口下侧栏占 260px 后
-       内容区只剩 713px，而四个 max-content 按钮 + 48px gap 固定占 509px，
-       任何正的 minmax 下限都会让容器撑破并造成整页横向滚动。 */
-    grid-template-columns:max-content minmax(0,1fr) max-content max-content max-content;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:flex-end;
     gap:var(--space-2);
-    align-items:end;
   }
   #engineeringPanel .batch-config .actions > .download,
   #engineeringPanel .batch-config .actions > button {
+    flex:0 0 auto;
+    width:auto;
     display:inline-flex;
     align-items:center;
     justify-content:center;
@@ -72,9 +218,10 @@ _FORM_ALIGNMENT_STYLE = r"""
   #engineeringPanel .batch-config .actions > .download {
     min-width:var(--batch-action-width);
   }
+  /* 文件选择控件吃掉行内剩余宽度，放不下就整行换行；按钮不再参与固定列宽预算。 */
   #engineeringPanel .batch-config .actions > label.secondary {
+    flex:1 1 280px;
     display:grid;
-    grid-template-rows:auto 42px;
     gap:4px;
     align-content:start;
     min-width:0;
@@ -145,23 +292,6 @@ _FORM_ALIGNMENT_STYLE = r"""
     justify-self:start;
   }
 
-  /* 断点与工作台主布局（1050px）对齐：主布局塌成单列后，批量配置也必须同时收敛，
-     否则 900~1050px 之间会同时出现“侧栏横条 + 批量配置两列硬切”的混合密度。
-     窄屏改回 intrinsic-width 横向优先 + 自然换行：2 列网格会把三个固定宽按钮
-     硬塞进两格，首行只剩一个 119px 下载按钮、右列空置，且行高 63/42 混排。 */
-  @media (max-width:1050px) {
-    #engineeringPanel .batch-config .actions {
-      display:flex;
-      flex-wrap:wrap;
-      align-items:flex-end;
-      gap:var(--space-2);
-    }
-    #engineeringPanel .batch-config .actions > * {
-      flex:0 0 auto;
-      width:auto;
-    }
-    #engineeringPanel .batch-config .actions > label.secondary { flex:1 1 240px; }
-  }
   @media (max-width:760px) {
     /* 最窄一档让文件选择控件独占一行。 */
     #engineeringPanel .batch-config .actions > label.secondary { flex:1 1 100%; }
@@ -515,26 +645,34 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step-status { align-self:start; color:var(--muted); font-size:12px; white-space:nowrap; }
   .workflow-step.active .workflow-step-status { color:var(--accent); font-weight:600; }
   .workflow-step.complete .workflow-step-status { color:var(--green); }
-  .tag-workspace { display:grid; grid-template-columns:minmax(230px,.8fr) minmax(0,1.2fr); gap:var(--space-3); align-items:start; }
+  .tag-workspace { display:grid; grid-template-columns:minmax(276px,.36fr) minmax(0,1.7fr); gap:var(--space-3); align-items:start; }
   .tag-workspace > *, .tag-detail { min-width:0; }
   #configPanel > .group { margin-bottom:var(--space-3); }
   #configPanel > #qualityPanel { display:grid; gap:var(--space-2); margin-top:var(--space-4); }
   .candidate-manager, .shared-preprocessing, .training-configuration { border-color:#bfd7ef; }
-  .candidate-manager .row { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .candidate-manager .row > * { min-width:0; }
-  /* 候选时间/备注/按钮四项同排；时间控件需要更多宽度，备注与按钮更窄。 */
-  .candidate-manager .candidate-window-row {
-    grid-template-columns:minmax(0,1.5fr) minmax(0,1.5fr) minmax(0,1.4fr) max-content;
-  }
   .candidate-manager .candidate-window-row > label { min-width:0; }
   .candidate-tool-tabs { display:flex; gap:var(--space-1); flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); padding-bottom:var(--space-2); }
   .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   .candidate-tool-panel { display:none; gap:var(--space-3); }
   .candidate-tool-panel.active { display:grid; }
-  .candidate-analysis-range { display:grid; grid-template-columns:repeat(2,minmax(0,240px)); gap:var(--space-2); }
-  .candidate-analysis-range > label { min-width:0; }
+  /* 日期控件按内容取宽，空间不足时由共用 .row 规则换行。 */
+  .candidate-analysis-range { display:grid; width:fit-content; max-width:100%; }
+  .candidate-analysis-range label { min-width:0; }
+  /* 说明最多占一段可读宽度；与日期控件放不下时自然换到下一行。 */
+  .candidate-analysis-group { display:flex; flex-wrap:wrap; align-items:flex-end; gap:var(--space-2) var(--space-3); }
+  .candidate-analysis-group > .group-title { flex:0 0 100%; }
+  .candidate-analysis-group > .help { flex:1 1 280px; min-width:0; max-width:520px; }
   .shared-preprocessing, .training-configuration { display:grid; gap:var(--space-2); }
+  /* 共享参数组的标题与紧随其后的说明同排：标题占左列（max-content），说明占右列并在
+     空间不足时自行折行；其余内容仍占整行。只在 ≥761px 生效，窄屏保持默认单列。 */
+  @media (min-width:761px) {
+    .shared-preprocessing { grid-template-columns:max-content minmax(0,1fr); }
+    .shared-preprocessing > * { grid-column:1 / -1; }
+    .shared-preprocessing > .group-title { grid-column:1; align-self:start; }
+    .shared-preprocessing > .group-title + .help { grid-column:2; align-self:start; }
+  }
   .panel.active { padding:var(--space-1) 0 var(--space-4); }
   .panel.active > h3 { margin:var(--space-1) 0 0; }
   .advanced-parameters {
@@ -550,38 +688,21 @@ _WORKBENCH_UI_STYLE = r"""
   .advanced-parameters[open] > summary { margin-bottom:var(--space-2); }
   .advanced-parameters > .row { margin-top:var(--space-2); }
   .training-parameter-grid {
-    display:grid;
-    grid-template-columns:repeat(3,minmax(0,1fr));
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:start;
+    align-items:end;
     gap:var(--space-2);
   }
   .training-parameter-grid > label,
   .filter-parameter-control,
   .model-name-field { min-width:0; }
   .filter-parameter-control > label { min-width:0; }
-  .model-name-field { grid-column:span 2; }
-  /* 共享预处理五项同排；列宽按内容收敛并左对齐，避免等分后每个输入框过宽。 */
-  .shared-preprocessing .preprocessing-parameter-row {
-    grid-template-columns:repeat(5,minmax(0,1fr));
-  }
-  /* 状态过滤块：最大 Lag、Lag 步长与“添加状态过滤条件”同排，按内容收敛列宽并贴底对齐。 */
-  .shared-preprocessing .state-filter-parameter-row {
-    grid-template-columns:repeat(3,max-content);
-    justify-content:start;
-  }
-  .shared-preprocessing .state-filter-parameter-row > * { min-width:0; }
-  .preprocessing-preview-controls {
-    display:grid;
-    grid-template-columns:minmax(0,1fr) max-content;
-    gap:var(--space-2);
-    align-items:end;
-    margin-top:var(--space-2);
-  }
-  .preprocessing-preview-controls > label { min-width:0; }
   .preprocessing-preview-area,
   .preprocessing-preview-area #preprocessingPreview { width:100%; min-width:0; }
   .preprocessing-preview-area #preprocessingPreview { margin-top:var(--space-2); }
   .preprocessing-preview-area #preprocessingPreviewTagSelect {
-    width:300px;
+    width:min(100%,var(--field-tag-width));
     min-width:0;
     max-width:100%;
   }
@@ -643,8 +764,7 @@ _WORKBENCH_UI_STYLE = r"""
   #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
   .validation-box, .exploration-controls { align-items:end; }
   .validation-box > button, .exploration-controls > button, .validation-box > .download, .exploration-controls > .download { align-self:end; }
-  /* 验证/探索表单里的按钮是 Command，不是 Choice Option：默认按内容取宽，
-     不该被 minmax(130px,1fr) 拉成整列宽，否则与相邻输入框同宽、失去按钮识别度。 */
+  /* 验证/探索表单里的按钮按内容取宽，不随相邻字段拉伸。 */
   .validation-box > button, .validation-box > .download {
     justify-self:start;
     width:auto;
@@ -701,31 +821,21 @@ _WORKBENCH_UI_STYLE = r"""
     .tag-workspace { grid-template-columns:minmax(0,1fr); }
     .candidate-analysis-range { grid-template-columns:minmax(0,1fr); }
     .row { grid-template-columns:minmax(0,1fr); }
-    .shared-preprocessing .preprocessing-parameter-row { grid-template-columns:minmax(0,1fr); }
-    .shared-preprocessing .state-filter-parameter-row { grid-template-columns:minmax(0,1fr); }
-    .candidate-manager .row { grid-template-columns:minmax(0,1fr); }
-    .candidate-manager .candidate-window-row { grid-template-columns:minmax(0,1fr); }
-    .candidate-manager .row > button { width:100%; }
     .candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }
     .candidate-tool-tabs > * { flex:0 0 auto; width:auto; }
     #engineeringPanel .detail-fields .row,
     .validation-box, .exploration-controls, .trend-controls,
     .condition-row { grid-template-columns:minmax(0,1fr); }
     .actions { align-items:stretch; }
-    .panel .actions > *, .inner-panel .actions > * { width:100%; }
+    /* 表单字段填满列宽；command button 保持 intrinsic 宽度并自然换行。 */
+    .panel .actions > label, .inner-panel .actions > label { width:100%; }
     .tabs > *, .inner-tabs > * { flex:1 1 0; width:auto; min-width:0; }
-    .validation-box > *, .exploration-controls > * { width:100%; }
     .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .metric strong { font-size:20px; }
     .table-wrap { max-width:100%; }
   }
-  @media (max-width:1100px) {
-    .training-parameter-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  }
   @media (max-width:520px) {
-    .training-parameter-grid { grid-template-columns:minmax(0,1fr); }
     .metrics { grid-template-columns:minmax(0,1fr); }
-    .model-name-field { grid-column:auto; }
   }
 </style>
 """
@@ -1156,7 +1266,7 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
     candidate_panel = "\n".join(
         (
             '      <div id="candidatePanel" class="panel">',
-            '        <div class="group"><div class="group-title">候选分析范围</div>',
+            '        <div class="group candidate-analysis-group"><div class="group-title">候选分析范围</div>',
             '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
             '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。</div></div>',
             parameter_group,
@@ -1434,22 +1544,22 @@ def _stabilize_workbench_html(html: str) -> str:
     exploratory_button = _element_with_unique_id(
         model_configuration_group, "trainExploratoryButton", "button", "探索模型入口"
     )
-    model_configuration_group = model_configuration_group.replace(exploratory_button, "", 1)
     exploratory_tools = (
         '        <details class="advanced-parameters exploratory-model-tools">\n'
         '          <summary>高级操作：建立探索模型</summary>\n'
         '          <div class="help">探索模型仅用于兼容保留的状态空间/聚类辅助路径，不属于正常状态主流程。</div>\n'
         f'          <div class="actions">{exploratory_button}</div>\n'
-        '          <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>\n'
-        '          <div class="notice">探索模型不能执行独立验证，也不能作为正常状态模型。</div>\n'
-        '        </details>'
+        '        </details>\n'
     )
-    exploratory_notice = (
-        '        <div class="notice">探索模型仅用于状态空间浏览和聚类辅助，不能作为正常状态模型。</div>'
-    )
-    if model_configuration_group.count(exploratory_notice) != 1:
+    group_close = "      </div>"
+    if not model_configuration_group.endswith(group_close):
         raise ValueError("无法固定Web工作台结构：探索模型入口")
-    model_configuration_group = model_configuration_group.replace(exploratory_notice, exploratory_tools, 1)
+    model_configuration_group = (
+        model_configuration_group[: -len(group_close)].replace(exploratory_button, "", 1).rstrip()
+        + "\n"
+        + exploratory_tools
+        + group_close
+    )
     if 'id="candidateWindows"' in parameter_group + model_configuration_group:
         raise ValueError("无法固定候选窗口或训练参数区域")
     status_area = (status_marker + status_area).replace(
@@ -1555,7 +1665,7 @@ def apply_model_results_ui(html: str) -> str:
     result = _stabilize_workbench_html(result)
     result = result.replace(
         "</head>",
-        f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n{_MODEL_RESULTS_STYLE}\n</head>",
+        f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n{_MODEL_RESULTS_STYLE}\n{_FORM_WIDTH_STYLE}\n{_FORM_LAYOUT_STYLE}\n</head>",
         1,
     )
     return result.replace(

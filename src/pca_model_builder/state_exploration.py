@@ -8,6 +8,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+from .cluster_quality import analyze_cluster_quality
 from .clustering import cluster_model_scores
 from .dpca import fit_dpca
 from .preprocessing import PreprocessingConfig, PreprocessingResult, preprocess_window
@@ -240,6 +241,12 @@ def run_state_exploration(
             "pc_columns": list(clustered.pc_columns),
             "cluster_count": exploration_config.cluster_count,
         },
+        "cluster_quality": analyze_cluster_quality(
+            points.loc[:, list(clustered.pc_columns)], points["cluster_id"],
+            points.index, processed.resampled, tag_columns,
+            model.explained_variance_ratio, preprocessing_config.sample_interval_minutes,
+            cluster_centers=centers,
+        ),
         "cluster_centers": {
             cluster_id: [float(value) for value in center]
             for cluster_id, center in centers.items()

@@ -1,4 +1,16 @@
-golden_vectors/v1/*.csv text eol=lf
-golden_vectors/v1/*.json text eol=lf
-golden_vectors/v1/*.pcamodel binary
-golden_vectors/v1/*.pcadeploy binary
+* text=auto
+
+# Source and documentation files use LF
+*.py   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Windows command scripts use CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf

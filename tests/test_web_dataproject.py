@@ -54,6 +54,14 @@ def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls()
     assert "normalEnd" not in html
 
 
+def test_trend_bar_inputs_cannot_overflow_their_labels() -> None:
+    html = web_dataproject.INDEX_HTML
+
+    # datetime-local 的固有宽度超过 label 的 flex 宽度时，min-width:auto 会让输入框
+    # 盖住相邻输入框；必须显式 min-width:0 才能收缩。
+    assert ".dp-trend-bar input { min-width:0; }" in html
+
+
 def test_missing_values_are_not_converted_to_zero_by_frontend_contract() -> None:
     html = web_dataproject.INDEX_HTML
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from html.parser import HTMLParser
 import json
 from pathlib import Path
 import shutil
@@ -453,12 +454,16 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert 'class="batch-config"' in html
     assert 'data-inner="batchPanel"' not in html
     assert "#engineeringPanel .batch-config .actions" in html
-    assert (
-        "grid-template-columns:max-content minmax(0,1fr) "
-        "max-content max-content max-content;"
-    ) in html
+    # 批量配置是内容驱动的 flex-wrap：文件选择吃剩余宽度，按钮按 intrinsic 宽度换行，
+    # 不再按“5 个固定列宽刚好塞进一行”的预算排布。
+    batch_actions = html.split("#engineeringPanel .batch-config .actions {", 1)[1].split(
+        "}", 1
+    )[0]
+    assert "display:flex;" in batch_actions
+    assert "flex-wrap:wrap;" in batch_actions
+    assert "grid-template-columns" not in batch_actions
     assert "#engineeringPanel .batch-config .actions > label.secondary" in html
-    assert "grid-template-rows:auto 42px;" in html
+    assert "flex:1 1 280px;" in html
     assert "#engineeringPanel .batch-config #tagConfigFile" in html
     assert "#clusterPanel #clusterButton" in html
     assert "align-self:end;" in html
@@ -473,6 +478,111 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
         ".actions { display:flex"
     )
 
+
+def test_shared_preprocessing_title_and_help_share_one_row() -> None:
+    html = web_model_results.INDEX_HTML
+
+    # 标题占左列、紧随其后的说明占右列并自行折行；其余内容（参数行、子标题）仍占整行。
+    for rule in (
+        ".shared-preprocessing { grid-template-columns:max-content minmax(0,1fr); }",
+        ".shared-preprocessing > * { grid-column:1 / -1; }",
+        ".shared-preprocessing > .group-title { grid-column:1; align-self:start; }",
+        ".shared-preprocessing > .group-title + .help { grid-column:2; align-self:start; }",
+    ):
+        assert rule in html
+    # 只在 ≥761px 生效：窄屏单列时若仍保留 grid-column:2 会生成隐式第二列，把标题压成 0 宽。
+    assert ".shared-preprocessing { grid-template-columns:minmax(0,1fr); }" not in html
+    assert "@media (min-width:761px) {\n    .shared-preprocessing { grid-template-columns:max-content minmax(0,1fr); }" in html
+
+
+def test_candidate_analysis_range_splits_available_width_without_overlap() -> None:
+    html = web_model_results.INDEX_HTML
+
+    range_rule = html.split(".candidate-analysis-range {", 1)[1].split("}", 1)[0]
+    assert "width:fit-content;" in range_rule
+    assert "max-width:100%;" in range_rule
+    assert ".candidate-analysis-range label { min-width:0; }" in html
+    assert 'class="group candidate-analysis-group"' in html
+    assert ".candidate-analysis-group { display:flex; flex-wrap:wrap;" in html
+    assert ".candidate-analysis-group > .group-title { flex:0 0 100%; }" in html
+    assert ".candidate-analysis-group > .help { flex:1 1" in html
+    assert "@container (max-width:" not in html
+    layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
+    assert ".row" in layout and "flex-wrap:wrap;" in layout
+
+def test_data_source_commands_share_one_intrinsic_width_action_row() -> None:
+    html = web_model_results.INDEX_HTML
+
+    row = html.split('<div class="actions"><button id="uploadButton">', 1)[1].split(
+        "</div>", 1
+    )[0]
+    assert 'id="resetButton"' in row
+    # 「检查时间轴与数值列」不再独占整行：与上传/清空同排，按内容取宽，窄屏自然换行。
+    assert 'id="inspectButton"' in row
+    assert html.index('id="inspectButton"') < html.index("<label>时间列")
+    # 宽度规则由 .actions > button 提供，不依赖按钮自身写死像素宽度。
+    assert ".actions > button, .actions > .download { flex:0 0 auto; width:auto; }" in html
+    # 上传/清空/检查与时间列、编码列共 5 个控件同排，两个 select 分享剩余宽度。
+    style = html.split('<style id="semanticFormWidthStyle">', 1)[1].split('</style>', 1)[0]
+    source_group = style.split("main .group:has(#uploadButton) {", 1)[1].split('}', 1)[0]
+    assert "display:grid;" in source_group
+    assert "grid-template-columns:auto auto auto minmax(0,1fr) minmax(0,1fr);" in source_group
+    assert "main .group:has(#uploadButton) > label { grid-column:1 / -1; }" in style
+    assert "main .group:has(#uploadButton) > :is(.actions, .row) { display:contents; }" in style
+    assert "main .group:has(#uploadButton) > :is(.actions, .row) > label > select { width:100%; }" in style
+
+
+def test_workbench_layout_rules_keep_buttons_intrinsic_and_grids_shrinkable() -> None:
+    html = web_model_results.INDEX_HTML
+    layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
+    desktop = layout.split("@media (max-width:760px)", 1)[0]
+
+    for group in (
+        ".row",
+        ".condition-row",
+        ".validation-box",
+        ".exploration-controls",
+        ".trend-controls",
+        ".dp-trend-controls",
+        ".dp-scatter-controls",
+        ".training-parameter-grid",
+        ".quality-tag-controls",
+    ):
+        assert group in desktop
+    assert "display:flex;" in desktop
+    assert "flex-wrap:wrap;" in desktop
+    assert "justify-content:start;" in desktop
+    assert "grid-template-columns" not in desktop
+    assert "1fr" not in desktop
+    assert "flex:0 0 auto;" in desktop and "width:auto;" in desktop
+    assert "main .condition-row > label:first-child > select" in desktop
+    assert "main .dp-scatter-controls select" in desktop
+    assert "main #engineeringPanel .detail-fields > .row { display:contents; }" in desktop
+    assert 'label:has(> input:not([type]))' in desktop
+    assert 'label:has(> select) { flex:0 1 var(--field-select-width); }' in desktop
+    assert 'label:has(> input[type="number"])' in desktop
+    assert 'flex:0 0 var(--field-number-width);' in desktop
+    assert "label:has(> textarea) { flex:0 0 100%;" in desktop
+
+    narrow = layout.split("@media (max-width:760px)", 1)[1]
+    assert "grid-template-columns:minmax(0,1fr);" in narrow
+    for structure in (
+        'id="configPanel"',
+        'id="candidatePanel"',
+        'class="row candidate-window-row"',
+        'id="performanceConditions"',
+        'id="modelPanel"',
+        'class="training-parameter-grid"',
+        'id="validationPanel"',
+        'id="releasePanel"',
+        'id="frozenReplayStart"',
+        'id="engineeringMin"',
+        'id="alarmMax"',
+    ):
+        assert structure in html
+    source = (PROJECT_ROOT / "src" / "pca_model_builder" / "web.py").read_text(encoding="utf-8")
+    assert 'row.className="condition-row"' in source
+    assert 'row.append(columnLabel,minimum,maximum,remove)' in source
 
 def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     html = web_model_results.INDEX_HTML
@@ -558,7 +668,7 @@ def test_final_web_uses_shared_control_and_responsive_layout_tokens() -> None:
         "@media (max-width:1050px)",
         "main { grid-template-columns:minmax(0,1fr); }",
         "@media (max-width:760px)",
-        ".candidate-manager .row { grid-template-columns:minmax(0,1fr); }",
+
         ".candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }",
     ):
         assert rule in html
@@ -865,11 +975,13 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     ):
         assert element_id in row
     assert row.count("<label>") == 3
-    # 候选时间、备注与按钮四项同排，按钮按文案宽度收缩。
-    assert ".candidate-manager .candidate-window-row {" in html
-    assert "grid-template-columns:minmax(0,1.5fr) minmax(0,1.5fr) minmax(0,1.4fr) max-content;" in html
-    # 窄屏仍回落为单列，避免时间控件被压扁。
-    assert ".candidate-manager .candidate-window-row { grid-template-columns:minmax(0,1fr); }" in html
+    # 字段按控件语义宽度自然换行，添加按钮保持内容宽度。
+    layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
+    desktop = layout.split("@media (max-width:760px)", 1)[0]
+    assert "main .candidate-manager .row > button" in desktop
+    assert "flex:0 0 auto;" in desktop and "width:auto;" in desktop
+    narrow = layout.split("@media (max-width:760px)", 1)[1]
+    assert "grid-template-columns:minmax(0,1fr);" in narrow
 
     for element_id in (
         'id="candidateStart"',
@@ -2100,26 +2212,29 @@ def test_state_filter_tags_never_enter_continuous_model_tags() -> None:
     assert '(state.registry[tag]?.role||"continuous_input")==="continuous_input"' in selected_source
 
 
-def test_state_exploration_performance_controls_share_one_row() -> None:
-    for html in (web_model_results.INDEX_HTML,):
-        row = html.split('<div class="exploration-controls performance-controls">', 1)[1].split(
-            "</div>", 1
-        )[0]
-        for element_id in (
-            'id="explorationPerformanceTag"',
-            'id="explorationPerformanceDirection"',
-            'id="explorationTargetMin"',
-            'id="explorationTargetMax"',
-            'id="explorationPerformanceMinimumDuration"',
-            'id="explorationPerformanceCandidateCount"',
-        ):
-            assert element_id in row
-        assert row.count("<label>") == 6
-        assert ".exploration-controls.performance-controls { grid-template-columns:repeat(6,minmax(0,1fr)); }" in html
-        assert "@media (max-width:1050px) { .exploration-controls.performance-controls { grid-template-columns:repeat(3,minmax(0,1fr)); } }" in html
-        # 标签换行时输入框仍贴底对齐，避免同一行控件高低不齐。
-        assert ".exploration-controls > label { display:grid; align-content:start; }" in html
+def test_state_exploration_performance_controls_size_to_available_width() -> None:
+    html = web_model_results.INDEX_HTML
+    row = html.split('<div class="exploration-controls performance-controls">', 1)[1].split(
+        "</div>", 1
+    )[0]
+    for element_id in (
+        'id="explorationPerformanceTag"',
+        'id="explorationPerformanceDirection"',
+        'id="explorationTargetMin"',
+        'id="explorationTargetMax"',
+        'id="explorationPerformanceMinimumDuration"',
+        'id="explorationPerformanceCandidateCount"',
+    ):
+        assert element_id in row
+    assert row.count("<label>") == 6
 
+    layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
+    desktop = layout.split("@media (max-width:760px)", 1)[0]
+    assert ".exploration-controls" in desktop
+    assert "display:flex;" in desktop and "flex-wrap:wrap;" in desktop
+    assert "repeat(" not in desktop and "1fr" not in desktop
+    narrow = layout.split("@media (max-width:760px)", 1)[1]
+    assert "main .exploration-controls.performance-controls { grid-template-columns:minmax(0,1fr); }" in narrow
 
 def test_workbench_tables_map_all_runtime_statuses_and_align_numeric_cells() -> None:
     html = web_model_results.INDEX_HTML
@@ -2199,3 +2314,91 @@ def test_model_results_use_visible_error_and_loading_states() -> None:
     assert "冻结模型回放失败：${error.message}" in source
     assert 'target.className = type === "empty" ? "empty" : type === "error" ? "status error" : `status ${type}`' in source
     assert 'comparability.className = data.comparability.comparable ? "help" : "status error"' in source
+
+
+def test_final_form_controls_have_five_scoped_width_semantics() -> None:
+    html = web_model_results.INDEX_HTML
+    style = html.split('<style id="semanticFormWidthStyle">', 1)[1].split('</style>', 1)[0]
+
+    class Controls(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fields = {}
+
+        def handle_starttag(self, tag, attrs) -> None:
+            attributes = dict(attrs)
+            if tag in ("input", "select", "textarea"):
+                field_id = attributes["id"]
+                assert field_id not in self.fields, field_id
+                self.fields[field_id] = (tag, attributes)
+
+    controls = Controls()
+    controls.feed(html)
+    groups = (
+        ('main input[type="number"]', 'number', 140,
+         'sampleInterval maxLag lagStep varianceThreshold components clusterCount '
+         'explorationClusterCount explorationRandomState explorationCandidateCount '
+         'explorationMinimumDuration explorationMaximumPlotPoints explorationTargetMin '
+         'explorationTargetMax explorationPerformanceMinimumDuration '
+         'explorationPerformanceCandidateCount frozenModelVersion'),
+        ('main select', 'select', 220,
+         'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod'),
+        ('main input[type="datetime-local"]', 'datetime', 240,
+         'analysisStart analysisEnd candidateStart candidateEnd trendStart trendEnd '
+         'validationStart validationEnd frozenReplayStart frozenReplayEnd'),
+        ('main select:is(', 'tag', 340,
+         'timestampColumn qualityTagSelect explorationPerformanceTag labelColumn '
+         'preprocessingPreviewWindow'),
+        ('main input:not([type]), main input[type="text"]', 'text', 420,
+         'modelName tagDescription tagUnit candidateComment validationComment '
+         'validationDecisionComment frozenModelId frozenBy freezeComment'),
+        ('main select[multiple]', 'multiple', 420, 'trendTags modelComparisonRuns'),
+    )
+    for selector, semantic, width, field_ids in groups:
+        assert f'--field-{semantic}-width:{width}px;' in style
+        rule = style.split(selector, 1)[1].split('}', 1)[0]
+        assert f'width:min(100%,var(--field-{semantic}-width));' in rule
+        for field_id in field_ids.split():
+            tag, attrs = controls.fields[field_id]
+            if semantic in ('select', 'tag', 'multiple'):
+                assert tag == 'select', field_id
+                if semantic == 'tag':
+                    assert f'#{field_id}' in rule
+                if semantic == 'multiple':
+                    assert 'multiple' in attrs
+            else:
+                expected_type = {'number':'number', 'datetime':'datetime-local', 'text':'text'}[semantic]
+                assert tag == 'input' and attrs.get('type', 'text') == expected_type, field_id
+    # 所有静态控件均被通用语义或明确例外覆盖；解析 HTML 而非脚本中的模板 ID。
+    assert all(tag != 'input' or attrs.get('type', 'text') in
+               ('text', 'number', 'datetime-local', 'file', 'range')
+               for tag, attrs in controls.fields.values())
+    assert len(controls.fields) == 67
+    assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
+
+
+def test_semantic_widths_keep_data_source_compact_and_responsive_exceptions() -> None:
+    html = web_model_results.INDEX_HTML
+    style = html.split('<style id="semanticFormWidthStyle">', 1)[1].split('</style>', 1)[0]
+    source_row = style.split('main .row:has(> label > #timestampColumn) {', 1)[1].split('}', 1)[0]
+    assert 'display:flex; flex-wrap:wrap; align-items:end;' in source_row
+    assert 'flex:0 1 var(--field-select-width); min-width:0; max-width:100%;' in style
+    assert 'flex-basis:var(--field-tag-width);' in style
+    assert 'main .panel > *, main .inner-panel > * { min-width:0; max-width:100%; }' in style
+    assert 'main textarea, main #tagSearch, main input[type="file"]' in style
+    assert 'main .condition-row :is(input, select)' not in style
+    assert 'repeat(auto-fit,minmax(min(100%,var(--field-select-width)),1fr))' not in style
+
+    layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split('</style>', 1)[0]
+    assert 'main .condition-row > label:first-child > select' in layout
+    assert 'main .dp-trend-bar > label { flex:0 0 auto; max-width:none; }' in layout
+    assert 'main #engineeringPanel .detail-fields label:has(> input[type="text"])' in layout
+    assert 'main #engineeringPanel .detail-fields label:has(> textarea)' in layout
+    narrow = style.split('@media (max-width:760px)', 1)[1]
+    assert 'min-width:0; max-width:100%;' in narrow
+    assert 'display:grid; grid-template-columns:minmax(0,1fr);' in narrow
+    assert 'button' not in narrow
+    for field_id in ('dpTrendVar1', 'dpTrendVar2', 'dpTrendVar3', 'dpTrendVar4'):
+        assert f'#{field_id}' in style
+        assert html.count(f'id="{field_id}"') == 1
+    assert html.count('id="preprocessingPreviewTagSelect"') == 1
