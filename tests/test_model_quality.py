@@ -208,3 +208,18 @@ def test_condition_context_reuses_filter_history_semantics(method,expected):
     if method == "first_order":
         assert result["switch_diagnostic"]["context_policy"] == "full_segment_history"
         assert result["switch_diagnostic"]["near_switch"]["samples"] == 8
+
+
+def test_refined_condition_diagnostic_reuses_direct_cluster_statistics():
+    scores = pd.DataFrame({"t2": [1, 1, 6, 6, 6, 1], "spe": 1.0},
+                          index=pd.date_range("2026-01-01", periods=6, freq="5min"))
+    direct = _condition_window(scores, 0, 5)
+    observed = pd.DataFrame({"cluster_id": ["cluster_001"] * 3 + ["cluster_002"] * 3,
+                             "segment_id": 1}, index=scores.index)
+    expected = _condition_summary(scores, [direct], cluster_series={"window": observed})
+    refined = {**direct, "source": "performance", "source_ref": "performance-hash"}
+    assert _condition_summary(scores, [refined])["groups"] == []
+    assert _condition_summary(scores, [refined], cluster_series={"window": observed})["groups"] == []
+    observed.attrs["origin_source_ref"] = direct["source_ref"]
+    actual = _condition_summary(scores, [refined], cluster_series={"window": observed})
+    assert actual == expected

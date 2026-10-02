@@ -197,15 +197,16 @@
       const appendRow = (parent, values, tag, reference) => {
         const row = document.createElement("tr");
         if (reference) row.title = reference;
-        values.forEach(value => { const cell = document.createElement(tag); cell.textContent = value; row.append(cell); });
+        values.forEach(value => { const cell = document.createElement(tag); if (typeof value === "object") cell.append(value); else cell.textContent = value; row.append(cell); });
         parent.append(row);
       };
       appendRow(head, headers, "th");
       rows.forEach(row => appendRow(body, row.values, "td", row.reference));
       element.append(head, body); target.append(element);
     };
-    table(groups, ["工况组", "评分样本数", "训练样本占比", "T² ≥95%", "T² ≥99%", "SPE ≥95%", "SPE ≥99%", "T²/95%限值比中位数", "SPE/95%限值比中位数", "Overall 95%最长连续时间"],
-      diagnostic.groups.map(row => ({reference:row.source_ref, values:[clusterUiLabel(row.cluster_id), row.samples, percent(row.share), percent(row.t2_95_exceedance_rate), percent(row.t2_99_exceedance_rate), percent(row.spe_95_exceedance_rate), percent(row.spe_99_exceedance_rate), number(row.t2_95_ratio_median), number(row.spe_95_ratio_median), `${row.longest_overall_95_minutes} 分钟`]})));
+    const locate = (label, group) => { const button=document.createElement("button"); button.type="button"; button.className="secondary"; button.textContent=label; button.onclick=()=>globalThis.focusTrainingDiagnostic?.(diagnostic,group); return button; };
+    table(groups, ["工况组", "评分样本数", "训练样本占比", "T² ≥95%", "T² ≥99%", "SPE ≥95%", "SPE ≥99%", "T²/95%限值比中位数", "SPE/95%限值比中位数", "Overall 95%最长连续时间", "定位"],
+      diagnostic.groups.map(row => ({reference:row.source_ref, values:[clusterUiLabel(row.cluster_id), row.samples, percent(row.share), percent(row.t2_95_exceedance_rate), percent(row.t2_99_exceedance_rate), percent(row.spe_95_exceedance_rate), percent(row.spe_99_exceedance_rate), number(row.t2_95_ratio_median), number(row.spe_95_ratio_median), `${row.longest_overall_95_minutes} 分钟`, /^state-exploration-/.test(row.source_ref||"")?locate("查看该工况组",row):"来源不可追溯"]})));
     const comparison = diagnostic.switch_diagnostic;
     if (comparison?.available) {
       table(switches, ["区域", "评分样本数", "T² ≥95%", "SPE ≥95%", "Overall ≥95%"],
@@ -214,6 +215,7 @@
       const context = comparison.context_policy === "full_segment_history" ? "一阶因果滤波依赖同段完整历史，含切换点的整个连续段计入切换附近，不假设固定历史长度。" : `附近范围为切换点前后各 ${comparison.context_minutes} 分钟（复用预处理上下文长度）。`;
       rule.textContent = `识别 ${comparison.switch_count} 个切换点；${context}${comparison.message}`;
       switches.append(rule);
+      if ((diagnostic.timeline||[]).some(point=>point.near_switch===true&&Number.isFinite(Date.parse(point.timestamp)))) switches.append(locate("查看切换区",null));
     } else switches.textContent = comparison?.message || "当前训练样本缺少连续工况组标记，无法计算工况切换区诊断。";
     const coverage = document.createElement("p");
     coverage.textContent = `可追溯评分样本 ${diagnostic.traceable_samples}；未归属工况组 ${diagnostic.unattributed_samples}。分组统计按已确认窗口来源归属；状态带优先使用完整状态探索标记，缺少连续标记时使用窗口来源。Overall 95% 使用 T² ≥ T²95 或 SPE ≥ SPE95；连续时间按样本覆盖时长计算，遇窗口、物理段或时间缺口即中断。`;

@@ -5797,3 +5797,142 @@ def test_train_payload_rejects_performance_tag_inside_training_pca(tmp_path, mon
                 },
             }
         )
+
+
+@pytest.mark.parametrize("operation", ["confirm_candidate", "replace_with_candidate"])
+def test_refined_training_diagnostic_round_trip(tmp_path, monkeypatch, operation):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    rng = np.random.default_rng(7)
+    for tag in ("A", "B", "C"):
+        history[tag] = rng.normal(0, 0.1, len(history)) + np.where(np.arange(len(history)) < 60, 0, 10)
+    uploaded = web.save_upload("refined.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    payload = dict(file_id=uploaded["file_id"], timestamp_column="time", tags=["A", "B", "C"],
+                   sample_interval_minutes=5, filter_method="none", resampling_method="none",
+                   max_lag_minutes=0, lag_step_minutes=5)
+    exploration = web.state_exploration_payload({**payload, "exploration_start": history.time.iloc[0].isoformat(),
+        "exploration_end": history.time.iloc[119].isoformat(), "exploration_config": {"cluster_count": 2, "minimum_candidate_duration_minutes": 10}})
+    run = exploration["exploration_run_id"]
+    original = max(exploration["cluster_candidates"], key=lambda item: item["sample_count"])
+    parent = dict(id="parent", start=original["start"], end=original["end"], source="cluster",
+                  source_ref=f"state-exploration-{run}-{original['candidate_id']}", comment="")
+    performance = web.performance_screen_payload({**payload, "analysis_start": history.time.iloc[0].isoformat(),
+        "analysis_end": history.time.iloc[119].isoformat(), "conditions": [{"column": "A", "minimum": -100}],
+        "scope": {"type": "candidate_windows"}, "parent_windows": [parent]})
+    refined = performance["candidate_windows"][0]
+    candidate = {**refined, "id": "refined", "comment": ""}
+    existing = [{**parent, "id": "training-parent", "enabled": True}] if operation.startswith("replace") else []
+    windows = web.training_windows_payload({**payload, "training_windows": existing, "operation": {
+        "action": operation, "candidate": candidate, "conflict_window_ids": [item["id"] for item in existing],
+        "excluded_windows": []}})["training_windows"]
+    assert all(set(item) == {"id", "start", "end", "source", "source_ref", "enabled", "comment"} for item in windows)
+    assert windows[-1]["source"] == "performance" and windows[-1]["source_ref"] == refined["source_ref"]
+    request = {**payload, "training_windows": windows, "training_candidates": [parent, candidate], "model_name": "refined", "n_components": 2}
+    result = web_model_results.train_payload(request)
+    diagnostic = result["model_quality"]["training_condition_diagnostic"]
+    assert diagnostic["traceable_samples"] == result["training_rows"]
+    assert diagnostic["groups"][0]["source_ref"] == f"state-exploration-{run}-{original['cluster_id']}"
+    assert diagnostic["groups"][0]["cluster_id"] == original["cluster_id"]
+    assert all(row["cluster_id"] is not None for row in diagnostic["timeline"])
+    assert diagnostic["switch_diagnostic"]["available"]
+    _, manifest = load_model_package(tmp_path / "runs" / result["run_id"] / "model.pcamodel")
+    assert manifest["training_windows"] == windows
+    assert "training_candidates" not in manifest and "training_candidates" not in manifest["config"]
+    config = web._preprocessing_config(payload)
+    from copy import deepcopy
+    invalid = [None, {}, {**candidate["provenance"], "origin_source": "manual"},
+               {**candidate["provenance"], "exploration_run_id": "b" * 32},
+               {**candidate["provenance"], "origin_source_ref": refined["source_ref"]},
+               {**candidate["provenance"], "origin_source_ref": parent["source_ref"].replace(run, "b" * 32), "exploration_run_id": "b" * 32},
+               {**candidate["provenance"], "origin_source_ref": re.sub(r"candidate-\d+$", "candidate-999", parent["source_ref"])}]
+    for provenance in invalid:
+        changed = deepcopy(request)
+        changed["training_candidates"] = [{**candidate, "provenance": provenance}]
+        assert web._training_cluster_series([windows[-1]], changed, config) == {}
+    for changes in ({"file_id": "other"}, {"timestamp_column": "other"},
+                    {"modeling_eligibility": {"keep_conditions": [{"column": "A", "minimum": 0}], "exclude_rule_groups": []}}):
+        assert web._training_cluster_series([windows[-1]], {**request, **changes}, config) == {}
+    assert web._training_cluster_series([windows[-1]], request, PreprocessingConfig(sample_interval_minutes=10, lag_step_minutes=10)) == {}
+    assert web._training_cluster_series([windows[-1]], {**request, "training_candidates": []}, config) == {}
+    missing = web_model_results.train_payload({**request, "training_candidates": []})["model_quality"]["training_condition_diagnostic"]
+    assert missing["groups"] == [] and missing["traceable_samples"] == 0
+    record = {"window_id": windows[-1]["id"], **{key: windows[-1][key] for key in ("source", "source_ref", "start", "end")}, "candidate": deepcopy(candidate)}
+    request = {**request, "training_candidates": [parent], "training_candidate_provenance": [record]}
+    retained = web_model_results.train_payload(request)
+    assert retained["model_quality"]["training_condition_diagnostic"] == diagnostic
+    _, retained_manifest = load_model_package(tmp_path / "runs" / retained["run_id"] / "model.pcamodel")
+    assert retained_manifest["training_windows"] == windows
+    assert "training_candidate_provenance" not in retained_manifest
+    assert "training_candidate_provenance" not in retained_manifest["config"]
+    unrelated = {**windows[-1], "id": "different-window"}
+    assert web._training_cluster_series([unrelated], request, config) == {}
+    assert web._training_cluster_series([], request, config) == {}
+    for key in ("window_id", "source", "source_ref", "start", "end"):
+        stale = {**record, key: "other"}
+        assert web._training_cluster_series([windows[-1]], {**request, "training_candidate_provenance": [stale]}, config) == {}
+    for provenance in invalid:
+        forged = {**record, "candidate": {**candidate, "provenance": provenance}}
+        assert web._training_cluster_series([windows[-1]], {**request, "training_candidate_provenance": [forged]}, config) == {}
+    for changes in ({"file_id": "other"}, {"timestamp_column": "other"},
+                    {"modeling_eligibility": {"keep_conditions": [{"column": "A", "minimum": 0}], "exclude_rule_groups": []}}):
+        assert web._training_cluster_series([windows[-1]], {**request, **changes}, config) == {}
+    assert web._training_cluster_series([windows[-1]], request, PreprocessingConfig(sample_interval_minutes=10, lag_step_minutes=10)) == {}
+    _assert_refined_diagnostic_focus(tmp_path, exploration, parent, performance, windows, retained)
+    monkeypatch.delitem(web.STATE_EXPLORATION_RUNS, run)
+    assert web._training_cluster_series([windows[-1]], request, config) == {}
+
+
+def _assert_refined_diagnostic_focus(tmp_path, exploration, parent, performance, windows, training):
+    node = shutil.which("node")
+    assert node, "Node.js is required for the end-to-end diagnostic check"
+    html = web.INDEX_HTML
+    def function(name):
+        start = html.index(f"function {name}(")
+        return html[start:html.index("\nfunction ", start)]
+    helpers = html[html.index("function trainingDiagnosticCandidateMatches("):html.index("function renderExplorationTimeline(")]
+    script = r'''
+const assert=require('node:assert/strict');
+class Element {
+ constructor(){this.children=[];this.style={};this.attrs={};this.textContent='';}
+ append(...items){this.children.push(...items)} replaceChildren(){this.children=[]}
+ setAttribute(k,v){this.attrs[k]=v} addEventListener(){} scrollIntoView(){} querySelector(){return null}
+}
+const nodes={},document={createElement:()=>new Element()}; function el(id){return nodes[id]??=new Element()}
+function displayTime(v){return v} function clusterUiLabel(v){return v} function candidateSourceLabel(v){return v.source}
+function candidateTrainingWindows(){return []} function candidateTrainingConflicts(){return []}
+function showCandidateTrend(){} function confirmCandidateWindow(){} function showCandidateConflicts(){}
+function renderStateExploration(){} function renderExplorationCandidateTables(){} function setStatus(){}
+function candidateId(){return 'ui-refined'}
+const state=__STATE__;
+__HELPERS__
+__ADD__
+__RENDER__
+const beforeAdd=state.candidateWindows.length;
+addPerformanceCandidate(state.performance.candidate_windows[0],state.performance);
+assert.equal(state.candidateWindows.length,beforeAdd+1);
+const child=state.candidateWindows.at(-1),diagnostic=state.training.model_quality.training_condition_diagnostic,group=diagnostic.groups[0];
+const original=JSON.stringify([state.candidateWindows,state.trainingWindows,state.training]);
+focusTrainingDiagnostic(diagnostic,group);
+assert.equal(state.trainingDiagnosticFocus.runId,state.exploration.exploration_run_id);
+assert.equal(state.trainingDiagnosticFocus.clusterId,group.cluster_id);
+assert.ok(state.trainingDiagnosticFocus.intervals.length);
+assert.equal(el('candidateWindows').children[0].children[1].children.filter(r=>r.attrs['data-diagnostic-focus']).length,2);
+assert.equal(JSON.stringify([state.candidateWindows,state.trainingWindows,state.training]),original);
+const focus=state.trainingDiagnosticFocus;
+for(const provenance of [undefined,{}, {...child.provenance,origin_source:'manual'}, {...child.provenance,exploration_run_id:'other'}, {...child.provenance,origin_source_ref:child.source_ref}, {...child.provenance,origin_source_ref:child.provenance.origin_source_ref.replace(focus.runId,'other'),exploration_run_id:'other'}]) {
+ assert.equal(trainingDiagnosticCandidateMatches({...child,provenance},focus),false);
+}
+state.candidateWindows=state.candidateWindows.filter(window=>window!==child);
+focusTrainingDiagnostic(diagnostic,group);
+assert.equal(state.trainingDiagnosticFocus.runId,state.exploration.exploration_run_id);
+assert.equal(el('candidateWindows').children[0].children[1].children.filter(r=>r.attrs['data-diagnostic-focus']).length,1);
+state.exploration.exploration_run_id='other';renderCandidateWindows();
+assert.equal(el('candidateWindows').children[0].children[1].children.filter(r=>r.attrs['data-diagnostic-focus']).length,0);
+'''
+    state = dict(exploration=exploration, performance=performance, candidateWindows=[parent], trainingWindows=windows, training=training)
+    script = script.replace("__STATE__", json.dumps(state)).replace("__HELPERS__", helpers).replace("__ADD__", function("addPerformanceCandidate")).replace("__RENDER__", function("renderCandidateWindows"))
+    script_path = tmp_path / "diagnostic-focus.js"
+    script_path.write_text(script, encoding="utf-8")
+    completed = subprocess.run([node, str(script_path)], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert completed.returncode == 0, completed.stderr

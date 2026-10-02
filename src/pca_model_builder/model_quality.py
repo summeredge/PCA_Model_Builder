@@ -142,10 +142,12 @@ def _training_condition_diagnostic(
     for number, window in enumerate(windows):
         positions = np.flatnonzero(owner == number)
         reference = str(window.get("source_ref") or "")
-        source = _cluster_source(reference) if window.get("source") == "cluster" else None
+        observed = cluster_series.get(str(window.get("id", "")))
+        if window.get("source") == "performance" and observed is not None:
+            reference = str(observed.attrs.get("origin_source_ref") or "")
+        source = _cluster_source(reference) if window.get("source") == "cluster" or (window.get("source") == "performance" and observed is not None) else None
         if source:
             groups.setdefault(source, {"cluster_id": source[1], "source_ref": "-".join(filter(None, source)), "label": f"工况组 {int(source[1].split('_')[1])}"})
-        observed = cluster_series.get(str(window.get("id", "")))
         if observed is not None and not observed.index.has_duplicates and {"cluster_id", "segment_id"} <= set(observed.columns):
             observed = list(observed.reindex(times[positions])[["cluster_id", "segment_id"]].itertuples(index=False, name=None))
         else:
