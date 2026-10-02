@@ -1283,6 +1283,7 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
         '        <div class="group">\n          ' + conditions.strip() + '\n        </div>',
         1,
     )
+    state_panel = state_panel.replace('<div id="stateExplorationPanel" class="panel">', '<div id="stateExplorationPanel" class="panel"><p class="notice">当前探索仅使用建模资格通过的数据。</p>', 1)
     candidate_panels = [
         panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
         for panel in (trend_panel, state_panel)
@@ -1297,6 +1298,14 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
     candidate_panel = "\n".join(
         (
             '      <div id="candidatePanel" class="panel">',
+            """        <div id="modelingEligibility" class="group">
+          <div class="group-title">建模资格筛选</div>
+          <p class="help">只影响离线探索、候选与训练资格。上下限包含边界；保留条件全部满足（AND），排除组内全部满足（AND），任一排除组命中即剔除（OR），排除优先。条件列不会自动成为 PCA 输入。</p>
+          <h3>保留条件</h3><div id="eligibilityKeepConditions"></div><button id="addEligibilityKeep" type="button" class="secondary">添加保留条件</button>
+          <h3>排除条件</h3><div id="eligibilityExcludeGroups"></div><button id="addEligibilityExcludeGroup" type="button" class="secondary">添加排除规则组</button>
+          <div class="actions"><button id="refreshEligibilitySummary" type="button" class="secondary">更新资格摘要</button></div>
+          <div id="eligibilitySummary" class="notice" aria-live="polite">检查数据后显示资格摘要；无规则时全部样本具备资格。</div>
+        </div>""",
             '        <div class="group candidate-analysis-group"><div class="group-title">候选分析范围</div>',
             '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
             '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。</div></div>',

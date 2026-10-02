@@ -261,6 +261,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   });
 
   function renderTrendPage(data) {
+    if (data.modeling_eligibility_summary) renderEligibilitySummary(data.modeling_eligibility_summary, "当前趋势窗口（展示保留完整历史）");
     renderTrendChart(data);
     $("dpTrendStats").innerHTML = data.series.map((item, index) => renderStatCard(item.name, data.statistics[item.name]?.current, data.histograms[item.name], colors[index % colors.length])).join("");
   }
@@ -758,7 +759,7 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     state_columns = base_web._state_filter_columns(payload)
     loaded = base_web._load_required_upload(
-        payload, [*tags, *state_columns], "找不到趋势Tag："
+        payload, list(dict.fromkeys([*tags, *state_columns, *base_web.eligibility_columns(payload.get("modeling_eligibility"))])), "找不到趋势Tag："
     )
     parsed = loaded.frame
     all_tags = list(loaded.metadata.numeric_candidate_columns)
@@ -792,6 +793,10 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
             reference_start,
             reference_end,
         )
+    result["modeling_eligibility_summary"] = base_web.filter_modeling_eligibility(
+        indexed.loc[pd.Timestamp(payload["start"]):pd.Timestamp(payload["end"])],
+        payload.get("modeling_eligibility"), base_web._preprocessing_config(payload), allow_empty=True,
+    ).summary
     return base_web._with_data_usage(
         result,
         loaded,

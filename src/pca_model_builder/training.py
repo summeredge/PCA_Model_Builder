@@ -34,6 +34,7 @@ def build_training_matrix(
     validate_dynamic: bool = True,
     reference_columns: Sequence[str] = (),
     exclude_engineering_range: bool = False,
+    modeling_eligibility: object = None,
 ) -> TrainingBuildResult:
     """Build each enabled window and physical segment independently."""
     windows = normalize_training_windows(training_windows)
@@ -41,6 +42,8 @@ def build_training_matrix(
     summaries: list[dict[str, Any]] = []
     reference_parts: list[pd.DataFrame] = []
     used_segment_count = 0
+    eligibility_input_rows = 0
+    eligibility_output_rows = 0
 
     if not any(window["enabled"] for window in windows):
         raise ValueError("至少需要一个启用的training_windows窗口")
@@ -62,6 +65,14 @@ def build_training_matrix(
                 f"训练窗口 {window['id']} 数据质量问题尚未处理：duplicate_timestamp(1)"
             )
         state_columns = [condition.column for condition in config.state_filters]
+        raw_segmentation = None
+        if modeling_eligibility is not None:
+            from .eligibility import filter_modeling_eligibility
+            eligible = filter_modeling_eligibility(selected.set_index(timestamp_column), modeling_eligibility, config, allow_empty=True)
+            eligibility_input_rows += len(selected)
+            eligibility_output_rows += len(eligible.frame)
+            selected = eligible.frame.reset_index()
+            raw_segmentation = (eligible.segment_ids, eligible.source_interval, eligible.gap_ranges) if not eligible.mask.all() else None
         indexed = (
             selected.loc[
                 :,
@@ -82,7 +93,7 @@ def build_training_matrix(
             continue
 
         try:
-            segment_ids, source_interval, _ = segment_raw_data(
+            segment_ids, source_interval, _ = raw_segmentation or segment_raw_data(
                 indexed.index, config
             )
         except ValueError as error:
@@ -107,6 +118,7 @@ def build_training_matrix(
                 # Training windows are isolated: never complete a boundary bucket
                 # with samples outside the engineer-selected window.
                 resampling_window=(start, end),
+                raw_segmentation=raw_segmentation,
             )
         except PreprocessingQualityError as error:
             raise ValueError(
@@ -277,6 +289,8 @@ def build_training_matrix(
             dynamic_parts.append(dynamic)
 
     if not dynamic_parts:
+        if validate_dynamic and eligibility_input_rows and not eligibility_output_rows:
+            raise ValueError("建模资格筛选后没有合格训练样本，请调整资格规则或训练窗口")
         if validate_dynamic:
             raise ValueError("所有启用窗口在平滑和 Lag 扩展后均无有效训练样本")
         dynamic = pd.DataFrame()

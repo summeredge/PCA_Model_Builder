@@ -63,6 +63,7 @@ from .preprocessing import (
 )
 from .quality import QualityReport, inspect_data_quality, raw_column_profile
 from .replay import FrozenReplayResult, replay_frozen_model
+from .eligibility import eligibility_columns, filter_modeling_eligibility, normalize_modeling_eligibility
 from .screening import screen_performance_states
 from .tag_config import (
     engineering_ranges,
@@ -341,7 +342,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         else []
     )
     performance_config = _training_performance_config(payload, tags)
-    loaded = _load_required_upload(
+    loaded = _load_modeling_upload(
         payload,
         list(
             dict.fromkeys(
@@ -377,6 +378,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         config,
         training_windows,
         engineering_ranges(tag_configs),
+        modeling_eligibility=payload.get("modeling_eligibility"),
         exclude_engineering_range=model_purpose == "normal_state",
         reference_columns=excluded_tags,
     )
@@ -470,7 +472,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
     tags = _required_tags(payload)
-    loaded = _load_required_upload(
+    loaded = _load_modeling_upload(
         payload, [*tags, *_state_filter_columns(payload)], "找不到 Tag："
     )
     parsed = loaded.frame
@@ -487,6 +489,7 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
         engineering_ranges(
             normalize_tag_configs(tags, {tag: registry[tag] for tag in tags})
         ),
+        modeling_eligibility=payload.get("modeling_eligibility"),
         exclude_engineering_range=True,
         validate_dynamic=False,
     )
@@ -499,6 +502,7 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
         engineering_ranges(
             normalize_tag_configs(tags, {tag: registry[tag] for tag in tags})
         ),
+        modeling_eligibility=payload.get("modeling_eligibility"),
         exclude_engineering_range=False,
         validate_dynamic=False,
     )
@@ -587,9 +591,19 @@ def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 operation.get("excluded_windows", [])
             )
             timestamp_column = _required_text(payload, "timestamp_column")
-            loaded = _load_upload(payload, [])
+            loaded = _load_modeling_upload(payload, [], "建模资格缺少列：")
             timestamps = loaded.frame[timestamp_column]
             parts = subtract_excluded_windows(candidate, excluded_windows, timestamps)
+            if eligibility_columns(payload.get("modeling_eligibility")):
+                selected = loaded.frame.loc[timestamps.between(pd.Timestamp(candidate["start"]), pd.Timestamp(candidate["end"]))].set_index(timestamp_column)
+                eligible = filter_modeling_eligibility(selected, payload.get("modeling_eligibility"), _preprocessing_config(payload))
+                qualified_parts = []
+                for part in parts:
+                    for _, segment in eligible.frame.groupby(eligible.segment_ids, sort=False):
+                        retained = segment.loc[pd.Timestamp(part["start"]):pd.Timestamp(part["end"])]
+                        if len(retained):
+                            qualified_parts.append({"start": retained.index[0].isoformat(), "end": retained.index[-1].isoformat()})
+                parts = qualified_parts
             if not parts:
                 raise ValueError("候选窗口已被排除窗口完全覆盖")
             candidate_start, candidate_end = candidate["start"], candidate["end"]
@@ -642,7 +656,7 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if len(tags) > 8:
         raise ValueError("趋势浏览一次最多选择8个Tag")
     state_columns = _state_filter_columns(payload)
-    loaded = _load_required_upload(
+    loaded = _load_modeling_upload(
         payload, [*tags, *state_columns], "找不到趋势Tag："
     )
     parsed = loaded.frame
@@ -670,6 +684,10 @@ def trend_payload(payload: dict[str, Any]) -> dict[str, Any]:
             reference_start,
             reference_end,
         )
+    result["modeling_eligibility_summary"] = filter_modeling_eligibility(
+        indexed.loc[pd.Timestamp(payload["start"]):pd.Timestamp(payload["end"])],
+        payload.get("modeling_eligibility"), _preprocessing_config(payload), allow_empty=True,
+    ).summary
     analysis_rows = int(result["statistics"][tags[0]]["current"]["sample_count"])
     return _with_data_usage(result, loaded, analysis_rows, len(result["rows"]))
 
@@ -691,8 +709,8 @@ def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
         metadata, _ = _upload_metadata(payload, timestamp_column)
         requested_columns = list(dict.fromkeys([*metadata.numeric_candidate_columns, *state_columns]))
     else:
-        requested_columns = list(dict.fromkeys([*tags, *state_columns]))
-    loaded = _load_required_upload(
+        requested_columns = list(dict.fromkeys([*tags, *state_columns, *eligibility_columns(payload.get("modeling_eligibility"))]))
+    loaded = _load_modeling_upload(
         payload, requested_columns, "找不到预处理列："
     )
     selected = _select_window(
@@ -708,7 +726,7 @@ def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if not tags:
             raise ValueError("预处理预览没有可用数值Tag")
     indexed = _indexed_tags(
-        selected, timestamp_column, list(dict.fromkeys([*tags, *state_columns]))
+        selected, timestamp_column, list(dict.fromkeys([*tags, *state_columns, *eligibility_columns(payload.get("modeling_eligibility"))]))
     )
     with _web_stage("preprocessing"):
         processed = preprocess_window(
@@ -717,6 +735,7 @@ def preprocessing_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
             config,
             validate_quality=False,
             include_intermediates=True,
+            modeling_eligibility=payload.get("modeling_eligibility"),
         )
     assert processed.raw is not None
     assert processed.resampled is not None
@@ -843,7 +862,7 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
     requested_columns = list(
         dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else [])])
     )
-    loaded = _load_required_upload(payload, requested_columns, "找不到 Tag：")
+    loaded = _load_modeling_upload(payload, requested_columns, "找不到 Tag：")
     all_tags = list(loaded.metadata.numeric_candidate_columns)
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
@@ -868,7 +887,7 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 _indexed_tags(
                     selected,
                     timestamp_column,
-                    list(dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else [])])),
+                    list(dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else []), *eligibility_columns(payload.get("modeling_eligibility"))])),
                 ),
                 tags,
                 config,
@@ -876,6 +895,7 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 performance_config=performance_config,
                 engineering_ranges=engineering_ranges(tag_configs),
                 resampling_window=(exploration_start, exploration_end),
+                modeling_eligibility=payload.get("modeling_eligibility"),
             )
         except PreprocessingQualityError as error:
             raise WebStageError(
@@ -907,6 +927,7 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
     exploration["_diagnostic_source"] = {
         "file_id": payload["file_id"], "timestamp_column": timestamp_column,
         "preprocessing": config.to_dict(),
+        "modeling_eligibility": normalize_modeling_eligibility(payload.get("modeling_eligibility")),
     }
     _store_state_exploration_run(run_id, exploration)
     return response
@@ -936,7 +957,7 @@ def _training_cluster_series(
                 continue
             exploration = STATE_EXPLORATION_RUNS.get(match[1], {})
             source = exploration.get("_diagnostic_source", {})
-            if source != {"file_id": payload["file_id"], "timestamp_column": payload["timestamp_column"], "preprocessing": config.to_dict()}:
+            if source != {"file_id": payload["file_id"], "timestamp_column": payload["timestamp_column"], "preprocessing": config.to_dict(), "modeling_eligibility": normalize_modeling_eligibility(payload.get("modeling_eligibility"))}:
                 continue
             points = exploration.get("cluster_series")
             if isinstance(points, pd.DataFrame):
@@ -1317,7 +1338,7 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tags = _required_tags(payload)
     config = _preprocessing_config(payload)
     state_columns = [condition.column for condition in config.state_filters]
-    loaded = _load_required_upload(
+    loaded = _load_modeling_upload(
         payload, list(dict.fromkeys([*tags, *state_columns])), "找不到 Tag："
     )
     parsed = loaded.frame
@@ -1338,11 +1359,12 @@ def cluster_payload(payload: dict[str, Any]) -> dict[str, Any]:
         indexed = _indexed_tags(
             analysis,
             timestamp_column,
-            [*tags, *state_columns],
+            [*tags, *state_columns, *eligibility_columns(payload.get("modeling_eligibility"))],
         )
         try:
             processed = preprocess_window(
-                indexed, tags, config, engineering_ranges(tag_configs), include_intermediates=True
+                indexed, tags, config, engineering_ranges(tag_configs), include_intermediates=True,
+                modeling_eligibility=payload.get("modeling_eligibility"),
             )
             dynamic = processed.dynamic
         except PreprocessingQualityError as error:
@@ -1377,7 +1399,7 @@ def _cluster_exploratory_payload(
     tag_configs = normalize_tag_configs(tags, config_data.get("tag_configs"))
     config = preprocessing_config_from_mapping(config_data)
     state_columns = [condition.column for condition in config.state_filters]
-    loaded = _load_required_upload(payload, [*tags, *state_columns], "找不到 Tag：")
+    loaded = _load_modeling_upload(payload, [*tags, *state_columns, *eligibility_columns(payload.get("modeling_eligibility"))], "找不到 Tag：")
     parsed = loaded.frame
     registry = normalize_tag_registry(
         list(loaded.metadata.numeric_candidate_columns),
@@ -1391,10 +1413,11 @@ def _cluster_exploratory_payload(
         _required_text(payload, "analysis_end"),
     )
     with _web_stage("preprocessing"):
-        indexed = _indexed_tags(analysis, timestamp_column, [*tags, *state_columns])
+        indexed = _indexed_tags(analysis, timestamp_column, [*tags, *state_columns, *eligibility_columns(payload.get("modeling_eligibility"))])
         try:
             processed = preprocess_window(
-                indexed, tags, config, engineering_ranges(tag_configs), include_intermediates=True
+                indexed, tags, config, engineering_ranges(tag_configs), include_intermediates=True,
+                modeling_eligibility=payload.get("modeling_eligibility"),
             )
             dynamic = processed.dynamic
         except PreprocessingQualityError as error:
@@ -1464,7 +1487,7 @@ def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
         for item in raw_conditions
         if isinstance(item, dict)
     ]
-    loaded = _load_required_upload(
+    loaded = _load_modeling_upload(
         payload,
         list(dict.fromkeys(columns)),
         "missing performance columns: ",
@@ -1482,6 +1505,7 @@ def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
             indexed,
             raw_conditions,
             sample_interval_minutes=int(payload.get("sample_interval_minutes", 5)),
+            modeling_eligibility=payload.get("modeling_eligibility"),
         )
     return _with_data_usage(result, loaded, len(analysis), len(analysis))
 
@@ -1764,6 +1788,27 @@ def _training_readiness(dynamic: pd.DataFrame) -> dict[str, Any]:
             },
         }
     return {"can_train": True, "issue": None}
+
+
+def _load_modeling_upload(payload: dict[str, Any], requested_columns: Sequence[str], missing_prefix: str) -> DataLoadResult:
+    columns = eligibility_columns(payload.get("modeling_eligibility"))
+    return _load_required_upload(payload, list(dict.fromkeys([*requested_columns, *columns])), missing_prefix)
+
+
+def modeling_eligibility_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    timestamp_column = _required_text(payload, "timestamp_column")
+    loaded = _load_modeling_upload(payload, [], "建模资格缺少列：")
+    frame = loaded.frame
+    candidate_range = payload.get("candidate_start") is not None or payload.get("candidate_end") is not None
+    if candidate_range:
+        frame = _select_window(frame, timestamp_column, _required_text(payload, "candidate_start"), _required_text(payload, "candidate_end"))
+    indexed = frame.set_index(timestamp_column)
+    eligible = filter_modeling_eligibility(indexed, payload.get("modeling_eligibility"), _preprocessing_config(payload), allow_empty=True)
+    result = {"modeling_eligibility": eligible.rules, "summary": eligible.summary}
+    if candidate_range:
+        result["eligible_windows"] = [{"start": segment.index[0].isoformat(), "end": segment.index[-1].isoformat()}
+                                      for _, segment in eligible.frame.groupby(eligible.segment_ids, sort=False)]
+    return result
 
 
 def _load_required_upload(
@@ -2660,6 +2705,9 @@ class _Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/inspect":
                 self._send_json(inspect_payload(payload))
                 return
+            if parsed.path == "/api/modeling-eligibility":
+                self._send_json(modeling_eligibility_payload(payload))
+                return
             if parsed.path == "/api/quality":
                 self._send_json(quality_payload(payload))
                 return
@@ -3278,6 +3326,61 @@ function invalidateQuality(reason) {
   if(reason) setStatus(`${reason}，请重新执行建模质量检查。`,"warning");
 }
 function firstOrderAlphaError() { const alpha=el("firstOrderAlpha").value; return el("filterMethod").value==="first_order"&&(!Number.isFinite(Number(alpha))||!(Number(alpha)>0&&Number(alpha)<=1))?"一阶滤波 alpha 必须大于 0 且不超过 1。":""; }
+let eligibilityRevision=0, eligibilitySummaryTimer=null;
+function modelingEligibilityPayload() {
+  const conditions=node=>[...(node?.querySelectorAll(".eligibility-condition")||[])].map(row=>{
+    const column=row.querySelector('[data-field="column"]').value;
+    const bound=field=>{ const value=row.querySelector(`[data-field="${field}"]`).value.trim(); if(value==="") return null; const number=Number(value); if(!Number.isFinite(number)) throw new Error("建模资格边界必须为有限数值。"); return number; };
+    const minimum=bound("minimum"),maximum=bound("maximum");
+    if(!column||minimum===null&&maximum===null) throw new Error("建模资格条件需要列和至少一个上下限。");
+    if(minimum!==null&&maximum!==null&&minimum>maximum) throw new Error("建模资格上下限反转。");
+    return {column,minimum,maximum};
+  });
+  return {keep_conditions:conditions(el("eligibilityKeepConditions")),exclude_rule_groups:[...(el("eligibilityExcludeGroups")?.children||[])].map(group=>conditions(group))};
+}
+function renderEligibilitySummary(summary,scope="完整历史") {
+  const node=el("eligibilitySummary"); if(!node) return;
+  node.textContent=`${scope}：原始样本 ${summary.original_samples}；保留条件通过 ${summary.keep_pass_samples}；排除规则命中 ${summary.exclude_hit_samples}；最终合格 ${summary.eligible_samples}；合格占比 ${(summary.eligible_share*100).toFixed(1)}%；资格筛选后连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;
+}
+async function refreshEligibilitySummary() {
+  if(!state.fileId||!state.inspection||!el("eligibilitySummary")) return;
+  const revision=eligibilityRevision;
+  try { const data=await api("/api/modeling-eligibility",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(commonPayload())}); if(revision===eligibilityRevision) renderEligibilitySummary(data.summary); }
+  catch(error) { if(revision===eligibilityRevision) el("eligibilitySummary").textContent=error.message; }
+}
+function eligibilityChanged() {
+  eligibilityRevision+=1;
+  invalidateModellingResults("建模资格规则已修改");
+  state.clustering=null; state.performance=null; state.training=null; state.runId=null; state.exploratoryRunId=null;
+  state.candidateWindows=[]; state.trainingWindows=state.trainingWindows.map(window=>({...window,enabled:false}));
+  renderCandidateWindows(); renderTrainingWindows();
+  ["clusterContent","performanceContent","modelContent"].forEach(id=>{ const node=el(id); if(node) node.hidden=true; });
+  ["clusterEmpty","performanceEmpty","modelEmpty"].forEach(id=>{ const node=el(id); if(node) { node.hidden=false; node.textContent="建模资格规则已修改，请重新计算。"; } });
+  ["modelDownload","validateButton"].forEach(id=>{ const node=el(id); if(node) { node.disabled=true; if(id==="modelDownload") node.hidden=true; } });
+  if(el("eligibilitySummary")) el("eligibilitySummary").textContent="规则已修改，正在更新资格摘要；原训练窗口已禁用，需重新确认。";
+  clearTimeout(eligibilitySummaryTimer); eligibilitySummaryTimer=setTimeout(refreshEligibilitySummary,250);
+}
+function addEligibilityCondition(container) {
+  const columns=state.inspection?.numeric_columns||[]; if(!columns.length) { setStatus("请先检查数据以加载数值列。","warning"); return; }
+  const row=document.createElement("div"); row.className="condition-row eligibility-condition";
+  const label=document.createElement("label"); label.textContent="条件列"; const select=document.createElement("select"); select.dataset.field="column"; fillSelect(select,columns); label.append(select);
+  const minimum=formField("下限（含，可空）","minimum","number"),maximum=formField("上限（含，可空）","maximum","number");
+  const remove=document.createElement("button"); remove.type="button"; remove.className="secondary"; remove.textContent="删除条件";
+  remove.addEventListener("click",()=>{ if(row.parentElement.classList.contains("eligibility-exclude-group")&&row.parentElement.querySelectorAll(".eligibility-condition").length===1) row.parentElement.remove(); else row.remove(); eligibilityChanged(); });
+  [select,minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("change",eligibilityChanged));
+  row.append(label,minimum,maximum,remove); container.append(row); eligibilityChanged();
+}
+function addEligibilityExcludeGroup() {
+  if(!state.inspection?.numeric_columns?.length) { setStatus("请先检查数据以加载数值列。","warning"); return; }
+  const group=document.createElement("div"); group.className="group eligibility-exclude-group";
+  const title=document.createElement("h4"); title.textContent="排除规则组（组内 AND）";
+  const add=document.createElement("button"); add.type="button"; add.className="secondary"; add.textContent="添加组内条件"; add.addEventListener("click",()=>addEligibilityCondition(group));
+  const remove=document.createElement("button"); remove.type="button"; remove.className="secondary"; remove.textContent="删除规则组"; remove.addEventListener("click",()=>{ group.remove(); eligibilityChanged(); });
+  group.append(title,add,remove); el("eligibilityExcludeGroups").append(group); addEligibilityCondition(group);
+}
+el("addEligibilityKeep")?.addEventListener("click",()=>addEligibilityCondition(el("eligibilityKeepConditions")));
+el("addEligibilityExcludeGroup")?.addEventListener("click",addEligibilityExcludeGroup);
+el("refreshEligibilitySummary")?.addEventListener("click",refreshEligibilitySummary);
 function stateFilterTags() { return (state.inspection?.numeric_columns||[]).filter(tag=>state.registry[tag]?.role==="state_filter"); }
 function addStateFilterCondition(column="") {
   const columns=stateFilterTags().filter(tag=>!stateFilterPayloadColumns().includes(tag)); if(!columns.length) { setStatus("没有可添加的状态过滤 Tag；每个状态过滤 Tag 只能配置一次。","warning"); return; }
@@ -3300,7 +3403,7 @@ function stateFilterPayload() {
   const rows=[...document.querySelectorAll("#stateFilterConditions .condition-row")], seen=new Set();
   return rows.map(row=>{ const select=row.querySelector('[data-field="column"]'), column=select?.value||""; if(!column) throw new Error("状态过滤条件缺少列。"); if(seen.has(column)) throw new Error(`状态过滤 Tag ${column} 重复配置。`); seen.add(column); if(state.registry[column]?.role!=="state_filter") throw new Error(`状态过滤条件 ${column} 的 Tag 角色已不再是“状态过滤”。`); const minimum=row.querySelector('[data-field="minimum"]').value.trim(), maximum=row.querySelector('[data-field="maximum"]').value.trim(); if(minimum===""&&maximum==="") throw new Error(`状态过滤条件 ${column} 至少需要下限或上限。`); return {column,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
 }
-function commonPayload() { const gap=el("gapThreshold").value, filterMethod=el("filterMethod").value, alpha=el("firstOrderAlpha").value, alphaError=firstOrderAlphaError(); if(alphaError) throw new Error(alphaError); return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),resampling_method:el("resamplingMethod").value,filter_method:filterMethod,first_order_alpha:filterMethod==="first_order"?Number(alpha):null,smoothing_window_minutes:filterMethod==="trailing_mean"?numberValue("smoothingWindow"):0,gap_threshold_minutes:gap===""?null:Number(gap),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),state_filters:stateFilterPayload()}; }
+function commonPayload() { const gap=el("gapThreshold").value, filterMethod=el("filterMethod").value, alpha=el("firstOrderAlpha").value, alphaError=firstOrderAlphaError(); if(alphaError) throw new Error(alphaError); return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),resampling_method:el("resamplingMethod").value,filter_method:filterMethod,first_order_alpha:filterMethod==="first_order"?Number(alpha):null,smoothing_window_minutes:filterMethod==="trailing_mean"?numberValue("smoothingWindow"):0,gap_threshold_minutes:gap===""?null:Number(gap),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),state_filters:stateFilterPayload(),modeling_eligibility:modelingEligibilityPayload()}; }
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function clusterUiLabel(value) { return String(value??"未记录").replace(/^\d+$/,number=>`工况组 ${Number(number)}`).replace(/cluster_(\d+)/gi,(_,number)=>`工况组 ${Number(number)}`).replace(/Cluster(?![A-Za-z_])/g,"工况组"); }
 function candidateSourceLabel(window) {
@@ -3386,7 +3489,23 @@ async function updateTrainingWindows(operation, affectsTraining) {
   catch(error) { renderTrainingWindows(); setStatus(error.message,"error"); return false; }
 }
 async function confirmCandidateWindow(candidate) { if(candidateTrainingWindows(candidate).length) { setStatus("该候选已生成训练窗口。","warning"); return; } const added=await updateTrainingWindows({action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows},true); if(added) { const count=candidateTrainingWindows(candidate).length; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus(`已确认并生成 ${count} 个训练窗口；它们将分别参与质量检查和训练。`,"success"); } }
-async function addCandidateWindow(source,start,end,sourceRef=null,comment="") { if(!start||!end) { setStatus("候选窗口需要开始和结束时间。","warning"); return; } if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) { setStatus("该候选已在候选窗口列表中。","warning"); return; } state.candidateWindows.push({id:candidateId(),start,end,source,source_ref:sourceRef,comment}); renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel"); el("candidateWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("候选窗口已加入；不会修改训练窗口，请人工确认后再生成训练窗口。","success"); }
+async function addCandidateWindow(source,start,end,sourceRef=null,comment="") {
+  if(!start||!end) { setStatus("候选窗口需要开始和结束时间。","warning"); return; }
+  if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) { setStatus("该候选已在候选窗口列表中。","warning"); return; }
+  const revision=eligibilityRevision;
+  try {
+    const rules=modelingEligibilityPayload(); let windows=[{start,end}];
+    if(rules.keep_conditions.length||rules.exclude_rule_groups.length) {
+      const data=await api("/api/modeling-eligibility",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),candidate_start:start,candidate_end:end})});
+      if(revision!==eligibilityRevision) return;
+      windows=data.eligible_windows;
+      if(!windows.length) { setStatus("该候选范围没有建模资格合格样本。","warning"); return; }
+      if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) return;
+    }
+    windows.forEach(window=>state.candidateWindows.push({id:candidateId(),start:window.start,end:window.end,source,source_ref:sourceRef,comment}));
+    renderCandidateWindows(); globalThis.showWorkflowStage?.("candidatePanel"); el("candidateWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus("合格候选窗口已加入；请人工确认后再生成训练窗口。","success");
+  } catch(error) { setStatus(error.message,"error"); }
+}
 function editTrainingWindow(window) { const start=prompt("训练窗口开始时间",displayTime(window.start)); if(start===null) return; const end=prompt("训练窗口结束时间",displayTime(window.end)); if(end===null) return; const comment=prompt("备注",window.comment||""); if(comment===null) return; updateTrainingWindows({action:"update",id:window.id,changes:{start,end,comment}},window.enabled); }
 
 async function api(path, options={}) {
@@ -3648,6 +3767,7 @@ el("uploadButton").addEventListener("click", async () => {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
+    eligibilityRevision+=1; clearTimeout(eligibilitySummaryTimer); el("eligibilityKeepConditions")?.replaceChildren(); el("eligibilityExcludeGroups")?.replaceChildren();
     state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; resetExplorationRegion(); state.performance=null; state.trend=null; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; state.preprocessingPreviewWindowId=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); el("stateFilterConditions").replaceChildren(); el("addStateFilterCondition").disabled=true; el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`文件信息：${data.filename}（${Math.ceil(data.size_bytes/1024)} KB），已读取 ${data.columns.length} 个列名。请选择时间列，下一步：正在检查数据。`,"success");
@@ -3665,7 +3785,7 @@ el("inspectButton").addEventListener("click", async () => {
     setStatus("正在检查数据…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:previousRegistry}),signal:controller.signal});
     ensureInspectionPageReady();
-    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; resetExplorationRegion(); state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
+    state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; resetExplorationRegion(); state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); refreshEligibilitySummary(); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); if(el("explorationStart")) el("explorationStart").value=localTime(data.time_start); if(el("explorationEnd")) el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
     el("trendStart").value=localTime(data.trend_default_start); el("trendEnd").value=localTime(data.trend_default_end);
@@ -3763,8 +3883,9 @@ el("preprocessingPreviewButton").addEventListener("click",async()=>{
   const alphaError=firstOrderAlphaError(); if(alphaError) { state.preprocessingPreview=null; state.preprocessingPreviewTag=null; el("preprocessingPreview").className="status error"; el("preprocessingPreview").textContent=alphaError; return; }
   const window=selectedPreprocessingPreviewWindow(); if(!window) { state.preprocessingPreview=null; state.preprocessingPreviewTag=null; el("preprocessingPreview").className="status error"; el("preprocessingPreview").textContent="没有启用的训练窗口，无法预览预处理。"; setStatus("请先在“正常状态候选”确认并启用至少一个训练窗口。","warning"); return; }
   const button=el("preprocessingPreviewButton"); setBusy(button,true,"预览中…");
-  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags:[],start:window.start,end:window.end})}); const tags=preprocessingPreviewTags(data); if(!tags.length){setStatus("当前窗口没有可用于预览的数值Tag。","warning");return;} state.preprocessingPreview={data,tags,windowId:window.id,start:window.start,end:window.end}; if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]; renderPreprocessingPreview(); setStatus(`预处理预览已更新（训练窗口 ${window.id}）；显示抽样不会进入训练。`,"success"); }
-  catch(error){setStatus(error.message,"error");} finally {setBusy(button,false);}
+  const revision=eligibilityRevision;
+  try { const data=await api("/api/preprocessing-preview",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),tags:[],start:window.start,end:window.end})}); if(revision!==eligibilityRevision) return; const tags=preprocessingPreviewTags(data); if(!tags.length){setStatus("当前窗口没有可用于预览的数值Tag。","warning");return;} state.preprocessingPreview={data,tags,windowId:window.id,start:window.start,end:window.end}; if(!tags.includes(state.preprocessingPreviewTag)) state.preprocessingPreviewTag=tags[0]; renderPreprocessingPreview(); setStatus(`预处理预览已更新（训练窗口 ${window.id}）；显示抽样不会进入训练。`,"success"); }
+  catch(error){setStatus(error.message,"error");} finally {setBusy(button,false); if(revision!==eligibilityRevision) button.disabled=true;}
 });
 function preprocessingPreviewTags(data) {
   return Array.isArray(data.preview_tags)?data.preview_tags:[];
@@ -3808,9 +3929,11 @@ el("addPerformanceCondition").addEventListener("click",addPerformanceCondition);
 
 el("performanceButton").addEventListener("click", async () => {
   const button=el("performanceButton"); setBusy(button,true,"筛选中…"); setStatus("正在按全部性能条件筛选连续候选时段。","info");
+  const revision=eligibilityRevision;
   try {
-    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),conditions:performanceConditionPayload()};
+    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),conditions:performanceConditionPayload(),modeling_eligibility:modelingEligibilityPayload()};
     const data=await api("/api/performance-screen",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }
     state.performance=data; excludePerformanceColumns(data.conditions); renderPerformance(data); if(globalThis.showCandidateTool) { globalThis.showWorkflowStage("candidatePanel"); globalThis.showCandidateTool("performancePanel"); } else document.querySelector('.tab[data-panel="performancePanel"]')?.click();
     setStatus("性能条件筛选完成；相关性能列已取消建模勾选。请选择候选时段并由工程师确认工况。","success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -3851,9 +3974,11 @@ el("convertExplorationCandidates").addEventListener("click", () => {
 el("clusterButton").addEventListener("click", async () => {
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   const button=el("clusterButton"); setBusy(button,true,"聚类中…"); setStatus("正在构建动态状态空间并执行聚类。","info");
+  const revision=eligibilityRevision;
   try {
-    const payload=state.exploratoryRunId?{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,exploratory_run_id:state.exploratoryRunId,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,n_clusters:numberValue("clusterCount")}:{...commonPayload(),tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
+    const payload=state.exploratoryRunId?{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,modeling_eligibility:modelingEligibilityPayload(),exploratory_run_id:state.exploratoryRunId,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,n_clusters:numberValue("clusterCount")}:{...commonPayload(),tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
     const data=await api("/api/cluster",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }
     state.clustering=data; renderClustering(data); if(globalThis.showCandidateTool) { globalThis.showWorkflowStage("candidatePanel"); globalThis.showCandidateTool("clusterPanel"); } else document.querySelector('.tab[data-panel="clusterPanel"]')?.click();
     setStatus("聚类完成。请由工程师判断工况组，并选择代表性连续时段作为正常候选。","success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -3864,15 +3989,17 @@ async function trainModel(modelPurpose) {
   const readiness=state.quality?.training_readiness?.[modelPurpose]||{can_train:state.quality?.can_train}; if(!readiness.can_train) { setStatus("训练前必须重新执行并通过对应模型用途的建模质量检查。","error"); return; }
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
+  const revision=eligibilityRevision;
   try {
     const components=el("components").value.trim();
     const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
     const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }
     state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
-  finally { setBusy(button,false,""); }
+  finally { setBusy(button,false,""); if(revision!==eligibilityRevision) button.disabled=true; }
 }
 el("trainExploratoryButton").addEventListener("click",()=>trainModel("exploratory"));
 el("trainButton").addEventListener("click",()=>trainModel("normal_state"));
@@ -3989,6 +4116,7 @@ el("excludeAllConstants").addEventListener("click",()=>{
   reconcileStateFilterConditions(); invalidateModellingResults(`已标记排除 ${constants.length} 个精确常量Tag`); renderTagList();
 });
 function renderTrend(data) {
+  if(data.modeling_eligibility_summary) renderEligibilitySummary(data.modeling_eligibility_summary,"当前趋势窗口（展示保留完整历史）");
   const container=el("trendChart"); container.replaceChildren(); const zoom=Number(el("trendZoom").value);
   data.tags.forEach((tag,index)=>{ const card=document.createElement("div"); card.className="chart-card"; const title=document.createElement("h3"); title.textContent=`${tag}${state.registry[tag]?.unit?` (${state.registry[tag].unit})`:""}`; card.append(title); card.insertAdjacentHTML("beforeend",trendSvg(data,tag,index,zoom)); container.append(card); });
   const fields=[["sample_count","样本"],["valid_count","有效"],["missing_rate","缺失率"],["unique_count","唯一值"],["minimum","最小"],["maximum","最大"],["mean","均值"],["median","中位数"],["standard_deviation","标准差"],["p01","P1"],["p05","P5"],["p95","P95"],["p99","P99"]];
@@ -4050,7 +4178,7 @@ function renderTraining(data) {
   const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>item.message||`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
   data.explained_variance.slice(0,30).forEach((value,index)=>{ const bar=document.createElement("div"); bar.className=`variance-bar ${index<data.n_components?"selected":""}`; bar.style.height=`${Math.max(3,value/max*95)}px`; const label=document.createElement("span"); label.textContent=`${(value*100).toFixed(0)}%`; bar.title=`PC${index+1}: ${(value*100).toFixed(2)}%`; bar.append(label); variance.append(bar); });
-  lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download;
+  lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download; el("modelDownload").hidden=false;
 }
 
 function syncScoreColorModes(rows) {

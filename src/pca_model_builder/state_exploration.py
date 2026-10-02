@@ -117,6 +117,7 @@ def run_state_exploration(
     performance_series: pd.Series | None = None,
     engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
     resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+    modeling_eligibility: object = None,
 ) -> dict[str, object]:
     """Explore historical operating states; never labels a state as normal."""
     normalized_performance = _normalize_performance_config(performance_config)
@@ -142,6 +143,7 @@ def run_state_exploration(
         preserve_columns=preserve_columns,
         include_intermediates=True,
         resampling_window=resampling_window,
+        modeling_eligibility=modeling_eligibility,
     )
     dynamic = processed.dynamic
     if len(dynamic) <= exploration_config.cluster_count:

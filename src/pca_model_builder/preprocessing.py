@@ -480,8 +480,15 @@ def preprocess_window(
     allow_empty_state_filter: bool = False,
     exclude_engineering_range: bool = False,
     preprocessing_semantics: str = "schema5",
+    modeling_eligibility: object = None,
+    raw_segmentation: tuple[pd.Series, float | None, tuple[dict[str, str], ...]] | None = None,
 ) -> PreprocessingResult:
     """Execute the single causal preprocessing contract for one independent window."""
+    if modeling_eligibility is not None:
+        from .eligibility import filter_modeling_eligibility
+        eligible = filter_modeling_eligibility(frame, modeling_eligibility, config)
+        frame = eligible.frame
+        raw_segmentation = (eligible.segment_ids, eligible.source_interval, eligible.gap_ranges) if not eligible.mask.all() else None
     if preprocessing_semantics == "schema5":
         return _preprocess_window_schema5(
             frame,
@@ -495,6 +502,7 @@ def preprocess_window(
             resampling_window=resampling_window,
             allow_empty_state_filter=allow_empty_state_filter,
             exclude_engineering_range=exclude_engineering_range,
+            raw_segmentation=raw_segmentation,
         )
     if preprocessing_semantics != "legacy":
         raise ValueError("unsupported preprocessing semantics")
@@ -756,6 +764,7 @@ def _preprocess_window_schema5(
     resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
     allow_empty_state_filter: bool = False,
     exclude_engineering_range: bool = False,
+    raw_segmentation: tuple[pd.Series, float | None, tuple[dict[str, str], ...]] | None = None,
 ) -> PreprocessingResult:
     """Schema 5: discard invalid resampled inputs before segment-local filtering."""
     _validate_index(frame.index)
@@ -765,7 +774,7 @@ def _preprocess_window_schema5(
     if missing:
         raise ValueError(f"missing tag columns: {', '.join(missing)}")
     raw = frame.loc[:, required].copy()
-    raw_segments, source_interval, gap_ranges = segment_raw_data(raw.index, config)
+    raw_segments, source_interval, gap_ranges = raw_segmentation or segment_raw_data(raw.index, config)
 
     resampled_parts: list[pd.DataFrame] = []
     segment_parts: list[pd.Series] = []
@@ -791,10 +800,16 @@ def _preprocess_window_schema5(
             config.sample_interval_minutes,
         )
         partial_loss = 0
-        if resampling_window is not None and config.resampling_method != "none":
-            start, end = resampling_window
+        if (resampling_window is not None or raw_segmentation is not None) and config.resampling_method != "none":
             interval = pd.Timedelta(minutes=config.sample_interval_minutes)
-            complete = (resampled.index - interval >= start) & (resampled.index <= end)
+            complete = np.ones(len(resampled), dtype=bool)
+            if resampling_window is not None:
+                start, end = resampling_window
+                complete &= (resampled.index - interval >= start) & (resampled.index <= end)
+            if raw_segmentation is not None:
+                # A bucket touching an eligibility gap cannot pool either side.
+                source_step = pd.Timedelta(minutes=source_interval or config.sample_interval_minutes)
+                complete &= (resampled.index - interval >= segment.index[0] - source_step) & (resampled.index <= segment.index[-1])
             partial_loss = int((~complete).sum())
             partial_row_loss_by_segment[int(segment_id)] = int(counts.loc[~complete].sum())
             resampled, counts = resampled.loc[complete], counts.loc[complete]

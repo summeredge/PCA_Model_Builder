@@ -11,6 +11,7 @@ def screen_performance_states(
     frame: pd.DataFrame,
     conditions: Sequence[Mapping[str, object]],
     sample_interval_minutes: int,
+    modeling_eligibility: object = None,
 ) -> dict[str, Any]:
     """Apply transparent AND range conditions to identify candidate periods."""
     if not isinstance(frame.index, pd.DatetimeIndex):
@@ -24,6 +25,14 @@ def screen_performance_states(
     if not conditions:
         raise ValueError("at least one performance condition is required")
 
+    if modeling_eligibility is not None:
+        from .eligibility import filter_modeling_eligibility, eligibility_columns
+        from .preprocessing import PreprocessingConfig
+        if eligibility_columns(modeling_eligibility):
+            frame = filter_modeling_eligibility(
+                frame, modeling_eligibility,
+                PreprocessingConfig(sample_interval_minutes=sample_interval_minutes, resampling_method="mean"),
+            ).frame
     normalized = [_normalize_condition(condition) for condition in conditions]
     columns = [condition["column"] for condition in normalized]
     if len(columns) != len(set(columns)):
