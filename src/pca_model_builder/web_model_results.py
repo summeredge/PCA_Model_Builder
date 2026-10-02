@@ -131,22 +131,13 @@ _FORM_LAYOUT_STYLE = r"""
   main .preprocessing-preview-controls > label { flex:0 0 auto; }
   main .preprocessing-preview-controls > div { flex:1 1 300px; min-width:0; max-width:100%; }
   main #engineeringPanel .detail-fields {
-    display:flex;
-    flex-wrap:wrap;
     gap:var(--space-1);
     justify-content:start;
     align-items:end;
     max-width:none;
   }
   main #engineeringPanel .detail-fields > .row { display:contents; }
-  main #engineeringPanel .detail-fields label:has(> input:not([type])),
-  main #engineeringPanel .detail-fields label:has(> input[type="text"]),
-  main #engineeringPanel .detail-fields label:has(> select) { flex:0 1 var(--field-select-width); }
-  main #engineeringPanel .detail-fields label:has(> input[type="number"]) {
-    flex:0 0 var(--field-number-width);
-  }
-  main #engineeringPanel .detail-fields > .row > label { align-self:end; }
-  main #engineeringPanel .detail-fields label:has(> textarea) { flex:0 0 100%; width:100%; }
+
   main #engineeringPanel .detail-fields > button,
   main .candidate-manager .row > button,
   main .dp-trend-bar > button,
@@ -175,9 +166,16 @@ _FORM_LAYOUT_STYLE = r"""
       width:auto;
     }
     main .preprocessing-preview-controls { display:grid; grid-template-columns:minmax(0,1fr); }
-    main #engineeringPanel .detail-fields { display:grid; grid-template-columns:minmax(0,1fr); }
-    main #engineeringPanel .detail-fields label:has(> textarea) { grid-column:1; }
+
     main #engineeringPanel .detail-fields > button { justify-self:start; }
+  }
+  /* Tag editor: five columns at desktop, one column on narrow screens. */
+  main #engineeringPanel .detail-fields {
+    display:grid;
+    grid-template-columns:repeat(5,minmax(0,1fr));
+  }
+  @media (max-width:760px) {
+    main #engineeringPanel .detail-fields { grid-template-columns:minmax(0,1fr); }
   }
 </style>
 """
@@ -263,10 +261,7 @@ _FORM_ALIGNMENT_STYLE = r"""
     min-width:0;
     gap:var(--space-2);
   }
-  #engineeringPanel .detail-fields .row {
-    column-gap:var(--space-2);
-    align-items:start;
-  }
+
   #engineeringPanel .detail-fields .row > label {
     min-width:0;
     align-self:start;
@@ -276,12 +271,6 @@ _FORM_ALIGNMENT_STYLE = r"""
   #engineeringPanel .detail-fields select {
     min-height:var(--control-height);
     height:var(--control-height);
-  }
-  #engineeringPanel #tagComment {
-    display:block;
-    height:84px;
-    min-height:84px;
-    resize:vertical;
   }
   #engineeringPanel #tagRole { align-self:start; }
   #engineeringPanel #saveTagConfig {
@@ -466,13 +455,11 @@ _APPLE_DESIGN_STYLE = r"""
     margin:0;
   }
   #tagOptions .tag-state { font-size:12px; line-height:20px; }
-  #engineeringPanel #tagRole,
-  #engineeringPanel #tagComment {
+  #engineeringPanel #tagRole {
     box-sizing:border-box;
     height:var(--control-height);
     min-height:var(--control-height);
   }
-  #engineeringPanel #tagComment { height:84px; min-height:84px; }
   button:focus-visible, .download:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .tabs, .inner-tabs {
     min-width:0;
@@ -574,7 +561,6 @@ _APPLE_DESIGN_STYLE = r"""
   th, td { border-bottom-color:var(--line); padding:8px 12px; }
   th { background:var(--line-soft); color:var(--text); font-weight:600; }
   a:not(.download) { color:var(--accent); }
-  #engineeringPanel #tagComment { resize:vertical; }
   button:focus-visible, .download:focus-visible, a:focus-visible {
     outline:2px solid var(--accent);
     outline-offset:2px;
@@ -645,7 +631,10 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step-status { align-self:start; color:var(--muted); font-size:12px; white-space:nowrap; }
   .workflow-step.active .workflow-step-status { color:var(--accent); font-weight:600; }
   .workflow-step.complete .workflow-step-status { color:var(--green); }
-  .tag-workspace { display:grid; grid-template-columns:minmax(276px,.36fr) minmax(0,1.7fr); gap:var(--space-3); align-items:start; }
+  .tag-workspace { display:grid; grid-template-columns:minmax(414px,.54fr) minmax(0,1.7fr); gap:var(--space-3); align-items:start; }
+  @media (max-width:1480px) {
+    .tag-workspace { grid-template-columns:minmax(0,1fr); }
+  }
   .tag-workspace > *, .tag-detail { min-width:0; }
   #configPanel > .group { margin-bottom:var(--space-3); }
   #configPanel > #qualityPanel { display:grid; gap:var(--space-2); margin-top:var(--space-4); }
@@ -818,7 +807,6 @@ _WORKBENCH_UI_STYLE = r"""
     .workflow-sidebar { position:static; padding:var(--space-3); }
     .workflow-steps { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
     section { padding:var(--panel-padding); }
-    .tag-workspace { grid-template-columns:minmax(0,1fr); }
     .candidate-analysis-range { grid-template-columns:minmax(0,1fr); }
     .row { grid-template-columns:minmax(0,1fr); }
     .candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }

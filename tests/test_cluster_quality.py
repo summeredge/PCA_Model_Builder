@@ -117,6 +117,11 @@ def test_quality_cards_are_inside_existing_result_panels_and_share_renderer():
         assert 'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration")' in html
         assert 'renderClusterQuality(el("assistanceClusterQuality"),data.cluster_quality,"cluster_assistance")' in html
         assert "状态探索工程提示" in html and "状态结构解释" in html
+        for element_id in ("explorationTimeline", "explorationClusterTable", "explorationClusterCandidates", "explorationPerformanceCandidates", "explorationPreferredRegionCandidates"):
+            assert f'id="{element_id}"' in html
+    state_renderer = web.INDEX_HTML.split("function renderStateExploration(data)", 1)[1].split("function renderExplorationLossSummary", 1)[0]
+    for renderer in ("renderExplorationPcChart", "renderExplorationTimeline", "renderExplorationClusterTable", "renderExplorationCandidateTables"):
+        assert f"{renderer}(" in state_renderer
 
 
 def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
@@ -133,9 +138,17 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
     const container={innerHTML:''};
     renderClusterQuality(container,quality,'state_exploration'); const exploration=container.innerHTML;
     renderClusterQuality(container,quality,'cluster_assistance'); const assistance=container.innerHTML;
+    const degraded=JSON.parse(JSON.stringify(quality));
+    const clusterIds=Object.keys(degraded.top_features[0].cluster_means);
+    degraded.top_features[0].cluster_means[clusterIds[0]]=NaN;
+    delete degraded.top_features[0].cluster_means[clusterIds[1]];
+    renderClusterQuality(container,degraded,'state_exploration'); const degradedMeans=container.innerHTML;
+    const legacy=JSON.parse(JSON.stringify(quality));
+    delete legacy.top_features[0].cluster_means;
+    renderClusterQuality(container,legacy,'state_exploration'); const unavailableMeans=container.innerHTML;
     renderClusterQuality(container,null,'state_exploration'); const missing=container.innerHTML;
     renderClusterQuality(container,{unavailable_reasons:{analysis:'样本不足'}},'cluster_assistance');
-    console.log(JSON.stringify({exploration,assistance,missing,invalid:container.innerHTML}));
+    console.log(JSON.stringify({exploration,assistance,degradedMeans,unavailableMeans,missing,invalid:container.innerHTML}));
     """
     output = subprocess.run([node, "-e", source], capture_output=True, text=True, encoding="utf-8", check=True)
     rendered = json.loads(output.stdout)
@@ -146,6 +159,11 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
         assert "没有时间列" in rendered[perspective]
         assert "&lt;driver&gt;" in rendered[perspective]
         assert "<driver>" not in rendered[perspective]
+        assert "<th>标准化差异</th><th>原始均值差</th><th>Cluster 1</th><th>Cluster 2</th>" in rendered[perspective]
+        assert "<tr><td>&lt;driver&gt;</td><td>2.000</td><td>1.000</td><td>0.000</td><td>1.000</td></tr>" in rendered[perspective]
+        assert "Top5" in rendered[perspective]
+    assert "<td>—</td><td>—</td>" in rendered["degradedMeans"]
+    assert "<td>—</td><td>—</td>" in rendered["unavailableMeans"]
     assert "尚无聚类分析数据" in rendered["missing"]
     assert "样本不足" in rendered["invalid"]
 

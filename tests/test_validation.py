@@ -12,6 +12,8 @@ from pca_model_builder.validation import (
     _contribution_stability,
     _contribution_stability_group,
     _validation_metrics,
+    _validation_metrics_match,
+    _without_additive_validation_metrics,
     build_validation_matrix,
     ensure_disjoint_windows,
     normalize_validation_windows,
@@ -360,6 +362,82 @@ def test_validation_metrics_separate_statistics_and_weight_normal_windows_by_row
     assert abnormal["windows"][1]["first_detection_delay_minutes_99"] == 10
     assert abnormal["first_detection_delay_minutes_95_median"] == 7.5
     assert abnormal["first_detection_delay_minutes_95_max"] == 10
+
+
+def test_known_abnormal_metrics_classify_detection_sources_and_continuity():
+    base = pd.Timestamp("2026-02-01T00:00:00")
+    limits = SimpleNamespace(
+        t2_limits={0.95: 1.0, 0.99: 3.0}, q_limits={0.95: 1.0, 0.99: 3.0}
+    )
+    inputs = (
+        ("A", [0, 5, 20, 25], [1.0, 0.0, 3.0, 0.0], [0.0] * 4),
+        ("B", [0, 5, 10], [0.0] * 3, [0.0, 3.0, 1.0]),
+        ("C", [0, 5, 10, 15], [3.0, 0.0, 0.0, 0.0], [0.0, 3.0, 0.0, 0.0]),
+        ("D", [0, 5], [0.0] * 2, [0.0] * 2),
+    )
+    windows = []
+    for position, (identifier, offsets, t2, spe) in enumerate(inputs):
+        window_base = base + pd.Timedelta(hours=position)
+        index = pd.DatetimeIndex(
+            [window_base + pd.Timedelta(minutes=offset) for offset in offsets]
+        )
+        scores = pd.DataFrame({"t2": t2, "spe": spe}, index=index)
+        windows.append(
+            {
+                "id": identifier,
+                "type": "known_abnormal",
+                "start": index[0],
+                "scores": scores,
+                "continuous_events": _combined_exceedance_events(scores, limits, 5),
+            }
+        )
+
+    abnormal = _validation_metrics(windows, limits, 5)["known_abnormal"]
+
+    assert abnormal["valid_window_count"] == 4
+    assert abnormal["detected_window_count_95"] == 3
+    assert abnormal["detected_window_count_99"] == 3
+    for confidence in (95, 99):
+        assert abnormal[f"t2_only_detected_window_count_{confidence}"] == 1
+        assert abnormal[f"spe_only_detected_window_count_{confidence}"] == 1
+        assert abnormal[f"t2_and_spe_detected_window_count_{confidence}"] == 1
+        assert sum(
+            abnormal[f"{field}_detected_window_count_{confidence}"]
+            for field in ("t2_only", "spe_only", "t2_and_spe")
+        ) == abnormal[f"detected_window_count_{confidence}"]
+
+    assert abnormal["detection_rate_95"] == pytest.approx(3 / 4)
+    assert abnormal["scoring_row_count"] == 13
+    assert abnormal["detected_row_count_95"] == 6
+    assert abnormal["detection_coverage_rate_95"] == pytest.approx(6 / 13)
+    assert abnormal["continuous_detection_event_count_95"] == 4
+    assert abnormal["longest_continuous_detection_minutes_95"] == 10
+    details = {item["validation_window_id"]: item for item in abnormal["windows"]}
+    assert details["A"]["first_detection_95"] == base.isoformat()
+    assert details["A"]["first_detection_delay_minutes_95"] == 0
+    assert details["A"]["continuous_detection_event_count_95"] == 2
+    assert details["A"]["longest_continuous_detection_minutes_95"] == 5
+    assert details["B"]["first_detection_99"] == (
+        base + pd.Timedelta(hours=1, minutes=5)
+    ).isoformat()
+    assert details["B"]["first_detection_delay_minutes_99"] == 5
+    assert details["B"]["longest_continuous_detection_minutes_95"] == 10
+    assert details["C"]["continuous_detection_event_count_95"] == 1
+    assert details["D"]["first_detection_95"] is None
+    assert details["D"]["detection_coverage_rate_95"] == 0
+    assert abnormal["first_detection_delay_minutes_95_median"] == 0
+    assert abnormal["first_detection_delay_minutes_95_max"] == 5
+
+    legacy = _without_additive_validation_metrics(
+        _validation_metrics(windows, limits, 5)
+    )
+    assert _validation_metrics_match(legacy, _validation_metrics(windows, limits, 5))
+    partial = {**_validation_metrics(windows, limits, 5)}
+    partial["known_abnormal"] = {
+        **partial["known_abnormal"],
+        "scoring_row_count": 12,
+    }
+    assert not _validation_metrics_match(partial, _validation_metrics(windows, limits, 5))
 
 
 def test_contribution_stability_is_separate_deterministic_and_handles_boundaries():

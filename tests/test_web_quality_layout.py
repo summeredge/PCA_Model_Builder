@@ -470,7 +470,7 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert "#engineeringPanel .detail-fields .row > label" in html
     assert "align-content:start;" in html
     assert "#engineeringPanel #tagRole" in html
-    assert "#engineeringPanel #tagComment" in html
+    assert "#tagComment" not in html
     assert "@media (max-width:900px)" in html
     # 窄屏下文件选择控件独占一行：grid 两列形态用 grid-column，flex 形态用 flex-basis。
     assert "flex:1 1 100%;" in html
@@ -558,11 +558,7 @@ def test_workbench_layout_rules_keep_buttons_intrinsic_and_grids_shrinkable() ->
     assert "main .condition-row > label:first-child > select" in desktop
     assert "main .dp-scatter-controls select" in desktop
     assert "main #engineeringPanel .detail-fields > .row { display:contents; }" in desktop
-    assert 'label:has(> input:not([type]))' in desktop
-    assert 'label:has(> select) { flex:0 1 var(--field-select-width); }' in desktop
-    assert 'label:has(> input[type="number"])' in desktop
-    assert 'flex:0 0 var(--field-number-width);' in desktop
-    assert "label:has(> textarea) { flex:0 0 100%;" in desktop
+
 
     narrow = layout.split("@media (max-width:760px)", 1)[1]
     assert "grid-template-columns:minmax(0,1fr);" in narrow
@@ -611,7 +607,7 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert "max-width:100%;" in html
     assert ".results { gap:24px; }" in html
     assert ".empty, .variance, .exploration-timeline" in html
-    assert "#engineeringPanel #tagRole," in html
+    assert "#engineeringPanel #tagRole {" in html
     assert "height:42px;" in html
     assert "height:30px;" in html
     assert "grid-template-columns:repeat(auto-fit,minmax(132px,1fr));" in html
@@ -2392,7 +2388,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
     assert all(tag != 'input' or attrs.get('type', 'text') in
                ('text', 'number', 'datetime-local', 'file', 'range')
                for tag, attrs in controls.fields.values())
-    assert len(controls.fields) == 67
+    assert len(controls.fields) == 66
     assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
 
 
@@ -2411,8 +2407,10 @@ def test_semantic_widths_keep_data_source_compact_and_responsive_exceptions() ->
     layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split('</style>', 1)[0]
     assert 'main .condition-row > label:first-child > select' in layout
     assert 'main .dp-trend-bar > label { flex:0 0 auto; max-width:none; }' in layout
-    assert 'main #engineeringPanel .detail-fields label:has(> input[type="text"])' in layout
-    assert 'main #engineeringPanel .detail-fields label:has(> textarea)' in layout
+    tag_grid = layout.split("/* Tag editor:", 1)[1]
+    assert 'main #engineeringPanel .detail-fields {' in tag_grid
+    assert 'grid-template-columns:repeat(5,minmax(0,1fr));' in tag_grid
+    assert 'main #engineeringPanel .detail-fields { grid-template-columns:minmax(0,1fr); }' in tag_grid
     narrow = style.split('@media (max-width:760px)', 1)[1]
     assert 'min-width:0; max-width:100%;' in narrow
     assert 'display:grid; grid-template-columns:minmax(0,1fr);' in narrow

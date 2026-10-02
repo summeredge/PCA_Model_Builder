@@ -3004,7 +3004,7 @@ INDEX_HTML = r"""<!doctype html>
           <h3 id="selectedTagTitle">请选择左侧Tag</h3>
           <div class="detail-fields">
             <div class="row"><label>描述<input id="tagDescription"></label><label>单位<input id="tagUnit"></label></div>
-            <div class="row"><label>变量角色<select id="tagRole"><option value="continuous_input">连续输入</option><option value="state_filter">状态过滤</option><option value="label_only">仅标签</option><option value="exclude">排除</option></select></label><label>备注<textarea id="tagComment"></textarea></label></div>
+            <div class="row"><label>变量角色<select id="tagRole"><option value="continuous_input">连续输入</option><option value="state_filter">状态过滤</option><option value="label_only">仅标签</option><option value="exclude">排除</option></select></label></div>
             <div class="row"><label>工程下限<input id="engineeringMin" type="number" step="any"></label><label>工程上限<input id="engineeringMax" type="number" step="any"></label></div>
             <div class="row"><label>正常下限<input id="normalMin" type="number" step="any"></label><label>正常上限<input id="normalMax" type="number" step="any"></label></div>
             <div class="row"><label>报警下限<input id="alarmMin" type="number" step="any"></label><label>报警上限<input id="alarmMax" type="number" step="any"></label></div>
@@ -3202,13 +3202,13 @@ function renderTagList() {
 }
 function selectTag(tag) {
   state.selectedTag=tag; const config=state.registry[tag]||emptyTagConfig(); el("selectedTagTitle").textContent=tag;
-  const fields={tagDescription:"description",tagUnit:"unit",tagRole:"role",tagComment:"comment",engineeringMin:"engineering_min",engineeringMax:"engineering_max",normalMin:"normal_min",normalMax:"normal_max",alarmMin:"alarm_min",alarmMax:"alarm_max"};
+  const fields={tagDescription:"description",tagUnit:"unit",tagRole:"role",engineeringMin:"engineering_min",engineeringMax:"engineering_max",normalMin:"normal_min",normalMax:"normal_max",alarmMin:"alarm_min",alarmMax:"alarm_max"};
   Object.entries(fields).forEach(([id,key])=>{ el(id).value=config[key]??""; }); renderTagList(); renderCurrentTagQuality();
 }
 function optionalNumber(id) { const value=el(id).value.trim(); return value===""?null:Number(value); }
 function saveCurrentTagConfig() {
   if(!state.selectedTag) throw new Error("请先选择Tag。");
-  const tag=state.selectedTag, previousRole=state.registry[tag]?.role; const config={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:el("tagComment").value.trim(),engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")}; state.registry[tag]=config;
+  const tag=state.selectedTag, previousRole=state.registry[tag]?.role; const config={description:el("tagDescription").value.trim(),unit:el("tagUnit").value.trim(),role:el("tagRole").value,comment:state.registry[tag]?.comment??"",engineering_min:optionalNumber("engineeringMin"),engineering_max:optionalNumber("engineeringMax"),normal_min:optionalNumber("normalMin"),normal_max:optionalNumber("normalMax"),alarm_min:optionalNumber("alarmMin"),alarm_max:optionalNumber("alarmMax")}; state.registry[tag]=config;
   if(config.role==="exclude"&&previousRole!=="exclude") setTagExclusion(tag,{tag,reason:"manual_exclude"}); else { if(previousRole==="exclude"&&config.role==="continuous_input") state.selectedModelTags.add(tag); else if(config.role!=="continuous_input") state.selectedModelTags.delete(tag); reconcileExcludedTags(); }
   reconcileStateFilterConditions(); invalidateModellingResults("Tag工程配置或角色已修改"); renderTagList();
 }
@@ -3351,7 +3351,7 @@ async function api(path, options={}) {
 }
 
 function ensureInspectionPageReady() {
-  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","tagComment","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","excludedWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","stateFilterConditions","addStateFilterCondition","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","explorationRegionSelect","explorationRegionDelete","explorationRegionClear","explorationRegionSummary","explorationPreferredRegionCandidates","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","preprocessingPreviewWindow","trainButton","validateButton","importConfigButton","exportConfigButton"];
+  const ids=["tagOptions","selectedTagTitle","tagDescription","tagUnit","tagRole","engineeringMin","engineeringMax","normalMin","normalMax","alarmMin","alarmMax","candidateWindows","excludedWindows","trainingWindows","validationWindowTable","trendTags","explorationPerformanceTag","performanceConditions","stateFilterConditions","addStateFilterCondition","basicInspectionSummary","basicInspectionIssues","modelQualityStatus","validatedModelDownload","frozenModelDownload","deploymentModelDownload","templateDownload","excludeAllConstants","clusterButton","stateExplorationButton","explorationRegionSelect","explorationRegionDelete","explorationRegionClear","explorationRegionSummary","explorationPreferredRegionCandidates","addPerformanceCondition","performanceButton","qualityButton","trendButton","preprocessingPreviewButton","preprocessingPreviewWindow","trainButton","validateButton","importConfigButton","exportConfigButton"];
   const missing=ids.filter(id=>!el(id)); if(missing.length) throw new Error(`页面初始化不完整，缺少元素：${missing.join(", ")}`);
 }
 
@@ -3414,11 +3414,13 @@ function renderClusterQuality(container, quality, perspective) {
   const percent=value=>typeof value==="number"&&Number.isFinite(value)?`${(value*100).toFixed(1)}%`:"—";
   const metrics=metric("Cluster 数量",quality.cluster_count)+metric("Silhouette Score",number(quality.silhouette_score))+metric("PC1贡献",percent(variance.pc1))+metric("PC2贡献",percent(variance.pc2));
   const centers=(quality.centers||[]).map(item=>`<tr><td>${escapeHtml(item.cluster)}</td><td>${number(item.pc1)}</td><td>${number(item.pc2)}</td></tr>`).join("");
-  const features=(quality.top_features||[]).map(item=>`<li>${escapeHtml(item.tag)}（标准化差异 ${number(item.standardized_difference)}；原始均值差 ${number(item.mean_difference)}）</li>`).join("");
+  const clusterIds=(quality.centers||[]).map(item=>String(item.cluster));
+  const featureHeaders=clusterIds.map(cluster=>`<th>Cluster ${escapeHtml(cluster)}</th>`).join("");
+  const features=(quality.top_features||[]).map(item=>`<tr><td>${escapeHtml(item.tag)}</td><td>${number(item.standardized_difference)}</td><td>${number(item.mean_difference)}</td>${clusterIds.map(cluster=>`<td>${number(item.cluster_means?.[cluster])}</td>`).join("")}</tr>`).join("");
   const temporal=quality.temporal_metrics;
   const time=temporal?`<div class="metrics">${metric("平均持续时间",`${number(temporal.average_duration_hours)} h`)}${metric("最长连续时间",`${number(temporal.longest_duration_hours)} h`)}${metric("状态切换次数",temporal.state_switch_count)}</div><p class="help">按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。</p>`:`<div class="empty">${escapeHtml(reasons.temporal_metrics||"无时间数据")}</div>`;
   const centerCard=`<div class="chart-card"><h3>Cluster中心与分离情况</h3><p>中心排列：${escapeHtml(quality.center_orientation)}</p><div class="table-wrap"><table><thead><tr><th>Cluster</th><th>PC1</th><th>PC2</th></tr></thead><tbody>${centers}</tbody></table></div><p class="help">中心方差占比达到80%时归为主要沿该主元；仅描述 PC1/PC2 平面。</p></div>`;
-  const featureCard=`<div class="chart-card"><h3>主要区分变量</h3>${features?`<ol>${features}</ol>`:`<div class="empty">${escapeHtml(reasons.top_features||"无有效建模 Tag")}</div>`}<p class="help">仅比较建模 Tag：Cluster 均值极差 / 全部有效样本标准差，Top5；表示统计差异，不表示因果。</p></div>`;
+  const featureCard=`<div class="chart-card"><h3>主要区分变量</h3>${features?`<div class="table-wrap"><table><thead><tr><th>变量</th><th>标准化差异</th><th>原始均值差</th>${featureHeaders}</tr></thead><tbody>${features}</tbody></table></div>`:`<div class="empty">${escapeHtml(reasons.top_features||"无有效建模 Tag")}</div>`}<p class="help">仅比较建模 Tag：Cluster 均值极差 / 全部有效样本标准差，Top5；表示统计差异，不表示因果。</p></div>`;
   const timeCard=`<div class="chart-card"><h3>时间连续性</h3>${time}</div>`;
   const title=perspective==="state_exploration"?"状态探索工程提示":"状态结构解释";
   const details=perspective==="state_exploration"?centerCard+timeCard+featureCard:centerCard+featureCard+timeCard;
@@ -4016,7 +4018,7 @@ function renderValidation(data) {
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
   const lifecycle=modelLifecycle(data); const decisionLabels={passed:"通过",insufficient:"结论不足",failed:"不通过"}; const validationStatus=data.model_status==="frozen"?"已生成冻结和部署模型包":data.model_status==="validated"?"已生成已验证模型副本":data.engineer_decision?`工程师结论已保存：${decisionLabels[data.engineer_decision.decision]||data.engineer_decision.decision}`:"验证回放完成，待工程师确认";
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("验证状态",validationStatus);
-  renderValidationMetricDetails(data.validation_metrics||{}); renderContributionStability(data.contribution_stability||{});
+  renderValidationMetricDetails(data.validation_metrics||{},data.status_by_engineering_label||{}); renderContributionStability(data.contribution_stability||{});
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
   el("contributionHint").textContent=data.contributions.length ? "按每个连续越过95%控制限的事件保存峰值贡献；事件不会跨物理时间缺口合并。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
@@ -4026,10 +4028,34 @@ function renderValidation(data) {
 
 function percent(value) { return value===null||value===undefined?"—":`${(Number(value)*100).toFixed(1)}%`; }
 function contributionPercent(value) { return value===null||value===undefined?"—":`${Number(value).toFixed(1)}%`; }
-function renderValidationMetricDetails(metrics) {
+function renderValidationMetricDetails(metrics, engineeringLabels={}) {
   const normal=metrics.normal_validation||{}, abnormal=metrics.known_abnormal||{};
-  const row=(label,values)=>`<tr><th>${label}</th>${values.map(value=>`<td class="numeric">${value}</td>`).join("")}</tr>`;
-  el("validationMetricDetails").innerHTML=`<table><thead><tr><th>验证类型</th><th>有效窗口</th><th>评分行 / 检测率</th><th>T² 95% / 99%</th><th>SPE 95% / 99%</th><th>总体 95% / 99%</th><th>连续误报 / 首次95%延迟</th></tr></thead><tbody>${row("正常样本",[normal.valid_window_count??0,normal.scoring_row_count??0,`${percent(normal.t2?.exceedance_rate_95)} / ${percent(normal.t2?.exceedance_rate_99)}`,`${percent(normal.spe?.exceedance_rate_95)} / ${percent(normal.spe?.exceedance_rate_99)}`,`${percent(normal.overall?.exceedance_rate_95)} / ${percent(normal.overall?.exceedance_rate_99)}`,`${normal.continuous_false_alarm_event_count_95??0} / ${normal.longest_continuous_false_alarm_minutes??0} 分钟`])}${row("已知异常",[abnormal.valid_window_count??0,`${abnormal.detected_window_count_95??0} / ${percent(abnormal.detection_rate_95)}；99% ${abnormal.detected_window_count_99??0} / ${percent(abnormal.detection_rate_99)}`,`${abnormal.t2_detected_window_count_95??0} / ${abnormal.t2_detected_window_count_99??0}`,`${abnormal.spe_detected_window_count_95??0} / ${abnormal.spe_detected_window_count_99??0}`,"—",`${abnormal.first_detection_delay_minutes_95_median??"—"} / ${abnormal.first_detection_delay_minutes_95_max??"—"} 分钟`])}</tbody></table>`;
+  const row=(label,value)=>`<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`;
+  const table=rows=>`<table><tbody>${rows.join("")}</tbody></table>`;
+  const delay=(window,confidence)=>{const value=window[`first_detection_delay_minutes_${confidence}`]; return value===null||value===undefined?"未检出":`${value} 分钟`;};
+  const detectedAt=value=>value?displayTime(value):"未检出";
+  const normalRows=[
+    row("T²误报警率",`95% ${percent(normal.t2?.exceedance_rate_95)} / 99% ${percent(normal.t2?.exceedance_rate_99)}`),
+    row("SPE误报警率",`95% ${percent(normal.spe?.exceedance_rate_95)} / 99% ${percent(normal.spe?.exceedance_rate_99)}`),
+    row("Overall误报警率",`95% ${percent(normal.overall?.exceedance_rate_95)} / 99% ${percent(normal.overall?.exceedance_rate_99)}`),
+    row("连续误报事件数（95%）",normal.continuous_false_alarm_event_count_95??0),
+    row("最长连续误报时间",`${normal.longest_continuous_false_alarm_minutes??0} 分钟`),
+  ];
+  const abnormalRows=[
+    row("Overall检出窗口",`95% ${abnormal.detected_window_count_95??0}/${abnormal.valid_window_count??0}（${percent(abnormal.detection_rate_95)}）；99% ${abnormal.detected_window_count_99??0}/${abnormal.valid_window_count??0}（${percent(abnormal.detection_rate_99)}）`),
+    row("仅T²检出窗口",`95% ${abnormal.t2_only_detected_window_count_95??"—"} / 99% ${abnormal.t2_only_detected_window_count_99??"—"}`),
+    row("仅SPE检出窗口",`95% ${abnormal.spe_only_detected_window_count_95??"—"} / 99% ${abnormal.spe_only_detected_window_count_99??"—"}`),
+    row("T²与SPE共同检出窗口",`95% ${abnormal.t2_and_spe_detected_window_count_95??"—"} / 99% ${abnormal.t2_and_spe_detected_window_count_99??"—"}`),
+    row("95%首次检出延迟（中位 / 最大）",`${abnormal.first_detection_delay_minutes_95_median??"—"} / ${abnormal.first_detection_delay_minutes_95_max??"—"} 分钟`),
+    row("95%检出覆盖率",abnormal.detection_coverage_rate_95===undefined?"—":`${abnormal.detected_row_count_95}/${abnormal.scoring_row_count} 评分点；${percent(abnormal.detection_coverage_rate_95)}`),
+    row("95%连续检出事件数",abnormal.continuous_detection_event_count_95??"—"),
+    row("最长连续检出时间",abnormal.longest_continuous_detection_minutes_95===undefined?"—":`${abnormal.longest_continuous_detection_minutes_95} 分钟`),
+  ];
+  const windows=abnormal.windows||[];
+  const windowRows=windows.map(window=>`<tr><td>${escapeHtml(window.validation_window_id)}</td><td>${escapeHtml(displayTime(window.start)||"—")}</td><td>${escapeHtml(detectedAt(window.first_detection_95))}</td><td>${escapeHtml(delay(window,95))}</td><td>${escapeHtml(detectedAt(window.first_detection_99))}</td><td>${escapeHtml(delay(window,99))}</td><td class="numeric">${escapeHtml(percent(window.detection_coverage_rate_95))}</td><td class="numeric">${window.continuous_detection_event_count_95??"—"}</td><td class="numeric">${window.longest_continuous_detection_minutes_95===undefined?"—":`${window.longest_continuous_detection_minutes_95} 分钟`}</td></tr>`).join("");
+  const labels=Object.entries(engineeringLabels||{});
+  const labelSection=labels.length?`<h4>工程标签状态分布</h4><table><thead><tr><th>工程标签</th><th>正常</th><th>关注</th><th>异常</th></tr></thead><tbody>${labels.map(([label,counts])=>`<tr><td>${escapeHtml(label)}</td><td class="numeric">${counts.normal??0}</td><td class="numeric">${counts.attention??0}</td><td class="numeric">${counts.abnormal??0}</td></tr>`).join("")}</tbody></table>`:"";
+  el("validationMetricDetails").innerHTML=`<h4>正常样本验证</h4>${table(normalRows)}<h4>已知异常验证</h4>${table(abnormalRows)}<h4>已知异常窗口明细</h4><table><thead><tr><th>窗口</th><th>开始时间</th><th>95%首次检出</th><th>95%检出延迟</th><th>99%首次检出</th><th>99%检出延迟</th><th>95%检出覆盖率</th><th>95%连续检出事件数</th><th>最长连续检出</th></tr></thead><tbody>${windowRows||'<tr><td colspan="9">无已知异常窗口明细</td></tr>'}</tbody></table>${labelSection}`;
 }
 function renderContributionStability(stability) {
   const rows=[];

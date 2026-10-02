@@ -23,6 +23,7 @@ from pca_model_builder.preprocessing import (
     infer_segment_ids,
 )
 from pca_model_builder.training import build_training_matrix
+from pca_model_builder.validation import _without_additive_validation_metrics
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -730,6 +731,20 @@ def test_tag_config_save_button_matches_template_download_button_width():
     assert "--batch-action-width:119px;" in html
     assert "#engineeringPanel #saveTagConfig {" in html
     assert "justify-self:start;" in html
+    tag_editor = html.split("id=\"selectedTagTitle\"", 1)[1].split(
+        "id=\"qualityPanel\"", 1
+    )[0]
+    controls = re.findall(
+        r"id=\"(?:tagDescription|tagUnit|tagRole|engineeringMin|engineeringMax|"
+        r"normalMin|normalMax|alarmMin|alarmMax|saveTagConfig)\"",
+        tag_editor,
+    )
+    assert len(controls) == 10
+    assert "id=\"tagComment\"" not in tag_editor
+    assert "grid-template-columns:repeat(5,minmax(0,1fr));" in html
+    assert "grid-template-columns:minmax(414px,.54fr) minmax(0,1.7fr)" in html
+    assert "@media (max-width:1480px)" in html
+    assert "comment:state.registry[tag]?.comment??\"\"" in html
 
 
 def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls():
@@ -748,6 +763,14 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
     for label in (
         "正常样本验证",
         "已知异常验证",
+        "已知异常窗口明细",
+        "95%首次检出",
+        "95%检出覆盖率",
+        "95%连续检出事件数",
+        "仅T²检出窗口",
+        "仅SPE检出窗口",
+        "T²与SPE共同检出窗口",
+        "工程标签状态分布",
         "通过",
         "结论不足",
         "不通过",
@@ -766,6 +789,53 @@ def test_final_web_page_exposes_typed_validation_and_engineer_decision_controls(
     formatter = html.split("function contributionPercent(value)", 1)[1].split("\n", 1)[0]
     assert "Number(value).toFixed(1)" in formatter
     assert "*100" not in formatter
+    validation_source = html.split(
+        "function renderValidationMetricDetails", 1
+    )[1].split("function renderContributionStability", 1)[0]
+    for field in (
+        "t2_only_detected_window_count_95",
+        "spe_only_detected_window_count_95",
+        "t2_and_spe_detected_window_count_95",
+        "first_detection_99",
+        "detection_coverage_rate_95",
+        "longest_continuous_detection_minutes_95",
+        "status_by_engineering_label",
+    ):
+        assert field in html
+    assert 'Object.entries(engineeringLabels||{})' in validation_source
+    assert 'labels.length?' in validation_source
+    assert "工程标签状态分布" in validation_source
+
+
+def test_validation_metric_renderer_shows_windows_and_optional_engineering_labels():
+    html = web_model_results.INDEX_HTML
+    renderer = html[html.index("function percent(value)"):html.index("function renderContributionStability")]
+    result = _run_node_javascript(r"""
+      const container={innerHTML:""};
+      function el() { return container; }
+      function escapeHtml(value) { return String(value).replace(/[&<>\"]/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[ch])); }
+      function displayTime(value) { return value?value.slice(0,16).replace("T"," "):""; }
+      __RENDERER__
+      const metrics={normal_validation:{t2:{exceedance_rate_95:.01,exceedance_rate_99:0},spe:{exceedance_rate_95:.02,exceedance_rate_99:0},overall:{exceedance_rate_95:.03,exceedance_rate_99:0},continuous_false_alarm_event_count_95:1,longest_continuous_false_alarm_minutes:5},known_abnormal:{valid_window_count:1,detected_window_count_95:0,detection_rate_95:0,detected_window_count_99:0,detection_rate_99:0,t2_only_detected_window_count_95:0,t2_only_detected_window_count_99:0,spe_only_detected_window_count_95:0,spe_only_detected_window_count_99:0,t2_and_spe_detected_window_count_95:0,t2_and_spe_detected_window_count_99:0,first_detection_delay_minutes_95_median:null,first_detection_delay_minutes_95_max:null,scoring_row_count:2,detected_row_count_95:0,detection_coverage_rate_95:0,continuous_detection_event_count_95:0,longest_continuous_detection_minutes_95:0,windows:[{validation_window_id:"abnormal-001",start:"2026-06-01T10:00:00",first_detection_95:null,first_detection_delay_minutes_95:null,first_detection_99:null,first_detection_delay_minutes_99:null,detection_coverage_rate_95:0,continuous_detection_event_count_95:0,longest_continuous_detection_minutes_95:0}]}};
+      renderValidationMetricDetails(metrics,{"<script>alarm</script>":{normal:1,attention:2,abnormal:3}});
+      const with_label=container.innerHTML;
+      renderValidationMetricDetails(metrics,{});
+      const without_label=container.innerHTML;
+      const legacy=JSON.parse(JSON.stringify(metrics));
+      for (const key of ["t2_only_detected_window_count_95","t2_only_detected_window_count_99","spe_only_detected_window_count_95","spe_only_detected_window_count_99","t2_and_spe_detected_window_count_95","t2_and_spe_detected_window_count_99","scoring_row_count","detected_row_count_95","detection_coverage_rate_95","continuous_detection_event_count_95","longest_continuous_detection_minutes_95"]) delete legacy.known_abnormal[key];
+      for (const key of ["start","scoring_row_count","detected_row_count_95","detection_coverage_rate_95","continuous_detection_event_count_95","longest_continuous_detection_minutes_95"]) delete legacy.known_abnormal.windows[0][key];
+      renderValidationMetricDetails(legacy,{});
+      console.log(JSON.stringify({with_label,without_label,legacy:container.innerHTML}));
+    """.replace("__RENDERER__", renderer))
+
+    assert "未检出" in result["with_label"]
+    assert "2026-06-01 10:00" in result["with_label"]
+    assert "工程标签状态分布" in result["with_label"]
+    assert "&lt;script&gt;alarm&lt;/script&gt;" in result["with_label"]
+    assert "<script>" not in result["with_label"]
+    assert "工程标签状态分布" not in result["without_label"]
+    assert "95% — / 99% —" in result["legacy"]
+    assert '<th>95%检出覆盖率</th><td>—</td>' in result["legacy"]
 
 
 def test_validation_decision_handler_uses_current_validation_lifecycle_state():
@@ -4528,6 +4598,10 @@ def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
         web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "invalid field"})
     assert sentinel.read_bytes() == b"do-not-overwrite"
     result = web.validate_payload({"run_id": trained["run_id"], "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows})
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    legacy_metrics = _without_additive_validation_metrics(result["validation_metrics"])
+    report["validation_metrics"] = legacy_metrics
+    report_path.write_text(json.dumps(report), encoding="utf-8")
     decision = web.validation_decision_payload({"run_id": trained["run_id"], "decision": "passed", "comment": "approved"})
     assert decision["model_status"] == "validated"
     assert (run_dir / "validated_model.pcamodel").exists()
@@ -4538,7 +4612,7 @@ def test_web_typed_validation_decision_keeps_candidate_and_creates_copy(
     assert validated_manifest["source_candidate_package"]["identifier"] == trained["run_id"]
     assert validated_model.feature_names == tuple(candidate_manifest["feature_names"])
     saved_report = json.loads((run_dir / "validation_report.json").read_text(encoding="utf-8"))
-    assert saved_report["validation_metrics"] == result["validation_metrics"]
+    assert saved_report["validation_metrics"] == legacy_metrics
     assert saved_report["contribution_stability"] == result["contribution_stability"]
     assert validated_manifest["validation_summary"]["validation_metrics"] == saved_report["validation_metrics"]
     assert validated_manifest["validation_summary"]["contribution_stability"] == saved_report["contribution_stability"]

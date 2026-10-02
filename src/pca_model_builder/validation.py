@@ -26,6 +26,22 @@ TimeWindow = tuple[pd.Timestamp, pd.Timestamp]
 _VALIDATION_WINDOW_FIELDS = {"id", "type", "start", "end", "enabled", "comment"}
 _VALIDATION_TYPES = {"normal_validation", "known_abnormal"}
 _ENGINEER_DECISIONS = {"passed", "insufficient", "failed"}
+_ADDITIVE_VALIDATION_METRIC_FIELDS = frozenset(
+    {
+        "t2_only_detected_window_count_95",
+        "t2_only_detected_window_count_99",
+        "spe_only_detected_window_count_95",
+        "spe_only_detected_window_count_99",
+        "t2_and_spe_detected_window_count_95",
+        "t2_and_spe_detected_window_count_99",
+        "start",
+        "scoring_row_count",
+        "detected_row_count_95",
+        "detection_coverage_rate_95",
+        "continuous_detection_event_count_95",
+        "longest_continuous_detection_minutes_95",
+    }
+)
 
 
 def normalize_validation_windows(value: object) -> list[dict[str, Any]]:
@@ -694,7 +710,7 @@ def _verify_score_metrics(report: Mapping[str, Any], scores: pd.DataFrame, model
     ):
         raise ValueError("验证报告顶层评分摘要与工件不一致")
     metrics = _validation_metrics(scored_windows, model, sample_interval_minutes)
-    if report.get("validation_metrics") != metrics:
+    if not _validation_metrics_match(report.get("validation_metrics"), metrics):
         raise ValueError("通过前必须重新执行独立验证：验证指标与评分工件不一致")
 
 
@@ -761,6 +777,45 @@ def _evidence_values_match(actual: object, expected: object) -> bool:
     return actual == expected
 
 
+def _has_additive_validation_metric(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            (
+                key in _ADDITIVE_VALIDATION_METRIC_FIELDS
+                and key != "scoring_row_count"
+            )
+            or _has_additive_validation_metric(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_has_additive_validation_metric(item) for item in value)
+    return False
+
+
+def _without_additive_validation_metrics(value: object) -> object:
+    if isinstance(value, Mapping):
+        is_known_abnormal = "detected_window_count_95" in value
+        is_detection_window = "validation_window_id" in value
+        return {
+            key: _without_additive_validation_metrics(item)
+            for key, item in value.items()
+            if key not in _ADDITIVE_VALIDATION_METRIC_FIELDS
+            or (
+                key == "scoring_row_count"
+                and not (is_known_abnormal or is_detection_window)
+            )
+        }
+    if isinstance(value, list):
+        return [_without_additive_validation_metrics(item) for item in value]
+    return value
+
+
+def _validation_metrics_match(actual: object, expected: Mapping[str, Any]) -> bool:
+    if _has_additive_validation_metric(actual):
+        return actual == expected
+    return actual == _without_additive_validation_metrics(expected)
+
+
 def _validation_metrics(
     scored_windows: Sequence[Mapping[str, Any]],
     model: DPCAModel,
@@ -776,7 +831,9 @@ def _validation_metrics(
         "normal_validation": _normal_validation_metrics(
             normal_windows, model, sample_interval_minutes
         ),
-        "known_abnormal": _known_abnormal_metrics(abnormal_windows, model),
+        "known_abnormal": _known_abnormal_metrics(
+            abnormal_windows, model, sample_interval_minutes
+        ),
     }
 
 
@@ -832,24 +889,60 @@ def _normal_validation_metrics(
 
 
 def _known_abnormal_metrics(
-    windows: Sequence[Mapping[str, Any]], model: DPCAModel
+    windows: Sequence[Mapping[str, Any]],
+    model: DPCAModel,
+    sample_interval_minutes: int,
 ) -> dict[str, Any]:
     window_metrics: list[dict[str, Any]] = []
-    detected_counts = {"overall": {}, "t2": {}, "spe": {}}
+    detected_counts = {
+        statistic: {}
+        for statistic in ("overall", "t2", "spe", "t2_only", "spe_only", "t2_and_spe")
+    }
     for confidence in (0.95, 0.99):
         for statistic in detected_counts:
             detected_counts[statistic][confidence] = 0
+    scoring_row_count = 0
+    detected_row_count_95 = 0
+    continuous_events: list[Mapping[str, Any]] = []
     for window in windows:
         scores = window["scores"]
-        item: dict[str, Any] = {"validation_window_id": window["id"]}
+        scoring_row_count += len(scores)
+        events = window.get("continuous_events", ())
+        continuous_events.extend(events)
+        overall_95 = (scores["t2"] >= model.t2_limits[0.95]) | (
+            scores["spe"] >= model.q_limits[0.95]
+        )
+        window_detected_row_count_95 = int(overall_95.sum())
+        detected_row_count_95 += window_detected_row_count_95
+        item: dict[str, Any] = {
+            "validation_window_id": window["id"],
+            "start": pd.Timestamp(window["start"]).isoformat(),
+            "scoring_row_count": len(scores),
+            "detected_row_count_95": window_detected_row_count_95,
+            "detection_coverage_rate_95": (
+                window_detected_row_count_95 / len(scores) if len(scores) else None
+            ),
+            "continuous_detection_event_count_95": len(events),
+            "longest_continuous_detection_minutes_95": _longest_event_minutes(
+                events, sample_interval_minutes
+            ),
+        }
         for confidence in (0.95, 0.99):
             masks = {
                 "t2": scores["t2"] >= model.t2_limits[confidence],
                 "spe": scores["spe"] >= model.q_limits[confidence],
             }
             masks["overall"] = masks["t2"] | masks["spe"]
-            for statistic, mask in masks.items():
-                if mask.any():
+            t2_detected = bool(masks["t2"].any())
+            spe_detected = bool(masks["spe"].any())
+            categories = {
+                **{statistic: bool(mask.any()) for statistic, mask in masks.items()},
+                "t2_only": t2_detected and not spe_detected,
+                "spe_only": spe_detected and not t2_detected,
+                "t2_and_spe": t2_detected and spe_detected,
+            }
+            for statistic, detected in categories.items():
+                if detected:
                     detected_counts[statistic][confidence] += 1
             overall = masks["overall"]
             key = str(int(confidence * 100))
@@ -871,16 +964,32 @@ def _known_abnormal_metrics(
         if item["first_detection_delay_minutes_95"] is not None
     ]
     rate = lambda count: None if not valid_window_count else count / valid_window_count
+    row_rate = (
+        None if not scoring_row_count else detected_row_count_95 / scoring_row_count
+    )
     return {
         "valid_window_count": valid_window_count,
+        "scoring_row_count": scoring_row_count,
+        "detected_row_count_95": detected_row_count_95,
+        "detection_coverage_rate_95": row_rate,
+        "continuous_detection_event_count_95": len(continuous_events),
+        "longest_continuous_detection_minutes_95": _longest_event_minutes(
+            continuous_events, sample_interval_minutes
+        ),
         "detected_window_count_95": detected_counts["overall"][0.95],
         "detection_rate_95": rate(detected_counts["overall"][0.95]),
         "detected_window_count_99": detected_counts["overall"][0.99],
         "detection_rate_99": rate(detected_counts["overall"][0.99]),
         "t2_detected_window_count_95": detected_counts["t2"][0.95],
         "t2_detected_window_count_99": detected_counts["t2"][0.99],
+        "t2_only_detected_window_count_95": detected_counts["t2_only"][0.95],
+        "t2_only_detected_window_count_99": detected_counts["t2_only"][0.99],
         "spe_detected_window_count_95": detected_counts["spe"][0.95],
         "spe_detected_window_count_99": detected_counts["spe"][0.99],
+        "spe_only_detected_window_count_95": detected_counts["spe_only"][0.95],
+        "spe_only_detected_window_count_99": detected_counts["spe_only"][0.99],
+        "t2_and_spe_detected_window_count_95": detected_counts["t2_and_spe"][0.95],
+        "t2_and_spe_detected_window_count_99": detected_counts["t2_and_spe"][0.99],
         "windows": window_metrics,
         "first_detection_delay_minutes_95_median": (
             float(np.median(delays)) if delays else None
