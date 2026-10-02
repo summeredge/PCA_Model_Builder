@@ -89,6 +89,7 @@
   window.renderTraining = function renderTrainingWithLoadings(data) {
     originalRenderTraining(data);
     renderModelQuality(data.model_quality, data.training_window_totals);
+    renderTrainingConditionDiagnostic(data.model_quality?.training_condition_diagnostic);
     drawLoadingPlot(data.loading_plot);
     renderComponentLoadings(data.loading_plot?.component_loadings);
     renderSingleModelDiagnostic(data.model_diagnostic);
@@ -151,7 +152,7 @@
     ratioLabel.textContent = "PC1+PC2 二维解释率";
     projection.append(ratioValue, ratioLabel, paragraph(ratio == null ? "当前模型不足两个主元。" : ratio >= 0.8 ? "二维图具有较好代表性。" : "二维图仅覆盖部分变化，建议结合更多主元和统计量判断。"));
     const data = quality.training_data;
-    training.append(paragraph(`有效训练样本：${quality.training_samples}；有效样本覆盖时长：${number(data.effective_sample_hours)} h；覆盖日期数：${totals.covered_day_count ?? "—"}；已使用窗口：${totals.used_window_count ?? "—"}；已使用连续段：${totals.used_segment_count ?? "—"}；可回溯 Cluster 来源数：${data.traceable_cluster_count ?? "未记录"}`),
+    training.append(paragraph(`有效训练样本：${quality.training_samples}；有效样本覆盖时长：${number(data.effective_sample_hours)} h；覆盖日期数：${totals.covered_day_count ?? "—"}；已使用窗口：${totals.used_window_count ?? "—"}；已使用连续段：${totals.used_segment_count ?? "—"}；可回溯工况组来源数：${data.traceable_cluster_count ?? "未记录"}`),
       paragraph(`有效评分时间范围：${data.time_start ? displayTime(data.time_start) : "—"} ～ ${data.time_end ? displayTime(data.time_end) : "—"}。覆盖时长按有效样本数 × 采样周期计算，不包含窗口之间的空档。`));
     const sources = document.createElement("div");
     sources.className = "metrics";
@@ -161,21 +162,115 @@
       const share = document.createElement("strong");
       share.textContent = percent(row.share);
       const label = document.createElement("span");
-      label.textContent = ({manual:"手工", trend:"趋势", performance:"性能筛选", suggested:"建议窗口", cluster:"Cluster"})[row.label] || row.label;
+      label.textContent = ({manual:"手工", trend:"趋势", performance:"性能筛选", suggested:"建议窗口", cluster:"工况组"})[row.label] || clusterUiLabel(row.label);
       const reference = row.source_ref === "unavailable" ? "未记录" : row.source_ref;
       const details = document.createElement("span");
       details.className = "model-training-source-reference";
-      details.textContent = `${row.samples} 有效样本${reference && reference !== label.textContent ? `；来源引用：${reference}` : ""}`;
+      details.textContent = `${row.samples} 有效样本`;
+      details.title = reference;
       item.append(share, label, details);
       sources.append(item);
     });
-    training.append(sources, paragraph(`Cluster 仅表示已确认训练窗口的来源，不能等同于实际状态数量；手工、趋势和性能窗口不能自动推断 Cluster。Cluster 来源缺失样本：${data.unattributed_samples}。`));
+    training.append(sources, paragraph(`工况组仅表示已确认训练窗口的来源，不能等同于实际状态数量；手工、趋势和性能窗口不能自动推断工况组。工况组来源缺失样本：${data.unattributed_samples}。`));
     quality.engineering_messages.forEach(message => judgment.append(paragraph(message)));
     const rules = document.createElement("details");
     const title = document.createElement("summary");
     title.textContent = "查看工程提示与趋势判断规则";
     rules.append(title, paragraph(quality.rules));
     judgment.append(rules);
+  }
+
+  function renderTrainingConditionDiagnostic(diagnostic) {
+    const ids = ["modelTrainingConditionMessage", "modelTrainingConditionGroups", "modelTrainingConditionTrend", "modelTrainingConditionSwitch", "modelTrainingConditionHints"];
+    const nodes = ids.map(id => document.getElementById(id));
+    if (nodes.some(node => !node)) return;
+    nodes.forEach(node => node.replaceChildren());
+    const [message, groups, trend, switches, hints] = nodes;
+    message.textContent = diagnostic?.message || "当前结果未提供训练工况诊断，请重新训练后查看。";
+    const section = document.getElementById("modelTrainingConditionDiagnostic");
+    if (section) section.classList.toggle("condition-unavailable", !diagnostic?.available);
+    if (!diagnostic?.available) return;
+    const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+    const number = value => Number.isFinite(value) ? value.toFixed(3) : "—";
+    const table = (target, headers, rows) => {
+      const element = document.createElement("table"), head = document.createElement("thead"), body = document.createElement("tbody");
+      const appendRow = (parent, values, tag, reference) => {
+        const row = document.createElement("tr");
+        if (reference) row.title = reference;
+        values.forEach(value => { const cell = document.createElement(tag); cell.textContent = value; row.append(cell); });
+        parent.append(row);
+      };
+      appendRow(head, headers, "th");
+      rows.forEach(row => appendRow(body, row.values, "td", row.reference));
+      element.append(head, body); target.append(element);
+    };
+    table(groups, ["工况组", "评分样本数", "训练样本占比", "T² ≥95%", "T² ≥99%", "SPE ≥95%", "SPE ≥99%", "T²/95%限值比中位数", "SPE/95%限值比中位数", "Overall 95%最长连续时间"],
+      diagnostic.groups.map(row => ({reference:row.source_ref, values:[clusterUiLabel(row.cluster_id), row.samples, percent(row.share), percent(row.t2_95_exceedance_rate), percent(row.t2_99_exceedance_rate), percent(row.spe_95_exceedance_rate), percent(row.spe_99_exceedance_rate), number(row.t2_95_ratio_median), number(row.spe_95_ratio_median), `${row.longest_overall_95_minutes} 分钟`]})));
+    const comparison = diagnostic.switch_diagnostic;
+    if (comparison?.available) {
+      table(switches, ["区域", "评分样本数", "T² ≥95%", "SPE ≥95%", "Overall ≥95%"],
+        [["稳定工况区", comparison.stable], ["工况切换附近", comparison.near_switch]].map(([label, row]) => ({values:[label, row.samples, percent(row.t2_95_exceedance_rate), percent(row.spe_95_exceedance_rate), percent(row.overall_95_exceedance_rate)]})));
+      const rule = document.createElement("p");
+      const context = comparison.context_policy === "full_segment_history" ? "一阶因果滤波依赖同段完整历史，含切换点的整个连续段计入切换附近，不假设固定历史长度。" : `附近范围为切换点前后各 ${comparison.context_minutes} 分钟（复用预处理上下文长度）。`;
+      rule.textContent = `识别 ${comparison.switch_count} 个切换点；${context}${comparison.message}`;
+      switches.append(rule);
+    } else switches.textContent = comparison?.message || "当前训练样本缺少连续工况组标记，无法计算工况切换区诊断。";
+    const coverage = document.createElement("p");
+    coverage.textContent = `可追溯评分样本 ${diagnostic.traceable_samples}；未归属工况组 ${diagnostic.unattributed_samples}。分组统计按已确认窗口来源归属；状态带优先使用完整状态探索标记，缺少连续标记时使用窗口来源。Overall 95% 使用 T² ≥ T²95 或 SPE ≥ SPE95；连续时间按样本覆盖时长计算，遇窗口、物理段或时间缺口即中断。`;
+    hints.append(coverage);
+    (diagnostic.engineering_messages || []).forEach(text => { const paragraph = document.createElement("p"); paragraph.textContent = text; hints.append(paragraph); });
+    drawTrainingConditionTrend(trend, diagnostic.timeline || []);
+  }
+
+  function drawTrainingConditionTrend(target, points) {
+    const times = points.map(point => Date.parse(point.timestamp));
+    const finiteTimes = times.filter(Number.isFinite);
+    if (!finiteTimes.length) { target.textContent = "没有可绘制的训练评分时间。"; return; }
+    const first = finiteTimes.reduce((value, time) => Math.min(value, time), Infinity), last = finiteTimes.reduce((value, time) => Math.max(value, time), -Infinity);
+    const x = time => 125 + (time - first) / Math.max(last - first, 1) * 760;
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 920 400");
+    svg.setAttribute("role", "img"); svg.setAttribute("aria-label", "训练工况与统计量趋势，共享时间轴");
+    const text = (label, px, py) => { const node = document.createElementNS(SVG_NS, "text"); node.setAttribute("x", px); node.setAttribute("y", py); node.setAttribute("font-size", "12"); node.setAttribute("fill", "#334155"); node.textContent = label; svg.append(node); };
+    text("工况组", 8, 45); text("T² / T²95", 8, 140); text("SPE / Q95", 8, 275);
+    [...new Set(points.map(point => point.cluster_id).filter(Boolean))].forEach((id, position) => text(clusterUiLabel(id), 125 + position * 72, 17));
+    const tooltip = point => `${displayTime(point.timestamp,19)}\n${point.cluster_id ? clusterUiLabel(point.cluster_id) : "未归属工况组"}\nT²限值比：${point.t2_limit_ratio ?? "—"}\nSPE限值比：${point.spe_limit_ratio ?? "—"}`;
+    const addTitle = (node, point) => { const title = document.createElementNS(SVG_NS, "title"); title.textContent = tooltip(point); node.append(title); };
+    points.forEach((point, position) => {
+      if (!Number.isFinite(times[position])) return;
+      const next = points[position + 1];
+      const continuous = next && !next.break_before && next.segment_id === point.segment_id && next.window_id === point.window_id;
+      const rect = document.createElementNS(SVG_NS, "rect");
+      rect.setAttribute("x", x(times[position])); rect.setAttribute("y", "28"); rect.setAttribute("height", "25");
+      rect.setAttribute("width", continuous ? Math.max(1, x(times[position + 1]) - x(times[position])) : 2);
+      rect.setAttribute("fill", point.cluster_id ? explorationClusterColor(point.cluster_id) : "#9aa7b4");
+      addTitle(rect, point); svg.append(rect);
+    });
+    [["t2_limit_ratio", "#2563eb", 185], ["spe_limit_ratio", "#cf3f36", 325]].forEach(([field, color, bottom]) => {
+      const maximum = points.reduce((value, point) => Number.isFinite(point[field]) ? Math.max(value, point[field]) : value, 1) * 1.1;
+      const y = value => bottom - value / maximum * 105;
+      addLine(svg, 125, y(1), 885, y(1), "#d19a20", 1);
+      text("95%：ratio = 1", 125, bottom - 112);
+      text("0", 108, bottom);
+      text(maximum.toFixed(2), 92, bottom - 100);
+      let segment = [];
+      points.forEach((point, position) => {
+        const previous = points[position - 1];
+        if (point.break_before || (previous && (point.segment_id !== previous.segment_id || point.window_id !== previous.window_id)) || !Number.isFinite(point[field]) || !Number.isFinite(times[position])) {
+          if (segment.length) replayLine(svg, segment, color);
+          segment = [];
+        }
+        if (Number.isFinite(point[field]) && Number.isFinite(times[position])) {
+          segment.push(`${x(times[position])},${y(point[field])}`);
+          const dot = document.createElementNS(SVG_NS, "circle"); dot.setAttribute("cx", x(times[position])); dot.setAttribute("cy", y(point[field])); dot.setAttribute("r", "2"); dot.setAttribute("fill", color); addTitle(dot, point); svg.append(dot);
+        }
+      });
+      if (segment.length) replayLine(svg, segment, color);
+    });
+    text(displayTime(new Date(first).toISOString(),19), 125, 375);
+    const end = document.createElementNS(SVG_NS, "text"); end.setAttribute("x", "885"); end.setAttribute("y", "375"); end.setAttribute("text-anchor", "end"); end.setAttribute("font-size", "12"); end.textContent = displayTime(new Date(last).toISOString(),19); svg.append(end);
+    text("时间", 480, 395);
+    target.append(svg);
   }
 
   document.getElementById("compareModelsButton").addEventListener("click", async () => {

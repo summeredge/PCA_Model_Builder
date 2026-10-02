@@ -133,6 +133,7 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
     if node is None:
         pytest.skip("Node.js unavailable")
     renderer = "function renderClusterQuality" + web.INDEX_HTML.split("function renderClusterQuality", 1)[1].split("function renderStateExploration", 1)[0]
+    renderer = "function clusterUiLabel" + web.INDEX_HTML.split("function clusterUiLabel", 1)[1].split("\n", 1)[0] + "\n" + renderer
     scores = pd.DataFrame({"pc1": [-2, -1, 1, 2], "pc2": 0})
     quality = analyze_cluster_quality(scores, [1, 1, 2, 2], raw_data=pd.DataFrame({"<driver>": [0, 0, 1, 1]}), feature_names=["<driver>"], explained_variance_ratio=[0.8, 0.2])
     source = """
@@ -164,7 +165,7 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
     assert "主要区分变量" not in rendered["exploration"]  # merged into variable diagnostics
     assert "&lt;driver&gt;" in rendered["assistance"]
     assert "<driver>" not in rendered["assistance"]
-    assert "<th>标准化差异</th><th>原始均值差</th><th>Cluster 1</th><th>Cluster 2</th>" in rendered["assistance"]
+    assert "<th>标准化差异</th><th>原始均值差</th><th>工况组 1</th><th>工况组 2</th>" in rendered["assistance"]
     assert "<tr><td>&lt;driver&gt;</td><td>2.000</td><td>1.000</td><td>0.000</td><td>1.000</td></tr>" in rendered["assistance"]
     assert "Top5" in rendered["assistance"]
     assert "<td>—</td><td>—</td>" in rendered["degradedMeans"]

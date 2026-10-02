@@ -176,6 +176,9 @@ def test_training_validation_and_release_follow_decision_order() -> None:
     assert validation.index('id="validateButton"') < validation.index('id="validationMetrics"') < validation.index('id="validationMetricDetails"') < validation.index('id="recordValidationDecision"')
     assert release.index('id="validatedModelDownload"') < release.index('id="freezeDeployment"') < release.index('id="frozenModelDownload"') < release.index('id="frozenReplay"')
     assert 'id="modelPreprocessingSummary"' in model
+    assert model.index('id="modelTrainingDataQuality"') < model.index('id="modelTrainingConditionDiagnostic"') < model.index('id="t2Chart"')
+    for element_id in ("modelTrainingConditionDiagnostic", "modelTrainingConditionMessage", "modelTrainingConditionGroups", "modelTrainingConditionTrend", "modelTrainingConditionSwitch", "modelTrainingConditionHints"):
+        assert html.count(f'id="{element_id}"') == 1
     assert '<section id="frozenReplay" class="chart-card" hidden>' in release
     assert 'replayButton.disabled = !canReplay || replayButton.textContent === "回放中…"' in html
 

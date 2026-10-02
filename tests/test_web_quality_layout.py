@@ -16,6 +16,17 @@ from pca_model_builder import cli_entry, web_model_results, web_quality_layout
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_training_condition_diagnostic_uses_responsive_svg_and_scoped_tables():
+    html = web_model_results.INDEX_HTML
+    diagnostic = html.split('<section id="modelTrainingConditionDiagnostic"', 1)[1].split('</section>', 1)[0]
+    assert 'id="modelTrainingConditionGroups" class="table-wrap"' in diagnostic
+    assert 'id="modelTrainingConditionSwitch" class="table-wrap"' in diagnostic
+    assert '#modelTrainingConditionDiagnostic { min-width:0; max-width:100%; }' in html
+    assert '.training-condition-trend svg { display:block; width:100%; height:auto; }' in html
+    assert '#modelTrainingConditionDiagnostic.condition-unavailable' in html
+    assert '.training-condition-trend, #modelTrainingConditionHints) { display:none; }' in html
+
+
 def _run_web_javascript(source: str) -> None:
     node = shutil.which("node")
     if node is None:
@@ -55,7 +66,7 @@ def test_variable_diagnostics_use_existing_cards_and_local_scroll_boundaries() -
     assert '.variable-diagnostics td { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }' in html
     assert '.exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); }' in html
     assert '<details open><summary>高相关变量</summary>' in html
-    assert '<details open><summary>Cluster 区分</summary>' in html
+    assert '<details open><summary>工况组区分</summary>' in html
     assert '<details><summary>变量质量</summary>' in html
     assert 'renderVariableDiagnostics(el("explorationVariableDiagnostics"),data.variable_diagnostics)' in html
     assert '调整建模 Tag 后本次状态探索将失效，请重新运行状态探索。' in html

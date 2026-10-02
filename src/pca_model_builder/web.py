@@ -454,6 +454,8 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "model_quality": model_quality_summary(
             model, scores, training_result.window_summaries,
             config.sample_interval_minutes, model_purpose,
+            cluster_series=_training_cluster_series(training_result.window_summaries, payload, config),
+            preprocessing_config=config,
         ),
         "model_download": f"/download/model?run_id={run_id}",
     }
@@ -902,6 +904,10 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
         response, loaded, len(selected), len(response["cluster_series"])
     )
     exploration["data_usage"] = response["data_usage"]
+    exploration["_diagnostic_source"] = {
+        "file_id": payload["file_id"], "timestamp_column": timestamp_column,
+        "preprocessing": config.to_dict(),
+    }
     _store_state_exploration_run(run_id, exploration)
     return response
 
@@ -916,6 +922,26 @@ def _store_state_exploration_run(
         while len(STATE_EXPLORATION_RUNS) > MAX_STATE_EXPLORATION_RUNS:
             _, evicted = STATE_EXPLORATION_RUNS.popitem(last=False)
             evicted.clear()
+
+
+def _training_cluster_series(
+    windows: list[dict[str, Any]], payload: dict[str, Any], config: PreprocessingConfig,
+) -> dict[str, pd.DataFrame]:
+    series = {}
+    with _STATE_EXPLORATION_LOCK:
+        for window in windows:
+            reference = str(window.get("source_ref") or "")
+            match = re.fullmatch(r"state-exploration-([a-fA-F0-9]{32})-.+", reference)
+            if not match:
+                continue
+            exploration = STATE_EXPLORATION_RUNS.get(match[1], {})
+            source = exploration.get("_diagnostic_source", {})
+            if source != {"file_id": payload["file_id"], "timestamp_column": payload["timestamp_column"], "preprocessing": config.to_dict()}:
+                continue
+            points = exploration.get("cluster_series")
+            if isinstance(points, pd.DataFrame):
+                series[str(window["id"])] = points.loc[window["start"]:window["end"], ["cluster_id", "segment_id"]].copy()
+    return series
 
 
 def clear_state_exploration_cache() -> None:
@@ -942,7 +968,7 @@ def _exploration_summary_payload(run_id: str) -> dict[str, Any]:
     return {
         key: value
         for key, value in exploration.items()
-        if key not in {"cluster_series", "cluster_series_display", "_performance_values"}
+        if key not in {"cluster_series", "cluster_series_display", "_performance_values", "_diagnostic_source"}
     }
 
 
@@ -3032,9 +3058,9 @@ INDEX_HTML = r"""<!doctype html>
           <div class="exploration-controls">
             <label>探索开始时间<input id="explorationStart" type="datetime-local"></label>
             <label>探索结束时间<input id="explorationEnd" type="datetime-local"></label>
-            <label>Cluster 数量<input id="explorationClusterCount" type="number" min="2" max="10" value="4"></label>
+            <label>工况组数量<input id="explorationClusterCount" type="number" min="2" max="10" value="4"></label>
             <label>随机种子<input id="explorationRandomState" type="number" step="1" value="0"></label>
-            <label>每个 Cluster 候选数量<input id="explorationCandidateCount" type="number" min="1" value="3"></label>
+            <label>每个工况组 候选数量<input id="explorationCandidateCount" type="number" min="1" value="3"></label>
             <label>候选最小时长（分钟）<input id="explorationMinimumDuration" type="number" min="1" value="30"></label>
             <label>时间轴最大抽样点数<input id="explorationMaximumPlotPoints" type="number" min="2" value="1200" title="仅限制状态时间轴与返回序列的抽样点数；PC1/PC2 散点始终绘制全部完整样本。"></label>
             <button id="stateExplorationButton" type="button" disabled>运行状态探索</button>
@@ -3048,7 +3074,7 @@ INDEX_HTML = r"""<!doctype html>
             <label>性能候选数量<input id="explorationPerformanceCandidateCount" type="number" min="1" value="3"></label>
           </div>
         </div>
-        <div id="explorationEmpty" class="empty">运行状态探索后显示摘要、告警、PC1/PC2、Cluster 时间轴和候选窗口。</div>
+        <div id="explorationEmpty" class="empty">运行状态探索后显示摘要、告警、PC1/PC2、工况组时间轴和候选窗口。</div>
         <div id="explorationContent" hidden>
           <h3>结果概览</h3>
           <div id="explorationClusterQuality"></div>
@@ -3065,14 +3091,14 @@ INDEX_HTML = r"""<!doctype html>
           <div id="explorationLossSummary" class="table-wrap"></div>
           <div class="exploration-result-grid">
             <div class="exploration-result-column">
-              <div class="chart-card"><div class="chart-card-head"><h3>Cluster PC1 / PC2 与中心</h3><div class="exploration-region-tools"><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
-              <div class="chart-card"><h3>Cluster 时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
+              <div class="chart-card"><div class="chart-card-head"><h3>工况组 PC1 / PC2 与中心</h3><div class="exploration-region-tools"><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
+              <div class="chart-card"><h3>工况组时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
             </div>
             <div class="chart-card"><h3>优选运行区域质量统计</h3><div id="explorationRegionSummary" class="table-wrap region-stats"><div class="empty">尚未定义优选运行区域。</div></div></div>
           </div>
-          <h3>Cluster 摘要表</h3>
-          <div class="table-wrap"><table><thead><tr><th>Cluster ID</th><th>样本数</th><th>覆盖率</th><th>连续段数</th><th>覆盖时长</th><th>中心距离中位数</th><th>主元离散度</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>候选数量</th></tr></thead><tbody id="explorationClusterTable"></tbody></table></div>
-          <h3>Cluster 候选表</h3>
+          <h3>工况组摘要表</h3>
+          <div class="table-wrap"><table><thead><tr><th>工况组 ID</th><th>样本数</th><th>覆盖率</th><th>连续段数</th><th>覆盖时长</th><th>中心距离中位数</th><th>主元离散度</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>候选数量</th></tr></thead><tbody id="explorationClusterTable"></tbody></table></div>
+          <h3>工况组候选表</h3>
           <div id="explorationClusterCandidates" class="table-wrap"></div>
           <h3>性能候选表</h3>
           <div id="explorationPerformanceCandidates" class="table-wrap"></div>
@@ -3114,7 +3140,7 @@ INDEX_HTML = r"""<!doctype html>
         <div class="group">
           <div class="group-title">运行状态聚类辅助</div>
           <div class="row"><label>分析期开始<input id="analysisStart" type="datetime-local"></label><label>分析期结束<input id="analysisEnd" type="datetime-local"></label></div>
-          <div class="row"><label>Cluster 数量<input id="clusterCount" type="number" min="2" max="10" value="3"></label><button id="clusterButton" class="secondary" disabled>生成运行状态聚类</button></div>
+          <div class="row"><label>工况组数量<input id="clusterCount" type="number" min="2" max="10" value="3"></label><button id="clusterButton" class="secondary" disabled>生成运行状态聚类</button></div>
           <div class="help">聚类只辅助发现运行模式，不会自动认定正常状态。</div>
           <div class="sub-title">性能条件筛选</div>
           <div id="performanceConditions" class="condition-list"><span class="help">检查数据后可添加筛选条件。</span></div>
@@ -3127,9 +3153,9 @@ INDEX_HTML = r"""<!doctype html>
           <div id="assistanceClusterQuality"></div>
           <div id="clusterMetrics" class="metrics"></div>
           <div class="chart-card"><h3>聚类状态空间 PC1 / PC2</h3><div id="clusterChart" class="chart"></div></div>
-          <h3>Cluster 概览与代表性连续时段</h3>
-          <div class="table-wrap"><table><thead><tr><th>Cluster</th><th>样本</th><th>占比</th><th>中心 PC1 / PC2</th><th>人工选择正常候选时段</th></tr></thead><tbody id="clusterTable"></tbody></table></div>
-          <div class="notice">Cluster 只表示数据中的相似运行状态，不代表正常或异常。只能将代表性连续时段加入候选，仍需工程师确认启用后再训练。</div>
+          <h3>工况组 概览与代表性连续时段</h3>
+          <div class="table-wrap"><table><thead><tr><th>工况组</th><th>样本</th><th>占比</th><th>中心 PC1 / PC2</th><th>人工选择正常候选时段</th></tr></thead><tbody id="clusterTable"></tbody></table></div>
+          <div class="notice">工况组 只表示数据中的相似运行状态，不代表正常或异常。只能将代表性连续时段加入候选，仍需工程师确认启用后再训练。</div>
         </div>
       </div>
       <div id="performancePanel" class="panel">
@@ -3276,6 +3302,14 @@ function stateFilterPayload() {
 }
 function commonPayload() { const gap=el("gapThreshold").value, filterMethod=el("filterMethod").value, alpha=el("firstOrderAlpha").value, alphaError=firstOrderAlphaError(); if(alphaError) throw new Error(alphaError); return {file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:tagConfigPayload(),sample_interval_minutes:numberValue("sampleInterval"),resampling_method:el("resamplingMethod").value,filter_method:filterMethod,first_order_alpha:filterMethod==="first_order"?Number(alpha):null,smoothing_window_minutes:filterMethod==="trailing_mean"?numberValue("smoothingWindow"):0,gap_threshold_minutes:gap===""?null:Number(gap),max_lag_minutes:numberValue("maxLag"),lag_step_minutes:numberValue("lagStep"),state_filters:stateFilterPayload()}; }
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+function clusterUiLabel(value) { return String(value??"未记录").replace(/^\d+$/,number=>`工况组 ${Number(number)}`).replace(/cluster_(\d+)/gi,(_,number)=>`工况组 ${Number(number)}`).replace(/Cluster(?![A-Za-z_])/g,"工况组"); }
+function candidateSourceLabel(window) {
+  const match=window.source==="cluster"&&String(window.source_ref||"").match(/(?:^|-)(cluster_\d+)-candidate-(\d+)$/i);
+  if(match) return `${clusterUiLabel(match[1])} · 候选 ${Number(match[2])}`;
+  const legacy=window.source==="cluster"&&String(window.source_ref||"").match(/^cluster-(\d+)-/);
+  if(legacy) return `工况组 ${Number(legacy[1])}`;
+  return ({manual:"手工窗口",trend:"趋势候选",performance:"性能候选",preferred_region:"区域候选",cluster:"工况组候选",suggested:"建议窗口"})[window.source]||displayUiValue(window.source);
+}
 function trainingWindowsPayload() { return state.trainingWindows; }
 function updateQualityButtonAvailability() { el("qualityButton").disabled=!state.inspection||!state.trainingWindows.some(window=>window.enabled); }
 function invalidatePreprocessingPreview(message="训练窗口或共享预处理配置已变化，请重新预览。") {
@@ -3316,9 +3350,9 @@ function renderCandidateWindows() {
   if(!state.candidateWindows.length) { container.innerHTML='<div class="empty">尚无候选窗口。</div>'; if(state.exploration) renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); return; }
   const table=document.createElement("table"), head=document.createElement("thead"), body=document.createElement("tbody");
   const header=document.createElement("tr"); ["窗口","来源","时间范围","状态","操作"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
-  state.candidateWindows.forEach(window=>{ const row=document.createElement("tr");
-    const name=document.createElement("td"); name.textContent=window.id;
-    const source=document.createElement("td"); source.textContent=displayUiValue(window.source)+(window.source_ref?` (${window.source_ref})`:"");
+  state.candidateWindows.forEach((window,index)=>{ const row=document.createElement("tr");
+    const name=document.createElement("td"); name.textContent=`候选 ${String(index+1).padStart(2,"0")}`; name.title=window.id;
+    const source=document.createElement("td"); source.textContent=candidateSourceLabel(window); source.title=window.source_ref||"";
     const range=document.createElement("td"); range.textContent=`${displayTime(window.start)} ～ ${displayTime(window.end)}`;
     const generated=candidateTrainingWindows(window).length>0; const status=document.createElement("td"); status.textContent=displayUiValue(generated?"accepted":"pending"); if(generated) { const note=document.createElement("div"); note.textContent="已生成训练窗口"; status.append(note); }
     const actions=document.createElement("td"); [["查看趋势",()=>showCandidateTrend(window)],["确认作为训练窗口",()=>confirmCandidateWindow(window)],["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]].forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&generated; button.addEventListener("click",handler); actions.append(button); });
@@ -3333,7 +3367,7 @@ function renderTrainingWindows() {
   const header=document.createElement("tr"); ["参与训练","来源","开始","结束","持续时间","原始 / 有效","质量","备注","操作"].forEach(value=>{ const th=document.createElement("th"); th.textContent=value; header.append(th); }); head.append(header);
   state.trainingWindows.forEach(window=>{ const summary=windowSummary(window.id); const row=document.createElement("tr");
     const enabled=document.createElement("input"); enabled.type="checkbox"; enabled.checked=window.enabled; enabled.addEventListener("change",()=>updateTrainingWindows({action:"set_enabled",id:window.id,enabled:enabled.checked},true)); const enabledCell=document.createElement("td"); enabledCell.append(enabled);
-    const source=document.createElement("td"); source.textContent=displayUiValue(window.source)+(window.source_ref?` (${window.source_ref})`:"");
+    const source=document.createElement("td"); source.textContent=candidateSourceLabel(window); source.title=window.source_ref||"";
     const start=document.createElement("td"); start.textContent=displayTime(window.start); const end=document.createElement("td"); end.textContent=displayTime(window.end);
     const durationMinutes=summary.duration_minutes??Math.round((new Date(window.end)-new Date(window.start))/60000); const duration=document.createElement("td"); duration.textContent=`${durationMinutes} 分钟`;
     const counts=document.createElement("td"); counts.textContent=summary.raw_samples===undefined?"待检查":`${summary.raw_samples} / ${summary.effective_samples}`;
@@ -3422,23 +3456,23 @@ function explorationPercent(value) { return value===null||value===undefined||!Nu
 const EXPLORATION_CLUSTER_PALETTE=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
 function explorationClusterColor(clusterId) { return EXPLORATION_CLUSTER_PALETTE[(explorationClusterNumber(clusterId)-1)%EXPLORATION_CLUSTER_PALETTE.length]; }
 function renderClusterQuality(container, quality, perspective) {
-  if(!quality||quality.unavailable_reasons?.analysis) { container.innerHTML=`<div class="chart-card"><h3>聚类质量摘要</h3><div class="empty">${escapeHtml(quality?.unavailable_reasons?.analysis||"尚无聚类分析数据，请运行分析。")}</div></div>`; return; }
+  if(!quality||quality.unavailable_reasons?.analysis) { container.innerHTML=`<div class="chart-card"><h3>聚类质量摘要</h3><div class="empty">${escapeHtml(clusterUiLabel(quality?.unavailable_reasons?.analysis||"尚无聚类分析数据，请运行分析。"))}</div></div>`; return; }
   const reasons=quality.unavailable_reasons||{}, variance=quality.explained_variance||{};
   const number=value=>typeof value==="number"&&Number.isFinite(value)?value.toFixed(3):"—";
   const percent=value=>typeof value==="number"&&Number.isFinite(value)?`${(value*100).toFixed(1)}%`:"—";
-  const metrics=metric("Cluster 数量",quality.cluster_count)+metric("Silhouette Score",number(quality.silhouette_score))+metric("PC1贡献",percent(variance.pc1))+metric("PC2贡献",percent(variance.pc2));
-  const centers=(quality.centers||[]).map(item=>`<tr><td>${escapeHtml(item.cluster)}</td><td>${number(item.pc1)}</td><td>${number(item.pc2)}</td></tr>`).join("");
+  const metrics=metric("工况组数量",quality.cluster_count)+metric("Silhouette Score",number(quality.silhouette_score))+metric("PC1贡献",percent(variance.pc1))+metric("PC2贡献",percent(variance.pc2));
+  const centers=(quality.centers||[]).map(item=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster))}</td><td>${number(item.pc1)}</td><td>${number(item.pc2)}</td></tr>`).join("");
   const clusterIds=(quality.centers||[]).map(item=>String(item.cluster));
-  const featureHeaders=clusterIds.map(cluster=>`<th>Cluster ${escapeHtml(cluster)}</th>`).join("");
+  const featureHeaders=clusterIds.map(cluster=>`<th>${escapeHtml(clusterUiLabel(cluster))}</th>`).join("");
   const features=(quality.top_features||[]).map(item=>`<tr><td>${escapeHtml(item.tag)}</td><td>${number(item.standardized_difference)}</td><td>${number(item.mean_difference)}</td>${clusterIds.map(cluster=>`<td>${number(item.cluster_means?.[cluster])}</td>`).join("")}</tr>`).join("");
   const temporal=quality.temporal_metrics;
-  const time=temporal?`<div class="metrics">${metric("平均持续时间",`${number(temporal.average_duration_hours)} h`)}${metric("最长连续时间",`${number(temporal.longest_duration_hours)} h`)}${metric("状态切换次数",temporal.state_switch_count)}</div><p class="help">按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。</p>`:`<div class="empty">${escapeHtml(reasons.temporal_metrics||"无时间数据")}</div>`;
-  const centerCard=`<div class="chart-card"><h3>Cluster中心与分离情况</h3><p>中心排列：${escapeHtml(quality.center_orientation)}</p><div class="table-wrap"><table><thead><tr><th>Cluster</th><th>PC1</th><th>PC2</th></tr></thead><tbody>${centers}</tbody></table></div><p class="help">中心方差占比达到80%时归为主要沿该主元；仅描述 PC1/PC2 平面。</p></div>`;
-  const featureCard=`<div class="chart-card"><h3>主要区分变量</h3>${features?`<div class="table-wrap"><table><thead><tr><th>变量</th><th>标准化差异</th><th>原始均值差</th>${featureHeaders}</tr></thead><tbody>${features}</tbody></table></div>`:`<div class="empty">${escapeHtml(reasons.top_features||"无有效建模 Tag")}</div>`}<p class="help">仅比较建模 Tag：Cluster 均值极差 / 全部有效样本标准差，Top5；表示统计差异，不表示因果。</p></div>`;
+  const time=temporal?`<div class="metrics">${metric("平均持续时间",`${number(temporal.average_duration_hours)} h`)}${metric("最长连续时间",`${number(temporal.longest_duration_hours)} h`)}${metric("状态切换次数",temporal.state_switch_count)}</div><p class="help">按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。</p>`:`<div class="empty">${escapeHtml(clusterUiLabel(reasons.temporal_metrics||"无时间数据"))}</div>`;
+  const centerCard=`<div class="chart-card"><h3>工况组中心与分离情况</h3><p>中心排列：${escapeHtml(quality.center_orientation)}</p><div class="table-wrap"><table><thead><tr><th>工况组</th><th>PC1</th><th>PC2</th></tr></thead><tbody>${centers}</tbody></table></div><p class="help">中心方差占比达到80%时归为主要沿该主元；仅描述 PC1/PC2 平面。</p></div>`;
+  const featureCard=`<div class="chart-card"><h3>主要区分变量</h3>${features?`<div class="table-wrap"><table><thead><tr><th>变量</th><th>标准化差异</th><th>原始均值差</th>${featureHeaders}</tr></thead><tbody>${features}</tbody></table></div>`:`<div class="empty">${escapeHtml(clusterUiLabel(reasons.top_features||"无有效建模 Tag"))}</div>`}<p class="help">仅比较建模 Tag：工况组 均值极差 / 全部有效样本标准差，Top5；表示统计差异，不表示因果。</p></div>`;
   const timeCard=`<div class="chart-card"><h3>时间连续性</h3>${time}</div>`;
   const title=perspective==="state_exploration"?"状态探索工程提示":"状态结构解释";
   const details=perspective==="state_exploration"?centerCard+timeCard:centerCard+featureCard+timeCard;
-  container.innerHTML=`<div class="chart-card"><h3>聚类质量摘要</h3><div class="metrics">${metrics}</div><p class="help">Silhouette 基于全部保留主元。${quality.silhouette_approximate?`大样本采用固定随机抽样近似（${quality.silhouette_sample_count} 点，覆盖全部 Cluster）。`:""}${escapeHtml(reasons.silhouette_score||"")} ${escapeHtml(reasons.explained_variance||"")}</p></div><div class="chart-card"><h3>${title}</h3><p>${escapeHtml(quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。")}</p><p class="help">弱分离提示阈值：Silhouette &lt; 0.25；连续变化提示：PC1贡献 ≥60% 且中心主要沿 PC1。</p></div>${details}`;
+  container.innerHTML=`<div class="chart-card"><h3>聚类质量摘要</h3><div class="metrics">${metrics}</div><p class="help">Silhouette 基于全部保留主元。${quality.silhouette_approximate?`大样本采用固定随机抽样近似（${quality.silhouette_sample_count} 点，覆盖全部 工况组）。`:""}${escapeHtml(clusterUiLabel(reasons.silhouette_score||""))} ${escapeHtml(reasons.explained_variance||"")}</p></div><div class="chart-card"><h3>${title}</h3><p>${escapeHtml(clusterUiLabel(quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。"))}</p><p class="help">弱分离提示阈值：Silhouette &lt; 0.25；连续变化提示：PC1贡献 ≥60% 且中心主要沿 PC1。</p></div>${details}`;
 }
 function renderVariableDiagnostics(container, diagnostics) {
   if(!diagnostics) { container.innerHTML='<div class="empty">尚无变量诊断数据，请重新运行状态探索。</div>'; return; }
@@ -3451,18 +3485,18 @@ function renderVariableDiagnostics(container, diagnostics) {
   const unavailableTable=unavailable.length?`<details><summary>不可计算的变量对（${unavailable.length}）</summary>${table(pairHeaders,pairRows(unavailable))}</details>`:"";
   const clusterIds=diagnostics.cluster_ids||[], features=diagnostics.cluster_features||[];
   const featureRows=items=>items.map(item=>`<tr><td>${escapeHtml(item.tag)}</td><td>${number(item.standardized_difference)}</td><td>${number(item.mean_difference)}</td>${clusterIds.map(cluster=>`<td>${number(item.cluster_means?.[cluster])}</td>`).join("")}<td>${escapeHtml(item.unavailable_reason||"")}</td></tr>`).join("");
-  const featureHeaders=["Tag","区分强度","均值极差",...clusterIds,"不可计算原因"];
+  const featureHeaders=["Tag","区分强度","均值极差",...clusterIds.map(clusterUiLabel),"不可计算原因"];
   const contrasts=features.length?table(featureHeaders,featureRows(features.slice(0,10)))+(features.length>10?`<details><summary>展开全部建模 Tag（其余 ${features.length-10} 个）</summary>${table(featureHeaders,featureRows(features.slice(10)))}</details>`:""):'<div class="empty">无可比较的建模 Tag。</div>';
   const profiles=(diagnostics.tag_profiles||[]).map(item=>{ const p=item.profile||{}; return `<tr><td>${escapeHtml(item.tag)}</td>${[p.valid_count,p.unique_count,p.mean,p.median,p.standard_deviation,p.p05,p.p95].map(value=>`<td>${number(value)}</td>`).join("")}<td>${escapeHtml((item.flags||[]).join("；")||"未触发关注提示")}</td></tr>`; }).join("");
-  container.innerHTML=`<div class="metrics">${metric("建模 Tag 数",summary.tag_count??"—")}${metric("高相关变量对数",summary.high_correlation_pair_count??"—")}${metric("需关注变量数",summary.attention_tag_count??"—")}</div><p class="help">口径：本次状态探索全部 ${number(diagnostics.sample_count)} 个有效动态样本的时间戳；使用同一预处理管线重采样后、滤波前的工程量值（未标准化）。状态过滤、无效行及滤波 / Lag 预热损失已由样本索引排除；每个工艺 Tag 仅显示一次，不展示 Lag 特征。这是有效样本上的变量特征，不是原始数据源质量。</p><details open><summary>高相关变量</summary><p class="help">Pearson |r| ≥ ${number(diagnostics.correlation_threshold)}；高相关表示可能存在信息冗余，需要结合工艺意义确认。按有限数值配对，至少 ${number(diagnostics.minimum_pair_count)} 个有效配对样本；不意味着必须删除一个变量。</p>${high}${unavailableTable}</details><details open><summary>Cluster 区分</summary><p class="help">全部建模 Tag 按区分强度排序：各 Cluster 工程量均值极差 / 全部有效样本总体标准差。统计差异不表示因果，可用于判断是否沿负荷、温度或压力等连续工况切分。</p>${contrasts}</details><details><summary>变量质量</summary><p class="help">统计仅使用有限数值；标准差为总体标准差。近似无变化沿用标准差 ≤ max(|均值|, 1) × 10⁻⁶；低唯一值沿用唯一值数 ≤ min(10, max(2, floor(有效数 × 1%)))。提示需要结合工艺意义确认，不代表自动保留 / 删除评分。</p>${profiles?table(["Tag","有效样本数","唯一值数","均值","中位数","标准差","P5","P95","关注提示"],profiles):'<div class="empty">无变量统计。</div>'}</details>`;
+  container.innerHTML=`<div class="metrics">${metric("建模 Tag 数",summary.tag_count??"—")}${metric("高相关变量对数",summary.high_correlation_pair_count??"—")}${metric("需关注变量数",summary.attention_tag_count??"—")}</div><p class="help">口径：本次状态探索全部 ${number(diagnostics.sample_count)} 个有效动态样本的时间戳；使用同一预处理管线重采样后、滤波前的工程量值（未标准化）。状态过滤、无效行及滤波 / Lag 预热损失已由样本索引排除；每个工艺 Tag 仅显示一次，不展示 Lag 特征。这是有效样本上的变量特征，不是原始数据源质量。</p><details open><summary>高相关变量</summary><p class="help">Pearson |r| ≥ ${number(diagnostics.correlation_threshold)}；高相关表示可能存在信息冗余，需要结合工艺意义确认。按有限数值配对，至少 ${number(diagnostics.minimum_pair_count)} 个有效配对样本；不意味着必须删除一个变量。</p>${high}${unavailableTable}</details><details open><summary>工况组区分</summary><p class="help">全部建模 Tag 按区分强度排序：各工况组工程量均值极差 / 全部有效样本总体标准差。统计差异不表示因果，可用于判断是否沿负荷、温度或压力等连续工况切分。</p>${contrasts}</details><details><summary>变量质量</summary><p class="help">统计仅使用有限数值；标准差为总体标准差。近似无变化沿用标准差 ≤ max(|均值|, 1) × 10⁻⁶；低唯一值沿用唯一值数 ≤ min(10, max(2, floor(有效数 × 1%)))。提示需要结合工艺意义确认，不代表自动保留 / 删除评分。</p>${profiles?table(["Tag","有效样本数","唯一值数","均值","中位数","标准差","P5","P95","关注提示"],profiles):'<div class="empty">无变量统计。</div>'}</details>`;
 }
 function renderStateExploration(data) {
   el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
   renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration");
   renderVariableDiagnostics(el("explorationVariableDiagnostics"),data.variable_diagnostics);
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
-  el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("完整样本",data.full_point_count)+metric("绘制点数",(data.cluster_series_full||data.cluster_series||[]).length);
-  const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
+  el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("工况组数量",(data.cluster_summaries||[]).length)+metric("完整样本",data.full_point_count)+metric("绘制点数",(data.cluster_series_full||data.cluster_series||[]).length);
+  const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${clusterUiLabel(item.message)}${item.cluster_id?`（${clusterUiLabel(item.cluster_id)}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
   renderExplorationLossSummary(summary.loss_counts||{}); renderExplorationPcChart(data); renderExplorationRegionSummary(data); renderExplorationRegionControls(); renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[]); renderExplorationClusterTable(data.cluster_summaries||[]); renderExplorationCandidateTables(data.cluster_candidates||[],data.performance_candidates||[],data.candidate_decisions||[],data.preferred_region_candidates||[]);
 }
 function renderExplorationLossSummary(losses) {
@@ -3475,10 +3509,10 @@ function renderExplorationRegionSummary(data) {
   const ellipses=region?.ellipses||[];
   if(!ellipses.length) { container.innerHTML='<div class="empty">尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。</div>'; return; }
   const targetRange=data.performance_config?.direction==="target_range";
-  const clusters=(region.cluster_counts||[]).map(item=>`<tr><td>${escapeHtml(item.cluster_id)}</td><td class="numeric">${item.sample_count}</td><td class="numeric">${explorationPercent(item.share)}</td></tr>`).join("");
+  const clusters=(region.cluster_counts||[]).map(item=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster_id))}</td><td class="numeric">${item.sample_count}</td><td class="numeric">${explorationPercent(item.share)}</td></tr>`).join("");
   const performance=targetRange?metric("性能有效样本",region.performance_valid_count??"—")+metric("性能达标样本",region.performance_target_count??"—")+metric("性能达标率",explorationPercent(region.performance_target_ratio))+metric("性能中位数",explorationNumber(region.performance_median,3)):metric("性能评价","—");
   const candidateCount=(data.preferred_region_candidates||[]).length;
-  container.innerHTML=`<div class="metrics">${metric("优选区域样本",region.selected_sample_count??0)}${metric("完整有效样本占比",explorationPercent(region.selected_sample_ratio))}${metric("最大 Cluster 占比",explorationPercent(region.max_cluster_share))}${metric("区域稳定性",explorationNumber(region.stability_score,4))}${metric("连续候选数",candidateCount)}${performance}</div><div class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。</div><table><thead><tr><th>Cluster</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table>`;
+  container.innerHTML=`<div class="metrics">${metric("优选区域样本",region.selected_sample_count??0)}${metric("完整有效样本占比",explorationPercent(region.selected_sample_ratio))}${metric("最大 工况组占比",explorationPercent(region.max_cluster_share))}${metric("区域稳定性",explorationNumber(region.stability_score,4))}${metric("连续候选数",candidateCount)}${performance}</div><div class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。</div><table><thead><tr><th>工况组</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table>`;
 }
 function renderExplorationRegionControls() {
   const hasRun=Boolean(state.exploration?.exploration_run_id), ellipses=state.preferredRegion?.ellipses||[];
@@ -3497,9 +3531,9 @@ function renderExplorationPcChart(data) {
   if(!globalThis.Plotly){container.innerHTML='<div class="empty">Plotly 未加载，无法绘制散点图。</div>';return;}
   const byCluster=new Map();
   finiteRows.forEach(row=>{const cluster=String(row.cluster_id); if(!byCluster.has(cluster)) byCluster.set(cluster,{x:[],y:[]}); const bucket=byCluster.get(cluster); bucket.x.push(Number(row.pc1)); bucket.y.push(Number(row.pc2));});
-  const traces=[...byCluster.entries()].map(([cluster,bucket])=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:cluster,marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hovertemplate:`${cluster}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
+  const traces=[...byCluster.entries()].map(([cluster,bucket])=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hovertemplate:`${clusterUiLabel(cluster)}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
   const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>({cluster,x:Number(center[0]),y:Number(center[1])})).filter(item=>Number.isFinite(item.x)&&Number.isFinite(item.y));
-  if(centers.length) traces.push({type:"scatter",mode:"markers+text",x:centers.map(item=>item.x),y:centers.map(item=>item.y),text:centers.map(item=>item.cluster),textposition:"top center",textfont:{size:10},showlegend:false,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:centers.map(item=>explorationClusterColor(item.cluster)),line:{width:1,color:"#ffffff"}},"meta":"center"});
+  if(centers.length) traces.push({type:"scatter",mode:"markers+text",x:centers.map(item=>item.x),y:centers.map(item=>item.y),text:centers.map(item=>clusterUiLabel(item.cluster)),textposition:"top center",textfont:{size:10},showlegend:false,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:centers.map(item=>explorationClusterColor(item.cluster)),line:{width:1,color:"#ffffff"}},"meta":"center"});
   const layout={autosize:true,hovermode:"closest",dragmode:"pan",margin:{l:46,r:14,t:10,b:40},paper_bgcolor:"#fff",plot_bgcolor:"#fff",font:{size:11,color:"#5f6c7b"},xaxis:{title:"PC1",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},yaxis:{title:"PC2",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},shapes:explorationRegionShapes()};
   const config={displayModeBar:true,modeBarButtons:[["zoom2d","pan2d","resetScale2d"]],displaylogo:false,responsive:true,scrollZoom:false};
   container.innerHTML='<div class="exploration-pc-canvas"></div><svg class="exploration-pc-overlay" role="img" aria-label="优选运行区域椭圆"></svg>';
@@ -3550,25 +3584,25 @@ function renderExplorationTimeline(rows,candidates) {
   const width=760,height=84,left=94,right=18,statusTop=16,statusHeight=30,candidateTop=58,candidateHeight=12;
   const x=value=>left+(new Date(value).getTime()-first)/(last-first)*(width-left-right);
   const blocks=[]; const breaks=[];
-  ordered.slice(0,-1).forEach((row,index)=>{const next=ordered[index+1]; const segmentBreak=next.break_before||next.segment_id!==row.segment_id; if(segmentBreak){breaks.push(`<line x1="${x(next.timestamp).toFixed(2)}" x2="${x(next.timestamp).toFixed(2)}" y1="${statusTop-5}" y2="${statusTop+statusHeight+5}" stroke="#64748b" stroke-dasharray="3 2"><title>物理连续段断点</title></line>`);return;} const start=x(row.timestamp),end=x(next.timestamp); if(end>start) blocks.push(`<rect x="${start.toFixed(2)}" y="${statusTop}" width="${(end-start).toFixed(2)}" height="${statusHeight}" fill="${explorationClusterColor(row.cluster_id)}"><title>${escapeHtml(row.cluster_id)}&#10;开始时间：${escapeHtml(displayTime(row.timestamp,19))}&#10;结束时间：${escapeHtml(displayTime(next.timestamp,19))}</title></rect>`);});
-  const windows=(candidates||[]).map(candidate=>{const start=Math.max(first,new Date(candidate.start).getTime()),end=Math.min(last,new Date(candidate.end).getTime()); if(!Number.isFinite(start)||!Number.isFinite(end)||end<start) return ""; const windowX=left+(start-first)/(last-first)*(width-left-right),windowWidth=Math.max(1,(end-start)/(last-first)*(width-left-right)); return `<rect x="${windowX.toFixed(2)}" y="${candidateTop}" width="${windowWidth.toFixed(2)}" height="${candidateHeight}" fill="${explorationClusterColor(candidate.cluster_id)}" fill-opacity=".35" stroke="${explorationClusterColor(candidate.cluster_id)}" stroke-width="1.5"><title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(candidate.cluster_id)}&#10;开始时间：${escapeHtml(displayTime(candidate.start,19))}&#10;结束时间：${escapeHtml(displayTime(candidate.end,19))}</title></rect>`;}).join("");
-  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cluster 状态时间轴"><text x="8" y="${statusTop+14}" fill="#334155" font-size="11">Cluster 状态</text><text x="8" y="${candidateTop+10}" fill="#334155" font-size="11">候选窗口</text>${blocks.join("")}${breaks.join("")}${windows}</svg>`;
+  ordered.slice(0,-1).forEach((row,index)=>{const next=ordered[index+1]; const segmentBreak=next.break_before||next.segment_id!==row.segment_id; if(segmentBreak){breaks.push(`<line x1="${x(next.timestamp).toFixed(2)}" x2="${x(next.timestamp).toFixed(2)}" y1="${statusTop-5}" y2="${statusTop+statusHeight+5}" stroke="#64748b" stroke-dasharray="3 2"><title>物理连续段断点</title></line>`);return;} const start=x(row.timestamp),end=x(next.timestamp); if(end>start) blocks.push(`<rect x="${start.toFixed(2)}" y="${statusTop}" width="${(end-start).toFixed(2)}" height="${statusHeight}" fill="${explorationClusterColor(row.cluster_id)}"><title>${escapeHtml(clusterUiLabel(row.cluster_id))}&#10;开始时间：${escapeHtml(displayTime(row.timestamp,19))}&#10;结束时间：${escapeHtml(displayTime(next.timestamp,19))}</title></rect>`);});
+  const windows=(candidates||[]).map(candidate=>{const start=Math.max(first,new Date(candidate.start).getTime()),end=Math.min(last,new Date(candidate.end).getTime()); if(!Number.isFinite(start)||!Number.isFinite(end)||end<start) return ""; const windowX=left+(start-first)/(last-first)*(width-left-right),windowWidth=Math.max(1,(end-start)/(last-first)*(width-left-right)); return `<rect x="${windowX.toFixed(2)}" y="${candidateTop}" width="${windowWidth.toFixed(2)}" height="${candidateHeight}" fill="${explorationClusterColor(candidate.cluster_id)}" fill-opacity=".35" stroke="${explorationClusterColor(candidate.cluster_id)}" stroke-width="1.5"><title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(clusterUiLabel(candidate.cluster_id))}&#10;开始时间：${escapeHtml(displayTime(candidate.start,19))}&#10;结束时间：${escapeHtml(displayTime(candidate.end,19))}</title></rect>`;}).join("");
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="工况组 状态时间轴"><text x="8" y="${statusTop+14}" fill="#334155" font-size="11">工况组 状态</text><text x="8" y="${candidateTop+10}" fill="#334155" font-size="11">候选窗口</text>${blocks.join("")}${breaks.join("")}${windows}</svg>`;
 }
 function renderExplorationClusterTable(summaries) {
-  const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); const values=[item.cluster_id,item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.performance_valid_count??"—",item.performance_target_count??"—",explorationPercent(item.performance_target_ratio),explorationNumber(item.performance_median,3),item.candidate_count]; values.forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
+  const body=el("explorationClusterTable"); body.replaceChildren(); summaries.forEach(item=>{const row=document.createElement("tr"); const values=[clusterUiLabel(item.cluster_id),item.sample_count,`${(Number(item.coverage_ratio)*100).toFixed(1)}%`,item.segment_count,`${item.total_duration_minutes} 分钟`,explorationNumber(item.median_distance_to_centroid,3),explorationNumber(item.pc_score_dispersion,3),item.performance_valid_count??"—",item.performance_target_count??"—",explorationPercent(item.performance_target_ratio),explorationNumber(item.performance_median,3),item.candidate_count]; values.forEach(value=>{const cell=document.createElement("td");cell.textContent=value;row.append(cell);});body.append(row);});
 }
 function renderExplorationCandidateTables(clusterCandidates,performanceCandidates,decisions,preferredRegionCandidates=[]) {
   const runId=state.exploration?.exploration_run_id;
   const commentById=Object.fromEntries(decisions.map(item=>[item.candidate_id,item.comment||""]));
   const controls=item=>{const sourceRef=stateExplorationCandidateSourceRef(runId,item.candidate_id);const candidate=state.candidateWindows.find(window=>window.source_ref===sourceRef);const status=state.trainingWindows.some(window=>window.source_ref===sourceRef)?"accepted":"pending";const comment=candidate?.comment??commentById[item.candidate_id]??"";return `<td><input class="exploration-candidate-select" type="checkbox" data-candidate-id="${escapeHtml(item.candidate_id)}" aria-label="选择候选"></td><td>${escapeHtml(displayUiValue(status))}</td><td><input class="exploration-candidate-comment" data-candidate-id="${escapeHtml(item.candidate_id)}" value="${escapeHtml(comment)}" aria-label="候选备注"></td>`;};
-  const clusterHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>Cluster</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
-  const clusterBody=clusterCandidates.map(item=>`<tr>${controls(item)}<td>${escapeHtml(item.cluster_id)}</td><td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
-  el("explorationClusterCandidates").innerHTML=clusterHead+(clusterBody||'<tr><td colspan="11">暂无满足条件的 Cluster 候选。</td></tr>')+"</tbody></table>";
-  const performanceHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联Cluster</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
-  const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
+  const clusterHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>工况组</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>中心距离</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const clusterBody=clusterCandidates.map(item=>`<tr>${controls(item)}<td>${escapeHtml(clusterUiLabel(item.cluster_id))}</td><td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${explorationNumber(item.centroid_distance,4)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`).join("");
+  el("explorationClusterCandidates").innerHTML=clusterHead+(clusterBody||'<tr><td colspan="11">暂无满足条件的工况组候选。</td></tr>')+"</tbody></table>";
+  const performanceHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>性能摘要</th><th>关联工况组</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const performanceBody=performanceCandidates.map(item=>{const summary=item.performance_summary||{};const text=`均值 ${explorationNumber(summary.mean,3)}；中位数 ${explorationNumber(summary.median,3)}；最小 ${explorationNumber(summary.minimum,3)}；最大 ${explorationNumber(summary.maximum,3)}`;return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${escapeHtml(text)}</td><td>${escapeHtml((item.associated_cluster_ids||[]).map(clusterUiLabel).join(", "))}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
   el("explorationPerformanceCandidates").innerHTML=performanceHead+(performanceBody||'<tr><td colspan="10">暂无满足条件的性能候选。</td></tr>')+"</tbody></table>";
-  const preferredHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>关联Cluster</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
-  const preferredBody=preferredRegionCandidates.map(item=>{const clusterIds=item.associated_cluster_ids||(item.cluster_id?[item.cluster_id]:[]);return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${escapeHtml(clusterIds.join(", ")||"—")}</td><td>${item.performance_valid_count??"—"}</td><td>${item.performance_target_count??"—"}</td><td>${explorationPercent(item.performance_target_ratio)}</td><td>${explorationNumber(item.performance_median,3)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
+  const preferredHead="<table><thead><tr><th>选择</th><th>状态</th><th>备注</th><th>开始</th><th>结束</th><th>覆盖时长</th><th>样本数</th><th>关联工况组</th><th>性能有效样本</th><th>性能达标样本</th><th>性能达标率</th><th>性能中位数</th><th>稳定性</th><th>排名</th></tr></thead><tbody>";
+  const preferredBody=preferredRegionCandidates.map(item=>{const clusterIds=item.associated_cluster_ids||(item.cluster_id?[item.cluster_id]:[]);return `<tr>${controls(item)}<td>${escapeHtml(displayTime(item.start,19))}</td><td>${escapeHtml(displayTime(item.end,19))}</td><td>${item.duration_minutes} 分钟</td><td>${item.sample_count}</td><td>${escapeHtml(clusterIds.map(clusterUiLabel).join(", ")||"—")}</td><td>${item.performance_valid_count??"—"}</td><td>${item.performance_target_count??"—"}</td><td>${explorationPercent(item.performance_target_ratio)}</td><td>${explorationNumber(item.performance_median,3)}</td><td>${explorationNumber(item.stability_score,4)}</td><td>${item.rank}</td></tr>`;}).join("");
   el("explorationPreferredRegionCandidates").innerHTML=preferredHead+(preferredBody||'<tr><td colspan="14">暂无满足最小时长的优选区域连续候选。</td></tr>')+"</tbody></table>";
  }
 
@@ -3821,7 +3855,7 @@ el("clusterButton").addEventListener("click", async () => {
     const payload=state.exploratoryRunId?{file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,exploratory_run_id:state.exploratoryRunId,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,n_clusters:numberValue("clusterCount")}:{...commonPayload(),tags,tag_configs:tagConfigPayload(tags),analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,variance_threshold:numberValue("varianceThreshold"),n_clusters:numberValue("clusterCount")};
     const data=await api("/api/cluster",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     state.clustering=data; renderClustering(data); if(globalThis.showCandidateTool) { globalThis.showWorkflowStage("candidatePanel"); globalThis.showCandidateTool("clusterPanel"); } else document.querySelector('.tab[data-panel="clusterPanel"]')?.click();
-    setStatus("聚类完成。请由工程师判断 Cluster，并选择代表性连续时段作为正常候选。","success");
+    setStatus("聚类完成。请由工程师判断工况组，并选择代表性连续时段作为正常候选。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -3986,12 +4020,12 @@ function renderPerformance(data) {
 function renderClustering(data) {
   el("clusterEmpty").hidden=true; el("clusterContent").hidden=false;
   renderClusterQuality(el("assistanceClusterQuality"),data.cluster_quality,"cluster_assistance");
-  el("clusterMetrics").innerHTML=metric("聚类动态样本",data.sample_count)+metric("状态空间主元",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("Cluster 数量",data.clusters.length);
+  el("clusterMetrics").innerHTML=metric("聚类动态样本",data.sample_count)+metric("状态空间主元",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("工况组数量",data.clusters.length);
   clusterScatter(el("clusterChart"),data.points);
   const body=el("clusterTable"); body.replaceChildren();
   data.clusters.forEach(item=>{
     const tr=document.createElement("tr");
-    [`Cluster ${item.cluster}`,item.count,`${(item.share*100).toFixed(1)}%`,`${item.pc1_center.toFixed(2)} / ${item.pc2_center.toFixed(2)}`].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); });
+    [`工况组 ${item.cluster}`,item.count,`${(item.share*100).toFixed(1)}%`,`${item.pc1_center.toFixed(2)} / ${item.pc2_center.toFixed(2)}`].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); });
     const windows=document.createElement("td");
     item.representative_windows.forEach(window=>{ const button=document.createElement("button"); button.className="secondary"; button.style.margin="2px"; button.textContent=`加入候选窗口：${displayTime(window.start)} ～ ${window.end.slice(11,16)} (${window.count}点)`; button.addEventListener("click",()=>addCandidateWindow("cluster",window.start,window.end,`cluster-${item.cluster}-${window.start}-${window.end}`,"")); windows.append(button); });
     tr.append(windows); body.append(tr);
@@ -4126,8 +4160,8 @@ function clusterScatter(container, rows) {
   if (!rows.length) { container.innerHTML='<div class="empty">无可展示数据</div>'; return; }
   const palette=["#176b87","#cf3f36","#16845b","#d19a20","#7c3aed","#db2777","#0891b2","#65a30d","#ea580c","#475569"];
   const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad);
-  const circles=rows.map(row=>`<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${palette[(row.cluster-1)%palette.length]}" fill-opacity=".72"><title>Cluster ${row.cluster} · ${escapeHtml(displayTime(row.timestamp))}</title></circle>`).join("");
-  const legend=[...new Set(rows.map(row=>row.cluster))].map(cluster=>`<text x="${pad+(cluster-1)*82}" y="15" fill="${palette[(cluster-1)%palette.length]}" font-size="10">● Cluster ${cluster}</text>`).join("");
+  const circles=rows.map(row=>`<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${palette[(row.cluster-1)%palette.length]}" fill-opacity=".72"><title>工况组 ${row.cluster} · ${escapeHtml(displayTime(row.timestamp))}</title></circle>`).join("");
+  const legend=[...new Set(rows.map(row=>row.cluster))].map(cluster=>`<text x="${pad+(cluster-1)*82}" y="15" fill="${palette[(cluster-1)%palette.length]}" font-size="10">● 工况组 ${cluster}</text>`).join("");
   container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="运行状态聚类散点">${legend}<line x1="${pad}" x2="${width-pad}" y1="${height/2}" y2="${height/2}" stroke="#d7dee8"/><line x1="${width/2}" x2="${width/2}" y1="${pad}" y2="${height-pad}" stroke="#d7dee8"/>${circles}<text x="${width-pad}" y="${height/2-5}" text-anchor="end" fill="#5f6c7b" font-size="10">PC1</text><text x="${width/2+5}" y="${pad+10}" fill="#5f6c7b" font-size="10">PC2</text></svg>`;
 }
 

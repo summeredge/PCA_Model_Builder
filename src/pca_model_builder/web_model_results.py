@@ -967,6 +967,9 @@ document.addEventListener("DOMContentLoaded", () => {
 _MODEL_RESULTS_STYLE = r"""
 <style id="modelResultsStyle">
   .model-quality-copy, #modelTrainingDataQuality > p { max-width:72ch; }
+  #modelTrainingConditionDiagnostic { min-width:0; max-width:100%; }
+  .training-condition-trend svg { display:block; width:100%; height:auto; }
+  #modelTrainingConditionDiagnostic.condition-unavailable > :is(h4, .table-wrap, .training-condition-trend, #modelTrainingConditionHints) { display:none; }
   .model-training-source-reference { overflow-wrap:anywhere; }
   .model-overview-grid {
     display:grid;
@@ -1196,6 +1199,16 @@ def _model_results_content_html() -> str:
             <h3>训练数据组成</h3><div id="modelTrainingDataQuality"></div>
             <h4>训练窗口与连续段</h4><div id="trainingWindowSummary" class="table-wrap"></div>
             <div id="trainingQualityWarnings" class="hint"></div>
+          </section>
+          <section id="modelTrainingConditionDiagnostic" class="chart-card">
+            <h3>训练工况诊断</h3>
+            <div id="modelTrainingConditionMessage" class="help"></div>
+            <div id="modelTrainingConditionGroups" class="table-wrap"></div>
+            <h4>训练工况与统计量趋势</h4>
+            <div id="modelTrainingConditionTrend" class="training-condition-trend"></div>
+            <h4>稳定工况区 / 工况切换附近</h4>
+            <div id="modelTrainingConditionSwitch" class="table-wrap"></div>
+            <div id="modelTrainingConditionHints" class="help"></div>
           </section>
           <h3>详细趋势和图表</h3>
           <div class="chart-grid">

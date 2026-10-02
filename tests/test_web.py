@@ -73,6 +73,7 @@ def test_model_quality_ui_renders_and_clears_stale_results():
       const nodes=Object.fromEntries(ids.map(id=>[id,new Element()]));
       const document={getElementById:id=>nodes[id],createElement:()=>new Element()};
       function displayTime(value) { return value; }
+      function clusterUiLabel(value) { return String(value).replace(/cluster_(\d+)/gi,(_,n)=>`工况组 ${Number(n)}`); }
       __RENDERER__
       const statistic={valid_samples:100,invalid_samples:0,mean:0.5,limits:{95:2,99:3},exceedance_rates:{95:0.05,99:0.01},trend:"stable"};
       const quality={training_samples:100,retained_explained_variance:0.82,pc1_pc2_explained_variance:0.65,statistics:{spe:statistic,t2:statistic},notice:"不能替代独立验证",rules:"经验规则",engineering_messages:["检查运行状态"],training_data:{effective_sample_hours:8.333,time_start:"2026-01-01",time_end:"2026-01-02",traceable_cluster_count:1,unattributed_samples:0,sources:[{label:"Cluster_001",source_ref:"<script>来源</script>",samples:100,share:1}]}};
@@ -86,7 +87,7 @@ def test_model_quality_ui_renders_and_clears_stale_results():
     assert "95% 超限比例" in result["filled"]["modelQualitySummary"]
     assert "5.0%" in result["filled"]["modelQualitySummary"]
     assert "65.0%" in result["filled"]["modelProjectionSummary"]
-    assert "Cluster_001" in result["filled"]["modelTrainingDataQuality"]
+    assert "工况组 1" in result["filled"]["modelTrainingDataQuality"]
     assert "100.0%" in result["filled"]["modelTrainingDataQuality"]
     assert "有效训练样本：100" in result["filled"]["modelTrainingDataQuality"]
     assert "8.333 h" in result["filled"]["modelTrainingDataQuality"]
@@ -121,6 +122,132 @@ def _run_node_javascript(source: str) -> dict:
     )
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
     return json.loads(result.stdout)
+
+
+def test_training_condition_ui_draws_separate_segments_and_clears_old_results():
+    source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
+    renderer = source[source.index("  function renderTrainingConditionDiagnostic("):source.index('  document.getElementById("compareModelsButton")')]
+    helpers = source[source.index("  function replayLine("):source.index("  const originalRenderTraining")]
+    helpers += source[source.index("  function addLine("):source.rindex("})();")]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(tag="div") {this.tag=tag;this.children=[];this.textContent="";this.attributes={};this.classList={toggle(){}};}
+        append(...nodes){this.children.push(...nodes);}
+        replaceChildren(){this.children=[];this.textContent="";}
+        setAttribute(key,value){this.attributes[key]=String(value);}
+        text(){return this.textContent+this.children.map(node=>node.text()).join(" ");}
+        find(tag){return [ ...(this.tag===tag?[this]:[]), ...this.children.flatMap(node=>node.find(tag)) ];}
+      }
+      const ids=["modelTrainingConditionDiagnostic","modelTrainingConditionMessage","modelTrainingConditionGroups","modelTrainingConditionTrend","modelTrainingConditionSwitch","modelTrainingConditionHints"];
+      const nodes=Object.fromEntries(ids.map(id=>[id,new Element()]));
+      const document={getElementById:id=>nodes[id],createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag)};
+      const SVG_NS="http://www.w3.org/2000/svg";
+      function clusterUiLabel(id){return String(id).replace(/cluster_(\d+)/gi,(_,n)=>`工况组 ${Number(n)}`);}
+      function displayTime(value){return value;}
+      function explorationClusterColor(id){return id==="cluster_001"?"#176b87":"#cf3f36";}
+      __HELPERS__
+      __RENDERER__
+      const points=Array.from({length:8},(_,i)=>({timestamp:new Date(Date.UTC(2026,0,1,0,i<4?i*5:i*5+10)).toISOString(),cluster_id:i<4?"cluster_001":"cluster_002",t2_limit_ratio:i===5?null:i/4,spe_limit_ratio:i===5?null:i/2,segment_id:i<2?1:i<4?2:i<6?3:4,window_id:i<4?"w1":"w2",break_before:[0,2,4,6].includes(i)}));
+      const group={cluster_id:"cluster_001",source_ref:"internal-ref",samples:7,share:1,t2_95_exceedance_rate:0.4,t2_99_exceedance_rate:0.2,spe_95_exceedance_rate:0.5,spe_99_exceedance_rate:0.3,t2_95_ratio_median:0.75,spe_95_ratio_median:1.5,longest_overall_95_minutes:10};
+      const rates={samples:3,t2_95_exceedance_rate:0.4,spe_95_exceedance_rate:0.5,overall_95_exceedance_rate:0.6};
+      const diagnostic={available:true,message:"工况组帮助",groups:[group],traceable_samples:7,unattributed_samples:1,timeline:points,switch_diagnostic:{available:true,stable:rates,near_switch:rates,switch_count:1,context_minutes:5,message:"描述性比较"},engineering_messages:["建议检查状态过渡"]};
+      renderTrainingConditionDiagnostic(diagnostic);
+      const filled=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
+      const svg=nodes.modelTrainingConditionTrend.children[0];
+      const polylines=svg.find("polyline").map(line=>line.attributes.points.split(" "));
+      const dots=svg.find("circle").map(dot=>dot.attributes);
+      const rectangles=svg.find("rect").map(rect=>({attrs:rect.attributes,title:rect.children[0].text()}));
+      renderTrainingConditionDiagnostic({available:false,message:"当前训练窗口无法追溯到状态探索工况组，无法执行按工况组诊断。"});
+      const unavailable=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
+      renderTrainingConditionDiagnostic(null);
+      console.log(JSON.stringify({filled,polylines,dots,rectangles,unavailable,empty:nodes.modelTrainingConditionMessage.text()}));
+    """.replace("__HELPERS__", helpers).replace("__RENDERER__", renderer))
+    assert [len(line) for line in result["polylines"]] == [2,2,1,2]*2
+    assert len(result["dots"]) == 14  # Null ratios do not become zero-valued points.
+    assert len(result["rectangles"]) == 8
+    assert {rect["attrs"]["fill"] for rect in result["rectangles"]} == {"#176b87","#cf3f36"}
+    assert all("T²限值比" in rect["title"] and "SPE限值比" in rect["title"] and "2026" in rect["title"] for rect in result["rectangles"])
+    assert "40.0%" in result["filled"]["modelTrainingConditionGroups"]
+    assert "稳定工况区" in result["filled"]["modelTrainingConditionSwitch"]
+    assert "工况切换附近" in result["filled"]["modelTrainingConditionSwitch"]
+    assert "ratio = 1" in result["filled"]["modelTrainingConditionTrend"]
+    assert "建议检查状态过渡" in result["filled"]["modelTrainingConditionHints"]
+    assert "无法追溯" in result["unavailable"]["modelTrainingConditionMessage"]
+    assert all(result["unavailable"][key] == "" for key in ("modelTrainingConditionGroups","modelTrainingConditionTrend","modelTrainingConditionSwitch","modelTrainingConditionHints"))
+    assert "重新训练" in result["empty"]
+
+
+def test_candidate_window_display_numbers_keep_internal_ids_for_actions():
+    html = web.INDEX_HTML
+    helpers = html[html.index("function clusterUiLabel("):html.index("function trainingWindowsPayload(")]
+    renderer = html[html.index("function renderCandidateWindows("):html.index("function renderTrainingWindows(")]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(){this.children=[];this.textContent="";this.handlers={};}
+        append(...nodes){this.children.push(...nodes);}
+        replaceChildren(){this.children=[];this.textContent="";}
+        addEventListener(name,handler){this.handlers[name]=handler;}
+        text(){return this.textContent+this.children.map(node=>node.text()).join(" ");}
+      }
+      const container=new Element(), calls=[];
+      const state={candidateWindows:[{id:"ab004836-2619-4298-9b21-be5282f6d92f",source:"cluster",source_ref:"state-exploration-e3add35a3e7f46c9824233f9fae8e0a0-cluster_002-candidate-001",start:"2026-01-01",end:"2026-01-02"},{id:"manual-id",source:"manual",source_ref:null,start:"2026-01-03",end:"2026-01-04"}],exploration:null};
+      const document={createElement:()=>new Element()};
+      function el(){return container;}
+      function displayTime(value){return value;}
+      function displayUiValue(value){return value;}
+      function candidateTrainingWindows(){return [];}
+      function confirmCandidateWindow(window){calls.push(window.id);}
+      function showCandidateTrend(window){calls.push(window.source_ref);}
+      __HELPERS__
+      __RENDERER__
+      renderCandidateWindows();
+      const rows=container.children[0].children[1].children;
+      const initial=rows.map(row=>({name:row.children[0].textContent,id:row.children[0].title,source:row.children[1].textContent,reference:row.children[1].title}));
+      const visible=container.text();
+      rows[0].children[4].children[1].handlers.click();
+      rows[0].children[4].children[0].handlers.click();
+      rows[0].children[4].children[2].handlers.click();
+      const remaining=container.children[0].children[1].children[0].children[0];
+      console.log(JSON.stringify({initial,visible,calls,remaining:{name:remaining.textContent,id:remaining.title},sources:["manual","trend","performance","preferred_region","suggested","cluster"].map(source=>candidateSourceLabel({source}))}));
+    """.replace("__HELPERS__", helpers).replace("__RENDERER__", renderer))
+    assert result["initial"][0]["name"] == "候选 01"
+    assert result["initial"][0]["source"] == "工况组 2 · 候选 1"
+    assert result["initial"][1]["name"] == "候选 02"
+    assert result["calls"] == [result["initial"][0]["id"],result["initial"][0]["reference"]]
+    assert result["initial"][0]["id"] not in result["visible"]
+    assert result["initial"][0]["reference"] not in result["visible"]
+    assert result["remaining"] == {"name":"候选 01","id":"manual-id"}
+    assert result["sources"] == ["手工窗口","趋势候选","性能候选","区域候选","建议窗口","工况组候选"]
+
+
+def test_training_condition_api_reads_cached_full_series_and_checks_provenance(tmp_path, monkeypatch):
+    monkeypatch.setattr(web,"UPLOADS_DIR",tmp_path / "uploads")
+    monkeypatch.setattr(web,"RUNS_DIR",tmp_path / "runs")
+    monkeypatch.setattr(web,"MAX_CHART_POINTS",7)
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv",history.to_csv(index=False).encode("utf-8-sig"))
+    payload = {"file_id":uploaded["file_id"],"timestamp_column":"time","tags":["A","B","C"],"sample_interval_minutes":5,"filter_method":"none","resampling_method":"none","max_lag_minutes":0,"lag_step_minutes":5}
+    exploration = web.state_exploration_payload({**payload,"exploration_start":history.time.iloc[0].isoformat(),"exploration_end":history.time.iloc[119].isoformat(),"exploration_config":{"cluster_count":3,"maximum_plot_points":7}})
+    run = exploration["exploration_run_id"]
+    windows = [{"id":f"w{i}","start":history.time.iloc[i*40].isoformat(),"end":history.time.iloc[i*40+39].isoformat(),"source":"cluster","source_ref":f"state-exploration-{run}-cluster_{i+1:03d}-candidate-001","enabled":True,"comment":""} for i in range(3)]
+    result = web_model_results.train_payload({**payload,"model_name":"conditions","training_windows":windows})
+    diagnostic = result["model_quality"]["training_condition_diagnostic"]
+    assert diagnostic["traceable_samples"] == result["training_rows"] == 120
+    assert [group["samples"] for group in diagnostic["groups"]] == [40,40,40]
+    assert len(diagnostic["timeline"]) == 120 > len(result["scores"])
+    assert diagnostic["switch_diagnostic"]["available"] is True
+    assert "_diagnostic_source" not in web._exploration_summary_payload(run)
+    config = web._preprocessing_config(payload)
+    for changed in ({**payload,"file_id":"other"},{**payload,"timestamp_column":"other"}):
+        assert web._training_cluster_series(windows,changed,config) == {}
+    changed_config = PreprocessingConfig(sample_interval_minutes=5,filter_method="none",resampling_method="none",max_lag_minutes=5,lag_step_minutes=5)
+    assert web._training_cluster_series(windows,payload,changed_config) == {}
+    monkeypatch.delitem(web.STATE_EXPLORATION_RUNS,run)
+    assert web._training_cluster_series(windows,payload,config) == {}
+    _,manifest = load_model_package(tmp_path / "runs" / result["run_id"] / "model.pcamodel")
+    assert "training_condition_diagnostic" not in manifest
+    assert "training_condition_diagnostic" not in manifest["config"]
+    assert manifest["training_windows"] == windows
 
 
 def _pc_renderer_source() -> str:
@@ -898,6 +1025,7 @@ def test_variable_diagnostics_renderer_handles_large_results_escaping_and_unavai
     diagnostic["unavailable_pairs"] = [{"tag_a": "<bad>", "tag_b": "<TAG_0>", "pearson_r": None, "valid_pair_count": 2, "unavailable_reason": "有效配对样本不足"}]
     diagnostic["tag_profiles"][-1]["flags"] = ["近似无变化", "低唯一值，疑似离散状态量"]
     renderer = "function renderVariableDiagnostics" + web_model_results.INDEX_HTML.split("function renderVariableDiagnostics", 1)[1].split("function renderStateExploration", 1)[0]
+    renderer = "function clusterUiLabel" + web.INDEX_HTML.split("function clusterUiLabel", 1)[1].split("\n", 1)[0] + "\n" + renderer
     result = _run_node_javascript(
         "const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');"
         "const metric=(name,value)=>`<span>${escapeHtml(name)} ${escapeHtml(value)}</span>`;"
@@ -908,7 +1036,7 @@ def test_variable_diagnostics_renderer_handles_large_results_escaping_and_unavai
     )
     html = result["large"]
     assert "<TAG_" not in html and "<cluster_002>" not in html
-    assert "&lt;TAG_49&gt;" in html and "&lt;cluster_002&gt;" in html
+    assert "&lt;TAG_49&gt;" in html and "&lt;工况组 2&gt;" in html
     assert "23780" in html and "23900" in html
     assert "展开其余 1205 对高相关变量" in html
     assert "展开全部建模 Tag（其余 40 个）" in html
@@ -960,9 +1088,9 @@ def test_final_web_page_exposes_state_exploration_workbench():
     for label in (
         "状态探索配置",
         "运行状态探索",
-        "Cluster PC1 / PC2 与中心",
-        "Cluster 时间轴",
-        "Cluster 候选表",
+        "工况组 PC1 / PC2 与中心",
+        "工况组时间轴",
+        "工况组候选表",
         "性能候选表",
         "性能有效样本",
         "性能达标样本",
@@ -1069,8 +1197,8 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "物理连续段断点" in timeline
     assert "候选窗口" in timeline
     assert "candidate.candidate_id" in timeline
-    assert '<title>${escapeHtml(row.cluster_id)}&#10;开始时间：' in timeline
-    assert '<title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(candidate.cluster_id)}&#10;开始时间：' in timeline
+    assert '<title>${escapeHtml(clusterUiLabel(row.cluster_id))}&#10;开始时间：' in timeline
+    assert '<title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(clusterUiLabel(candidate.cluster_id))}&#10;开始时间：' in timeline
     assert "explorationTimelineTick" not in html
     assert "${ticks}" not in timeline
     renderer = html[
@@ -1083,6 +1211,7 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
       function escapeHtml(value) { return String(value); }
       function displayTime(value) { return String(value); }
       function explorationClusterColor() { return "#7ab"; }
+      function clusterUiLabel(value) { return String(value).replace(/cluster_(\d+)/gi,(_,n)=>`工况组 ${Number(n)}`); }
       __RENDERER__
       renderExplorationTimeline(
         [
@@ -1095,11 +1224,11 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
       const labels=[...svg.matchAll(/<text\b[^>]*>(.*?)<\/text>/g)].map(match=>match[1]);
       console.log(JSON.stringify({
         labels,
-        rowTooltip:svg.includes("<title>Cluster_001&#10;开始时间：2026-01-01T00:00:00"),
-        candidateTooltip:svg.includes("<title>candidate-1&#10;Cluster_001&#10;开始时间：2026-01-01T00:15:00")
+        rowTooltip:svg.includes("<title>工况组 1&#10;开始时间：2026-01-01T00:00:00"),
+        candidateTooltip:svg.includes("<title>candidate-1&#10;工况组 1&#10;开始时间：2026-01-01T00:15:00")
       }));
     """.replace("__RENDERER__", renderer))
-    assert rendered["labels"] == ["Cluster 状态", "候选窗口"]
+    assert rendered["labels"] == ["工况组 状态", "候选窗口"]
     assert rendered["rowTooltip"]
     assert rendered["candidateTooltip"]
     assert "显示点之间的时间跨度可能来自抽样" not in timeline
@@ -1180,7 +1309,7 @@ def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
 def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
     for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
         grid = html.split('<div class="exploration-result-grid">', 1)[1].split(
-            "Cluster 摘要表", 1
+            "工况组摘要表", 1
         )[0]
         positions = [
             grid.index('id="explorationPcChart"'),
@@ -1198,19 +1327,19 @@ def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
         assert 'id="explorationPcChart"' in column
         assert 'id="explorationTimeline"' in column
         assert "优选运行区域质量统计" not in column
-        assert column.index("Cluster PC1 / PC2 与中心") < column.index("Cluster 时间轴")
+        assert column.index("工况组 PC1 / PC2 与中心") < column.index("工况组时间轴")
         # 优选区域工具与 PC 标题同行并右对齐，不再单独占一行。
         head = column.split('<div class="chart-card-head">', 1)[1].split("</div></div>", 1)[
             0
         ]
-        assert "Cluster PC1 / PC2 与中心" in head
+        assert "工况组 PC1 / PC2 与中心" in head
         assert 'class="exploration-region-tools"' in head
         assert column.index('<div class="chart-card-head">') < column.index(
             'id="explorationPcChart"'
         )
-        # Cluster 摘要表保持在两行结果之后并占满整行。
+        # 工况组摘要表保持在两行结果之后并占满整行。
         assert html.index('<div class="exploration-result-grid">') < html.index(
-            "Cluster 摘要表"
+            "工况组摘要表"
         )
         assert html.index('id="explorationClusterTable"') > html.index(
             'id="explorationTimeline"'
@@ -1249,7 +1378,7 @@ def test_preferred_region_statistics_use_a_compact_scoped_metric_style():
         for label in (
             "优选区域样本",
             "完整有效样本占比",
-            "最大 Cluster 占比",
+            "最大 工况组占比",
             "区域稳定性",
             "连续候选数",
             "性能有效样本",
