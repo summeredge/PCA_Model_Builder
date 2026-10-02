@@ -2865,6 +2865,12 @@ INDEX_HTML = r"""<!doctype html>
     .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .chart-card { display:grid; gap:7px; min-width:0; }
     .chart-card h3 { margin:0; font-size:14px; }
+    .variable-diagnostics { min-width:0; }
+    #explorationContent:has(> .variable-diagnostics) { min-width:0; }
+    .variable-diagnostics > div, .variable-diagnostics details, .variable-diagnostics .table-wrap { min-width:0; max-width:100%; }
+    .variable-diagnostics .table-wrap { max-height:280px; }
+    .variable-diagnostics td { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }
+    .variable-diagnostics summary { cursor:pointer; }
     .chart-card-head { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
     .chart { height:260px; border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
     /* PC1/PC2 scatter is WebGL rendered; the overlay only hosts the region ellipse drag. */
@@ -2898,6 +2904,7 @@ INDEX_HTML = r"""<!doctype html>
      .exploration-region-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
      .exploration-region-tools .active { background:var(--accent); color:#fff; }
      .exploration-result-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,540px); gap:12px; align-items:start; }
+     .exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); }
      /* 左列独立成栈，右侧高面板不再撑开第一行，时间轴紧贴散点图下方。 */
      .exploration-result-column { display:grid; gap:var(--space-2); min-width:0; align-content:start; }
      .exploration-timeline { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
@@ -3045,6 +3052,13 @@ INDEX_HTML = r"""<!doctype html>
         <div id="explorationContent" hidden>
           <h3>结果概览</h3>
           <div id="explorationClusterQuality"></div>
+          <section class="chart-card variable-diagnostics" aria-labelledby="variableDiagnosticsTitle">
+            <h3 id="variableDiagnosticsTitle">变量诊断</h3>
+            <p class="help">诊断仅提供变量证据，不自动选择或删除 Tag。</p>
+            <div class="actions"><button id="diagnosticsTagConfig" class="secondary" type="button">返回 Tag 配置</button></div>
+            <p class="help">调整建模 Tag 后本次状态探索将失效，请重新运行状态探索。</p>
+            <div id="explorationVariableDiagnostics"></div>
+          </section>
           <div id="explorationOverview" class="metrics"></div>
           <div id="explorationWarnings" class="compact-list"><span class="help">暂无结构化告警。</span></div>
           <h3>预处理损失摘要</h3>
@@ -3423,12 +3437,29 @@ function renderClusterQuality(container, quality, perspective) {
   const featureCard=`<div class="chart-card"><h3>主要区分变量</h3>${features?`<div class="table-wrap"><table><thead><tr><th>变量</th><th>标准化差异</th><th>原始均值差</th>${featureHeaders}</tr></thead><tbody>${features}</tbody></table></div>`:`<div class="empty">${escapeHtml(reasons.top_features||"无有效建模 Tag")}</div>`}<p class="help">仅比较建模 Tag：Cluster 均值极差 / 全部有效样本标准差，Top5；表示统计差异，不表示因果。</p></div>`;
   const timeCard=`<div class="chart-card"><h3>时间连续性</h3>${time}</div>`;
   const title=perspective==="state_exploration"?"状态探索工程提示":"状态结构解释";
-  const details=perspective==="state_exploration"?centerCard+timeCard+featureCard:centerCard+featureCard+timeCard;
+  const details=perspective==="state_exploration"?centerCard+timeCard:centerCard+featureCard+timeCard;
   container.innerHTML=`<div class="chart-card"><h3>聚类质量摘要</h3><div class="metrics">${metrics}</div><p class="help">Silhouette 基于全部保留主元。${quality.silhouette_approximate?`大样本采用固定随机抽样近似（${quality.silhouette_sample_count} 点，覆盖全部 Cluster）。`:""}${escapeHtml(reasons.silhouette_score||"")} ${escapeHtml(reasons.explained_variance||"")}</p></div><div class="chart-card"><h3>${title}</h3><p>${escapeHtml(quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。")}</p><p class="help">弱分离提示阈值：Silhouette &lt; 0.25；连续变化提示：PC1贡献 ≥60% 且中心主要沿 PC1。</p></div>${details}`;
+}
+function renderVariableDiagnostics(container, diagnostics) {
+  if(!diagnostics) { container.innerHTML='<div class="empty">尚无变量诊断数据，请重新运行状态探索。</div>'; return; }
+  const number=value=>typeof value==="number"&&Number.isFinite(value)?String(Number(value.toPrecision(6))):"—";
+  const table=(headers,rows)=>`<div class="table-wrap" tabindex="0"><table><thead><tr>${headers.map(value=>`<th>${escapeHtml(value)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  const pairRows=pairs=>pairs.map(item=>`<tr><td>${escapeHtml(item.tag_a)}</td><td>${escapeHtml(item.tag_b)}</td><td>${item.pearson_r===null?escapeHtml(item.unavailable_reason):number(item.pearson_r)}</td><td>${number(item.valid_pair_count)}</td></tr>`).join("");
+  const pairHeaders=["Tag A","Tag B","Pearson r / 不可计算原因","有效配对样本"];
+  const pairs=diagnostics.high_correlation_pairs||[], unavailable=diagnostics.unavailable_pairs||[], summary=diagnostics.summary||{};
+  const high=pairs.length?table(pairHeaders,pairRows(pairs.slice(0,20)))+(pairs.length>20?`<details><summary>展开其余 ${pairs.length-20} 对高相关变量</summary>${table(pairHeaders,pairRows(pairs.slice(20)))}</details>`:""):'<div class="empty">未发现达到阈值的高相关变量对。</div>';
+  const unavailableTable=unavailable.length?`<details><summary>不可计算的变量对（${unavailable.length}）</summary>${table(pairHeaders,pairRows(unavailable))}</details>`:"";
+  const clusterIds=diagnostics.cluster_ids||[], features=diagnostics.cluster_features||[];
+  const featureRows=items=>items.map(item=>`<tr><td>${escapeHtml(item.tag)}</td><td>${number(item.standardized_difference)}</td><td>${number(item.mean_difference)}</td>${clusterIds.map(cluster=>`<td>${number(item.cluster_means?.[cluster])}</td>`).join("")}<td>${escapeHtml(item.unavailable_reason||"")}</td></tr>`).join("");
+  const featureHeaders=["Tag","区分强度","均值极差",...clusterIds,"不可计算原因"];
+  const contrasts=features.length?table(featureHeaders,featureRows(features.slice(0,10)))+(features.length>10?`<details><summary>展开全部建模 Tag（其余 ${features.length-10} 个）</summary>${table(featureHeaders,featureRows(features.slice(10)))}</details>`:""):'<div class="empty">无可比较的建模 Tag。</div>';
+  const profiles=(diagnostics.tag_profiles||[]).map(item=>{ const p=item.profile||{}; return `<tr><td>${escapeHtml(item.tag)}</td>${[p.valid_count,p.unique_count,p.mean,p.median,p.standard_deviation,p.p05,p.p95].map(value=>`<td>${number(value)}</td>`).join("")}<td>${escapeHtml((item.flags||[]).join("；")||"未触发关注提示")}</td></tr>`; }).join("");
+  container.innerHTML=`<div class="metrics">${metric("建模 Tag 数",summary.tag_count??"—")}${metric("高相关变量对数",summary.high_correlation_pair_count??"—")}${metric("需关注变量数",summary.attention_tag_count??"—")}</div><p class="help">口径：本次状态探索全部 ${number(diagnostics.sample_count)} 个有效动态样本的时间戳；使用同一预处理管线重采样后、滤波前的工程量值（未标准化）。状态过滤、无效行及滤波 / Lag 预热损失已由样本索引排除；每个工艺 Tag 仅显示一次，不展示 Lag 特征。这是有效样本上的变量特征，不是原始数据源质量。</p><details open><summary>高相关变量</summary><p class="help">Pearson |r| ≥ ${number(diagnostics.correlation_threshold)}；高相关表示可能存在信息冗余，需要结合工艺意义确认。按有限数值配对，至少 ${number(diagnostics.minimum_pair_count)} 个有效配对样本；不意味着必须删除一个变量。</p>${high}${unavailableTable}</details><details open><summary>Cluster 区分</summary><p class="help">全部建模 Tag 按区分强度排序：各 Cluster 工程量均值极差 / 全部有效样本总体标准差。统计差异不表示因果，可用于判断是否沿负荷、温度或压力等连续工况切分。</p>${contrasts}</details><details><summary>变量质量</summary><p class="help">统计仅使用有限数值；标准差为总体标准差。近似无变化沿用标准差 ≤ max(|均值|, 1) × 10⁻⁶；低唯一值沿用唯一值数 ≤ min(10, max(2, floor(有效数 × 1%)))。提示需要结合工艺意义确认，不代表自动保留 / 删除评分。</p>${profiles?table(["Tag","有效样本数","唯一值数","均值","中位数","标准差","P5","P95","关注提示"],profiles):'<div class="empty">无变量统计。</div>'}</details>`;
 }
 function renderStateExploration(data) {
   el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
   renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration");
+  renderVariableDiagnostics(el("explorationVariableDiagnostics"),data.variable_diagnostics);
   const summary=data.preprocessing_summary||{}; const coverage=Number(summary.effective_coverage_ratio||0);
   el("explorationOverview").innerHTML=metric("原始行数",summary.source_row_count)+metric("重采样行数",summary.resampled_row_count)+metric("最终动态样本数",summary.final_dynamic_row_count)+metric("有效覆盖率",`${(coverage*100).toFixed(1)}%`)+metric("Cluster 数量",(data.cluster_summaries||[]).length)+metric("完整样本",data.full_point_count)+metric("绘制点数",(data.cluster_series_full||data.cluster_series||[]).length);
   const warnings=el("explorationWarnings"); warnings.replaceChildren(); (data.warnings||[]).forEach(item=>{ const row=document.createElement("div"); row.textContent=`${item.code}：${item.message}${item.cluster_id?`（${item.cluster_id}）`:``}`; warnings.append(row); }); if(!warnings.children.length) warnings.innerHTML='<span class="help">暂无结构化告警。</span>';
@@ -3617,6 +3648,7 @@ el("inspectButton").addEventListener("click", async () => {
 el("tagSearch").addEventListener("input",renderTagList);
 el("selectAllTags").addEventListener("click",()=>{ const performanceTag=explorationPerformanceTag(); state.selectedModelTags=new Set((state.inspection?.numeric_columns||[]).filter(tag=>tag!==performanceTag&&(state.registry[tag]?.role||"continuous_input")==="continuous_input")); invalidateModellingResults("建模Tag已修改"); renderTagList(); });
 el("clearAllTags").addEventListener("click",()=>{ state.selectedModelTags.clear(); invalidateModellingResults("建模Tag已修改"); renderTagList(); });
+el("diagnosticsTagConfig").addEventListener("click",()=>{ document.querySelector('[data-panel="configPanel"]').click(); document.querySelector('[data-inner="engineeringPanel"]')?.click(); el("tagSearch").focus(); });
 el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.showProblems; el("showProblemTags").textContent=state.showProblems?"显示全部Tag":"只看问题Tag"; renderTagList(); });
 el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
 document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".inner-tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".inner-panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.inner)); }));

@@ -26,7 +26,7 @@ def analyze_cluster_quality(
         "silhouette_sample_count": 0, "silhouette_approximate": False,
         "explained_variance": {"pc1": None, "pc2": None},
         "centers": [], "center_orientation": "无明显方向",
-        "temporal_metrics": None, "top_features": [],
+        "temporal_metrics": None, "top_features": [], "feature_contrasts": [],
         "engineering_hint": {}, "unavailable_reasons": {},
     }
     reasons = result["unavailable_reasons"]
@@ -113,20 +113,38 @@ def analyze_cluster_quality(
     if raw_data is not None and raw_data.index.is_unique:
         aligned = raw_data.reindex(scores.index)
         for tag in dict.fromkeys(feature_names):
-            if tag not in aligned or pd.api.types.is_datetime64_any_dtype(aligned[tag]):
-                continue
-            numeric = pd.to_numeric(aligned[tag], errors="coerce").replace([np.inf, -np.inf], np.nan).astype(float)
+            numeric = (
+                pd.to_numeric(aligned[tag], errors="coerce").replace([np.inf, -np.inf], np.nan).astype(float)
+                if tag in aligned and not pd.api.types.is_datetime64_any_dtype(aligned[tag])
+                else pd.Series(np.nan, index=scores.index)
+            )
             std = numeric.std(ddof=0)
             means = [numeric.iloc[np.flatnonzero(labels == cluster)].mean() for cluster in clusters]
-            if not np.isfinite(std) or std <= 0 or not np.isfinite(means).all() or len(clusters) < 2:
-                continue
-            difference = float(max(means) - min(means))
-            result["top_features"].append({
+            difference = float(max(means) - min(means)) if np.isfinite(means).all() else None
+            if difference is not None and not np.isfinite(difference):
+                difference = None
+            reason = (
+                "需要至少两个 Cluster" if len(clusters) < 2 else
+                "某些 Cluster 无有效均值或统计不可计算" if difference is None else
+                "有效样本不足或标准差不可计算" if numeric.count() < 2 or not np.isfinite(std) else
+                "精确常量，标准化差异不可计算" if std <= 0 else None
+            )
+            strength = difference / float(std) if reason is None else None
+            if strength is not None and not np.isfinite(strength):
+                strength, reason = None, "标准化差异不可计算"
+            result["feature_contrasts"].append({
                 "tag": tag, "mean_difference": difference,
-                "standardized_difference": difference / float(std),
-                "cluster_means": {str(cluster): float(mean) for cluster, mean in zip(clusters, means, strict=True)},
+                "standardized_difference": strength,
+                "cluster_means": {str(cluster): float(mean) if np.isfinite(mean) else None for cluster, mean in zip(clusters, means, strict=True)},
+                "unavailable_reason": reason,
             })
-        result["top_features"] = sorted(result["top_features"], key=lambda item: -item["standardized_difference"])[:5]
+        result["feature_contrasts"] = sorted(
+            result["feature_contrasts"],
+            key=lambda item: (item["standardized_difference"] is None, -(item["standardized_difference"] or 0)),
+        )
+        result["top_features"] = [
+            item for item in result["feature_contrasts"] if item["unavailable_reason"] is None
+        ][:5]
     if not result["top_features"]:
         reasons["top_features"] = "无可比较的有效建模 Tag（需至少两个 Cluster、非恒定数值及各 Cluster 有效均值）"
 

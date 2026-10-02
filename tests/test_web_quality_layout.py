@@ -44,6 +44,23 @@ def test_quality_profiles_use_two_side_by_side_sections() -> None:
     )
 
 
+def test_variable_diagnostics_use_existing_cards_and_local_scroll_boundaries() -> None:
+    html = web_model_results.INDEX_HTML
+    for element_id in ("variableDiagnosticsTitle", "explorationVariableDiagnostics", "diagnosticsTagConfig"):
+        assert html.count(f'id="{element_id}"') == 1
+    assert html.index('id="explorationClusterQuality"') < html.index('id="explorationVariableDiagnostics"') < html.index('id="explorationPcChart"')
+    assert 'class="chart-card variable-diagnostics"' in html
+    assert '#explorationContent:has(> .variable-diagnostics) { min-width:0; }' in html
+    assert '.variable-diagnostics .table-wrap { max-height:280px; }' in html
+    assert '.variable-diagnostics td { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }' in html
+    assert '.exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); }' in html
+    assert '<details open><summary>高相关变量</summary>' in html
+    assert '<details open><summary>Cluster 区分</summary>' in html
+    assert '<details><summary>变量质量</summary>' in html
+    assert 'renderVariableDiagnostics(el("explorationVariableDiagnostics"),data.variable_diagnostics)' in html
+    assert '调整建模 Tag 后本次状态探索将失效，请重新运行状态探索。' in html
+
+
 def test_quality_grid_falls_back_to_one_column_on_narrow_screen() -> None:
     html = web_model_results.INDEX_HTML
 

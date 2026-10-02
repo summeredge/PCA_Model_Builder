@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 
 from pca_model_builder.preprocessing import PreprocessingConfig, StateFilter
+from pca_model_builder.preprocessing import preprocess_window
 from pca_model_builder.state_exploration import (
     ExplorationConfig,
     PerformanceConfig,
@@ -46,6 +47,58 @@ def test_state_exploration_is_draft_and_deterministic_with_display_limit():
         and item["decided_at"] is None
         for item in first["candidate_decisions"]
     )
+
+
+def test_variable_diagnostics_use_unfiltered_engineering_values_at_full_valid_dpca_samples():
+    rng = np.random.default_rng(14)
+    index = pd.date_range("2026-01-01", periods=240, freq="1min")
+    frame = pd.DataFrame(rng.normal(size=(240, 4)), index=index, columns=["A", "B", "C", "D"])
+    frame["A"] = 100 + frame["A"] * 10
+    frame["B"] = frame["A"] * 2 + rng.normal(scale=0.01, size=240)
+    frame["STATE"] = 1.0
+    frame.loc[index[60:80], "STATE"] = 0.0
+    frame.loc[index[120:125], "C"] = np.inf
+    frame["PERF"] = rng.normal(size=240)
+    frame = frame.drop(index[170:180])  # physical gap
+    tags = ["A", "B", "C", "D"]
+    config = PreprocessingConfig(
+        sample_interval_minutes=5, resampling_method="mean",
+        filter_method="trailing_mean", smoothing_window_minutes=10,
+        max_lag_minutes=10, lag_step_minutes=5, gap_threshold_minutes=5,
+        state_filters=(StateFilter("STATE", minimum=1),),
+    )
+    window = (index[0], index[-1])
+    result = run_state_exploration(
+        frame, tags, config, ExplorationConfig(cluster_count=2, maximum_plot_points=4),
+        performance_config=PerformanceConfig("PERF", "higher_is_better"),
+        resampling_window=window,
+    )
+    processed = preprocess_window(frame, tags, config, preserve_columns=["PERF"], include_intermediates=True, resampling_window=window)
+    points = result["cluster_series"]
+    expected = processed.resampled.reindex(points.index)[tags]
+    diagnostics = result["variable_diagnostics"]
+    assert diagnostics["sample_count"] == len(points) > len(result["cluster_series_display"])
+    assert diagnostics["sample_scope"] == "full_valid_exploration_samples"
+    assert diagnostics["value_scope"] == "resampled_before_filtering"
+    assert list(points.index) == list(processed.dynamic.index)
+    assert not expected.equals(processed.filtered.reindex(points.index)[tags])
+    assert [item["tag"] for item in diagnostics["tag_profiles"]] == tags
+    assert diagnostics["summary"]["tag_count"] == 4
+    assert processed.dynamic.shape[1] == 12  # Lag stays internal
+    pair = next(item for item in diagnostics["high_correlation_pairs"] if item["tag_a"] == "A" and item["tag_b"] == "B")
+    assert pair["pearson_r"] == pytest.approx(expected.A.corr(expected.B))
+    assert pair["valid_pair_count"] == len(points)
+    for item in diagnostics["tag_profiles"]:
+        values = expected[item["tag"]]
+        assert item["profile"]["mean"] == pytest.approx(values.mean())
+        assert item["profile"]["valid_count"] == len(points)
+    assert diagnostics["cluster_features"] == result["cluster_quality"]["feature_contrasts"]
+    assert {item["tag"] for item in diagnostics["cluster_features"]} == set(tags)
+    for item in diagnostics["cluster_features"]:
+        means = expected[item["tag"]].groupby(points.cluster_id).mean()
+        assert item["cluster_means"] == pytest.approx(means.to_dict())
+        assert item["mean_difference"] == pytest.approx(means.max() - means.min())
+        assert item["standardized_difference"] == pytest.approx((means.max() - means.min()) / expected[item["tag"]].std(ddof=0))
 
 
 def test_preferred_region_uses_union_of_ellipses_and_full_pc_space():

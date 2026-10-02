@@ -12,6 +12,7 @@ from .cluster_quality import analyze_cluster_quality
 from .clustering import cluster_model_scores
 from .dpca import fit_dpca
 from .preprocessing import PreprocessingConfig, PreprocessingResult, preprocess_window
+from .variable_diagnostics import analyze_variable_diagnostics
 
 
 DEFAULT_CLUSTER_COUNT = 4
@@ -220,6 +221,18 @@ def run_state_exploration(
     )
     full_point_count = len(points)
     returned_point_count = len(display)
+    # Use the existing engineering-value view and full valid sample index;
+    # neither display downsampling nor Lag expansion changes Tag semantics.
+    diagnostic_data = processed.resampled.reindex(points.index).loc[:, tag_columns]
+    cluster_quality = analyze_cluster_quality(
+        points.loc[:, list(clustered.pc_columns)], points["cluster_id"],
+        points.index, diagnostic_data, tag_columns,
+        model.explained_variance_ratio, preprocessing_config.sample_interval_minutes,
+        cluster_centers=centers,
+    )
+    variable_diagnostics = analyze_variable_diagnostics(diagnostic_data)
+    variable_diagnostics["cluster_features"] = cluster_quality["feature_contrasts"]
+    variable_diagnostics["cluster_ids"] = [item["cluster"] for item in cluster_quality["centers"]]
     return {
         "exploration_run_id": uuid4().hex,
         "exploration_config": asdict(exploration_config),
@@ -241,12 +254,8 @@ def run_state_exploration(
             "pc_columns": list(clustered.pc_columns),
             "cluster_count": exploration_config.cluster_count,
         },
-        "cluster_quality": analyze_cluster_quality(
-            points.loc[:, list(clustered.pc_columns)], points["cluster_id"],
-            points.index, processed.resampled, tag_columns,
-            model.explained_variance_ratio, preprocessing_config.sample_interval_minutes,
-            cluster_centers=centers,
-        ),
+        "cluster_quality": cluster_quality,
+        "variable_diagnostics": variable_diagnostics,
         "cluster_centers": {
             cluster_id: [float(value) for value in center]
             for cluster_id, center in centers.items()

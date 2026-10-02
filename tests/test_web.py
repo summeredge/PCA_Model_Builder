@@ -111,7 +111,8 @@ def _run_node_javascript(source: str) -> dict:
     if node is None:
         pytest.skip("Node.js is required for SVG coordinate regression tests")
     result = subprocess.run(
-        [node, "-e", textwrap.dedent(source)],
+        [node, "-"],
+        input=textwrap.dedent(source),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -882,6 +883,60 @@ def test_successful_validation_replay_resets_engineer_decision_status():
         'decisionStatus.textContent="等待保存工程师结论。"'
     ) < source.index('setStatus("独立窗口回放完成。')
     assert 'validationDecisionStatus' not in source.split('} catch (error)', 1)[1]
+
+
+def test_variable_diagnostics_renderer_handles_large_results_escaping_and_unavailable_values():
+    from pca_model_builder.variable_diagnostics import analyze_variable_diagnostics
+
+    diagnostic = analyze_variable_diagnostics(pd.DataFrame({f"<TAG_{i}>": np.arange(60) * (i + 1) for i in range(50)}))
+    diagnostic["cluster_ids"] = ["cluster_001", "<cluster_002>"]
+    diagnostic["cluster_features"] = [{
+        "tag": f"<TAG_{i}>", "standardized_difference": 1.25,
+        "mean_difference": 120, "cluster_means": {"cluster_001": 23780, "<cluster_002>": 23900},
+    } for i in range(50)]
+    diagnostic["cluster_features"][-1].update(standardized_difference=None, unavailable_reason="精确常量", cluster_means={"cluster_001": 1})
+    diagnostic["unavailable_pairs"] = [{"tag_a": "<bad>", "tag_b": "<TAG_0>", "pearson_r": None, "valid_pair_count": 2, "unavailable_reason": "有效配对样本不足"}]
+    diagnostic["tag_profiles"][-1]["flags"] = ["近似无变化", "低唯一值，疑似离散状态量"]
+    renderer = "function renderVariableDiagnostics" + web_model_results.INDEX_HTML.split("function renderVariableDiagnostics", 1)[1].split("function renderStateExploration", 1)[0]
+    result = _run_node_javascript(
+        "const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');"
+        "const metric=(name,value)=>`<span>${escapeHtml(name)} ${escapeHtml(value)}</span>`;"
+        + renderer + "const container={innerHTML:''};"
+        + f"renderVariableDiagnostics(container,{json.dumps(diagnostic, ensure_ascii=False)}); const large=container.innerHTML;"
+        + "renderVariableDiagnostics(container,{sample_count:0,summary:{},high_correlation_pairs:[],tag_profiles:[]}); const empty=container.innerHTML;"
+        + "renderVariableDiagnostics(container,null); console.log(JSON.stringify({large,empty,missing:container.innerHTML}));"
+    )
+    html = result["large"]
+    assert "<TAG_" not in html and "<cluster_002>" not in html
+    assert "&lt;TAG_49&gt;" in html and "&lt;cluster_002&gt;" in html
+    assert "23780" in html and "23900" in html
+    assert "展开其余 1205 对高相关变量" in html
+    assert "展开全部建模 Tag（其余 40 个）" in html
+    assert "有效配对样本不足" in html and "精确常量" in html
+    assert "近似无变化；低唯一值，疑似离散状态量" in html
+    assert "<td>—</td>" in html
+    assert "不意味着必须删除" in html
+    assert "不是原始数据源质量" in html
+    assert 'tabindex="0"' in html
+    assert "NaN" not in html and "Infinity" not in html
+    assert "未发现达到阈值" in result["empty"] and "无变量统计" in result["empty"]
+    assert "请重新运行状态探索" in result["missing"]
+
+
+def test_diagnostics_tag_configuration_navigation_keeps_selection_and_result_until_edit():
+    html = web_model_results.INDEX_HTML
+    handler = 'el("diagnosticsTagConfig").addEventListener' + html.split('el("diagnosticsTagConfig").addEventListener', 1)[1].split('\n', 1)[0]
+    result = _run_node_javascript(
+        "const state={selectedModelTags:new Set(['A','B']),exploration:{variable_diagnostics:{sample_count:10}}};"
+        "const clicks=[];let listener,focused=false;"
+        "const el=id=>id==='diagnosticsTagConfig'?{addEventListener:(event,callback)=>{listener=callback;}}:{focus:()=>{focused=true;}};"
+        "const document={querySelector:selector=>selector.includes('configPanel')?{click:()=>clicks.push('configPanel')}:null};"
+        + handler + "listener();console.log(JSON.stringify({clicks,focused,tags:[...state.selectedModelTags],diagnostics:state.exploration.variable_diagnostics}));"
+    )
+    assert result == {"clicks": ["configPanel"], "focused": True, "tags": ["A", "B"], "diagnostics": {"sample_count": 10}}
+    # Edits still route through the existing centralized invalidation.
+    source = html.split("function renderTagList()", 1)[1].split("function selectTag", 1)[0]
+    assert 'invalidateModellingResults("建模Tag已修改")' in source
 
 
 def test_final_web_page_exposes_state_exploration_workbench():
@@ -3265,6 +3320,11 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
     assert result["data_usage"]["loaded_column_count"] == 5
     assert result["performance_candidates"]
     assert result["preprocessing_summary"]["dynamic_feature_count"] == 3
+    diagnostics = result["variable_diagnostics"]
+    assert diagnostics["sample_count"] == result["full_point_count"]
+    assert {item["tag"] for item in diagnostics["tag_profiles"]} == {"A", "B", "C"}
+    assert diagnostics["cluster_features"] == result["cluster_quality"]["feature_contrasts"]
+    json.dumps(diagnostics, allow_nan=False)
     assert all(
         "performance_target_met" not in row for row in result["cluster_series"]
     )
@@ -3291,6 +3351,7 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
     assert summary_status == 200
     assert summary["exploration_run_id"] == run_id
     assert summary["data_usage"]["loaded_column_count"] == 5
+    assert summary["variable_diagnostics"] == diagnostics
     assert series_status == 200
     assert series["full_point_count"] == result["full_point_count"]
     assert series["returned_point_count"] <= 5

@@ -75,6 +75,10 @@ def test_top_five_tags_ignore_invalid_and_non_model_columns_and_align_by_index()
     raw = pd.DataFrame({**{f"T{i}": np.arange(8) + np.array([0] * 4 + [i] * 4) for i in range(7)}, "bad": np.inf, "text": "bad", "ignored": [0] * 4 + [100] * 4}, index=index).iloc[::-1]
     quality = analyze_cluster_quality(scores, [1] * 4 + [2] * 4, raw_data=raw, feature_names=[*[f"T{i}" for i in range(7)], "bad", "text", "missing"])
     assert [item["tag"] for item in quality["top_features"]] == ["T6", "T5", "T4", "T3", "T2"]
+    assert len(quality["feature_contrasts"]) == 10
+    assert [item["tag"] for item in quality["feature_contrasts"][:7]] == [f"T{i}" for i in range(6, -1, -1)]
+    assert all(item["unavailable_reason"] for item in quality["feature_contrasts"][7:])
+    json.dumps(quality, allow_nan=False)
 
 
 def test_nullable_tags_with_no_valid_values_have_reason():
@@ -142,10 +146,10 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
     const clusterIds=Object.keys(degraded.top_features[0].cluster_means);
     degraded.top_features[0].cluster_means[clusterIds[0]]=NaN;
     delete degraded.top_features[0].cluster_means[clusterIds[1]];
-    renderClusterQuality(container,degraded,'state_exploration'); const degradedMeans=container.innerHTML;
+    renderClusterQuality(container,degraded,'cluster_assistance'); const degradedMeans=container.innerHTML;
     const legacy=JSON.parse(JSON.stringify(quality));
     delete legacy.top_features[0].cluster_means;
-    renderClusterQuality(container,legacy,'state_exploration'); const unavailableMeans=container.innerHTML;
+    renderClusterQuality(container,legacy,'cluster_assistance'); const unavailableMeans=container.innerHTML;
     renderClusterQuality(container,null,'state_exploration'); const missing=container.innerHTML;
     renderClusterQuality(container,{unavailable_reasons:{analysis:'样本不足'}},'cluster_assistance');
     console.log(JSON.stringify({exploration,assistance,degradedMeans,unavailableMeans,missing,invalid:container.innerHTML}));
@@ -157,11 +161,12 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
     for perspective in ("exploration", "assistance"):
         assert "聚类质量摘要" in rendered[perspective]
         assert "没有时间列" in rendered[perspective]
-        assert "&lt;driver&gt;" in rendered[perspective]
-        assert "<driver>" not in rendered[perspective]
-        assert "<th>标准化差异</th><th>原始均值差</th><th>Cluster 1</th><th>Cluster 2</th>" in rendered[perspective]
-        assert "<tr><td>&lt;driver&gt;</td><td>2.000</td><td>1.000</td><td>0.000</td><td>1.000</td></tr>" in rendered[perspective]
-        assert "Top5" in rendered[perspective]
+    assert "主要区分变量" not in rendered["exploration"]  # merged into variable diagnostics
+    assert "&lt;driver&gt;" in rendered["assistance"]
+    assert "<driver>" not in rendered["assistance"]
+    assert "<th>标准化差异</th><th>原始均值差</th><th>Cluster 1</th><th>Cluster 2</th>" in rendered["assistance"]
+    assert "<tr><td>&lt;driver&gt;</td><td>2.000</td><td>1.000</td><td>0.000</td><td>1.000</td></tr>" in rendered["assistance"]
+    assert "Top5" in rendered["assistance"]
     assert "<td>—</td><td>—</td>" in rendered["degradedMeans"]
     assert "<td>—</td><td>—</td>" in rendered["unavailableMeans"]
     assert "尚无聚类分析数据" in rendered["missing"]
@@ -186,3 +191,18 @@ def test_state_exploration_quality_uses_full_samples_and_existing_centers():
         np.testing.assert_allclose([center["pc1"], center["pc2"]], result["cluster_centers"][center["cluster"]][:2])
     assert {item["tag"] for item in quality["top_features"]} <= {"A", "B", "C"}
     assert all(item["decision"] == "pending" for item in result["candidate_decisions"])
+
+
+def test_all_feature_contrasts_keep_constant_means_and_explain_missing_cluster_values():
+    scores = pd.DataFrame({"pc1": [-1, -1, 1, 1], "pc2": 0})
+    raw = pd.DataFrame({"constant": 5.0, "one_cluster": [1, 2, np.inf, np.nan], "driver": [10, 12, 20, 22]})
+    quality = analyze_cluster_quality(scores, ["C001", "C001", "C002", "C002"], raw_data=raw, feature_names=raw.columns)
+    contrasts = {item["tag"]: item for item in quality["feature_contrasts"]}
+    assert [item["tag"] for item in quality["top_features"]] == ["driver"]
+    assert contrasts["constant"]["cluster_means"] == {"C001": 5.0, "C002": 5.0}
+    assert contrasts["constant"]["mean_difference"] == 0.0
+    assert contrasts["constant"]["standardized_difference"] is None
+    assert "常量" in contrasts["constant"]["unavailable_reason"]
+    assert contrasts["one_cluster"]["cluster_means"] == {"C001": 1.5, "C002": None}
+    assert contrasts["one_cluster"]["standardized_difference"] is None
+    json.dumps(quality, allow_nan=False)
