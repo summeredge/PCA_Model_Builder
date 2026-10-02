@@ -30,6 +30,57 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TXT_FIXTURE = Path(__file__).parent / "fixtures" / "u400ph_desensitized.txt"
 
 
+def test_performance_candidate_identity_is_stable_and_namespaced_by_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    frame = _history_frame()
+    content = frame.to_csv(index=False).encode("utf-8-sig")
+    first = web.save_upload("first.csv", content)
+    second = web.save_upload("second.csv", content)
+    payload = {"file_id": first["file_id"], "timestamp_column": "time",
+               "analysis_start": frame.time.iloc[0].isoformat(), "analysis_end": frame.time.iloc[-1].isoformat(),
+               "sample_interval_minutes": 5, "conditions": [{"column": "A", "minimum": -100}]}
+    result = web.performance_screen_payload(payload)
+    repeated = web.performance_screen_payload(payload)
+    other = web.performance_screen_payload({**payload, "file_id": second["file_id"]})
+    legacy = web.screen_performance_states(frame.set_index("time"), payload["conditions"], 5)
+    assert result["representative_windows"] == legacy["representative_windows"] == other["representative_windows"]
+    assert result["candidate_windows"] == repeated["candidate_windows"]
+    assert result["candidate_windows"][0]["source_ref"] != other["candidate_windows"][0]["source_ref"]
+    candidate = result["candidate_windows"][0]
+    assert candidate["candidate_id"] == candidate["source_ref"]
+    assert candidate["provenance"]["file_id"] == first["file_id"]
+
+
+@pytest.mark.parametrize("kind", ["candidate_windows", "cluster"])
+def test_performance_api_forwards_scope_parents_and_preserves_provenance(tmp_path, monkeypatch, kind):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    frame = _history_frame()
+    uploaded = web.save_upload("scoped.csv", frame.to_csv(index=False).encode("utf-8-sig"))
+    parents = [{"id": "manual-parent", "start": frame.time.iloc[0].isoformat(), "end": frame.time.iloc[10].isoformat(), "source": "manual", "source_ref": None},
+               {"id": "cluster-parent", "start": frame.time.iloc[20].isoformat(), "end": frame.time.iloc[30].isoformat(), "source": "cluster", "source_ref": f"cluster-2-{frame.time.iloc[20].isoformat()}-{frame.time.iloc[30].isoformat()}"}]
+    scope = {"type": kind, **({"cluster_ids": ["cluster_2"]} if kind == "cluster" else {})}
+    calls = []
+    screen = web.screen_performance_states
+
+    def record(*args, **kwargs):
+        calls.append(kwargs)
+        return screen(*args, **kwargs)
+
+    monkeypatch.setattr(web, "screen_performance_states", record)
+    result = web.performance_screen_payload({"file_id": uploaded["file_id"], "timestamp_column": "time",
+        "analysis_start": frame.time.iloc[0].isoformat(), "analysis_end": frame.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5, "conditions": [{"column": "A", "minimum": -100}], "scope": scope, "parent_windows": parents})
+    assert calls[0]["scope"] == scope and calls[0]["parent_windows"] == parents
+    assert result["scope"] == scope
+    assert result["parent_count"] == result["matched_parent_count"] == (1 if kind == "cluster" else 2)
+    assert result["unmatched_parent_count"] == 0
+    assert result["representative_windows"] == result["candidate_windows"]
+    cluster = next(candidate for candidate in result["candidate_windows"] if candidate["provenance"]["parent_candidate_id"] == "cluster-parent")
+    assert cluster["provenance"]["parent_source_ref"] == parents[1]["source_ref"]
+    assert cluster["provenance"]["cluster_id"] == "cluster_2"
+    assert cluster["provenance"]["file_id"] == uploaded["file_id"]
+
+
 def test_model_quality_api_uses_full_training_scores_before_chart_sampling(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
     monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
@@ -196,6 +247,7 @@ def test_candidate_window_display_numbers_keep_internal_ids_for_actions():
       function displayTime(value){return value;}
       function displayUiValue(value){return value;}
       function candidateTrainingWindows(){return [];}
+      function candidateTrainingConflicts(){return [];}
       function confirmCandidateWindow(window){calls.push(window.id);}
       function showCandidateTrend(window){calls.push(window.source_ref);}
       __HELPERS__

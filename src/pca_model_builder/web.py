@@ -537,6 +537,73 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _candidate_training_additions(
+    payload: dict[str, Any], operation: dict[str, Any], windows: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], DataLoadResult]:
+    candidate = operation.get("candidate")
+    if not isinstance(candidate, dict):
+        raise ValueError("候选窗口无效")
+    candidate_id = candidate.get("id")
+    source = candidate.get("source")
+    source_ref = candidate.get("source_ref")
+    comment = candidate.get("comment")
+    if not isinstance(candidate_id, str) or not candidate_id.strip():
+        raise ValueError("候选窗口ID无效")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("候选窗口来源无效")
+    if source_ref is not None and (
+        not isinstance(source_ref, str) or not source_ref.strip()
+    ):
+        raise ValueError("候选窗口来源引用无效")
+    if not isinstance(comment, str):
+        raise ValueError("候选窗口备注无效")
+    base_id = f"training-{candidate_id}"
+    if any(
+        window["id"] == base_id
+        or window["id"].startswith(f"{base_id}-part-")
+        for window in windows
+    ):
+        raise ValueError("该候选已生成训练窗口")
+    excluded_windows = merge_excluded_windows(
+        operation.get("excluded_windows", [])
+    )
+    timestamp_column = _required_text(payload, "timestamp_column")
+    loaded = _load_modeling_upload(payload, [], "建模资格缺少列：")
+    timestamps = loaded.frame[timestamp_column]
+    parts = subtract_excluded_windows(candidate, excluded_windows, timestamps)
+    if eligibility_columns(payload.get("modeling_eligibility")):
+        selected = loaded.frame.loc[timestamps.between(pd.Timestamp(candidate["start"]), pd.Timestamp(candidate["end"]))].set_index(timestamp_column)
+        eligible = filter_modeling_eligibility(selected, payload.get("modeling_eligibility"), _preprocessing_config(payload))
+        qualified_parts = []
+        for part in parts:
+            for _, segment in eligible.frame.groupby(eligible.segment_ids, sort=False):
+                retained = segment.loc[pd.Timestamp(part["start"]):pd.Timestamp(part["end"])]
+                if len(retained):
+                    qualified_parts.append({"start": retained.index[0].isoformat(), "end": retained.index[-1].isoformat()})
+        parts = qualified_parts
+    if not parts:
+        raise ValueError("候选窗口已被排除窗口完全覆盖")
+    candidate_start, candidate_end = candidate["start"], candidate["end"]
+    is_cut = parts != [{"start": pd.Timestamp(candidate_start).isoformat(), "end": pd.Timestamp(candidate_end).isoformat()}]
+    additions = [
+        {
+            "id": (
+                f"{base_id}-part-{position:03d}"
+                if is_cut
+                else base_id
+            ),
+            "start": part["start"],
+            "end": part["end"],
+            "source": source,
+            "source_ref": source_ref or candidate_id,
+            "enabled": True,
+            "comment": comment,
+        }
+        for position, part in enumerate(parts, start=1)
+    ]
+    return additions, loaded
+
+
 def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
     windows = (
         normalize_training_windows(payload["training_windows"], allow_empty=True)
@@ -562,70 +629,33 @@ def training_windows_payload(payload: dict[str, Any]) -> dict[str, Any]:
             windows = set_enabled_training_window(
                 windows, str(operation.get("id", "")), operation.get("enabled")
             )
-        elif action == "confirm_candidate":
-            candidate = operation.get("candidate")
-            if not isinstance(candidate, dict):
-                raise ValueError("候选窗口无效")
-            candidate_id = candidate.get("id")
-            source = candidate.get("source")
-            source_ref = candidate.get("source_ref")
-            comment = candidate.get("comment")
-            if not isinstance(candidate_id, str) or not candidate_id.strip():
-                raise ValueError("候选窗口ID无效")
-            if not isinstance(source, str) or not source.strip():
-                raise ValueError("候选窗口来源无效")
-            if source_ref is not None and (
-                not isinstance(source_ref, str) or not source_ref.strip()
-            ):
-                raise ValueError("候选窗口来源引用无效")
-            if not isinstance(comment, str):
-                raise ValueError("候选窗口备注无效")
-            base_id = f"training-{candidate_id}"
-            if any(
-                window["id"] == base_id
-                or window["id"].startswith(f"{base_id}-part-")
-                for window in windows
-            ):
-                raise ValueError("该候选已生成训练窗口")
-            excluded_windows = merge_excluded_windows(
-                operation.get("excluded_windows", [])
-            )
-            timestamp_column = _required_text(payload, "timestamp_column")
-            loaded = _load_modeling_upload(payload, [], "建模资格缺少列：")
-            timestamps = loaded.frame[timestamp_column]
-            parts = subtract_excluded_windows(candidate, excluded_windows, timestamps)
-            if eligibility_columns(payload.get("modeling_eligibility")):
-                selected = loaded.frame.loc[timestamps.between(pd.Timestamp(candidate["start"]), pd.Timestamp(candidate["end"]))].set_index(timestamp_column)
-                eligible = filter_modeling_eligibility(selected, payload.get("modeling_eligibility"), _preprocessing_config(payload))
-                qualified_parts = []
-                for part in parts:
-                    for _, segment in eligible.frame.groupby(eligible.segment_ids, sort=False):
-                        retained = segment.loc[pd.Timestamp(part["start"]):pd.Timestamp(part["end"])]
-                        if len(retained):
-                            qualified_parts.append({"start": retained.index[0].isoformat(), "end": retained.index[-1].isoformat()})
-                parts = qualified_parts
-            if not parts:
-                raise ValueError("候选窗口已被排除窗口完全覆盖")
-            candidate_start, candidate_end = candidate["start"], candidate["end"]
-            is_cut = parts != [{"start": pd.Timestamp(candidate_start).isoformat(), "end": pd.Timestamp(candidate_end).isoformat()}]
-            additions = [
-                {
-                    "id": (
-                        f"{base_id}-part-{position:03d}"
-                        if is_cut
-                        else base_id
-                    ),
-                    "start": part["start"],
-                    "end": part["end"],
-                    "source": source,
-                    "source_ref": source_ref or candidate_id,
-                    "enabled": True,
-                    "comment": comment,
-                }
-                for position, part in enumerate(parts, start=1)
+        elif action in {"confirm_candidate", "replace_with_candidate", "preview_candidate"}:
+            additions, loaded = _candidate_training_additions(payload, operation, windows)
+            timestamps = loaded.frame[_required_text(payload, "timestamp_column")]
+            conflicts = [
+                window for window in windows
+                if window["enabled"] and any(
+                    pd.Timestamp(part["start"]) <= pd.Timestamp(window["end"])
+                    and pd.Timestamp(window["start"]) <= pd.Timestamp(part["end"])
+                    for part in additions
+                )
             ]
-            for addition in additions:
-                windows = add_training_window(windows, addition)
+            if action == "preview_candidate":
+                return {"training_windows": windows, "conflicts": conflicts}
+            if action == "replace_with_candidate":
+                conflict_ids = operation.get("conflict_window_ids")
+                if (
+                    not isinstance(conflict_ids, list)
+                    or not all(isinstance(value, str) for value in conflict_ids)
+                    or len(conflict_ids) != len(set(conflict_ids))
+                    or set(conflict_ids) != {window["id"] for window in conflicts}
+                ):
+                    raise ValueError("训练窗口冲突已变化，请刷新后重新确认。")
+                windows = [
+                    {**window, "enabled": False} if window in conflicts else window
+                    for window in windows
+                ]
+            windows = normalize_training_windows([*windows, *additions], allow_empty=True)
         else:
             raise ValueError("training_windows操作无效")
     if payload.get("file_id") and loaded is None:
@@ -1506,7 +1536,13 @@ def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
             raw_conditions,
             sample_interval_minutes=int(payload.get("sample_interval_minutes", 5)),
             modeling_eligibility=payload.get("modeling_eligibility"),
+            scope=payload.get("scope"),
+            parent_windows=payload.get("parent_windows"),
         )
+    for candidate in result["candidate_windows"]:
+        reference = f"{candidate['source_ref']}-file-{payload['file_id']}"
+        candidate.update(candidate_id=reference, source_ref=reference)
+        candidate["provenance"]["file_id"] = payload["file_id"]
     return _with_data_usage(result, loaded, len(analysis), len(analysis))
 
 
@@ -3353,7 +3389,8 @@ function eligibilityChanged() {
   invalidateModellingResults("建模资格规则已修改");
   state.clustering=null; state.performance=null; state.training=null; state.runId=null; state.exploratoryRunId=null;
   state.candidateWindows=[]; state.trainingWindows=state.trainingWindows.map(window=>({...window,enabled:false}));
-  renderCandidateWindows(); renderTrainingWindows();
+  state.trainingWindowSummary=[];
+  renderCandidateWindows(); renderTrainingWindows(); updateQualityButtonAvailability();
   ["clusterContent","performanceContent","modelContent"].forEach(id=>{ const node=el(id); if(node) node.hidden=true; });
   ["clusterEmpty","performanceEmpty","modelEmpty"].forEach(id=>{ const node=el(id); if(node) { node.hidden=false; node.textContent="建模资格规则已修改，请重新计算。"; } });
   ["modelDownload","validateButton"].forEach(id=>{ const node=el(id); if(node) { node.disabled=true; if(id==="modelDownload") node.hidden=true; } });
@@ -3407,6 +3444,7 @@ function commonPayload() { const gap=el("gapThreshold").value, filterMethod=el("
 function candidateId() { return globalThis.crypto?.randomUUID?.() || `window-${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function clusterUiLabel(value) { return String(value??"未记录").replace(/^\d+$/,number=>`工况组 ${Number(number)}`).replace(/cluster_(\d+)/gi,(_,number)=>`工况组 ${Number(number)}`).replace(/Cluster(?![A-Za-z_])/g,"工况组"); }
 function candidateSourceLabel(window) {
+  if(window.source==="performance"&&window.provenance) { const p=window.provenance; return `${p.cluster_id?`${clusterUiLabel(p.cluster_id)} · 条件筛选`:p.parent_candidate_id?"条件细化":"条件筛选"} · 候选 ${p.ordinal_in_parent||1}`; }
   const match=window.source==="cluster"&&String(window.source_ref||"").match(/(?:^|-)(cluster_\d+)-candidate-(\d+)$/i);
   if(match) return `${clusterUiLabel(match[1])} · 候选 ${Number(match[2])}`;
   const legacy=window.source==="cluster"&&String(window.source_ref||"").match(/^cluster-(\d+)-/);
@@ -3436,6 +3474,27 @@ function renderPreprocessingPreviewWindow() {
 function selectedPreprocessingPreviewWindow() { return state.trainingWindows.find(window=>window.enabled&&window.id===state.preprocessingPreviewWindowId)||state.trainingWindows.find(window=>window.enabled)||null; }
 function windowSummary(id) { return state.trainingWindowSummary.find(item=>item.id===id)||{}; }
 function candidateTrainingWindows(candidate) { const baseId=`training-${candidate.id}`; return state.trainingWindows.filter(window=>window.id===baseId||window.id.startsWith(`${baseId}-part-`)); }
+function windowsOverlap(window,other) { return Date.parse(window.start)<=Date.parse(other.end)&&Date.parse(other.start)<=Date.parse(window.end); }
+function candidateTrainingConflicts(candidate) { return state.trainingWindows.filter(window=>window.enabled===true&&windowsOverlap(candidate,window)); }
+function isParentTrainingWindow(candidate,window) { const parent=candidate.provenance?.parent_candidate_id; if(!parent) return false; const baseId=`training-${parent}`; return window.id===baseId||window.id.startsWith(`${baseId}-part-`); }
+async function showCandidateConflicts(candidate,container) {
+  const revision=eligibilityRevision, snapshot=JSON.stringify([state.trainingWindows,state.excludedWindows]);
+  try {
+    const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation:{action:"preview_candidate",candidate,excluded_windows:state.excludedWindows}})});
+    if(revision!==eligibilityRevision||snapshot!==JSON.stringify([state.trainingWindows,state.excludedWindows])||!state.candidateWindows.includes(candidate)) { setStatus("候选或训练窗口已变化，请重新查看冲突。","warning"); return; }
+    container.replaceChildren();
+    const conflicts=data.conflicts, summary=document.createElement("div"); summary.textContent=`最终有效训练段与 ${conflicts.length} 个启用训练窗口冲突`; container.append(summary);
+    conflicts.forEach(window=>{ const detail=document.createElement("div"); detail.textContent=`${window.id} · ${candidateSourceLabel(window)} · 来源引用：${window.source_ref||"—"} · ${displayTime(window.start)} ～ ${displayTime(window.end)} · ${isParentTrainingWindow(candidate,window)?"父候选训练窗口":"其它训练窗口"}`; container.append(detail); });
+    const keep=document.createElement("button"); keep.type="button"; keep.className="secondary"; keep.textContent="保留现有训练窗口"; keep.addEventListener("click",()=>container.replaceChildren()); container.append(keep);
+    const replace=document.createElement("button"); replace.type="button"; replace.textContent=conflicts.length?"用当前候选替换":"确认作为训练窗口";
+    replace.addEventListener("click",async()=>{
+      if(revision!==eligibilityRevision||snapshot!==JSON.stringify([state.trainingWindows,state.excludedWindows])||!state.candidateWindows.includes(candidate)) { setStatus("训练窗口冲突已变化，请刷新后重新确认。","warning"); return; }
+      replace.disabled=true;
+      const added=await updateTrainingWindows({action:"replace_with_candidate",candidate,conflict_window_ids:conflicts.map(window=>window.id),excluded_windows:state.excludedWindows},true);
+      if(added) { el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus(`已禁用 ${conflicts.length} 个冲突窗口并生成当前候选的训练窗口。`,"success"); } else replace.disabled=false;
+    }); container.append(replace);
+  } catch(error) { setStatus(error.message,"error"); }
+}
 function stateExplorationCandidateSourceRef(runId,candidateId) { return `state-exploration-${runId}-${candidateId}`; }
 function mergeExcludedWindows(windows) { const sorted=windows.map(window=>({...window})).sort((left,right)=>Date.parse(left.start)-Date.parse(right.start)||Date.parse(left.end)-Date.parse(right.end)||left.id.localeCompare(right.id)); return sorted.reduce((merged,window)=>{ const previous=merged.at(-1); if(previous&&Date.parse(window.start)<=Date.parse(previous.end)) { if(Date.parse(window.end)>Date.parse(previous.end)) previous.end=window.end; return merged; } merged.push(window); return merged; },[]); }
 function renderExcludedWindows() {
@@ -3449,6 +3508,7 @@ function addExcludedWindow(source,start,end,sourceRef=null,comment="") { if(!sta
 function removeExcludedWindow(windowId) { state.excludedWindows=state.excludedWindows.filter(window=>window.id!==windowId); renderExcludedWindows(); globalThis.refreshTrendExcludedWindows?.(); setStatus("排除窗口已删除；已有训练窗口未被修改，如需重新切分请先删除关联训练窗口后重新确认。","warning"); }
 function showCandidateTrend(window) { el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); requestAnimationFrame(()=>requestAnimationFrame(()=>{ const draw=el("dpDrawTrend"); if(draw&&!draw.disabled) draw.click(); })); }
 function renderCandidateWindows() {
+  globalThis.refreshPerformanceScopeOptions?.();
   const container=el("candidateWindows"); container.replaceChildren();
   if(!state.candidateWindows.length) { container.innerHTML='<div class="empty">尚无候选窗口。</div>'; if(state.exploration) renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); return; }
   const table=document.createElement("table"), head=document.createElement("thead"), body=document.createElement("tbody");
@@ -3457,8 +3517,12 @@ function renderCandidateWindows() {
     const name=document.createElement("td"); name.textContent=`候选 ${String(index+1).padStart(2,"0")}`; name.title=window.id;
     const source=document.createElement("td"); source.textContent=candidateSourceLabel(window); source.title=window.source_ref||"";
     const range=document.createElement("td"); range.textContent=`${displayTime(window.start)} ～ ${displayTime(window.end)}`;
-    const generated=candidateTrainingWindows(window).length>0; const status=document.createElement("td"); status.textContent=displayUiValue(generated?"accepted":"pending"); if(generated) { const note=document.createElement("div"); note.textContent="已生成训练窗口"; status.append(note); }
-    const actions=document.createElement("td"); [["查看趋势",()=>showCandidateTrend(window)],["确认作为训练窗口",()=>confirmCandidateWindow(window)],["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]].forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&generated; button.addEventListener("click",handler); actions.append(button); });
+    const associated=candidateTrainingWindows(window), generated=associated.length>0, enabled=associated.some(item=>item.enabled), conflicts=candidateTrainingConflicts(window);
+    const status=document.createElement("td"); status.textContent=generated?(enabled?"已生成训练窗口":"训练窗口已禁用"):"待确认";
+    if(!generated) { const note=document.createElement("div"); note.textContent=conflicts.length?`与 ${conflicts.length} 个启用训练窗口范围重叠（按最终有效段复核）`:"无冲突"; status.append(note); }
+    const actions=document.createElement("td"), details=document.createElement("div");
+    const operations=[["查看趋势",()=>showCandidateTrend(window)],...(conflicts.length&&!generated?[["查看冲突",()=>showCandidateConflicts(window,details)],["用当前候选替换",()=>showCandidateConflicts(window,details)]]:[["确认作为训练窗口",()=>confirmCandidateWindow(window)]]),["删除",()=>{ state.candidateWindows=state.candidateWindows.filter(item=>item.id!==window.id); renderCandidateWindows(); }]];
+    operations.forEach(([label,handler])=>{ const button=document.createElement("button"); button.className="secondary"; button.type="button"; button.textContent=label; button.disabled=label==="确认作为训练窗口"&&generated; button.addEventListener("click",handler); actions.append(button); }); actions.append(details);
     row.append(name,source,range,status,actions); body.append(row);
   }); table.append(head,body); container.append(table); if(state.exploration) renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]);
 }
@@ -3485,10 +3549,11 @@ function renderTrainingWindows() {
   }); table.append(head,body); container.append(table);
 }
 async function updateTrainingWindows(operation, affectsTraining) {
-  try { const previous=JSON.stringify(state.trainingWindows); const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation})}); state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); renderCandidateWindows(); updateQualityButtonAvailability(); if(affectsTraining&&previous!==JSON.stringify(state.trainingWindows)) invalidateQuality("人工确认的训练窗口已修改"); return true; }
+  const revision=eligibilityRevision;
+  try { const previous=JSON.stringify(state.trainingWindows); const data=await api("/api/training-windows",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...commonPayload(),training_windows:trainingWindowsPayload(),operation})}); if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期的训练窗口操作结果。","warning"); return false; } state.trainingWindows=data.training_windows; state.trainingWindowSummary=data.summary; renderTrainingWindows(); renderCandidateWindows(); updateQualityButtonAvailability(); if(affectsTraining&&previous!==JSON.stringify(state.trainingWindows)) invalidateQuality("人工确认的训练窗口已修改"); return true; }
   catch(error) { renderTrainingWindows(); setStatus(error.message,"error"); return false; }
 }
-async function confirmCandidateWindow(candidate) { if(candidateTrainingWindows(candidate).length) { setStatus("该候选已生成训练窗口。","warning"); return; } const added=await updateTrainingWindows({action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows},true); if(added) { const count=candidateTrainingWindows(candidate).length; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus(`已确认并生成 ${count} 个训练窗口；它们将分别参与质量检查和训练。`,"success"); } }
+async function confirmCandidateWindow(candidate) { if(candidateTrainingWindows(candidate).length) { setStatus("该候选已生成训练窗口。","warning"); return; } if(candidateTrainingConflicts(candidate).length) { setStatus("当前候选与启用训练窗口重叠，请查看冲突后选择保留或替换。","warning"); return; } const added=await updateTrainingWindows({action:"confirm_candidate",candidate,excluded_windows:state.excludedWindows},true); if(added) { const count=candidateTrainingWindows(candidate).length; renderCandidateWindows(); el("trainingWindows").scrollIntoView({behavior:"smooth",block:"start"}); setStatus(`已确认并生成 ${count} 个训练窗口；它们将分别参与质量检查和训练。`,"success"); } }
 async function addCandidateWindow(source,start,end,sourceRef=null,comment="") {
   if(!start||!end) { setStatus("候选窗口需要开始和结束时间。","warning"); return; }
   if(sourceRef&&state.candidateWindows.some(window=>window.source_ref===sourceRef)) { setStatus("该候选已在候选窗口列表中。","warning"); return; }
@@ -3556,6 +3621,51 @@ function addPerformanceCondition() {
   row.append(columnLabel,minimum,maximum,remove); el("performanceConditions").append(row);
 }
 function renderPerformanceConditions(columns) { const list=el("performanceConditions"); list.replaceChildren(); if(columns.length) addPerformanceCondition(); }
+let performanceRevision=0;
+let performanceScopeParentIds=[];
+function invalidatePerformance() {
+  performanceRevision+=1; state.performance=null;
+  if(el("performanceContent")) el("performanceContent").hidden=true;
+  if(el("performanceEmpty")) { el("performanceEmpty").hidden=false; el("performanceEmpty").textContent="筛选配置已变化，请重新筛选候选时段。"; }
+}
+function performanceCandidateCluster(window) {
+  const p=window.source==="performance"?window.provenance:null;
+  const source=p?(p.origin_source||p.parent_source):window.source;
+  const reference=p?(p.origin_source_ref||p.parent_source_ref):window.source_ref;
+  if(source!=="cluster") return null;
+  const match=String(reference||"").match(/^state-exploration-(.+)-(cluster_\d+)-candidate-\d+$/);
+  if(match) return match[2];
+  const legacy=String(reference||"").match(/^cluster-(\d+)-\d{4}-\d{2}-\d{2}T/);
+  return legacy?`cluster_${Number(legacy[1])}`:null;
+}
+function refreshPerformanceScopeOptions() {
+  const scope=el("performanceScope"), parents=el("performanceParents"), clusters=el("performanceClusters"); if(!scope||!parents||!clusters) return;
+  const refresh=(select,items)=>{ const selected=new Set([...select.selectedOptions].map(option=>option.value)); select.replaceChildren(); items.forEach(([value,label,title])=>{ const option=document.createElement("option"); option.value=value; option.textContent=label; option.title=title||""; option.selected=selected.has(value); select.append(option); }); return [...selected].some(value=>!items.some(item=>item[0]===value)); };
+  const removedParents=refresh(parents,state.candidateWindows.map((window,index)=>[window.id,`候选 ${String(index+1).padStart(2,"0")} · ${candidateSourceLabel(window)} · ${displayTime(window.start)} ～ ${displayTime(window.end)}`,window.source_ref]));
+  const ids=[...new Set(state.candidateWindows.map(performanceCandidateCluster).filter(Boolean))].sort((a,b)=>Number(a.slice(8))-Number(b.slice(8)));
+  const removedClusters=refresh(clusters,ids.map(id=>[id,clusterUiLabel(id)]));
+  el("performanceParentsLabel").hidden=scope.value!=="candidate_windows"; el("performanceClustersLabel").hidden=scope.value!=="cluster";
+  const selected=scope.value==="candidate_windows"?[...parents.selectedOptions].map(option=>option.textContent):[...clusters.selectedOptions].map(option=>option.textContent);
+  el("performanceScopeSummary").textContent=scope.value==="all"?"筛选全部建模资格数据。":selected.length?`当前筛选范围：${selected.join("；")}`:scope.value==="cluster"?"请选择当前候选池中可追溯的工况组。":"请选择一个或多个父候选窗口。";
+  const parentIds=scope.value==="cluster"?state.candidateWindows.filter(window=>[...clusters.selectedOptions].some(option=>option.value===performanceCandidateCluster(window))).map(window=>window.id):scope.value==="candidate_windows"?[...parents.selectedOptions].map(option=>option.value):[];
+  const sameParents=performanceScopeParentIds.length===parentIds.length&&performanceScopeParentIds.every(id=>parentIds.includes(id));
+  if((scope.value==="candidate_windows"&&removedParents)||(scope.value==="cluster"&&removedClusters)||(state.performance&&!sameParents)) invalidatePerformance();
+  performanceScopeParentIds=parentIds;
+}
+function performanceScopePayload() {
+  const type=el("performanceScope")?.value||"all";
+  if(type==="all") return {scope:{type}};
+  if(type==="candidate_windows") { const ids=new Set([...el("performanceParents").selectedOptions].map(option=>option.value)); const parents=state.candidateWindows.filter(window=>ids.has(window.id)); if(!parents.length) throw new Error("请至少选择一个已有候选窗口。"); return {scope:{type},parent_windows:parents}; }
+  const ids=[...el("performanceClusters").selectedOptions].map(option=>option.value);
+  if(!ids.length||!state.candidateWindows.some(window=>ids.includes(performanceCandidateCluster(window)))) throw new Error("当前候选窗口中没有可用于该工况组筛选的来源。");
+  return {scope:{type,cluster_ids:ids},parent_windows:state.candidateWindows.slice()};
+}
+function addPerformanceCandidate(window,data) {
+  if(state.performance!==data) { setStatus("筛选结果已失效，请重新筛选。","warning"); return; }
+  if(window.source_ref&&state.candidateWindows.some(item=>item.source_ref===window.source_ref)) { setStatus("该候选已在候选窗口列表中。","warning"); return; }
+  state.candidateWindows.push({id:candidateId(),start:window.start,end:window.end,source:window.source||"performance",source_ref:window.source_ref||candidateId(),...(window.provenance?{provenance:window.provenance}:{}),comment:""});
+  renderCandidateWindows(); setStatus("候选已加入；请人工确认后再生成训练窗口。","success");
+}
 function performanceConditionPayload() {
   const rows=[...document.querySelectorAll('#performanceConditions .condition-row')]; if(!rows.length) throw new Error("请至少添加一个性能条件。");
   return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
@@ -3930,15 +4040,24 @@ el("addPerformanceCondition").addEventListener("click",addPerformanceCondition);
 el("performanceButton").addEventListener("click", async () => {
   const button=el("performanceButton"); setBusy(button,true,"筛选中…"); setStatus("正在按全部性能条件筛选连续候选时段。","info");
   const revision=eligibilityRevision;
+  const screenRevision=performanceRevision;
   try {
-    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),conditions:performanceConditionPayload(),modeling_eligibility:modelingEligibilityPayload()};
+    const payload={file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,analysis_start:el("analysisStart").value,analysis_end:el("analysisEnd").value,sample_interval_minutes:numberValue("sampleInterval"),conditions:performanceConditionPayload(),modeling_eligibility:modelingEligibilityPayload(),...performanceScopePayload()};
+    const scopeKey=JSON.stringify(performanceScopePayload());
     const data=await api("/api/performance-screen",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }
+    if(screenRevision!==performanceRevision||scopeKey!==JSON.stringify(performanceScopePayload())) { setStatus("筛选范围或工程条件已变化，已丢弃过期结果。","warning"); return; }
     state.performance=data; excludePerformanceColumns(data.conditions); renderPerformance(data); if(globalThis.showCandidateTool) { globalThis.showWorkflowStage("candidatePanel"); globalThis.showCandidateTool("performancePanel"); } else document.querySelector('.tab[data-panel="performancePanel"]')?.click();
     setStatus("性能条件筛选完成；相关性能列已取消建模勾选。请选择候选时段并由工程师确认工况。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
+el("performanceScope")?.addEventListener("change",()=>{ invalidatePerformance(); refreshPerformanceScopeOptions(); });
+["performanceParents","performanceClusters"].forEach(id=>el(id)?.addEventListener("change",()=>{ invalidatePerformance(); refreshPerformanceScopeOptions(); }));
+el("performanceConditions").addEventListener("input",invalidatePerformance);
+el("performanceConditions").addEventListener("change",invalidatePerformance);
+el("performanceConditions").addEventListener("click",event=>{ if(event.target.closest("button")) invalidatePerformance(); });
+el("addPerformanceCondition").addEventListener("click",invalidatePerformance);
 
 el("stateExplorationButton").addEventListener("click", async () => {
   const button=el("stateExplorationButton"); setBusy(button,true,"探索中…"); setStatus("正在使用统一预处理构建完整状态空间并执行探索聚类。","info");
@@ -4140,9 +4259,10 @@ function renderHistogram(histogram) {
 function renderPerformance(data) {
   el("performanceEmpty").hidden=true; el("performanceContent").hidden=false;
   el("performanceMetrics").innerHTML=metric("分析样本",data.total_rows)+metric("全部条件命中",data.matched_rows)+metric("命中占比",`${(data.match_share*100).toFixed(1)}%`)+metric("组合方式","AND");
+  if(data.scope&&data.scope.type!=="all") el("performanceMetrics").innerHTML+=metric("父候选数",data.parent_count)+metric("命中父候选数",data.matched_parent_count)+metric("未命中父候选数",data.unmatched_parent_count)+metric("生成细化候选数",data.derived_candidate_count);
   const conditions=el("performanceConditionTable"); conditions.replaceChildren(); data.conditions.forEach(item=>{ const tr=document.createElement("tr"); const expression=`${item.minimum===null?"":`≥ ${item.minimum}`} ${item.maximum===null?"":`≤ ${item.maximum}`}`.trim(); [item.column,expression,item.matched_rows].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); conditions.append(tr); });
-  const windows=el("performanceTable"); windows.replaceChildren(); data.representative_windows.forEach((window,index)=>{ const tr=document.createElement("tr"); [displayTime(window.start),displayTime(window.end),window.count].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); const action=document.createElement("td"); const button=document.createElement("button"); button.className="secondary"; button.textContent="加入候选窗口"; button.addEventListener("click",()=>addCandidateWindow("performance",window.start,window.end,`performance-${index+1}`,"")); action.append(button); tr.append(action); windows.append(tr); });
-  if(!data.representative_windows.length) { const tr=document.createElement("tr"); const td=document.createElement("td"); td.colSpan=4; td.textContent="没有同时满足全部条件的连续时段。"; tr.append(td); windows.append(tr); }
+  const candidates=data.candidate_windows??data.representative_windows; const windows=el("performanceTable"); windows.replaceChildren(); candidates.forEach(window=>{ const tr=document.createElement("tr"); [displayTime(window.start),displayTime(window.end),window.count].forEach(value=>{ const td=document.createElement("td"); td.textContent=value; tr.append(td); }); const action=document.createElement("td"); const button=document.createElement("button"); button.className="secondary"; button.textContent="加入候选窗口"; button.title=window.source_ref||""; button.addEventListener("click",()=>addPerformanceCandidate(window,data)); action.append(button); tr.append(action); windows.append(tr); });
+  if(!candidates.length) { const tr=document.createElement("tr"); const td=document.createElement("td"); td.colSpan=4; td.textContent="没有同时满足全部条件的连续时段。"; tr.append(td); windows.append(tr); }
 }
 
 function renderClustering(data) {

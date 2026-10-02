@@ -1277,6 +1277,20 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
         '全部条件按 AND 组合。筛选列会取消建模勾选，不自动进入 PCA；工程师可随后调整 Tag 角色和勾选。',
         1,
     )
+    conditions = conditions.replace(
+        '<div id="performanceConditions"',
+        '<div class="row"><label>筛选范围<select id="performanceScope">'
+        '<option value="all" selected>全部建模资格数据</option>'
+        '<option value="candidate_windows">已有候选窗口</option>'
+        '<option value="cluster">指定工况组</option></select></label></div>'
+        '<label id="performanceParentsLabel" hidden>父候选窗口（可多选）'
+        '<select id="performanceParents" multiple size="5"></select></label>'
+        '<label id="performanceClustersLabel" hidden>工况组（可多选）'
+        '<select id="performanceClusters" multiple size="5"></select></label>'
+        '<div id="performanceScopeSummary" class="help">筛选全部建模资格数据。</div>'
+        '<div id="performanceConditions"',
+        1,
+    )
     performance_panel = performance_panel.replace(
         '<div id="performancePanel" class="panel">',
         '<div id="performancePanel" class="panel">\n'

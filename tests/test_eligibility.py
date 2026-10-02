@@ -262,11 +262,15 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
         pytest.skip("Node.js is required for eligibility editor regression tests")
     html = web_model_results.INDEX_HTML
     script = html[html.index("let eligibilityRevision="):html.index("function stateFilterTags()")]
+    renderer = html[html.index("function renderTrainingWindows()"):html.index("async function updateTrainingWindows(")]
+    helpers = "\n".join(next(line for line in html.splitlines() if line.startswith(f"function {name}(")) for name in ["windowSummary", "updateQualityButtonAvailability"])
     harness = r'''
       class Element {
         constructor(tag="div") { this.tag=tag; this.children=[]; this.value=""; this.dataset={}; this.handlers={}; this.className=""; this.hidden=false; this.textContent=""; this.classList={contains:name=>this.className.split(" ").includes(name)}; }
         append(...nodes) { nodes.forEach(node=>{node.parentElement=this;this.children.push(node);}); }
         remove() { this.parentElement.children=this.parentElement.children.filter(node=>node!==this); }
+        replaceChildren() { this.children=[]; }
+        text() { return this.textContent+this.children.map(child=>child.text()).join(" "); }
         addEventListener(name,handler) { this.handlers[name]=handler; }
         querySelectorAll(selector) {
           const match=node=>selector===".eligibility-condition"?node.classList.contains("eligibility-condition"):selector==="input"?node.tag==="input":selector.includes("data-field")?selector.includes(`"${node.dataset.field}"`):false;
@@ -274,18 +278,23 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
         }
         querySelector(selector) { return this.querySelectorAll(selector)[0]||null; }
       }
-      const nodes=Object.fromEntries(["eligibilityKeepConditions","eligibilityExcludeGroups","eligibilitySummary","addEligibilityKeep","addEligibilityExcludeGroup","refreshEligibilitySummary","modelContent","modelEmpty","modelDownload","validateButton"].map(id=>[id,new Element()]));
+      const nodes=Object.fromEntries(["eligibilityKeepConditions","eligibilityExcludeGroups","eligibilitySummary","addEligibilityKeep","addEligibilityExcludeGroup","refreshEligibilitySummary","modelContent","modelEmpty","modelDownload","validateButton","trainingWindows","qualityButton"].map(id=>[id,new Element()]));
       const el=id=>nodes[id]||null, document={createElement:tag=>new Element(tag)};
-      const state={inspection:{numeric_columns:["gate","other"]},selectedModelTags:new Set(["A"]),candidateWindows:[],trainingWindows:[{id:"manual",enabled:true,source_ref:"manual"}],quality:{},training:{},runId:"old",exploratoryRunId:"old",clustering:{},performance:{}};
+      const state={inspection:{numeric_columns:["gate","other"]},selectedModelTags:new Set(["A"]),candidateWindows:[],trainingWindows:[{id:"manual",enabled:true,source_ref:"manual"}],trainingWindowSummary:[],quality:{},training:{},runId:"old",exploratoryRunId:"old",clustering:{},performance:{}};
       let invalidations=0;
       function invalidateModellingResults() { invalidations+=1;state.quality=null; }
       function renderCandidateWindows() {}
-      function renderTrainingWindows() {}
+      function renderPreprocessingPreviewWindow() {}
+      function candidateSourceLabel(window) { return window.source; }
+      function displayTime(value) { return value; }
+      function displayUiValue(value) { return value; }
       function setStatus() {}
       function fillSelect(select,columns) { select.value=columns[0]; }
       function formField(labelText,field,type) { const label=new Element("label"),input=new Element("input");input.dataset.field=field;label.append(input);return label; }
       function setTimeout() { return 0; }
       function clearTimeout() {}
+      __RENDERER__
+      __HELPERS__
       __SCRIPT__
       const keep=el("eligibilityKeepConditions"); addEligibilityCondition(keep); addEligibilityCondition(keep);
       keep.children.forEach((row,index)=>{ row.querySelector('[data-field="minimum"]').value=String(index+1);row.querySelector('[data-field="maximum"]').value="10"; });
@@ -294,13 +303,16 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
       const payload=modelingEligibilityPayload();
       const first=keep.children[0];first.children[3].handlers.click();
       const group=el("eligibilityExcludeGroups").children[0];group.querySelector(".eligibility-condition").children[3].handlers.click();
-      state.candidateWindows=[{id:"stale"}];state.trainingWindows=[{id:"manual",enabled:true,source_ref:"manual"}];state.training={};state.runId="stale";
+      state.candidateWindows=[{id:"stale"}];state.trainingWindows=[{id:"manual",source:"manual",enabled:true,source_ref:"manual"}];state.training={};state.runId="stale";
+      state.trainingWindowSummary=[{id:"manual",raw_samples:120,effective_samples:118,quality_status:"passed"}];
+      renderTrainingWindows();updateQualityButtonAvailability();
+      const before={text:el("trainingWindows").text(),disabled:el("qualityButton").disabled};
       eligibilityChanged();
       renderEligibilitySummary({original_samples:10,keep_pass_samples:8,exclude_hit_samples:3,eligible_samples:5,eligible_share:.5,segment_count:2});
       const invalid=keep.children[0];invalid.querySelector('[data-field="minimum"]').value="20";
       let error="";try { modelingEligibilityPayload(); } catch(caught) { error=caught.message; }
-      console.log(JSON.stringify({payload,keep:keep.children.length,groups:el("eligibilityExcludeGroups").children.length,invalidations,summary:el("eligibilitySummary").textContent,error,candidates:state.candidateWindows,windows:state.trainingWindows,training:state.training,runId:state.runId,tags:[...state.selectedModelTags],modelHidden:el("modelContent").hidden}));
-    '''.replace("__SCRIPT__", script)
+      console.log(JSON.stringify({before,windowSummary:state.trainingWindowSummary,windowText:el("trainingWindows").text(),qualityDisabled:el("qualityButton").disabled,payload,keep:keep.children.length,groups:el("eligibilityExcludeGroups").children.length,invalidations,summary:el("eligibilitySummary").textContent,error,candidates:state.candidateWindows,windows:state.trainingWindows,training:state.training,runId:state.runId,tags:[...state.selectedModelTags],modelHidden:el("modelContent").hidden}));
+    '''.replace("__SCRIPT__", script).replace("__RENDERER__", renderer).replace("__HELPERS__", helpers)
     result = subprocess.run([node, "-"], input=harness, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
@@ -308,11 +320,70 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
     assert data["keep"] == data["groups"] == 1
     assert data["invalidations"] >= 7
     assert data["candidates"] == [] and data["training"] is None and data["runId"] is None
-    assert data["windows"] == [{"id": "manual", "enabled": False, "source_ref": "manual"}]
+    assert data["windows"] == [{"id": "manual", "source": "manual", "enabled": False, "source_ref": "manual"}]
+    assert "120 / 118" in data["before"]["text"] and "passed" in data["before"]["text"]
+    assert data["before"]["disabled"] is False
+    assert data["windowSummary"] == [] and data["qualityDisabled"] is True
+    assert "120 / 118" not in data["windowText"] and "passed" not in data["windowText"]
+    assert "待检查" in data["windowText"]
     assert data["modelHidden"] and data["tags"] == ["A"]
     assert "上下限反转" in data["error"]
     for text in ["原始样本 10", "保留条件通过 8", "排除规则命中 3", "最终合格 5", "50.0%", "连续段 2"]:
         assert text in data["summary"]
+
+
+@pytest.mark.parametrize("action", ["confirm_candidate", "update", "remove", "set_enabled"])
+@pytest.mark.parametrize("stale", [False, True])
+def test_training_window_operations_discard_old_eligibility_responses(action, stale):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for training window regression tests")
+    html = web_model_results.INDEX_HTML
+    script = html[html.index("async function updateTrainingWindows("):html.index("async function confirmCandidateWindow(")]
+    availability = next(line for line in html.splitlines() if line.startswith("function updateQualityButtonAvailability("))
+    window = {"id": "manual", "source": "manual", "source_ref": "original", "enabled": True, "comment": "original"}
+    expected_windows = [] if action == "remove" else [
+        {**window, "comment": "edited"} if action == "update" else
+        {**window, "enabled": False} if action == "set_enabled" else
+        {**window, "id": "confirmed", "source_ref": "candidate"}
+    ]
+    expected_summary = [{"id": item["id"], "raw_samples": 100, "effective_samples": 99} for item in expected_windows]
+    harness = r'''
+      let eligibilityRevision=0, respond, request, renders=0, invalidations=0;
+      const messages=[],button={disabled:false};
+      const state={inspection:{},trainingWindows:[__WINDOW__],trainingWindowSummary:[{id:"manual",raw_samples:120,effective_samples:118}]};
+      function el() { return button; }
+      function commonPayload() { return {}; }
+      function trainingWindowsPayload() { return state.trainingWindows; }
+      function api(url,options) { request=JSON.parse(options.body); return new Promise(resolve=>{respond=resolve;}); }
+      function renderTrainingWindows() { renders+=1; }
+      function renderCandidateWindows() { renders+=1; }
+      function invalidateQuality() { invalidations+=1; }
+      function setStatus(message,type) { messages.push({message,type}); }
+      __AVAILABILITY__
+      __SCRIPT__
+      (async()=>{
+        const pending=updateTrainingWindows({action:__ACTION__,id:"manual"},true);
+        if(__STALE__) { eligibilityRevision+=1;state.trainingWindows=state.trainingWindows.map(window=>({...window,enabled:false}));state.trainingWindowSummary=[];updateQualityButtonAvailability(); }
+        respond({training_windows:__WINDOWS__,summary:__SUMMARY__});
+        const returned=await pending;
+        console.log(JSON.stringify({returned,windows:state.trainingWindows,summary:state.trainingWindowSummary,disabled:button.disabled,renders,invalidations,messages,request}));
+      })();
+    '''.replace("__WINDOW__", json.dumps(window)).replace("__WINDOWS__", json.dumps(expected_windows)).replace("__SUMMARY__", json.dumps(expected_summary)).replace("__STALE__", json.dumps(stale)).replace("__ACTION__", json.dumps(action)).replace("__AVAILABILITY__", availability).replace("__SCRIPT__", script)
+    result = subprocess.run([node, "-"], input=harness, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["request"]["operation"]["action"] == action
+    if stale:
+        assert data["returned"] is False
+        assert data["windows"] == [{**window, "enabled": False}] and data["summary"] == []
+        assert data["disabled"] is True and data["renders"] == data["invalidations"] == 0
+        assert data["messages"][-1]["type"] == "warning"
+    else:
+        assert data["returned"] is True
+        assert data["windows"] == expected_windows and data["summary"] == expected_summary
+        assert data["disabled"] == (not any(item["enabled"] for item in expected_windows))
+        assert data["renders"] == 2 and data["invalidations"] == 1
 
 
 def test_ui_manual_candidates_split_before_confirmation_and_discard_stale_requests():

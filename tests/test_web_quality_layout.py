@@ -1056,7 +1056,8 @@ def test_final_web_entry_exposes_candidate_window_manager() -> None:
     assert 'addCandidateWindow("manual"' in html
     assert 'addCandidateWindow("cluster"' in html
     assert 'addCandidateWindow("trend"' in html
-    assert 'addCandidateWindow("performance"' in html
+    assert 'addPerformanceCandidate(window,data)' in html
+    assert 'source_ref:window.source_ref' in html
     assert 'button.textContent="填入正常期"' not in html
     assert "normalStart" not in html
     assert "normalEnd" not in html
@@ -1480,7 +1481,8 @@ def test_candidate_actions_do_not_replace_the_training_window() -> None:
     )[0]
 
     assert 'addCandidateWindow("cluster"' in cluster_source
-    assert 'addCandidateWindow("performance"' in performance_source
+    assert 'addPerformanceCandidate(window,data)' in performance_source
+    assert 'data.candidate_windows??data.representative_windows' in performance_source
     assert 'normalStart' not in cluster_source
     assert 'normalEnd' not in cluster_source
     assert 'normalStart' not in performance_source
@@ -1616,8 +1618,9 @@ def test_candidate_confirmation_is_separate_from_training_windows() -> None:
     assert "set_enabled" not in view_source
     assert "state.trainingWindows" not in view_source
     assert '["pending","accepted","rejected"]' not in candidate_source
-    assert "candidateTrainingWindows(window).length>0" in candidate_source
-    assert 'status.textContent=displayUiValue(generated?"accepted":"pending")' in candidate_source
+    assert "associated=candidateTrainingWindows(window), generated=associated.length>0" in candidate_source
+    assert 'enabled=associated.some(item=>item.enabled)' in candidate_source
+    assert 'candidateTrainingConflicts(window)' in candidate_source
     assert 'label==="确认作为训练窗口"&&generated' in candidate_source
     assert "window.status" not in candidate_source
     assert 'document.createElement("select")' not in candidate_source
@@ -2385,7 +2388,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
          'explorationTargetMax explorationPerformanceMinimumDuration '
          'explorationPerformanceCandidateCount frozenModelVersion'),
         ('main select', 'select', 220,
-         'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod'),
+         'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope'),
         ('main input[type="datetime-local"]', 'datetime', 240,
          'analysisStart analysisEnd candidateStart candidateEnd trendStart trendEnd '
          'validationStart validationEnd frozenReplayStart frozenReplayEnd'),
@@ -2395,7 +2398,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
         ('main input:not([type]), main input[type="text"]', 'text', 420,
          'modelName tagDescription tagUnit candidateComment validationComment '
          'validationDecisionComment frozenModelId frozenBy freezeComment'),
-        ('main select[multiple]', 'multiple', 420, 'trendTags modelComparisonRuns'),
+        ('main select[multiple]', 'multiple', 420, 'trendTags modelComparisonRuns performanceParents performanceClusters'),
     )
     for selector, semantic, width, field_ids in groups:
         assert f'--field-{semantic}-width:{width}px;' in style
@@ -2416,7 +2419,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
     assert all(tag != 'input' or attrs.get('type', 'text') in
                ('text', 'number', 'datetime-local', 'file', 'range')
                for tag, attrs in controls.fields.values())
-    assert len(controls.fields) == 66
+    assert len(controls.fields) == 69
     assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
 
 
