@@ -3310,6 +3310,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="validation-box"><label>工程师结论<select id="validationDecision"><option value="passed">通过</option><option value="insufficient">结论不足</option><option value="failed">不通过</option></select></label><label>审查备注<input id="validationDecisionComment" type="text"></label><button id="recordValidationDecision" type="button">保存人工结论</button><div id="validationDecisionStatus" class="status info" role="status" aria-live="polite">等待保存工程师结论。</div><a id="validatedModelDownload" class="download" href="#" hidden>下载已验证模型包</a></div>
           <h3>验证指标</h3>
           <div id="validationMetricDetails" class="table-wrap"></div>
+          <div id="validationInvestigationWindows"></div>
           <div class="chart-grid">
             <div class="chart-card"><h3>验证期 T²</h3><div id="validationT2Chart" class="chart"></div></div>
             <div class="chart-card"><h3>验证期 SPE/Q</h3><div id="validationSpeChart" class="chart"></div></div>
@@ -3391,6 +3392,7 @@ function renderModelTrainingDataSummary(totals=state.quality?.training_window_to
   node.textContent=`训练数据摘要：已使用 / 启用训练窗口：${totals.used_window_count??"—"} / ${totals.enabled_window_count??"—"}；有效训练样本：${totals.training_rows??"—"}；覆盖日期数：${totals.covered_day_count??"—"}；最大单窗口有效样本占比：${trainingCompositionShare(totals.max_window_effective_share)}。`;
 }
 function invalidateQuality(reason) {
+  invalidateValidationInvestigation();
   state.trainingDiagnosticInvalidated=true;
   if(state.trainingDiagnosticFocus) clearTrainingDiagnosticFocus();
   const checked=Boolean(state.quality)||state.qualityStatus==="failed", checking=state.qualityStatus==="checking"; state.qualityRevision+=1; state.quality=null; state.qualityError=""; state.qualityStatus=reason&&(checked||checking)?"changed":"unchecked";
@@ -4001,6 +4003,7 @@ async function updateExplorationPreferredRegion(ellipses) {
 
 el("uploadButton").addEventListener("click", async () => {
   const file=el("fileInput").files[0]; if (!file) { setStatus("请选择 CSV、XLSX 或 TXT 文件。","warning"); return; }
+  invalidateValidationInvestigation();
   const button=el("uploadButton"); setBusy(button,true,"上传中…");
   try {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
@@ -4236,6 +4239,7 @@ el("clusterButton").addEventListener("click", async () => {
 async function trainModel(modelPurpose) {
   const readiness=state.quality?.training_readiness?.[modelPurpose]||{can_train:state.quality?.can_train}; if(!readiness.can_train) { setStatus("训练前必须重新执行并通过对应模型用途的建模质量检查。","error"); return; }
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
+  invalidateValidationInvestigation();
   const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
   const revision=eligibilityRevision;
   try {
@@ -4244,7 +4248,7 @@ async function trainModel(modelPurpose) {
     const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }
-    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
+    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validationInvestigationModel={training:data,tags:[...tags],tagConfigs:payload.tag_configs}; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); if(revision!==eligibilityRevision) button.disabled=true; }
@@ -4253,6 +4257,7 @@ el("trainExploratoryButton").addEventListener("click",()=>trainModel("explorator
 el("trainButton").addEventListener("click",()=>trainModel("normal_state"));
 
 function renderValidationWindows() {
+  invalidateValidationInvestigation();
   const body=el("validationWindowTable"); body.replaceChildren();
   state.validationWindows.forEach(window=>{ const row=document.createElement("tr");
     const type=document.createElement("td"); type.textContent=window.type==="normal_validation"?"正常样本验证":"已知异常验证";
@@ -4270,11 +4275,14 @@ el("addValidationWindow").addEventListener("click",()=>{
 });
 
 el("validateButton").addEventListener("click", async () => {
+  invalidateValidationInvestigation();
   const button=el("validateButton"); setBusy(button,true,"回放中…"); setStatus("正在使用训练参数回放独立验证窗口。","info");
   try {
     if(!state.validationWindows.length) { state.validationWindows.push({id:"validation-default-001",type:"normal_validation",start:el("validationStart").value,end:el("validationEnd").value,enabled:true,comment:""}); renderValidationWindows(); }
+    const investigationRevision=state.validationInvestigationRevision, training=state.training, fileId=state.fileId, runId=state.runId;
     const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_windows:state.validationWindows,label_column:el("labelColumn").value};
     const data=await api("/api/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(investigationRevision!==state.validationInvestigationRevision||training!==state.training||fileId!==state.fileId||runId!==state.runId) { setStatus("验证上下文已变更，已丢弃过期的页面结果。","warning"); return; }
     state.validation=data; renderValidation(data); const decisionStatus=el("validationDecisionStatus"); decisionStatus.textContent="等待保存工程师结论。"; decisionStatus.className="status info"; setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
@@ -4417,6 +4425,7 @@ function modelLifecycle(data) {
   return {purpose:"正常状态模型",status:"候选",notice:"正常状态候选模型，尚未完成独立验证和工程师确认。"};
 }
 function renderTraining(data) {
+  invalidateValidationInvestigation();
   state.trainingDiagnosticInvalidated=false;
   if(state.trainingDiagnosticFocus) clearTrainingDiagnosticFocus();
   el("modelEmpty").hidden=true; el("modelContent").hidden=false;
@@ -4459,7 +4468,143 @@ function renderTrainingWindowSummary(windows) {
   table.append(head,body); container.append(table);
 }
 
+function validationInvestigationWindowsKey(windows) {
+  return JSON.stringify((windows||[]).map(window=>[window.id,window.type,Date.parse(window.start),Date.parse(window.end),window.enabled!==false]));
+}
+function invalidateValidationInvestigation() {
+  state.validationInvestigationRevision=(state.validationInvestigationRevision||0)+1;
+  state.validationInvestigationFocus=null;
+  state.validationInvestigationContext=null;
+  document.querySelectorAll('[data-validation-investigation-context]').forEach(node=>node.remove());
+  el("validationInvestigationWindows")?.replaceChildren();
+}
+function currentValidationInvestigationContext(context=state.validationInvestigationContext) {
+  if(!context||context!==state.validationInvestigationContext) return null;
+  if(context.runId!==state.runId||context.fileId!==state.fileId||context.training!==state.training||context.report!==state.validation||context.windowsKey!==validationInvestigationWindowsKey(state.validationWindows)) {
+    invalidateValidationInvestigation(); return null;
+  }
+  return context;
+}
+function currentValidationInvestigationFocus() {
+  const focus=state.validationInvestigationFocus;
+  return focus&&currentValidationInvestigationContext(focus.context)?focus:null;
+}
+function refreshValidationInvestigationContext() { currentValidationInvestigationContext(); }
+function validationInvestigationLabel(window) {
+  return `${window.type==="normal_validation"?"正常验证":"已知异常"}窗口 ${window.id} · ${displayTime(window.start,19)} ～ ${displayTime(window.end,19)}`;
+}
+function validationInvestigationIssue(window,summary) {
+  if(summary?.status!=="scored") return "当前窗口未形成有效评分，请结合事件趋势和输入变量人工调查。";
+  if(window.type==="normal_validation") return `T² 95% 超限率：${percent(summary.t2_exceedance_95)} / 99%：${percent(summary.t2_exceedance_99)}；SPE 95% 超限率：${percent(summary.spe_exceedance_95)} / 99%：${percent(summary.spe_exceedance_99)}`;
+  if(!(summary.continuous_events||[]).some(event=>event.point_count>1)) return "该已知异常未形成持续检出，请检查事件趋势、输入变量和训练状态覆盖。";
+  return `T² 95% 超限率：${percent(summary.t2_exceedance_95)}；SPE 95% 超限率：${percent(summary.spe_exceedance_95)}`;
+}
+function renderValidationInvestigation(data) {
+  invalidateValidationInvestigation();
+  const container=el("validationInvestigationWindows");
+  if(!container||data.run_id!==state.runId||validationInvestigationWindowsKey(data.validation_windows)!==validationInvestigationWindowsKey(state.validationWindows)) return;
+  const model=state.validationInvestigationModel;
+  const context={report:data,runId:data.run_id,fileId:state.fileId,training:state.training,windowsKey:validationInvestigationWindowsKey(state.validationWindows),tags:model?.training===state.training?model.tags:selectedTags(),tagConfigs:model?.training===state.training?model.tagConfigs:state.registry};
+  state.validationInvestigationContext=context;
+  (data.validation_windows||[]).filter(window=>window.enabled!==false).forEach(window=>{
+    const summary=(data.validation_window_summaries||[]).find(item=>item.id===window.id);
+    const card=document.createElement("section"); card.className="chart-card"; card.dataset.validationInvestigationWindow=window.id;
+    const title=document.createElement("h4"); title.textContent=validationInvestigationLabel(window);
+    const issue=document.createElement("p"); issue.textContent=validationInvestigationIssue(window,summary);
+    card.append(title,issue);
+    if(window.type==="known_abnormal"&&summary?.status==="scored") {
+      const details=document.createElement("p"); details.className="help";
+      const metrics=data.validation_metrics?.known_abnormal?.windows?.find(item=>item.validation_window_id===window.id);
+      const category=summary.t2_exceedance_95>0?(summary.spe_exceedance_95>0?"both":"T²-only"):(summary.spe_exceedance_95>0?"SPE-only":null);
+      const explanations={"T²-only":"该事件主要在保留主元空间位置上形成超限。","SPE-only":"该事件主要在模型残差空间形成超限。",both:"两类统计量均形成检出。"};
+      details.textContent=`95% 首次检出：${metrics?.first_detection_95?displayTime(metrics.first_detection_95,19):"未检出"}；99% 首次检出：${metrics?.first_detection_99?displayTime(metrics.first_detection_99,19):"未检出"}。持续检出提示基于现有 95% 连续事件是否包含多个评分点。${category?`95% ${category}：${explanations[category]}这是统计解释，不代表工艺根因。`:""}`;
+      card.append(details);
+    }
+    const actions=document.createElement("div"); actions.className="actions";
+    const normal=window.type==="normal_validation";
+    [[normal?"查看该窗口趋势":"查看异常趋势","trend"],[normal?"检查训练集覆盖":"检查是否混入训练集","training"],[normal?"检查相关输入变量":"查看当前建模 Tag","tags"]].forEach(([label,target])=>{
+      const button=document.createElement("button"); button.type="button"; button.className="secondary"; button.textContent=label;
+      button.addEventListener("click",()=>focusValidationInvestigation(context,window.id,target)); actions.append(button);
+    });
+    card.append(actions); container.append(card);
+  });
+}
+function validationInvestigationRelatedTags(context,windowId) {
+  const contributions=(context.report.contributions||[]).filter(event=>event.validation_window_id===windowId).flatMap(event=>event.tags||[]);
+  return [...new Set(contributions.sort((a,b)=>b.contribution_pct-a.contribution_pct).map(item=>item.tag))].filter(tag=>context.tags.includes(tag)).slice(0,3);
+}
+function validationInvestigationTrainingEvidence(focus) {
+  const training=focus.context.training, windows=training?.training_window_summary;
+  const lines=["证据来源：当前 model run 的 training_window_summary / training_window_totals / training_condition_diagnostic。"];
+  const totals=training?.training_window_totals||{}, diagnostic=training?.model_quality?.training_condition_diagnostic;
+  lines.push(`训练窗口数量：使用 ${totals.used_window_count??"未记录"} / 启用 ${totals.enabled_window_count??"未记录"}。`);
+  if(diagnostic) {
+    const total=diagnostic.traceable_samples+diagnostic.unattributed_samples;
+    lines.push(`工况组可追溯 / 不可追溯评分样本比例：${total>0?`${percent(diagnostic.traceable_samples/total)} / ${percent(diagnostic.unattributed_samples/total)}`:"未记录"}。`);
+    lines.push(`工况组组成：${(diagnostic.groups||[]).map(group=>`${clusterUiLabel(group.cluster_id)} ${percent(group.share)}（来源 ${group.source_ref}）`).join("；")||"未记录"}。`);
+  } else lines.push("工况组组成及可追溯 / 不可追溯比例：未记录。");
+  lines.push(`来源组成：${Object.entries(totals.source_summary||{}).map(([source,item])=>`${displayUiValue(source)} ${percent(item.effective_sample_share)}`).join("；")||"未记录"}。`);
+  lines.push("当前没有可靠的工况来源映射，请结合趋势与训练组成人工判断。");
+  if(focus.validationWindowType==="known_abnormal") {
+    if(!Array.isArray(windows)||!windows.length) lines.push("当前模型未记录训练窗口，无法检查时间重叠。");
+    else if(windows.some(window=>window.enabled!==false&&window.status!=="disabled"&&(!Number.isFinite(Date.parse(window.start))||!Number.isFinite(Date.parse(window.end))))) lines.push("部分训练窗口缺少有效时间，无法完整检查时间重叠。");
+    else {
+      const overlap=windows.filter(window=>window.enabled!==false&&window.status!=="disabled"&&Date.parse(window.start)<=Date.parse(focus.end)&&Date.parse(window.end)>=Date.parse(focus.start));
+      lines.push(overlap.length?`存在时间重叠（包含端点）：${overlap.map(window=>`${window.id} · ${displayTime(window.start,19)} ～ ${displayTime(window.end,19)} · ${displayUiValue(window.status)} · 来源 ${window.source}${window.source_ref?` / ${window.source_ref}`:""}`).join("；")}。`:"该验证窗口与当前训练窗口无时间重叠。");
+      lines.push("时间重叠仅表示窗口范围交集，不判定相同异常工况是否出现在其他训练时间，也不证明重叠样本实际参与了训练。");
+    }
+  }
+  return lines;
+}
+function showValidationInvestigationContext(focus,target,kind) {
+  document.querySelectorAll('[data-validation-investigation-context]').forEach(node=>node.remove());
+  if(!target) return;
+  const banner=document.createElement("section"); banner.className="notice"; banner.dataset.validationInvestigationContext=kind;
+  const text=document.createElement("p"); text.textContent=`来自 Validation 调查：${validationInvestigationLabel({id:focus.validationWindowId,type:focus.validationWindowType,start:focus.start,end:focus.end})} · model run ${focus.runId} · ${focus.issue}`;
+  const back=document.createElement("button"); back.type="button"; back.className="secondary"; back.textContent="返回验证结果";
+  back.addEventListener("click",()=>{
+    if(currentValidationInvestigationFocus()!==focus) return;
+    if(globalThis.showWorkflowStage) globalThis.showWorkflowStage("validationPanel"); else document.querySelector('[data-panel="validationPanel"]')?.click();
+    [...(el("validationInvestigationWindows")?.children||[])].find(card=>card.dataset.validationInvestigationWindow===focus.validationWindowId)?.scrollIntoView({block:"center"});
+  });
+  banner.append(text,back);
+  if(kind==="training") validationInvestigationTrainingEvidence(focus).forEach(line=>{const p=document.createElement("p"); p.textContent=line; banner.append(p);});
+  else {
+    const note=document.createElement("p"); note.className="help"; note.textContent="当前 PCA 输入 Tag（完整保留）：高亮该窗口事件中贡献率最高的三个输入 Tag。贡献表示该统计偏离在模型输入中的分解，不代表工艺根因。"; banner.append(note);
+    const tags=document.createElement("div"); tags.className="table-wrap";
+    tags.innerHTML=`<table><thead><tr><th>当前模型输入 Tag</th><th>角色</th><th>窗口贡献</th></tr></thead><tbody>${focus.context.tags.map(tag=>`<tr${focus.relatedTags.includes(tag)?' data-validation-related-tag="true" style="background:#fff4d6"':""}><td>${escapeHtml(tag)}</td><td>${escapeHtml(displayUiValue(focus.context.tagConfigs?.[tag]?.role||"continuous_input"))}</td><td>${focus.relatedTags.includes(tag)?"贡献 Top Tag":"—"}</td></tr>`).join("")}</tbody></table>`;
+    banner.append(tags);
+  }
+  target.parentNode.insertBefore(banner,target); banner.scrollIntoView({block:"start"});
+}
+async function focusValidationInvestigation(context,windowId,kind) {
+  if(!currentValidationInvestigationContext(context)) { setStatus("Validation 调查上下文已失效，请查看当前验证结果。","warning"); return; }
+  const window=context.report.validation_windows.find(item=>item.id===windowId&&item.enabled!==false);
+  if(!window||!["normal_validation","known_abnormal"].includes(window.type)||!Number.isFinite(Date.parse(window.start))||!Number.isFinite(Date.parse(window.end))||Date.parse(window.start)>Date.parse(window.end)) return;
+  const summary=context.report.validation_window_summaries?.find(item=>item.id===windowId);
+  const focus={context,runId:context.runId,validationWindowId:window.id,validationWindowType:window.type,start:window.start,end:window.end,issue:validationInvestigationIssue(window,summary),relatedTags:validationInvestigationRelatedTags(context,window.id)};
+  state.validationInvestigationFocus=focus;
+  if(kind==="training") {
+    if(globalThis.showWorkflowStage) globalThis.showWorkflowStage("modelPanel"); else document.querySelector('[data-panel="modelPanel"]')?.click();
+    showValidationInvestigationContext(focus,el("modelTrainingDataQuality")||el("trainingWindowSummary"),kind);
+  } else if(kind==="tags") {
+    if(globalThis.showWorkflowStage) globalThis.showWorkflowStage("configPanel"); else document.querySelector('[data-panel="configPanel"]')?.click();
+    showValidationInvestigationContext(focus,el("tagOptions"),kind);
+  } else if(kind==="trend") {
+    el("trendStart").value=window.start.slice(0,19); el("trendEnd").value=window.end.slice(0,19); el("trendPreset").value="custom";
+    [...el("trendTags").options].forEach(option=>option.selected=context.tags.includes(option.value));
+    if(globalThis.showWorkflowStage) { globalThis.showWorkflowStage("candidatePanel"); globalThis.showCandidateTool?.("trendPanel"); }
+    else document.querySelector('[data-panel="trendPanel"]')?.click();
+    showValidationInvestigationContext(focus,el("dpTrendChart")||el("trendChart"),kind);
+    if(globalThis.showValidationInvestigationTrend) {
+      try { await globalThis.showValidationInvestigationTrend(context.tags,focus); }
+      catch(error) { if(currentValidationInvestigationFocus()===focus) setStatus(error.message,"error"); }
+    }
+  }
+}
+
 function renderValidation(data) {
+  renderValidationInvestigation(data);
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
   const lifecycle=modelLifecycle(data); const decisionLabels={passed:"通过",insufficient:"结论不足",failed:"不通过"}; const validationStatus=data.model_status==="frozen"?"已生成冻结和部署模型包":data.model_status==="validated"?"已生成已验证模型副本":data.engineer_decision?`工程师结论已保存：${decisionLabels[data.engineer_decision.decision]||data.engineer_decision.decision}`:"验证回放完成，待工程师确认";
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("验证状态",validationStatus);

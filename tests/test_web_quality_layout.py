@@ -1237,6 +1237,9 @@ def test_invalidate_quality_executes_actual_status_boundaries() -> None:
     function_source = "function invalidateQuality" + html.split("function invalidateQuality", 1)[1].split(
         "function firstOrderAlphaError", 1
     )[0]
+    investigation_source = "function invalidateValidationInvestigation" + html.split(
+        "function invalidateValidationInvestigation", 1
+    )[1].split("function currentValidationInvestigationContext", 1)[0]
     _run_web_javascript(
         f"""
         const functionSource = {json.dumps(function_source)};
@@ -1256,6 +1259,8 @@ def test_invalidate_quality_executes_actual_status_boundaries() -> None:
         const state = {{
           quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:""
         }};
+        const document = {{querySelectorAll:()=>[]}};
+        {investigation_source}
         function renderModelTrainingDataSummary() {{}}
         function renderModelQualityStatus() {{}}
         function renderCurrentTagQuality() {{}}
@@ -1274,7 +1279,9 @@ def test_invalidate_quality_executes_actual_status_boundaries() -> None:
           state.quality=scenario.quality;
           state.qualityStatus=scenario.status;
           const before=state.qualityRevision;
+          state.validationInvestigationFocus={{runId:"old"}};
           invalidateQuality(scenario.reason);
+          if(state.validationInvestigationFocus!==null) throw new Error("stale Validation focus kept");
           snapshots.push([
             state.qualityStatus,
             state.qualityRevision-before,
@@ -1931,6 +1938,9 @@ def test_state_filter_change_invalidates_quality_without_any_exploration() -> No
     invalidate_quality_source = "function invalidateQuality" + html.split(
         "function invalidateQuality", 1
     )[1].split("function firstOrderAlphaError", 1)[0]
+    investigation_source = "function invalidateValidationInvestigation" + html.split(
+        "function invalidateValidationInvestigation", 1
+    )[1].split("function currentValidationInvestigationContext", 1)[0]
     invalidate_exploration_source = "function confirmedExplorationSourceRefs" + html.split(
         "function confirmedExplorationSourceRefs", 1
     )[1].split("async function updateExplorationPreferredRegion", 1)[0]
@@ -1973,6 +1983,8 @@ def test_state_filter_change_invalidates_quality_without_any_exploration() -> No
           preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null,
         }};
         const statuses = [];
+        const document = {{querySelectorAll:()=>[]}};
+        {investigation_source}
         function renderModelTrainingDataSummary() {{}}
         function renderModelQualityStatus() {{}}
         function renderCurrentTagQuality() {{}}
@@ -2085,6 +2097,9 @@ def test_exploration_invalidation_keeps_confirmed_candidates_and_training_window
     invalidate_quality_source = "function invalidateQuality" + html.split(
         "function invalidateQuality", 1
     )[1].split("function firstOrderAlphaError", 1)[0]
+    investigation_source = "function invalidateValidationInvestigation" + html.split(
+        "function invalidateValidationInvestigation", 1
+    )[1].split("function currentValidationInvestigationContext", 1)[0]
 
     _run_web_javascript(
         f"""
@@ -2131,6 +2146,8 @@ def test_exploration_invalidation_keeps_confirmed_candidates_and_training_window
         function renderModelTrainingDataSummary() {{}}
         function renderModelQualityStatus() {{}}
         function renderCurrentTagQuality() {{}}
+        const document = {{querySelectorAll:()=>[]}};
+        {investigation_source}
         function renderCandidateWindows() {{ candidateRenders.push(state.candidateWindows.length); }}
         function renderExplorationRegionControls() {{}}
         function resetExplorationRegion() {{}}

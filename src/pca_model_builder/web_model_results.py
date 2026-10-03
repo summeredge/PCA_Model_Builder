@@ -858,6 +858,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const validatedDownload = document.getElementById("validatedModelDownload");
 
   globalThis.showWorkflowStage = target => {
+    globalThis.refreshValidationInvestigationContext?.();
     [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.toggle("active", panel.id === target));
     if (target === "modelPanel") {
       const fields = [["采样周期", "sampleInterval"], ["重采样", "resamplingMethod"], ["滤波", "filterMethod"], ["缺口阈值", "gapThreshold"], ["最大 Lag", "maxLag"], ["Lag 步长", "lagStep"]];
