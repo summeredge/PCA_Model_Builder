@@ -4693,7 +4693,7 @@ async function focusValidationInvestigation(context,windowId,kind) {
   state.validationInvestigationFocus=focus;
   if(kind==="training") {
     if(globalThis.showWorkflowStage) globalThis.showWorkflowStage("modelPanel"); else document.querySelector('[data-panel="modelPanel"]')?.click();
-    showValidationInvestigationContext(focus,el("modelTrainingDataQuality")||el("trainingWindowSummary"),kind);
+    showValidationInvestigationContext(focus,el("finalTrainingReviewTitle")?.closest?.("section")||el("modelTrainingDataQuality")||el("trainingWindowSummary"),kind);
   } else if(kind==="tags") {
     if(globalThis.showWorkflowStage) globalThis.showWorkflowStage("configPanel"); else document.querySelector('[data-panel="configPanel"]')?.click();
     showValidationInvestigationContext(focus,el("tagOptions"),kind);
