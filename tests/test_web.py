@@ -4293,13 +4293,13 @@ def test_web_quality_uses_all_enabled_candidate_windows(tmp_path, monkeypatch):
 def test_web_quality_page_exposes_training_composition_and_non_blocking_warnings():
     html = web.INDEX_HTML
     for label in (
-        "训练集组成审查",
+        "最终训练集审查",
         "有效训练样本",
-        "used 窗口数",
-        "used 连续段数",
+        "实际使用训练窗口数",
+        "连续段数量",
         "覆盖日期数",
-        "最大单窗口占比",
-        "最大单窗口 ID",
+        "最大单窗口有效样本占比",
+        "需要工程师确认",
         "有效样本占比",
         "这些指标用于检查训练集的代表性和时间覆盖度",
     ):
@@ -4308,9 +4308,62 @@ def test_web_quality_page_exposes_training_composition_and_non_blocking_warnings
     quality_source = html.split("function renderQuality(data)", 1)[1].split(
         "function excludeConstantTag", 1
     )[0]
-    assert "renderTrainingComposition(data.training_window_totals||{})" in quality_source
+    assert "renderTrainingComposition(data.training_window_totals||{},data)" in quality_source
     assert "data.training_quality_warnings" in quality_source
     assert 'card.className="issue-card"' in quality_source
+
+
+@pytest.mark.parametrize("sources", [("cluster", "cluster"), ("cluster", "cluster", "trend", "manual", "performance")])
+def test_final_training_review_uses_effective_samples_and_preserves_windows(tmp_path, monkeypatch, sources):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    history = _history_frame()
+    history.loc[3, "A"] = np.nan
+    uploaded = web.save_upload("review.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    config = {"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"],
+              "sample_interval_minutes": 5, "filter_method": "none", "max_lag_minutes": 5, "lag_step_minutes": 5}
+    exploration = web.state_exploration_payload({**config, "exploration_start": history.time.iloc[0].isoformat(),
+        "exploration_end": history.time.iloc[119].isoformat(),
+        "exploration_config": {"cluster_count": 2, "minimum_candidate_duration_minutes": 5}})
+    parents = list({item["cluster_id"]: item for item in exploration["cluster_candidates"]}.values())
+    assert len(parents) == 2
+    windows = [{"id": f"window-{i}", "source": source,
+                "source_ref": f"state-exploration-{exploration['exploration_run_id']}-{parents[i]['candidate_id']}" if source == "cluster" else None,
+                "start": history.time.iloc[i * 20].isoformat(), "end": history.time.iloc[i * 20 + 19].isoformat(),
+                "enabled": True, "comment": ""} for i, source in enumerate(sources)]
+    if len(sources) == 2:
+        windows[1]["source_ref"] = windows[0]["source_ref"]
+    windows.extend([
+        {"id": "dropped", "source": "manual", "source_ref": None, "start": history.time.iloc[110].isoformat(),
+         "end": history.time.iloc[110].isoformat(), "enabled": True, "comment": ""},
+        {"id": "disabled", "source": "manual", "source_ref": None, "start": history.time.iloc[115].isoformat(),
+         "end": history.time.iloc[119].isoformat(), "enabled": False, "comment": ""},
+    ])
+    result = web.quality_payload({**config, "training_windows": windows})
+    totals, composition = result["training_window_totals"], result["training_group_composition"]
+    summaries = result["training_window_summary"]
+    assert [{key: item[key] for key in windows[0]} for item in summaries] == windows
+    assert totals["enabled_window_count"] == len(sources) + 1
+    assert totals["used_window_count"] == len(sources)
+    assert totals["dropped_window_count"] == 1
+    assert summaries[0]["input_invalid_loss"] == 1
+    expected = sum(item["effective_samples"] for item in summaries if item["source"] == "cluster")
+    assert sum(group["effective_samples"] for group in composition["groups"]) == expected
+    assert sum(group["effective_sample_share"] for group in composition["groups"]) == pytest.approx(expected / totals["training_rows"])
+    assert composition["untraceable_samples"] == totals["training_rows"] - expected
+    assert len(composition["groups"]) == (1 if len(sources) == 2 else 2)
+    if len(sources) == 2:
+        assert composition["groups"][0]["effective_sample_share"] == 1.0
+    for source, item in totals["source_summary"].items():
+        actual = [row for row in summaries if row["source"] == source and row["status"] == "used"]
+        assert item["used_window_count"] == len(actual)
+        assert item["effective_samples"] == sum(row["effective_samples"] for row in actual)
+        assert item["effective_sample_share"] == pytest.approx(item["effective_samples"] / totals["training_rows"])
+    for reference in (None, "cluster_999", f"state-exploration-{'b' * 32}-cluster_001-candidate-001"):
+        changed = [{**item, "source_ref": reference} if item["source"] == "cluster" else item for item in windows]
+        lost = web.quality_payload({**config, "training_windows": changed})
+        assert lost["training_group_composition"]["groups"] == []
+        assert lost["training_group_composition"]["untraceable_samples"] == totals["training_rows"]
+        assert lost["training_readiness"] == result["training_readiness"]
 
 
 def test_web_quality_returns_normal_state_training_composition_after_range_exclusion(
@@ -5829,6 +5882,14 @@ def test_refined_training_diagnostic_round_trip(tmp_path, monkeypatch, operation
     assert all(set(item) == {"id", "start", "end", "source", "source_ref", "enabled", "comment"} for item in windows)
     assert windows[-1]["source"] == "performance" and windows[-1]["source_ref"] == refined["source_ref"]
     request = {**payload, "training_windows": windows, "training_candidates": [parent, candidate], "model_name": "refined", "n_components": 2}
+    review = web.quality_payload(request)
+    assert review["training_group_composition"]["untraceable_samples"] == 0
+    assert review["training_group_composition"]["groups"] == [{
+        "cluster_id": original["cluster_id"],
+        "source_ref": f"state-exploration-{run}-{original['cluster_id']}",
+        "effective_samples": review["training_window_totals"]["training_rows"],
+        "effective_sample_share": 1.0,
+    }]
     result = web_model_results.train_payload(request)
     diagnostic = result["model_quality"]["training_condition_diagnostic"]
     assert diagnostic["traceable_samples"] == result["training_rows"]
@@ -5859,6 +5920,7 @@ def test_refined_training_diagnostic_round_trip(tmp_path, monkeypatch, operation
     assert missing["groups"] == [] and missing["traceable_samples"] == 0
     record = {"window_id": windows[-1]["id"], **{key: windows[-1][key] for key in ("source", "source_ref", "start", "end")}, "candidate": deepcopy(candidate)}
     request = {**request, "training_candidates": [parent], "training_candidate_provenance": [record]}
+    assert web.quality_payload(request)["training_group_composition"] == review["training_group_composition"]
     retained = web_model_results.train_payload(request)
     assert retained["model_quality"]["training_condition_diagnostic"] == diagnostic
     _, retained_manifest = load_model_package(tmp_path / "runs" / retained["run_id"] / "model.pcamodel")
@@ -5871,6 +5933,9 @@ def test_refined_training_diagnostic_round_trip(tmp_path, monkeypatch, operation
     for key in ("window_id", "source", "source_ref", "start", "end"):
         stale = {**record, key: "other"}
         assert web._training_cluster_series([windows[-1]], {**request, "training_candidate_provenance": [stale]}, config) == {}
+        lost = web.quality_payload({**request, "training_candidate_provenance": [stale]})
+        assert lost["training_group_composition"]["groups"] == []
+        assert lost["training_group_composition"]["untraceable_samples"] == lost["training_window_totals"]["training_rows"]
     for provenance in invalid:
         forged = {**record, "candidate": {**candidate, "provenance": provenance}}
         assert web._training_cluster_series([windows[-1]], {**request, "training_candidate_provenance": [forged]}, config) == {}

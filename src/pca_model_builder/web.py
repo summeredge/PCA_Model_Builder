@@ -532,6 +532,9 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     result["training_window_summary"] = normal_training.window_summaries
     result["training_window_totals"] = normal_training.training_window_totals
     result["training_quality_warnings"] = normal_training.global_quality_warnings
+    result["training_group_composition"] = _training_group_composition(
+        normal_training.window_summaries, payload, config
+    )
     return _with_data_usage(
         result, loaded, len(normal_training.reference), len(normal_training.reference)
     )
@@ -1032,6 +1035,50 @@ def _training_cluster_series(
                     observed.attrs["origin_source_ref"] = reference
                 series[str(window["id"])] = observed
     return series
+
+
+def _training_group_composition(
+    summaries: list[dict[str, Any]], payload: dict[str, Any], config: PreprocessingConfig,
+) -> dict[str, Any]:
+    """Aggregate actual window contributions using the existing provenance checks."""
+    from .model_quality import _cluster_source
+    from .screening import candidate_cluster_source
+
+    used = [item for item in summaries if item.get("status") == "used"]
+    observed = _training_cluster_series(used, payload, config)
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    untraceable = 0
+    total = sum(item["effective_samples"] for item in used)
+    for item in used:
+        reference = str(item.get("source_ref") or "")
+        if item["source"] == "cluster":
+            origin = candidate_cluster_source(item)
+            if origin.get("exploration_run_id"):
+                with _STATE_EXPLORATION_LOCK:
+                    candidates = STATE_EXPLORATION_RUNS.get(origin["exploration_run_id"], {}).get("cluster_candidates", [])
+                    reliable = item["id"] in observed and any(
+                        candidate.get("candidate_id") == origin["origin_candidate_id"]
+                        and candidate.get("cluster_id") == origin["cluster_id"] for candidate in candidates
+                    )
+            else:
+                reliable = bool(origin)
+            if not reliable:
+                reference = ""
+        if item["source"] == "performance":
+            points = observed.get(item["id"])
+            reference = str(points.attrs.get("origin_source_ref") or "") if points is not None else ""
+        source = _cluster_source(reference) if item["source"] in {"cluster", "performance"} else None
+        if source is None:
+            untraceable += item["effective_samples"]
+            continue
+        group = groups.setdefault(source, {
+            "cluster_id": source[1], "source_ref": "-".join(filter(None, source)),
+            "effective_samples": 0,
+        })
+        group["effective_samples"] += item["effective_samples"]
+    for group in groups.values():
+        group["effective_sample_share"] = group["effective_samples"] / total if total else 0.0
+    return {"groups": list(groups.values()), "untraceable_samples": untraceable}
 
 
 def clear_state_exploration_cache() -> None:
@@ -3013,6 +3060,8 @@ INDEX_HTML = r"""<!doctype html>
     .metric span { color:var(--muted); font-size:12px; }
     .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .chart-card { display:grid; gap:7px; min-width:0; }
+    .final-training-review { grid-template-columns:minmax(0,1fr); }
+    #trainingCompositionReview { min-width:0; max-width:100%; }
     .chart-card h3 { margin:0; font-size:14px; }
     .variable-diagnostics { min-width:0; }
     #explorationContent:has(> .variable-diagnostics) { min-width:0; }
@@ -3121,8 +3170,6 @@ INDEX_HTML = r"""<!doctype html>
          <div id="modelQualityStatus" class="status info" role="status">未检查</div>
          </div>
          <div id="modelQualityResults">
-          <h3>训练集组成审查</h3>
-          <div id="trainingCompositionReview" class="empty">执行建模质量检查后显示训练集组成。</div>
            <div id="qualitySummary" class="metrics"></div>
           <h3>当前 Tag 建模质量详情</h3>
           <label>查看 Tag：<select id="qualityTagSelect" disabled></select></label>
@@ -3131,7 +3178,11 @@ INDEX_HTML = r"""<!doctype html>
           <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量 Tag</button></div>
           <div id="qualityIssues" class="empty">执行建模质量检查后，显示需要确认或阻止训练的 Tag。</div>
         </div>
-        <div class="actions"><button id="trainExploratoryButton" class="secondary" disabled>建立探索模型</button><button id="trainButton" disabled>建立正常状态候选模型</button></div>
+        <section class="chart-card final-training-review" aria-labelledby="finalTrainingReviewTitle">
+          <h3 id="finalTrainingReviewTitle">最终训练集审查</h3>
+          <div id="trainingCompositionReview" class="empty" aria-live="polite">执行建模质量检查后显示训练集组成。</div>
+        </section>
+        <div class="actions"><button id="trainExploratoryButton" class="secondary" disabled>建立探索模型</button><button id="trainButton" disabled>确认并训练</button></div>
       </div>
       <div id="status" class="status info" role="status" aria-live="polite">请先上传 CSV。</div>
       <div class="help">时间戳重复、乱序或无法满足采样时间轴契约会阻断训练；建模 Tag 或启用状态过滤列中的缺失、非数字、NaN、Inf 在重采样后删除整行并重新分段；不插值、不补点、不自动修复异常值。</div>
@@ -4086,11 +4137,11 @@ el("qualityButton").addEventListener("click",async()=>{
   el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent="正在执行建模质量检查。";
   renderModelTrainingDataSummary(null,"正在执行建模质量检查。");
   try {
-    const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload()};
+    const payload={...commonPayload(),tags,training_windows:trainingWindowsPayload(),training_candidates:state.candidateWindows,training_candidate_provenance:state.trainingCandidateProvenance};
     const data=await api("/api/quality",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}); if(qualityRevision!==state.qualityRevision) return; const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}}; state.quality=data; if(!data.tags.some(item=>item.tag===state.selectedTag)) state.selectedTag=data.tags[0]?.tag||null; state.qualityStatus=readiness.normal_state.can_train&&readiness.exploratory.can_train?"passed":"issues"; state.trainingWindowSummary=data.training_window_summary||state.trainingWindowSummary; renderTrainingWindows(); renderQuality(data); renderTagList(); renderModelQualityStatus(); el("trainButton").disabled=!readiness.normal_state.can_train; el("trainExploratoryButton").disabled=!readiness.exploratory.can_train;
     globalThis.showWorkflowStage?.("modelPanel");
     setStatus(readiness.normal_state.can_train&&readiness.exploratory.can_train?"建模质量检查通过，可以训练两类模型。":readiness.exploratory.can_train?"探索模型可训练；正常状态候选受当前工程量程排除影响不可训练。":"建模质量检查发现问题，请排除问题 Tag 或调整训练窗口后重新检查。",readiness.exploratory.can_train?"success":"error");
-  } catch(error) { if(qualityRevision!==state.qualityRevision) return; state.qualityStatus="failed"; state.qualityError=error.message||String(error); renderModelTrainingDataSummary(null,"建模质量检查失败，需重新执行建模质量检查。"); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
+  } catch(error) { if(qualityRevision!==state.qualityRevision) return; state.qualityStatus="failed"; state.qualityError=error.message||String(error); el("trainingCompositionReview").textContent="建模质量检查失败，请重新检查。"; renderModelTrainingDataSummary(null,"建模质量检查失败，需重新执行建模质量检查。"); renderModelQualityStatus(); setStatus(state.qualityError,"error"); el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; }
   finally { setBusy(button,false,""); }
 });
 
@@ -4325,18 +4376,29 @@ function renderCurrentTagQuality() {
   container.className=""; container.innerHTML=`<div class="issue-card ${item.status}"><strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(role))} · ${escapeHtml(displayUiValue(item.status))}</strong>${qualityProfileTable("全数据统计",item.full)}${qualityProfileTable("参考期统计",item.reference)}<h4>质量问题与建议</h4><ul>${issueHtml}</ul><span>建议操作：${escapeHtml(item.suggested_action)}</span></div>`;
 }
 function trainingCompositionShare(value) { return value===null||value===undefined||!Number.isFinite(Number(value))?"—":`${(Number(value)*100).toFixed(1)}%`; }
-function renderTrainingComposition(totals) {
+function renderTrainingComposition(totals, data={}) {
   const container=el("trainingCompositionReview"); if(!container) return;
   if(!totals||totals.training_rows===undefined) { container.className="empty"; container.textContent="执行建模质量检查后显示训练集组成。"; return; }
   const sources=totals.source_summary||{};
-  const rows=Object.entries(sources).map(([source,item])=>`<tr><td>${escapeHtml(displayUiValue(source))}</td><td class="numeric">${item.used_window_count??0}</td><td class="numeric">${item.effective_samples??0}</td><td class="numeric">${trainingCompositionShare(item.effective_sample_share)}</td></tr>`).join("");
+  const sourceLabels={cluster:"工况组候选",performance:"工程条件细化",trend:"趋势选择",manual:"手工窗口",preferred_region:"优选区域",suggested:"系统建议",legacy:"历史窗口"};
+  const rows=Object.entries(sources).map(([source,item])=>`<tr><td>${escapeHtml(sourceLabels[source]||"来源不可追溯")}</td><td class="numeric">${item.used_window_count??0}</td><td class="numeric">${item.effective_samples??0}</td><td class="numeric">${trainingCompositionShare(item.effective_sample_share)}</td></tr>`).join("");
+  const composition=data.training_group_composition, groups=composition?.groups||[];
+  const untraceable=composition?.untraceable_samples??totals.training_rows;
+  const groupRow=(label,samples,share)=>`<tr><td>${escapeHtml(label)}</td><td class="numeric">${samples}</td><td class="numeric">${trainingCompositionShare(share)}</td></tr>`;
+  const groupRows=groups.map(group=>groupRow(clusterUiLabel(group.cluster_id),group.effective_samples,group.effective_sample_share)).join("")+(untraceable?groupRow("来源不可追溯",untraceable,totals.training_rows?untraceable/totals.training_rows:0):"");
+  const summaries=(data.training_window_summary||[]).filter(item=>item.status!=="disabled");
+  const loss=key=>summaries.length&&summaries.every(item=>item[key]!==undefined||item.raw_samples===0)?summaries.reduce((sum,item)=>sum+(item[key]||0),0):"当前不可用";
+  const prompts=(data.training_quality_warnings||[]).map(item=>item.message||`${item.feature} 全局变化极小，请确认训练集代表性。`);
+  if(groups.length>1) prompts.push(`训练数据来自 ${groups.length} 个可追溯工况组，请确认这些工况是否都应由同一个正常状态模型覆盖。`);
+  if(totals.dropped_window_count) prompts.push(`${totals.dropped_window_count} 个启用窗口未产生有效训练样本，请确认训练集覆盖是否符合预期。`);
+  if(untraceable) prompts.push(`${untraceable} 个有效样本来源不可追溯至工况组，请确认这些样本是否代表预期正常状态。`);
   container.className="";
-  container.innerHTML=`<div class="metrics">${metric("有效训练样本",totals.training_rows)}${metric("used 窗口数",totals.used_window_count??0)}${metric("used 连续段数",totals.used_segment_count??0)}${metric("覆盖日期数",totals.covered_day_count??0)}${metric("最大单窗口占比",trainingCompositionShare(totals.max_window_effective_share))}${metric("最大单窗口 ID",totals.max_window_id??"—")}</div><div class="table-wrap"><table><thead><tr><th>来源</th><th>used 窗口数</th><th>有效样本数</th><th>有效样本占比</th></tr></thead><tbody>${rows||'<tr><td colspan="4">暂无有效训练样本来源。</td></tr>'}</tbody></table></div><div class="help">这些指标用于检查训练集的代表性和时间覆盖度，由工程师判断；不会自动改变训练集。</div>`;
+  container.innerHTML=`<h4>训练集概况</h4><div class="metrics">${metric("有效训练样本",totals.training_rows)}${metric("覆盖日期数",totals.covered_day_count??"当前不可用")}${metric("连续段数量",totals.used_segment_count??"当前不可用")}${metric("启用训练窗口数",totals.enabled_window_count??"当前不可用")}${metric("实际使用训练窗口数",totals.used_window_count??"当前不可用")}${metric("被丢弃窗口数",totals.dropped_window_count??"当前不可用")}${metric("最大单窗口有效样本占比",totals.max_window_effective_share==null?"当前不可用":trainingCompositionShare(totals.max_window_effective_share))}${metric("建模资格筛除比例","当前不可用")}</div><details><summary>预处理 / Lag / 上下文损失明细</summary><div class="metrics">${[["重采样行减少（原始行）","resampling_row_reduction"],["不完整时间桶损失（原始行）","partial_resampling_row_loss"],["无效输入损失（目标采样行）","input_invalid_loss"],["工程量程排除（目标采样行）","engineering_range_loss"],["状态过滤损失（目标采样行）","state_filter_loss"],["滤波预热损失（目标采样行）","filter_warmup_loss"],["滤波上下文损失（目标采样行）","filter_context_invalid_loss"],["Lag 预热损失（目标采样行）","lag_warmup_loss"],["Lag 上下文损失（目标采样行）","lag_context_invalid_loss"]].map(([label,key])=>metric(label,loss(key))).join("")}</div></details><h4>工况组成</h4><div class="table-wrap"><table><thead><tr><th>工况组</th><th>有效样本数</th><th>有效样本占比</th></tr></thead><tbody>${groupRows||'<tr><td colspan="3">暂无有效训练样本。</td></tr>'}</tbody></table></div><h4>来源组成</h4><div class="table-wrap"><table><thead><tr><th>来源</th><th>实际使用窗口数</th><th>有效样本数</th><th>有效样本占比</th></tr></thead><tbody>${rows||'<tr><td colspan="4">暂无有效训练样本来源。</td></tr>'}</tbody></table></div><h4>需要工程师确认</h4>${[...new Set(prompts)].map(message=>`<div class="notice">${escapeHtml(message)}</div>`).join("")||'<div class="help">当前没有额外审查提示，请确认样本代表预期正常状态。</div>'}<div class="help">这些指标用于检查训练集的代表性和时间覆盖度，由工程师判断；不会自动改变训练集。以上为正常状态候选训练集；占比均以最终有效样本为分母，来源窗口数仅统计实际使用窗口。工况组仅表示候选来源。各损失沿用已有口径，不相加为总损失。资格筛选摘要未提供当前训练窗口口径。</div>`;
 }
 function renderQuality(data) {
   const readiness=data.training_readiness||{normal_state:{can_train:data.can_train},exploratory:{can_train:data.can_train}};
   el("qualitySummary").innerHTML=metric("可直接使用",data.summary.usable)+metric("需要确认",data.summary.review)+metric("阻止训练",data.summary.blocking)+metric("正常状态训练",readiness.normal_state.can_train?"通过":"未通过")+metric("探索训练",readiness.exploratory.can_train?"通过":"未通过");
-  renderTrainingComposition(data.training_window_totals||{});
+  renderTrainingComposition(data.training_window_totals||{},data);
   renderModelTrainingDataSummary(data.training_window_totals);
   const container=el("qualityIssues"); container.className=""; container.replaceChildren();
   data.time_issues.forEach(issue=>{ const card=document.createElement("div"); card.className=`issue-card ${issue.severity==="error"?"blocking":""}`; card.innerHTML=`<strong>${escapeHtml(issue.code)}</strong><span>${escapeHtml(issue.message)}</span>`; container.append(card); });

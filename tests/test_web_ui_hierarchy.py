@@ -159,15 +159,15 @@ def test_training_validation_and_release_follow_decision_order() -> None:
     release = html[html.index('<div id="releasePanel"'):]
 
     assert [model.index(label) for label in (
-        "① 训练准备", "② 建模质量检查", "③ PCA / DPCA 模型配置",
-        "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
+        "① 训练准备", "② PCA / DPCA 模型配置", "③ 建模质量检查",
+        "最终训练集审查", "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
         'id="modelQualitySummary"', 'id="componentLoadings"',
         'id="modelTrainingDataQuality"', 'id="t2Chart"', 'id="speChart"',
         'id="scoreChart"', 'id="loadingChart"', 'id="modelStructureComparison"',
         'id="modelDownload"',
     )] == sorted(model.index(label) for label in (
-        "① 训练准备", "② 建模质量检查", "③ PCA / DPCA 模型配置",
-        "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
+        "① 训练准备", "② PCA / DPCA 模型配置", "③ 建模质量检查",
+        "最终训练集审查", "④ 正式训练", 'id="modelContent"', 'id="varianceChart"',
         'id="modelQualitySummary"', 'id="componentLoadings"',
         'id="modelTrainingDataQuality"', 'id="t2Chart"', 'id="speChart"',
         'id="scoreChart"', 'id="loadingChart"', 'id="modelStructureComparison"',
