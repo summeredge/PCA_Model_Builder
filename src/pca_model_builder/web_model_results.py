@@ -1232,7 +1232,8 @@ def _model_results_content_html() -> str:
             <div id="modelComparisonResult" class="help">比较只读取已保存的正常状态候选模型包。</div>
           </section>
           <h3>模型文件</h3>
-          <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a></div>
+          <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a><button id="modelingSnapshotButton" class="secondary" type="button">查看建模快照</button></div>
+          <div id="modelingSnapshot" class="table-wrap" hidden></div>
         </div>"""
 
 
@@ -1570,6 +1571,7 @@ def _stabilize_workbench_html(html: str) -> str:
         '          </div>\n'
         f'          {_label_for_unique_field(training_parameter_tail, "varianceThreshold", "累计解释率")}\n'
         f'          {_label_for_unique_field(training_parameter_tail, "components", "主元数")}\n'
+        f'          {_label_for_unique_field(training_parameter_tail, "changeReason", "本轮建模说明")}\n'
         '        </div>\n'
     )
     training_data_summary = (

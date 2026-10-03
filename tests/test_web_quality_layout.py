@@ -2461,7 +2461,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
          'preprocessingPreviewWindow'),
         ('main input:not([type]), main input[type="text"]', 'text', 420,
          'modelName tagDescription tagUnit candidateComment validationComment '
-         'validationDecisionComment frozenModelId frozenBy freezeComment'),
+         'validationDecisionComment frozenModelId frozenBy freezeComment changeReason'),
         ('main select[multiple]', 'multiple', 420, 'trendTags modelComparisonRuns performanceParents performanceClusters'),
     )
     for selector, semantic, width, field_ids in groups:
@@ -2483,7 +2483,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
     assert all(tag != 'input' or attrs.get('type', 'text') in
                ('text', 'number', 'datetime-local', 'file', 'range')
                for tag, attrs in controls.fields.values())
-    assert len(controls.fields) == 69
+    assert len(controls.fields) == 70
     assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
 
 
@@ -2514,3 +2514,40 @@ def test_semantic_widths_keep_data_source_compact_and_responsive_exceptions() ->
         assert f'#{field_id}' in style
         assert html.count(f'id="{field_id}"') == 1
     assert html.count('id="preprocessingPreviewTagSelect"') == 1
+
+
+def test_modeling_snapshot_view_renders_context_and_missing_state() -> None:
+    html = web_model_results.INDEX_HTML
+    source = "function modelingSnapshotValue" + html.split("function modelingSnapshotValue", 1)[1].split(
+        'el("modelingSnapshotButton")', 1
+    )[0]
+
+    _run_web_javascript(f"""
+        const assert=require('node:assert/strict');
+        const nodes=new Map();
+        const el=id=>{{ if(!nodes.has(id)) nodes.set(id,{{innerHTML:'',textContent:'',hidden:true,className:''}}); return nodes.get(id); }};
+        const escapeHtml=value=>String(value).replaceAll('<','&lt;');
+        const displayUiValue=value=>value;
+        const clusterUiLabel=value=>'工况组 '+value;
+        {source}
+        renderModelingSnapshot({{}});
+        assert.equal(el('modelingSnapshot').textContent,'该模型运行没有建模快照。');
+        assert.equal(el('modelingSnapshot').className,'empty');
+        renderModelingSnapshot({{snapshot:{{
+          run_id:'a'.repeat(32), model_name:'DEMO', model_purpose:'normal_state', model_status:'candidate',
+          created_at:'2026-01-01T00:00:00+00:00', candidate_model:{{filename:'model.pcamodel',sha256:'f'.repeat(64)}},
+          change_reason:'排除每日清洗状态并细化高负荷工况',
+          data_source:{{filename:'history.csv',file_id:'b'.repeat(32),timestamp_column:'time',sha256:'e'.repeat(64),size_bytes:1234}},
+          modeling_tags:[{{tag:'A',role:'continuous_input',unit:'degC',description:'温度'}}],
+          excluded_tags:[{{tag:'C',reason:'constant_in_reference_window'}}],
+          modeling_eligibility:{{keep_conditions:[{{column:'A',minimum:0,maximum:1}}],exclude_rule_groups:[[{{column:'B',minimum:null,maximum:5}}]]}},
+          training_windows:[{{id:'w1'}}],
+          training_window_totals:{{enabled_window_count:1,used_window_count:1,dropped_window_count:0,training_rows:77,covered_day_count:1}},
+          window_provenance:[{{window_id:'w1',source:'cluster',traceable:true,cluster_id:'cluster_001',origin_source_ref:'state-exploration-run-cluster_001-candidate-001'}},
+            {{window_id:'w2',source:'manual',traceable:false}}],
+          model_config:{{sample_interval_minutes:5,filter_method:'first_order',first_order_alpha:0.4,state_filters:[{{column:'A',minimum:0}}],n_components:6}}}}}});
+        const card=el('modelingSnapshot').innerHTML;
+        for(const text of ['DEMO','history.csv','建模资格','degC','工况组 cluster_001','来源不可追溯','77','1 / 1 / 0','排除每日清洗状态并细化高负荷工况','first_order','constant_in_reference_window','A ≥ 0 ≤ 1']) assert(card.includes(text),text);
+        assert.equal(el('modelingSnapshot').hidden,false);
+        assert.equal(el('modelingSnapshot').className,'');
+    """)

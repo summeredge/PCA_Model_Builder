@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 
@@ -15,6 +16,77 @@ def test_performance_scope_controls_live_in_candidate_stage_once():
     assert '<option value="cluster">指定工况组</option>' in html
     assert 'id="performanceParents" multiple' in html
     assert 'id="performanceClusters" multiple' in html
+
+
+@pytest.mark.parametrize("selected,conditions,changed", [
+    (["A", "B"], ["quality"], False),
+    (["A", "B", "quality"], ["quality"], True),
+    (["A", "B", "quality", "yield"], ["quality", "absent", "yield", "quality"], True),
+])
+def test_performance_exclusion_invalidates_only_when_model_tags_change(selected, conditions, changed):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for WebUI regression tests")
+    html = web_model_results.INDEX_HTML
+
+    def function(name):
+        start = html.index(f"function {name}(")
+        first_line = html[start:].split("\n", 1)[0]
+        return first_line if first_line.endswith("}") else html[start:html.index("\n}", start) + 2]
+
+    # Execute the real invalidation chain, including pending-candidate removal.
+    script = r'''
+      const assert=require("node:assert/strict");
+      const nodes={}; function el(id){return nodes[id]??={replaceChildren(){},hidden:false};}
+      const document={querySelectorAll:()=>[]};
+      function clearTrainingDiagnosticFocus(){state.trainingDiagnosticFocus=null;}
+      function resetExplorationRegion(){clearTrainingDiagnosticFocus();state.preferredRegion=null;}
+      function renderCandidateWindows(){} function renderTagList(){}
+      function renderModelTrainingDataSummary(){} function renderModelQualityStatus(){}
+      function renderCurrentTagQuality(){} function setStatus(){}
+      function candidateId(){return "derived-ui";}
+      __FUNCTIONS__
+      const exploration={exploration_run_id:"run-1"},quality={},preview={},focus={runId:"run-1"};
+      const parent={id:"parent-1",source_ref:"state-exploration-run-1-cluster_001-candidate-001",source:"cluster"};
+      const state={selectedModelTags:new Set(__SELECTED__),exploration,explorationRevision:7,
+        trainingDiagnosticFocus:focus,preferredRegion:null,candidateWindows:[parent],trainingWindows:[],
+        quality,qualityRevision:3,qualityStatus:"passed",preprocessingPreview:preview,preprocessingPreviewTag:"A"};
+      const result={conditions:__CONDITIONS__.map(column=>({column})),candidate_windows:[{source:"performance",source_ref:"derived-1",start:"2026-01-01",end:"2026-01-02",provenance:{parent_candidate_id:"parent-1",exploration_run_id:"run-1"}}]};
+      state.performance=result;
+      let invalidations=0;
+      const realInvalidate=invalidateModellingResults;
+      invalidateModellingResults=reason=>{invalidations++;realInvalidate(reason);};
+      excludePerformanceColumns(result.conditions);
+      assert.equal(invalidations,__CHANGED__?1:0);
+      assert.deepEqual([...state.selectedModelTags],["A","B"]);
+      assert.equal(state.performance,result);
+      if(__CHANGED__){
+        assert.equal(state.exploration,null);assert.equal(state.explorationRevision,8);
+        assert.equal(state.candidateWindows.length,0);
+        assert.equal(state.quality,null);assert.equal(state.qualityStatus,"changed");assert.equal(state.qualityRevision,4);
+        assert.equal(state.preprocessingPreview,null);assert.equal(state.preprocessingPreviewTag,null);
+        assert.equal(state.trainingDiagnosticFocus,null);
+      }else{
+        assert.equal(state.exploration,exploration);assert.equal(state.exploration.exploration_run_id,"run-1");
+        assert.equal(state.explorationRevision,7);assert.equal(state.candidateWindows[0],parent);
+        assert.equal(state.quality,quality);assert.equal(state.qualityRevision,3);
+        assert.equal(state.preprocessingPreview,preview);assert.equal(state.trainingDiagnosticFocus,focus);
+        addPerformanceCandidate(result.candidate_windows[0],result);
+        assert.equal(state.candidateWindows.length,2);assert.equal(state.candidateWindows[0],parent);
+        assert.equal(state.candidateWindows[1].provenance,result.candidate_windows[0].provenance);
+        assert.equal(state.performance,result);
+      }
+      excludePerformanceColumns(result.conditions);
+      assert.equal(invalidations,__CHANGED__?1:0);
+    '''
+    names = ["excludePerformanceColumns", "invalidateModellingResults", "invalidateExploration",
+             "confirmedExplorationSourceRefs", "candidateTrainingWindows", "invalidatePreprocessingPreview",
+             "invalidateQuality", "invalidateValidationInvestigation", "addPerformanceCandidate"]
+    script = script.replace("__FUNCTIONS__", "\n".join(function(name) for name in names))
+    script = script.replace("__SELECTED__", json.dumps(selected)).replace("__CONDITIONS__", json.dumps(conditions))
+    script = script.replace("__CHANGED__", json.dumps(changed))
+    result = subprocess.run([node, "-"], input=script, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 def test_performance_scope_payload_rendering_provenance_and_stale_requests():

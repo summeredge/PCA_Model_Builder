@@ -1056,12 +1056,69 @@ def test_successful_validation_replay_resets_engineer_decision_status():
 
     assert 'state.validation=data; renderValidation(data);' in source
     assert 'decisionStatus=el("validationDecisionStatus")' in source
-    assert 'decisionStatus.textContent="等待保存工程师结论。"' in source
+    assert 'decisionStatus.textContent="验证回放完成，待重新确认；请保存工程师结论。"' in source
     assert 'decisionStatus.className="status info"' in source
     assert source.index('renderValidation(data);') < source.index(
-        'decisionStatus.textContent="等待保存工程师结论。"'
+        'decisionStatus.textContent="验证回放完成，待重新确认；请保存工程师结论。"'
     ) < source.index('setStatus("独立窗口回放完成。')
     assert 'validationDecisionStatus' not in source.split('} catch (error)', 1)[1]
+
+
+def test_validation_ui_revokes_stale_approval_and_restores_latest_passed_result():
+    html = web_model_results.INDEX_HTML
+    invalidation = "function invalidateValidationInvestigation" + html.split("function invalidateValidationInvestigation", 1)[1].split("function currentValidationInvestigationContext", 1)[0]
+    start = html.index('el("validateButton").addEventListener("click", async')
+    handlers = html[start:html.index('el("freezeDeployment").addEventListener', start)]
+    start = html.index("function renderValidation(data)")
+    renderer = html[start:html.index("\nfunction percent(", start)]
+    result = _run_node_javascript(r'''
+      const assert=require("node:assert/strict");
+      const nodes={}; function el(id){return nodes[id]??={value:"",hidden:false,href:"#",listeners:{},
+        addEventListener(event,handler){this.listeners[event]=handler;},replaceChildren(){}};}
+      const document={querySelectorAll:()=>[]};
+      function renderValidationInvestigation(){}
+      __INVALIDATION__
+      function setBusy(){} function setStatus(){} function renderValidationWindows(){}
+      function modelLifecycle(){return {purpose:"正常状态模型",status:"候选"};}
+      function metric(){return "";} function renderValidationMetricDetails(){}
+      function renderContributionStability(){} function lineChart(){}
+      let response; async function api(){return response;}
+      const base={model_purpose:"normal_state",model_status:"candidate",scored_rows:1,status_counts:{normal:1,attention:0,abnormal:0},
+        scores:[],contributions:[],validation_downloads:{scores:"scores",report:"report",contributions:"contributions"}};
+      const state={runId:"run-1",fileId:"file-1",validationWindows:[{}],validation:base};
+      __RENDERER__
+      __HANDLERS__
+      (async()=>{
+        for(const decision of ["passed","failed","passed","insufficient","passed"]){
+          response={model_status:decision==="passed"?"validated":"candidate",engineer_decision:{decision},
+            validated_model_download:decision==="passed"?"validated-latest":null};
+          el("validationDecision").value=decision;
+          await el("recordValidationDecision").listeners.click();
+          assert.equal(state.validation.engineer_decision.decision,decision);
+          assert.equal(el("validatedModelDownload").hidden,decision!=="passed");
+          assert.equal(el("freezeDeployment").disabled,decision!=="passed");
+          assert.equal(el("validatedModelDownload").href,decision==="passed"?"validated-latest":"#");
+        }
+        state.validation={...base,model_status:"frozen",engineer_decision:{decision:"passed"}};
+        el("frozenModelDownload").href="old-frozen";el("deploymentModelDownload").href="old-deployment";
+        renderValidation(state.validation);
+        response={...base};
+        await el("validateButton").listeners.click();
+        assert.equal(state.validation.engineer_decision,undefined);
+        assert.equal(el("freezeDeployment").disabled,true);
+        for(const id of ["validatedModelDownload","frozenModelDownload","deploymentModelDownload"]){
+          assert.equal(el(id).hidden,true);assert.equal(el(id).href,"#");
+        }
+        assert.match(el("validationDecisionStatus").textContent,/待重新确认/);
+        response={model_status:"validated",engineer_decision:{decision:"passed"},validated_model_download:"validated-new"};
+        await el("recordValidationDecision").listeners.click();
+        assert.equal(el("freezeDeployment").disabled,false);
+        assert.equal(el("validatedModelDownload").hidden,false);
+        assert.equal(el("validatedModelDownload").href,"validated-new");
+        console.log(JSON.stringify({verified:true}));
+      })().catch(error=>{console.error(error);process.exitCode=1;});
+    '''.replace("__RENDERER__", renderer).replace("__HANDLERS__", handlers).replace("__INVALIDATION__", invalidation))
+    assert result["verified"] is True
 
 
 def test_variable_diagnostics_renderer_handles_large_results_escaping_and_unavailable_values():
@@ -3038,7 +3095,8 @@ def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
         in html
     )
     assert "state.selectedModelTags.delete(item.tag)" in html
-    assert "columns.forEach(tag=>state.selectedModelTags.delete(tag))" in html
+    assert "columns.forEach(tag=>{ if(state.selectedModelTags.delete(tag)) changed=true; })" in html
+    assert 'if(changed) invalidateModellingResults("性能筛选列已从建模Tag取消")' in html
     assert (
         "if(config.role!==\"continuous_input\") "
         "state.selectedModelTags.delete(tag)"
@@ -4313,6 +4371,43 @@ def test_web_quality_page_exposes_training_composition_and_non_blocking_warnings
     assert 'card.className="issue-card"' in quality_source
 
 
+def test_train_payload_returns_same_training_group_composition_as_quality(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("parity.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    payload = {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "training_windows": [{
+            "id": "manual-window-001",
+            "start": history.time.iloc[0].isoformat(),
+            "end": history.time.iloc[79].isoformat(),
+            "source": "manual",
+            "source_ref": None,
+            "enabled": True,
+            "comment": "",
+        }],
+        "sample_interval_minutes": 5,
+        "filter_method": "none",
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+    }
+
+    quality = web.quality_payload(payload)
+    trained = web_model_results.train_payload({**payload, "model_name": "parity", "n_components": 2})
+
+    assert trained["training_group_composition"] == quality["training_group_composition"]
+    assert trained["training_group_composition"] == {
+        "groups": [],
+        "untraceable_samples": trained["training_window_totals"]["training_rows"],
+    }
+    html = web_model_results.INDEX_HTML
+    training_source = html.split("function renderTraining(data)", 1)[1].split("function modelingSnapshotValue", 1)[0]
+    assert "renderTrainingComposition(totals,data);" in training_source
+
+
 @pytest.mark.parametrize("sources", [("cluster", "cluster"), ("cluster", "cluster", "trend", "manual", "performance")])
 def test_final_training_review_uses_effective_samples_and_preserves_windows(tmp_path, monkeypatch, sources):
     monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
@@ -5266,6 +5361,93 @@ def test_score_payload_buckets_when_critical_points_exceed_limit():
     assert scores.index[731].isoformat() in timestamps
     assert scores.index[1873].isoformat() in timestamps
     assert sum(row["status"] == "abnormal" for row in payload) > 100
+
+
+@pytest.mark.parametrize("change", [
+    "revalidate", "failed", "insufficient", "reapprove", "stale_package",
+    "missing_report", "missing_decision", "summary", "evidence", "decision",
+    "candidate", "scores", "contributions",
+])
+def test_web_freeze_requires_current_approved_validation(tmp_path, monkeypatch, change):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    uploaded = web.save_upload("history.csv", _history_frame().to_csv(index=False).encode("utf-8-sig"))
+    trained = web.train_payload({"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"], "normal_start": "2026-01-01T00:00:00", "normal_end": "2026-01-01T07:55:00", "sample_interval_minutes": 5, "smoothing_window_minutes": 10, "max_lag_minutes": 0, "lag_step_minutes": 5, "model_name": "candidate"})
+    run_id = trained["run_id"]
+    run_dir = web.RUNS_DIR / run_id
+    candidate_before = (run_dir / "model.pcamodel").read_bytes()
+    windows = [
+        {"id": "normal", "type": "normal_validation", "start": "2026-01-01T08:00:00", "end": "2026-01-01T09:55:00", "enabled": True, "comment": ""},
+        {"id": "abnormal", "type": "known_abnormal", "start": "2026-01-01T10:50:00", "end": "2026-01-01T14:55:00", "enabled": True, "comment": ""},
+    ]
+    validation_payload = {"run_id": run_id, "file_id": uploaded["file_id"], "timestamp_column": "time", "validation_windows": windows}
+    web.validate_payload(validation_payload)
+    web.validation_decision_payload({"run_id": run_id, "decision": "passed", "comment": "first approval"})
+    validated_path = run_dir / "validated_model.pcamodel"
+    old_validated = validated_path.read_bytes()
+    report_path = run_dir / "validation_report.json"
+
+    if change in {"revalidate", "reapprove", "stale_package"}:
+        windows[0]["end"] = "2026-01-01T09:50:00"
+        web.validate_payload(validation_payload)
+        assert "engineer_decision" not in json.loads(report_path.read_text(encoding="utf-8"))
+        assert validated_path.read_bytes() == old_validated
+        if change != "revalidate":
+            web.validation_decision_payload({"run_id": run_id, "decision": "passed", "comment": "latest approval"})
+            assert validated_path.read_bytes() != old_validated
+        if change == "stale_package":
+            validated_path.write_bytes(old_validated)
+    elif change in {"failed", "insufficient"}:
+        decision = web.validation_decision_payload({"run_id": run_id, "decision": change, "comment": "latest decision"})
+        assert decision["validated_model_download"] is None
+        assert decision["model_status"] == "candidate"
+        assert validated_path.read_bytes() == old_validated
+    elif change == "missing_report":
+        report_path.unlink()
+    elif change == "missing_decision":
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        del report["engineer_decision"]
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+    elif change in {"scores", "contributions"}:
+        artifact = run_dir / ("validation_scores.csv" if change == "scores" else "validation_contributions.json")
+        artifact.write_bytes(artifact.read_bytes() + b" ")
+    else:
+        with zipfile.ZipFile(validated_path) as package:
+            manifest = json.loads(package.read("manifest.json"))
+            arrays = package.read("arrays.npz")
+        if change == "summary":
+            manifest["validation_summary"]["validation_windows"][0]["comment"] = "different validation"
+        elif change == "evidence":
+            manifest["validation_summary"]["validation_evidence"]["scores"]["filename"] = "old_scores.csv"
+        elif change == "decision":
+            manifest["engineer_decision"]["comment"] = "different approval"
+        elif change == "candidate":
+            manifest["source_candidate_package"]["identifier"] = "different-run"
+        with zipfile.ZipFile(validated_path, "w", zipfile.ZIP_DEFLATED) as package:
+            package.writestr("manifest.json", json.dumps(manifest))
+            package.writestr("arrays.npz", arrays)
+
+    freeze_payload = {"run_id": run_id, "model_id": "web.current", "model_version": 1, "frozen_by": "engineer"}
+    if change == "reapprove":
+        assert web.freeze_deployment_payload(freeze_payload)["model_status"] == "frozen"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        _, frozen = load_model_package(run_dir / "frozen_model.pcamodel")
+        assert frozen["validation_summary"] == report
+        assert frozen["engineer_decision"] == report["engineer_decision"]
+        assert frozen["source_candidate_package"]["identifier"] == run_id
+        _, deployment = load_deployment_package(run_dir / "deployment_model.pcadeploy")
+        assert deployment["model_id"] == "web.current"
+        assert deployment["deployment_schema_version"] == 2
+    else:
+        message = "不存在" if change == "missing_report" else "尚未由工程师确认通过" if change in {"revalidate", "failed", "insufficient", "missing_decision"} else "工件证据不匹配" if change in {"scores", "contributions"} else "不一致"
+        with pytest.raises(ValueError, match=message):
+            web.freeze_deployment_payload(freeze_payload)
+        assert validated_path.is_file()
+        assert not (run_dir / "frozen_model.pcamodel").exists()
+        assert not (run_dir / "deployment_model.pcadeploy").exists()
+        assert not list(run_dir.glob(".frozen-*"))
+        assert not list(run_dir.glob(".deployment-*"))
+    assert (run_dir / "model.pcamodel").read_bytes() == candidate_before
 
 
 def test_web_freezes_validated_model_and_returns_two_downloads(tmp_path, monkeypatch):

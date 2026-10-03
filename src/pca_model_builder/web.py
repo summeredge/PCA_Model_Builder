@@ -4,6 +4,7 @@ import argparse
 from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict
+from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import default as email_policy
 import json
@@ -13,7 +14,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
 import uuid
 import webbrowser
@@ -80,6 +81,7 @@ from .tag_profile import model_quality_payload, profile_tag
 from .training import _validate_dynamic_matrix, build_training_matrix
 from .trend import downsample_trend, trend_payload_data
 from .validation import (
+    _file_sha256,
     build_validation_evidence,
     record_engineer_decision,
     validate_model_windows,
@@ -423,6 +425,29 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         model_purpose=model_purpose,
         model_status=model_status,
     )
+    _write_web_json_atomic(
+        run_dir / "modeling_snapshot.json",
+        _modeling_snapshot(
+            run_id=run_id,
+            payload=payload,
+            model_path=run_dir / "model.pcamodel",
+            source_path=loaded.metadata.source_path,
+            model_name=model_name,
+            model_purpose=model_purpose,
+            model_status=model_status,
+            timestamp_column=timestamp_column,
+            tags=tags,
+            tag_configs=tag_configs,
+            excluded_tag_records=excluded_tag_records,
+            training_windows=training_windows,
+            training_result=training_result,
+            config=config,
+            variance_threshold=variance_threshold,
+            requested_components=n_components,
+            retained_components=model.n_components,
+            dynamic_feature_count=int(dynamic.shape[1]),
+        ),
+    )
     with _web_stage("scoring"):
         scores = model.score(dynamic)
     performance_target = _training_performance_target(
@@ -440,6 +465,9 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "training_window_summary": training_result.window_summaries,
         "training_window_totals": training_result.training_window_totals,
         "training_quality_warnings": training_result.global_quality_warnings,
+        "training_group_composition": _training_group_composition(
+            training_result.window_summaries, payload, config
+        ),
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
         "cumulative_explained_variance": float(
@@ -1033,25 +1061,29 @@ def _training_cluster_series(
                 observed = points.loc[window["start"]:window["end"], ["cluster_id", "segment_id"]].copy()
                 if origin:
                     observed.attrs["origin_source_ref"] = reference
+                    recorded = matches[0].get("provenance")
+                    recorded = recorded if isinstance(recorded, Mapping) else {}
+                    observed.attrs["origin_candidate"] = {
+                        "id": matches[0].get("id"),
+                        "source_ref": matches[0].get("source_ref"),
+                        "scope_type": recorded.get("scope_type"),
+                        "conditions": recorded.get("conditions"),
+                    }
                 series[str(window["id"])] = observed
     return series
 
 
-def _training_group_composition(
+def _verified_training_window_origins(
     summaries: list[dict[str, Any]], payload: dict[str, Any], config: PreprocessingConfig,
-) -> dict[str, Any]:
-    """Aggregate actual window contributions using the existing provenance checks."""
-    from .model_quality import _cluster_source
+) -> dict[str, dict[str, Any]]:
+    """Verified cluster origin per used window; windows that cannot be confirmed stay absent."""
     from .screening import candidate_cluster_source
 
     used = [item for item in summaries if item.get("status") == "used"]
     observed = _training_cluster_series(used, payload, config)
-    groups: dict[tuple[str, str], dict[str, Any]] = {}
-    untraceable = 0
-    total = sum(item["effective_samples"] for item in used)
+    origins: dict[str, dict[str, Any]] = {}
     for item in used:
-        reference = str(item.get("source_ref") or "")
-        if item["source"] == "cluster":
+        if item.get("source") == "cluster":
             origin = candidate_cluster_source(item)
             if origin.get("exploration_run_id"):
                 with _STATE_EXPLORATION_LOCK:
@@ -1062,12 +1094,31 @@ def _training_group_composition(
                     )
             else:
                 reliable = bool(origin)
-            if not reliable:
-                reference = ""
-        if item["source"] == "performance":
+            if reliable:
+                origins[item["id"]] = origin
+        elif item.get("source") == "performance":
             points = observed.get(item["id"])
             reference = str(points.attrs.get("origin_source_ref") or "") if points is not None else ""
-        source = _cluster_source(reference) if item["source"] in {"cluster", "performance"} else None
+            origin = candidate_cluster_source({"source": "cluster", "source_ref": reference})
+            if origin.get("origin_source_ref") == reference and origin.get("exploration_run_id") and origin.get("cluster_id"):
+                origins[item["id"]] = {**origin, "origin_candidate": points.attrs.get("origin_candidate")}
+    return origins
+
+
+def _training_group_composition(
+    summaries: list[dict[str, Any]], payload: dict[str, Any], config: PreprocessingConfig,
+) -> dict[str, Any]:
+    """Aggregate actual window contributions using the existing provenance checks."""
+    from .model_quality import _cluster_source
+
+    used = [item for item in summaries if item.get("status") == "used"]
+    origins = _verified_training_window_origins(summaries, payload, config)
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    untraceable = 0
+    total = sum(item["effective_samples"] for item in used)
+    for item in used:
+        origin = origins.get(item["id"])
+        source = _cluster_source(str(origin.get("origin_source_ref") or "")) if origin else None
         if source is None:
             untraceable += item["effective_samples"]
             continue
@@ -1079,6 +1130,110 @@ def _training_group_composition(
     for group in groups.values():
         group["effective_sample_share"] = group["effective_samples"] / total if total else 0.0
     return {"groups": list(groups.values()), "untraceable_samples": untraceable}
+
+
+def _modeling_snapshot(
+    *,
+    run_id: str,
+    payload: dict[str, Any],
+    model_path: Path,
+    source_path: Path | None,
+    model_name: str,
+    model_purpose: str,
+    model_status: str,
+    timestamp_column: str,
+    tags: Sequence[str],
+    tag_configs: Mapping[str, Mapping[str, Any]],
+    excluded_tag_records: list[dict[str, Any]],
+    training_windows: list[dict[str, Any]],
+    training_result: Any,
+    config: PreprocessingConfig,
+    variance_threshold: float,
+    requested_components: int | None,
+    retained_components: int,
+    dynamic_feature_count: int,
+) -> dict[str, Any]:
+    """Offline record of why this run was modeled this way; never part of the model package."""
+    origins = _verified_training_window_origins(training_result.window_summaries, payload, config)
+    provenance: list[dict[str, Any]] = []
+    for item in training_result.window_summaries:
+        if item.get("status") != "used":
+            continue
+        origin = origins.get(item["id"])
+        record: dict[str, Any] = {
+            "window_id": item["id"],
+            "source": item["source"],
+            "source_ref": item.get("source_ref"),
+            "traceable": bool(origin),
+        }
+        if origin:
+            record.update({
+                "origin_source": origin.get("origin_source"),
+                "exploration_run_id": origin.get("exploration_run_id"),
+                "cluster_id": origin.get("cluster_id"),
+                "origin_candidate_id": origin.get("origin_candidate_id"),
+                "origin_source_ref": origin.get("origin_source_ref"),
+            })
+            if item["source"] == "performance":
+                candidate = origin.get("origin_candidate") or {}
+                record.update({
+                    "parent_candidate_id": candidate.get("id"),
+                    "parent_source_ref": candidate.get("source_ref"),
+                    "screening": {
+                        "scope_type": candidate.get("scope_type"),
+                        "conditions": candidate.get("conditions"),
+                    },
+                })
+        provenance.append(record)
+    source_filename = payload.get("source_filename")
+    change_reason = payload.get("change_reason", "")
+    return {
+        "snapshot_schema_version": 1,
+        "run_id": run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "model_name": model_name,
+        "model_purpose": model_purpose,
+        "model_status": model_status,
+        "candidate_model": {"filename": model_path.name, "sha256": _file_sha256(model_path)},
+        "change_reason": change_reason.strip() if isinstance(change_reason, str) else "",
+        "data_source": {
+            "filename": (
+                Path(source_filename).name
+                if isinstance(source_filename, str) and source_filename.strip()
+                else None
+            ),
+            "file_id": payload.get("file_id"),
+            "timestamp_column": timestamp_column,
+            "sha256": _file_sha256(source_path) if source_path is not None else None,
+            "size_bytes": source_path.stat().st_size if source_path is not None else None,
+        },
+        "modeling_tags": [{"tag": tag, **tag_configs[tag]} for tag in tags],
+        "excluded_tags": excluded_tag_records,
+        "modeling_eligibility": normalize_modeling_eligibility(payload.get("modeling_eligibility")),
+        "training_windows": training_windows,
+        "training_window_summary": training_result.window_summaries,
+        "training_window_totals": training_result.training_window_totals,
+        "window_provenance": provenance,
+        "model_config": {
+            **config.to_dict(),
+            "variance_threshold": variance_threshold,
+            "requested_n_components": requested_components,
+            "n_components": retained_components,
+            "dynamic_features": dynamic_feature_count,
+        },
+    }
+
+
+def modeling_snapshot_payload(run_id_value: object) -> dict[str, Any]:
+    run_id = _validated_id(str(run_id_value or ""), "run_id")
+    path = RUNS_DIR / run_id / "modeling_snapshot.json"
+    if not path.is_file():
+        return {"run_id": run_id, "available": False}
+    try:
+        snapshot = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ValueError("建模快照文件损坏") from error
+    return {"run_id": run_id, "available": True, "snapshot": snapshot}
 
 
 def clear_state_exploration_cache() -> None:
@@ -2068,7 +2223,28 @@ def _freeze_deployment_payload_locked(payload: dict[str, Any], run_id: str) -> d
         raise ValueError("当前运行尚未生成已验证模型")
     if frozen_path.exists() or deployment_path.exists():
         raise ValueError("冻结或部署模型包已存在，拒绝覆盖")
-    load_model_package(validated_path)
+    model_path = run_dir / "model.pcamodel"
+    report_path = run_dir / "validation_report.json"
+    if not model_path.is_file() or not report_path.is_file():
+        raise ValueError("当前候选模型或验证报告不存在，拒绝冻结")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    decision = report.get("engineer_decision")
+    if not isinstance(decision, dict) or decision.get("decision") != "passed":
+        raise ValueError("当前验证结果尚未由工程师确认通过，拒绝冻结")
+    model, manifest = load_model_package(model_path)
+    config = preprocessing_config_from_mapping(manifest["config"])
+    evidence = verify_validation_evidence(model_path, model, report, run_dir / "validation_scores.csv", run_dir / "validation_contributions.json", sample_interval_minutes=config.sample_interval_minutes)
+    _, validated_manifest = load_model_package(validated_path)
+    if (
+        validated_manifest.get("validation_summary") != report
+        or validated_manifest.get("engineer_decision") != decision
+        or validated_manifest.get("source_candidate_package") != {
+            "identifier": run_id,
+            "filename": model_path.name,
+            "sha256": evidence["candidate_model"]["sha256"],
+        }
+    ):
+        raise ValueError("已验证模型与当前候选模型、验证证据或工程师结论不一致，请重新确认通过后冻结")
 
     temporary_frozen = run_dir / f".frozen-{uuid.uuid4().hex}.pcamodel"
     temporary_deployment = run_dir / f".deployment-{uuid.uuid4().hex}.pcadeploy"
@@ -2678,6 +2854,14 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self._send_json(error_payload(error), 400)
             return
+        if parsed.path == "/api/modeling-snapshot":
+            try:
+                self._send_json(
+                    modeling_snapshot_payload(parse_qs(parsed.query).get("run_id", [""])[0])
+                )
+            except Exception as error:
+                self._send_json(error_payload(error), 400)
+            return
         if parsed.path in {"/", "/index.html"}:
             self._send_text(INDEX_HTML, "text/html; charset=utf-8")
             return
@@ -3163,7 +3347,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="stateFilterConditions" class="condition-list"><span class="help">把 Tag 角色设为“状态过滤”后，可在此配置上下限；多个条件按 AND 组合。状态过滤 Tag 不进入 PCA 连续输入。</span></div>
         <div class="row"><label>预览训练窗口<select id="preprocessingPreviewWindow" disabled></select></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
-        <label>模型名称<input id="modelName" value="DPCA_Model_V1"></label>
+        <div class="row"><label>模型名称<input id="modelName" value="DPCA_Model_V1"></label><label>本轮建模说明 / 修改理由（可选）<input id="changeReason" placeholder="例如：排除每日清洗状态并细化高负荷工况"></label></div>
          <h3>建模质量检查</h3>
          <div class="quality-action-row">
          <button id="qualityButton" class="secondary" disabled>执行建模质量检查</button>
@@ -3306,7 +3490,8 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div class="chart-card"><div class="chart-card-head"><h3>主元得分 PC1 / PC2</h3><div class="exploration-region-tools"><label>着色方式<select id="scoreColorMode"><option value="default">默认</option><option value="time">时间</option><option value="performance">性能状态</option></select></label></div></div><div id="scoreChart" class="chart"></div><p id="scoreChartNote" class="chart-note">默认按 T²/SPE 综合状态着色；切换着色方式只改变视觉编码，PC 坐标、样本数量和筛选范围不变。</p></div>
           <div class="legend"><span><i class="swatch" style="background:var(--accent)"></i>统计量</span><span><i class="swatch" style="background:var(--attention)"></i>95% 边界</span><span><i class="swatch" style="background:var(--abnormal)"></i>99% 边界</span></div>
-          <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a></div>
+          <div class="actions"><a id="modelDownload" class="download" href="#">下载模型包</a><button id="modelingSnapshotButton" class="secondary" type="button">查看建模快照</button></div>
+          <div id="modelingSnapshot" class="table-wrap" hidden></div>
           <div id="modelLifecycleNotice" class="notice"></div>
         </div>
       </div>
@@ -3798,7 +3983,7 @@ function performanceConditionPayload() {
   const rows=[...document.querySelectorAll('#performanceConditions .condition-row')]; if(!rows.length) throw new Error("请至少添加一个性能条件。");
   return rows.map(row=>{ const minimum=row.querySelector('[data-field="minimum"]').value.trim(); const maximum=row.querySelector('[data-field="maximum"]').value.trim(); return {column:row.querySelector("select").value,minimum:minimum===""?null:Number(minimum),maximum:maximum===""?null:Number(maximum)}; });
 }
-function excludePerformanceColumns(conditions) { const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>state.selectedModelTags.delete(tag)); invalidateModellingResults("性能筛选列已从建模Tag取消"); renderTagList(); }
+function excludePerformanceColumns(conditions) { let changed=false; const columns=new Set(conditions.map(item=>item.column)); columns.forEach(tag=>{ if(state.selectedModelTags.delete(tag)) changed=true; }); if(changed) invalidateModellingResults("性能筛选列已从建模Tag取消"); renderTagList(); }
 function syncExplorationPerformanceSelection() { const performanceTag=explorationPerformanceTag(); const changed=performanceTag&&state.selectedModelTags.delete(performanceTag); if(changed) invalidateModellingResults("状态探索性能 Tag 已从建模Tag取消"); if(state.inspection) renderTagList(); }
 function performanceConfigPayload() { const performanceTag=explorationPerformanceTag(); return performanceTag?{performance_tag:performanceTag,direction:el("explorationPerformanceDirection").value,target_min:optionalNumber("explorationTargetMin"),target_max:optionalNumber("explorationTargetMax"),minimum_duration_minutes:numberValue("explorationPerformanceMinimumDuration"),candidate_count:numberValue("explorationPerformanceCandidateCount")}:null; }
 function stateExplorationPayload() {
@@ -4106,7 +4291,7 @@ el("uploadButton").addEventListener("click", async () => {
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
     eligibilityRevision+=1; clearTimeout(eligibilitySummaryTimer); el("eligibilityKeepConditions")?.replaceChildren(); el("eligibilityExcludeGroups")?.replaceChildren();
-    state.fileId=data.file_id; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; resetExplorationRegion(); state.performance=null; state.trend=null; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; state.preprocessingPreviewWindowId=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingCandidateProvenance=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); el("stateFilterConditions").replaceChildren(); el("addStateFilterCondition").disabled=true; el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
+    state.fileId=data.file_id; state.fileName=data.filename; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; resetExplorationRegion(); state.performance=null; state.trend=null; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; state.preprocessingPreviewWindowId=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingCandidateProvenance=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); el("stateFilterConditions").replaceChildren(); el("addStateFilterCondition").disabled=true; el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
     setStatus(`文件信息：${data.filename}（${Math.ceil(data.size_bytes/1024)} KB），已读取 ${data.columns.length} 个列名。请选择时间列，下一步：正在检查数据。`,"success");
   } catch (error) { setStatus(error.message,"error"); }
@@ -4340,7 +4525,7 @@ async function trainModel(modelPurpose) {
   const revision=eligibilityRevision;
   try {
     const components=el("components").value.trim();
-    const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),training_candidates:state.candidateWindows,training_candidate_provenance:state.trainingCandidateProvenance,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value};
+    const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),training_candidates:state.candidateWindows,training_candidate_provenance:state.trainingCandidateProvenance,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value,change_reason:el("changeReason").value.trim(),source_filename:state.fileName||null};
     const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }
@@ -4379,7 +4564,7 @@ el("validateButton").addEventListener("click", async () => {
     const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_windows:state.validationWindows,label_column:el("labelColumn").value};
     const data=await api("/api/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(investigationRevision!==state.validationInvestigationRevision||training!==state.training||fileId!==state.fileId||runId!==state.runId) { setStatus("验证上下文已变更，已丢弃过期的页面结果。","warning"); return; }
-    state.validation=data; renderValidation(data); const decisionStatus=el("validationDecisionStatus"); decisionStatus.textContent="等待保存工程师结论。"; decisionStatus.className="status info"; setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
+    state.validation=data; renderValidation(data); const decisionStatus=el("validationDecisionStatus"); decisionStatus.textContent="验证回放完成，待重新确认；请保存工程师结论。"; decisionStatus.className="status info"; setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }
 });
@@ -4540,7 +4725,8 @@ function renderTraining(data) {
   const totals=data.training_window_totals||{}; const windowCounts=`${totals.enabled_window_count??"—"} / ${totals.used_window_count??"—"} / ${totals.dropped_window_count??"—"}`;
   el("modelMetrics").innerHTML=metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("训练动态样本",data.training_rows)+metric("启用 / 使用 / 丢弃窗口",windowCounts)+metric("动态特征",data.dynamic_features)+metric("主元数",data.n_components)+metric("累计解释率",`${(data.cumulative_explained_variance*100).toFixed(1)}%`)+metric("关注 / 异常",`${data.status_counts.attention} / ${data.status_counts.abnormal}`);
   el("modelLifecycleNotice").textContent=lifecycle.notice;
-  renderTrainingComposition(totals);
+  el("modelingSnapshot").hidden=true; el("modelingSnapshot").replaceChildren();
+  renderTrainingComposition(totals,data);
   renderTrainingWindowSummary(data.training_window_summary||[]);
   const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>item.message||`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren(); const max=Math.max(...data.explained_variance,0.01);
@@ -4548,6 +4734,35 @@ function renderTraining(data) {
   lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download; el("modelDownload").hidden=false;
 }
 
+function modelingSnapshotValue(value) { if(value===null||value===undefined||value==="") return "—"; return typeof value==="object"?JSON.stringify(value):String(value); }
+function modelingSnapshotRows(pairs) { return '<div class="table-wrap"><table><tbody>'+pairs.map(pair=>'<tr><th>'+escapeHtml(pair[0])+'</th><td>'+escapeHtml(modelingSnapshotValue(pair[1]))+'</td></tr>').join("")+'</tbody></table></div>'; }
+function renderModelingSnapshot(result) {
+  const container=el("modelingSnapshot"); container.hidden=false; container.className="";
+  const snapshot=result&&result.snapshot;
+  if(!snapshot) { container.className="empty"; container.textContent="该模型运行没有建模快照。"; return; }
+  const source=snapshot.data_source||{}, config=snapshot.model_config||{}, eligibility=snapshot.modeling_eligibility||{}, totals=snapshot.training_window_totals||{};
+  const condition=item=>item.column+(item.minimum===null||item.minimum===undefined?"":" ≥ "+modelingSnapshotValue(item.minimum))+(item.maximum===null||item.maximum===undefined?"":" ≤ "+modelingSnapshotValue(item.maximum));
+  const tags=(snapshot.modeling_tags||[]).map(item=>'<div class="notice">'+escapeHtml(item.tag)+' · '+escapeHtml(displayUiValue(item.role||""))+(item.unit?' ('+escapeHtml(item.unit)+')':"")+(item.description?' · '+escapeHtml(item.description):"")+'</div>').join("")||'<div class="help">没有建模 Tag 记录。</div>';
+  const excluded=(snapshot.excluded_tags||[]).map(item=>'<tr><td>'+escapeHtml(item.tag)+'</td><td>'+escapeHtml(item.reason||"")+'</td></tr>').join("");
+  const provenance=(snapshot.window_provenance||[]).map(item=>'<tr><td>'+escapeHtml(item.window_id)+'</td><td>'+escapeHtml(displayUiValue(item.source))+'</td><td>'+escapeHtml(item.traceable?clusterUiLabel(item.cluster_id||"—"):"来源不可追溯")+'</td><td>'+escapeHtml(item.origin_source_ref||"—")+'</td></tr>').join("");
+  container.innerHTML='<h4>建模快照</h4><div class="help">该快照是离线建模过程记录，不进入模型包或部署包；旧运行可能没有快照。</div>'
+    +'<h4>运行标识</h4>'+modelingSnapshotRows([["run_id",snapshot.run_id],["模型名称",snapshot.model_name],["模型用途",displayUiValue(snapshot.model_purpose)],["模型状态",displayUiValue(snapshot.model_status)],["创建时间",snapshot.created_at],["候选模型 SHA-256",(snapshot.candidate_model||{}).sha256]])
+    +'<h4>数据来源</h4>'+modelingSnapshotRows([["原始文件",source.filename],["file_id",source.file_id],["时间列",source.timestamp_column],["文件 SHA-256",source.sha256],["文件大小（字节）",source.size_bytes]])
+    +'<h4>建模 Tag</h4>'+tags
+    +'<h4>排除 Tag</h4>'+(excluded?'<div class="table-wrap"><table><thead><tr><th>Tag</th><th>原因</th></tr></thead><tbody>'+excluded+'</tbody></table></div>':'<div class="help">没有排除 Tag 记录。</div>')
+    +'<h4>建模资格</h4>'+modelingSnapshotRows([["保留条件",(eligibility.keep_conditions||[]).map(condition).join("；")],["排除规则组",(eligibility.exclude_rule_groups||[]).map(group=>group.map(condition).join(" 且 ")).join("；")]])
+    +'<h4>训练窗口</h4>'+modelingSnapshotRows([["训练窗口数",(snapshot.training_windows||[]).length],["启用 / 使用 / 丢弃窗口",[totals.enabled_window_count,totals.used_window_count,totals.dropped_window_count].join(" / ")],["有效训练样本",totals.training_rows],["覆盖日期数",totals.covered_day_count]])
+    +'<h4>工况 / 来源</h4><div class="table-wrap"><table><thead><tr><th>窗口</th><th>来源</th><th>工况组</th><th>来源引用</th></tr></thead><tbody>'+(provenance||'<tr><td colspan="4">没有实际使用的训练窗口。</td></tr>')+'</tbody></table></div>'
+    +'<h4>预处理 / 模型配置</h4>'+modelingSnapshotRows(Object.entries(config))
+    +'<h4>本轮建模说明</h4><div class="notice">'+escapeHtml(snapshot.change_reason||"未填写。")+'</div>';
+}
+el("modelingSnapshotButton").addEventListener("click", async () => {
+  if(!state.runId) { setStatus("请先完成训练，再查看建模快照。","warning"); return; }
+  const button=el("modelingSnapshotButton");
+  try { setBusy(button,true,"读取中…"); renderModelingSnapshot(await api("/api/modeling-snapshot?run_id="+encodeURIComponent(state.runId))); setStatus("已显示本轮建模快照。","success"); }
+  catch(error) { setStatus(error.message,"error"); }
+  finally { setBusy(button,false,""); }
+});
 function syncScoreColorModes(rows) {
   const select=el("scoreColorMode"); if(!select) return;
   const performance=select.querySelector('option[value="performance"]');
@@ -4713,6 +4928,10 @@ async function focusValidationInvestigation(context,windowId,kind) {
 function renderValidation(data) {
   renderValidationInvestigation(data);
   el("validationEmpty").hidden=true; el("validationContent").hidden=false;
+  const approved=data.engineer_decision?.decision==="passed"&&["validated","frozen"].includes(data.model_status);
+  el("validatedModelDownload").hidden=!approved; if(!approved) el("validatedModelDownload").href="#";
+  el("freezeDeployment").disabled=!approved;
+  ["frozenModelDownload","deploymentModelDownload"].forEach(id=>{ el(id).hidden=data.model_status!=="frozen"; if(data.model_status!=="frozen") el(id).href="#"; });
   const lifecycle=modelLifecycle(data); const decisionLabels={passed:"通过",insufficient:"结论不足",failed:"不通过"}; const validationStatus=data.model_status==="frozen"?"已生成冻结和部署模型包":data.model_status==="validated"?"已生成已验证模型副本":data.engineer_decision?`工程师结论已保存：${decisionLabels[data.engineer_decision.decision]||data.engineer_decision.decision}`:"验证回放完成，待工程师确认";
   el("validationMetrics").innerHTML=metric("验证样本",data.scored_rows)+metric("正常",data.status_counts.normal)+metric("关注",data.status_counts.attention)+metric("异常",data.status_counts.abnormal)+metric("模型用途",lifecycle.purpose)+metric("模型状态",lifecycle.status)+metric("验证状态",validationStatus);
   renderValidationMetricDetails(data.validation_metrics||{},data.status_by_engineering_label||{}); renderContributionStability(data.contribution_stability||{});
