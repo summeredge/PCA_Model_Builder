@@ -64,16 +64,19 @@ def test_final_training_review_renders_actual_composition_and_clears_stale_data(
     assert '#trainingCompositionReview { min-width:0; max-width:100%; }' in html
     source = "function trainingCompositionShare" + html.split("function trainingCompositionShare", 1)[1].split("function renderQuality", 1)[0]
     invalidate = "function invalidateQuality" + html.split("function invalidateQuality", 1)[1].split("function firstOrderAlphaError", 1)[0]
+    investigation = "function invalidateValidationInvestigation" + html.split("function invalidateValidationInvestigation", 1)[1].split("function currentValidationInvestigationContext", 1)[0]
     _run_web_javascript(f"""
         const assert=require('node:assert/strict');
         const nodes=new Map();
-        const el=id=>{{ if(!nodes.has(id)) nodes.set(id,{{innerHTML:'',textContent:'',disabled:false}}); return nodes.get(id); }};
+        const el=id=>{{ if(!nodes.has(id)) nodes.set(id,{{innerHTML:'',textContent:'',disabled:false,replaceChildren(){{}}}}); return nodes.get(id); }};
+        const document={{querySelectorAll:()=>[]}};
         const metric=(label,value)=>`<div>${{label}}: ${{value}}</div>`;
         const escapeHtml=value=>String(value).replaceAll('<','&lt;');
         const clusterUiLabel=value=>value.replace(/cluster_0*(\\d+)/,'工况组 $1');
         const state={{quality:{{}},qualityStatus:'passed',qualityRevision:0}};
         const renderModelTrainingDataSummary=()=>{{}},renderModelQualityStatus=()=>{{}},renderCurrentTagQuality=()=>{{}},setStatus=()=>{{}};
         {source}
+        {investigation}
         {invalidate}
         const totals={{training_rows:100,enabled_window_count:3,used_window_count:2,dropped_window_count:1,
           source_summary:{{cluster:{{used_window_count:1,effective_samples:60,effective_sample_share:.6}},
