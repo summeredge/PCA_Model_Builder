@@ -31,7 +31,7 @@ def test_final_web_keeps_chinese_workflow_labels_and_separate_statistics() -> No
         "分析与建模共享参数",
         "PCA 模型配置与训练",
         "建立探索模型",
-        "建立正常状态候选模型",
+        "确认并训练",
         "运行状态聚类辅助",
         "验证结果",
         "训练期 T²",
@@ -67,7 +67,8 @@ def test_final_web_exposes_distinct_model_semantics_and_warnings() -> None:
 
     for text in (
         "建立探索模型",
-        "建立正常状态候选模型",
+        "确认并训练",
+        "以上为正常状态候选训练集",
         "探索模型仅用于兼容保留的状态空间/聚类辅助路径，不属于正常状态主流程。",
     ):
         assert text in html

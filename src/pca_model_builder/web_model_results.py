@@ -1560,7 +1560,7 @@ def _stabilize_workbench_html(html: str) -> str:
         "训练操作",
     )
     quality_section = training_parameter_tail[quality_start:training_action_start].rstrip().replace(
-        '<h3>建模质量检查</h3>', '<h3>② 建模质量检查</h3>', 1
+        '<h3>建模质量检查</h3>', '<h3>③ 建模质量检查</h3>', 1
     )
     training_actions_section = training_parameter_tail[training_action_start:].rstrip()
     model_configuration_rows = (
@@ -1590,9 +1590,9 @@ def _stabilize_workbench_html(html: str) -> str:
         '        <h3>① 训练准备</h3>\n'
         + training_data_summary
         + preprocessing_preview_section
-        + quality_section
-        + '        <h3>③ PCA / DPCA 模型配置</h3>\n'
+        + '        <h3>② PCA / DPCA 模型配置</h3>\n'
         + model_configuration_rows
+        + quality_section
         + '        <h3>④ 正式训练</h3>\n'
         + training_actions_section
     )

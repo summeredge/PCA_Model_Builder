@@ -55,6 +55,49 @@ def test_quality_profiles_use_two_side_by_side_sections() -> None:
     )
 
 
+def test_final_training_review_renders_actual_composition_and_clears_stale_data() -> None:
+    html = web_model_results.INDEX_HTML
+    model = html[html.index('<div id="modelPanel"'):html.index('<div id="validationPanel"')]
+    assert model.index('id="components"') < model.index('id="qualityButton"') < model.index('id="qualityIssues"') < model.index('id="trainingCompositionReview"') < model.index('id="trainButton"')
+    assert html.count('id="trainingCompositionReview"') == 1
+    assert '.final-training-review { grid-template-columns:minmax(0,1fr); }' in html
+    assert '#trainingCompositionReview { min-width:0; max-width:100%; }' in html
+    source = "function trainingCompositionShare" + html.split("function trainingCompositionShare", 1)[1].split("function renderQuality", 1)[0]
+    invalidate = "function invalidateQuality" + html.split("function invalidateQuality", 1)[1].split("function firstOrderAlphaError", 1)[0]
+    _run_web_javascript(f"""
+        const assert=require('node:assert/strict');
+        const nodes=new Map();
+        const el=id=>{{ if(!nodes.has(id)) nodes.set(id,{{innerHTML:'',textContent:'',disabled:false}}); return nodes.get(id); }};
+        const metric=(label,value)=>`<div>${{label}}: ${{value}}</div>`;
+        const escapeHtml=value=>String(value).replaceAll('<','&lt;');
+        const clusterUiLabel=value=>value.replace(/cluster_0*(\\d+)/,'工况组 $1');
+        const state={{quality:{{}},qualityStatus:'passed',qualityRevision:0}};
+        const renderModelTrainingDataSummary=()=>{{}},renderModelQualityStatus=()=>{{}},renderCurrentTagQuality=()=>{{}},setStatus=()=>{{}};
+        {source}
+        {invalidate}
+        const totals={{training_rows:100,enabled_window_count:3,used_window_count:2,dropped_window_count:1,
+          source_summary:{{cluster:{{used_window_count:1,effective_samples:60,effective_sample_share:.6}},
+          performance:{{used_window_count:1,effective_samples:40,effective_sample_share:.4}}}}}};
+        const group=(id,count)=>({{cluster_id:id,effective_samples:count,effective_sample_share:count/100}});
+        renderTrainingComposition(totals,{{training_group_composition:{{groups:[group('cluster_001',100)],untraceable_samples:0}}}});
+        let card=el('trainingCompositionReview').innerHTML;
+        assert(card.includes('工况组 1')); assert(card.includes('100.0%')); assert(card.includes('工程条件细化'));
+        assert(!card.includes('个可追溯工况组')); assert(card.includes('当前不可用'));
+        renderTrainingComposition(totals,{{training_group_composition:{{groups:[group('cluster_001',60),group('cluster_002',30)],untraceable_samples:10}},
+          training_quality_warnings:[{{message:'已有代表性提示'}}]}});
+        card=el('trainingCompositionReview').innerHTML;
+        for(const text of ['60.0%','30.0%','10.0%','2 个可追溯工况组','来源不可追溯','已有代表性提示','1 个启用窗口']) assert(card.includes(text),text);
+        assert(!card.includes('异常')); assert(!card.includes('UUID'));
+        for(const reason of ['训练窗口','Tag','预处理','建模资格']) {{
+          state.quality={{}}; state.qualityStatus='passed';
+          invalidateQuality(reason);
+          assert.equal(state.quality,null); assert.equal(state.qualityStatus,'changed');
+          assert.equal(el('trainingCompositionReview').textContent,'配置已变更，请重新执行建模质量检查。');
+          assert(el('trainButton').disabled); assert(el('trainExploratoryButton').disabled);
+        }}
+    """)
+
+
 def test_variable_diagnostics_use_existing_cards_and_local_scroll_boundaries() -> None:
     html = web_model_results.INDEX_HTML
     for element_id in ("variableDiagnosticsTitle", "explorationVariableDiagnostics", "diagnosticsTagConfig"):
@@ -1103,7 +1146,7 @@ def test_model_quality_check_is_in_the_model_training_stage() -> None:
     assert "已失效" not in html.split("<script>", 1)[0]
 
 
-def test_model_training_stage_reads_summary_quality_preview_then_parameters() -> None:
+def test_model_training_stage_reads_parameters_quality_review_then_training() -> None:
     html = web_model_results.INDEX_HTML
     model_start = html.index('<div id="modelPanel"')
     model_end = html.index('<div id="validationPanel"', model_start)
@@ -1113,12 +1156,13 @@ def test_model_training_stage_reads_summary_quality_preview_then_parameters() ->
         'id="preprocessingPreviewWindow"',
         'id="preprocessingPreviewButton"',
         'id="preprocessingPreview"',
-        'id="qualityButton"',
-        'id="modelQualityStatus"',
-        'id="modelQualityResults"',
         'id="modelName"',
         'id="varianceThreshold"',
         'id="components"',
+        'id="qualityButton"',
+        'id="modelQualityStatus"',
+        'id="modelQualityResults"',
+        'id="trainingCompositionReview"',
         'id="trainButton"',
     ]
     positions = [model_source.index(item) for item in order]
