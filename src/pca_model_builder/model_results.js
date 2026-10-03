@@ -204,9 +204,15 @@
       rows.forEach(row => appendRow(body, row.values, "td", row.reference));
       element.append(head, body); target.append(element);
     };
-    const locate = (label, group) => { const button=document.createElement("button"); button.type="button"; button.className="secondary"; button.textContent=label; button.onclick=()=>globalThis.focusTrainingDiagnostic?.(diagnostic,group); return button; };
+    const locate = (label, group, action="exploration") => { const button=document.createElement("button"); button.type="button"; button.className="secondary"; button.textContent=label; button.onclick=()=>globalThis.focusTrainingDiagnostic?.(diagnostic,group,action); return button; };
+    const groupActions = group => {
+      if(!globalThis.trainingDiagnosticRun?.(group)) return "来源不可追溯";
+      const actions=document.createElement("div");
+      actions.append(locate("查看该工况组",group),locate("继续筛选该工况组",group,"screen"),locate("查看关联训练窗口",group,"training_windows"));
+      return actions;
+    };
     table(groups, ["工况组", "评分样本数", "训练样本占比", "T² ≥95%", "T² ≥99%", "SPE ≥95%", "SPE ≥99%", "T²/95%限值比中位数", "SPE/95%限值比中位数", "Overall 95%最长连续时间", "定位"],
-      diagnostic.groups.map(row => ({reference:row.source_ref, values:[clusterUiLabel(row.cluster_id), row.samples, percent(row.share), percent(row.t2_95_exceedance_rate), percent(row.t2_99_exceedance_rate), percent(row.spe_95_exceedance_rate), percent(row.spe_99_exceedance_rate), number(row.t2_95_ratio_median), number(row.spe_95_ratio_median), `${row.longest_overall_95_minutes} 分钟`, /^state-exploration-/.test(row.source_ref||"")?locate("查看该工况组",row):"来源不可追溯"]})));
+      diagnostic.groups.map(row => ({reference:row.source_ref, values:[clusterUiLabel(row.cluster_id), row.samples, percent(row.share), percent(row.t2_95_exceedance_rate), percent(row.t2_99_exceedance_rate), percent(row.spe_95_exceedance_rate), percent(row.spe_99_exceedance_rate), number(row.t2_95_ratio_median), number(row.spe_95_ratio_median), `${row.longest_overall_95_minutes} 分钟`, groupActions(row)]})));
     const comparison = diagnostic.switch_diagnostic;
     if (comparison?.available) {
       table(switches, ["区域", "评分样本数", "T² ≥95%", "SPE ≥95%", "Overall ≥95%"],
