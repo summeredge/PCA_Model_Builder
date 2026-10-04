@@ -168,8 +168,11 @@ def test_train_writes_snapshot_with_verified_cluster_and_refinement_provenance(t
     assert refined_record["cluster_id"] == parents[1]["cluster_id"]
     assert refined_record["origin_candidate_id"] == parents[1]["candidate_id"]
     assert refined_record["origin_source_ref"] == refined_parent["source_ref"]
-    assert refined_record["parent_candidate_id"] == "refined"
-    assert refined_record["parent_source_ref"] == refinement["source_ref"]
+    assert refined_record["refinement_candidate_id"] == "refined"
+    assert refined_record["refinement_source_ref"] == refinement["source_ref"]
+    assert refined_record["parent_candidate_id"] == refined_parent["id"]
+    assert refined_record["parent_source"] == "cluster"
+    assert refined_record["parent_source_ref"] == refined_parent["source_ref"]
     assert refined_record["screening"] == {
         "scope_type": "candidate_windows",
         "conditions": [{"column": "A", "minimum": -100.0, "maximum": None}],
@@ -190,7 +193,9 @@ def test_train_writes_snapshot_with_verified_cluster_and_refinement_provenance(t
     retained_records = {item["window_id"]: item for item in _read_snapshot(retained["run_id"])["window_provenance"]}
     assert retained_records["training-performance"]["traceable"] is True
     assert retained_records["training-performance"]["cluster_id"] == parents[1]["cluster_id"]
-    assert retained_records["training-performance"]["parent_candidate_id"] == "refined"
+    assert retained_records["training-performance"]["refinement_candidate_id"] == "refined"
+    assert retained_records["training-performance"]["parent_candidate_id"] == refined_parent["id"]
+    assert retained_records["training-performance"]["parent_source_ref"] == refined_parent["source_ref"]
     assert retained["training_group_composition"] == composition
 
 
@@ -212,7 +217,9 @@ def test_snapshot_does_not_change_model_or_deployment_packages(tmp_path, monkeyp
         manifest = json.loads(package.read("manifest.json"))
     assert manifest["schema_version"] == 5
     assert "modeling_snapshot" not in json.dumps(manifest)
-    for key in ("change_reason", "candidate_model", "window_provenance", "data_source", "modeling_tags", "modeling_eligibility"):
+    for key in ("change_reason", "candidate_model", "window_provenance", "data_source", "modeling_tags",
+                "modeling_eligibility", "snapshot_excluded_tags", "refinement_candidate_id", "refinement_source_ref",
+                "parent_source"):
         assert key not in manifest and key not in manifest["config"]
     _read_snapshot(trained["run_id"])
 
@@ -349,6 +356,95 @@ def test_snapshot_missing_for_old_run_keeps_model_and_release_flow(tmp_path, mon
     assert not (run_dir / "modeling_snapshot.json").exists()
 
 
+def _exclusion_frame() -> pd.DataFrame:
+    frame = _history_frame()
+    frame["D"] = 0.5
+    frame["E"] = 0.25
+    frame["FIXED"] = 50.0
+    return frame
+
+
+def _exclusion_payload(uploaded, frame):
+    return {
+        "file_id": uploaded["file_id"],
+        "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "tag_configs": {
+            "A": {"role": "continuous_input"},
+            "B": {"role": "continuous_input"},
+            "C": {"role": "continuous_input"},
+            "D": {"role": "exclude"},
+            "E": {"role": "continuous_input"},
+            "FIXED": {"role": "exclude"},
+        },
+        "training_windows": [{
+            "id": "normal", "start": frame.time.iloc[0].isoformat(), "end": frame.time.iloc[79].isoformat(),
+            "source": "manual", "source_ref": None, "enabled": True, "comment": "",
+        }],
+        "sample_interval_minutes": 5,
+        "filter_method": "none",
+        "max_lag_minutes": 0,
+        "lag_step_minutes": 5,
+    }
+
+
+def test_snapshot_records_all_confirmed_excluded_tags_with_verified_constant_stats(tmp_path, monkeypatch):
+    frame = _exclusion_frame()
+    uploaded = _upload(tmp_path, monkeypatch, frame)
+    forged = {
+        "tag": "FIXED", "reason": "constant_in_reference_window",
+        "sample_count": 999, "unique_count": 7, "constant_value": -1.0,
+    }
+    trained = web.train_payload({
+        **_exclusion_payload(uploaded, frame),
+        "model_name": "exclusions",
+        "n_components": 2,
+        "excluded_tags": [forged],
+        "snapshot_excluded_tags": [{**forged}, {"tag": "D", "reason": "manual_exclude"}],
+    })
+
+    snapshot = _read_snapshot(trained["run_id"])
+    _, manifest = load_model_package(web.RUNS_DIR / trained["run_id"] / "model.pcamodel")
+    verified = manifest["config"]["excluded_tags"]
+    assert snapshot["excluded_tags"][0] == verified[0]
+    assert verified[0]["tag"] == "FIXED" and verified[0]["unique_count"] == 1
+    assert verified[0]["sample_count"] != 999 and verified[0]["constant_value"] == 50.0
+    assert snapshot["excluded_tags"][1] == {"tag": "D", "reason": "manual_exclude"}
+    assert "snapshot_excluded_tags" not in manifest and "snapshot_excluded_tags" not in manifest["config"]
+    assert all(not name.startswith("D__") for name in manifest["feature_names"])
+
+    snapshot_only = web.train_payload({
+        **_exclusion_payload(uploaded, frame),
+        "model_name": "snapshot-only-exclusion",
+        "n_components": 2,
+        "snapshot_excluded_tags": [{**forged}],
+    })
+    records = _read_snapshot(snapshot_only["run_id"])["excluded_tags"]
+    assert records == [verified[0]]
+
+
+@pytest.mark.parametrize("records,match", [
+    ([{"tag": "NOPE", "reason": "manual_exclude"}], "找不到 Tag"),
+    ([{"tag": "D", "reason": "manual_exclude"}, {"tag": "D", "reason": "manual_exclude"}], "不能重复Tag"),
+    ([{"tag": "A", "reason": "manual_exclude"}], "仍在建模选择中"),
+    ([{"tag": "E", "reason": "manual_exclude"}], "尚未确认排除"),
+    ([{"tag": "D", "reason": ""}], "原因无效"),
+    ([{"tag": "D", "reason": 7}], "原因无效"),
+    ("manual_exclude", "必须是列表"),
+])
+def test_snapshot_rejects_forged_excluded_tag_records(tmp_path, monkeypatch, records, match):
+    frame = _exclusion_frame()
+    uploaded = _upload(tmp_path, monkeypatch, frame)
+    with pytest.raises(ValueError, match=match):
+        web.train_payload({
+            **_exclusion_payload(uploaded, frame),
+            "model_name": "forged-exclude",
+            "n_components": 2,
+            "snapshot_excluded_tags": records,
+        })
+    assert not list((tmp_path / "runs").glob("*"))
+
+
 def test_snapshot_endpoint_serves_snapshot_and_reports_missing_file(tmp_path, monkeypatch):
     frame = _history_frame()
     uploaded = _upload(tmp_path, monkeypatch, frame)
@@ -387,6 +483,7 @@ def test_web_ui_exposes_snapshot_entry_and_change_reason():
     assert "该模型运行没有建模快照。" in html
     assert 'state.fileName=data.filename;' in html
     assert ',change_reason:el("changeReason").value.trim(),source_filename:state.fileName||null};' in html
+    assert 'snapshot_excluded_tags:state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude")' in html
     training_source = html.split("function renderTraining(data)", 1)[1].split("function modelingSnapshotValue", 1)[0]
     assert 'el("modelingSnapshot").hidden=true; el("modelingSnapshot").replaceChildren();' in training_source
     assert "renderTrainingComposition(totals,data);" in training_source

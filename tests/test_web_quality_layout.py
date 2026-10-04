@@ -147,7 +147,7 @@ def test_trend_page_no_longer_exposes_xy_scatter_matrix() -> None:
     assert '<h2>XY 散点矩阵</h2>' not in html
     assert 'class="dp-scatter-section"' not in html
     assert "renderScatterMatrix" not in html
-    assert 'src="/assets/model-results.js"' in html
+    assert f'src="/assets/model-results.js?v={web_model_results.WEB_BUILD_ID}"' in html
 
 
 def test_trend_chart_drag_selection_uses_the_physical_time_domain() -> None:
@@ -190,7 +190,7 @@ def test_trend_chart_uses_local_plotly_scattergl_without_svg_curves() -> None:
         "function renderStatCard", 1
     )[0]
 
-    assert 'src="/assets/plotly.min.js"' in html
+    assert f'src="/assets/plotly.min.js?v={web_model_results.WEB_BUILD_ID}"' in html
     assert "cdn.plot.ly" not in html
     assert 'type: "scattergl"' in trend_source
     assert 'mode: "lines"' in trend_source
@@ -422,6 +422,8 @@ def test_trend_drops_rangeslider_and_rangeselector_without_touching_the_window()
         assert f'label: "{label}"' not in xaxis_block
     # The freed space becomes chart height.
     assert ".dp-chart { min-height:660px; height:660px;" in web_model_results.INDEX_HTML
+    assert ".dp-chart.empty { min-height:0; height:auto; resize:none; }" in web_model_results.INDEX_HTML
+    assert ".dp-trend-stats > .empty { grid-column:1 / -1; min-height:0; padding:8px 10px; }" in web_model_results.INDEX_HTML
 
     # Browsing controls are visual only: they must not write the business window.
     relayout = trend_source.split('plot.on("plotly_relayout"', 1)[1].split("});", 1)[0]
@@ -584,7 +586,7 @@ def test_candidate_analysis_range_splits_available_width_without_overlap() -> No
     layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
     assert ".row" in layout and "flex-wrap:wrap;" in layout
 
-def test_data_source_commands_share_one_intrinsic_width_action_row() -> None:
+def test_data_source_controls_wrap_by_semantic_width() -> None:
     html = web_model_results.INDEX_HTML
 
     row = html.split('<div class="actions"><button id="uploadButton">', 1)[1].split(
@@ -596,20 +598,23 @@ def test_data_source_commands_share_one_intrinsic_width_action_row() -> None:
     assert html.index('id="inspectButton"') < html.index("<label>时间列")
     # 宽度规则由 .actions > button 提供，不依赖按钮自身写死像素宽度。
     assert ".actions > button, .actions > .download { flex:0 0 auto; width:auto; }" in html
-    # 上传/清空/检查与时间列、编码列共 5 个控件同排，两个 select 分享剩余宽度。
+    # 时间列按长 Tag 名分配较宽宽度，编码选择保持短控件宽度；空间不足时 flex-wrap 换行。
     style = html.split('<style id="semanticFormWidthStyle">', 1)[1].split('</style>', 1)[0]
     source_group = style.split("main .group:has(#uploadButton) {", 1)[1].split('}', 1)[0]
-    assert "display:grid;" in source_group
-    assert "grid-template-columns:auto auto auto minmax(0,1fr) minmax(0,1fr);" in source_group
-    assert "main .group:has(#uploadButton) > label { grid-column:1 / -1; }" in style
+    assert "display:flex;" in source_group
+    assert "flex-wrap:wrap;" in source_group
+    assert "main .group:has(#uploadButton) > label { flex:1 1 100%; min-width:0; }" in style
     assert "main .group:has(#uploadButton) > :is(.actions, .row) { display:contents; }" in style
     assert "main .group:has(#uploadButton) > :is(.actions, .row) > label > select { width:100%; }" in style
+    assert "flex:0 1 var(--field-select-width); min-width:0; max-width:100%;" in style
+    assert "flex-basis:var(--field-tag-width);" in style
 
 
 def test_workbench_layout_rules_keep_buttons_intrinsic_and_grids_shrinkable() -> None:
     html = web_model_results.INDEX_HTML
     layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
     desktop = layout.split("@media (max-width:760px)", 1)[0]
+    workbench = html.split('<style id="workbenchUiStyle">', 1)[1].split("</style>", 1)[0]
 
     for group in (
         ".row",
@@ -631,7 +636,11 @@ def test_workbench_layout_rules_keep_buttons_intrinsic_and_grids_shrinkable() ->
     assert "flex:0 0 auto;" in desktop and "width:auto;" in desktop
     assert "main .condition-row > label:first-child > select" in desktop
     assert "main .dp-scatter-controls select" in desktop
-    assert "main #engineeringPanel .detail-fields > .row { display:contents; }" in desktop
+    assert "main #engineeringPanel .detail-fields > .row { display:contents; }" not in layout
+    assert ".training-parameter-grid {" not in workbench
+    assert ".candidate-manager .row > *" not in workbench
+    assert ".candidate-manager .candidate-window-row > label" not in workbench
+    assert ".validation-box, .exploration-controls { align-items:end; }" not in workbench
 
 
     narrow = layout.split("@media (max-width:760px)", 1)[1]
@@ -785,7 +794,8 @@ def test_final_web_preprocessing_notice_matches_schema5_invalid_row_policy() -> 
 def test_training_parameters_split_common_and_advanced_fields() -> None:
     html = web_model_results.INDEX_HTML
     shared_start = html.index('<div class="group shared-preprocessing">')
-    shared_end = html.index('<div class="candidate-tool-tabs"', shared_start)
+    candidate_tools_start = html.index('<div class="candidate-tool-tabs"')
+    shared_end = html.index('<div class="group candidate-manager"', shared_start)
     shared_source = html[shared_start:shared_end]
     model_start = html.index('<div class="group training-configuration">')
     model_end = html.index('<details class="advanced-parameters exploratory-model-tools">', model_start)
@@ -805,6 +815,7 @@ def test_training_parameters_split_common_and_advanced_fields() -> None:
     ):
         assert f'id="{field_id}"' in shared_source, field_id
         assert f'id="{field_id}"' not in model_source, field_id
+    assert candidate_tools_start < shared_start < html.index('id="trendPanel"', shared_start)
     for field_id in ("varianceThreshold", "components", "modelName"):
         assert f'id="{field_id}"' in model_source, field_id
         assert f'id="{field_id}"' not in shared_source, field_id
@@ -977,7 +988,9 @@ def test_final_web_has_one_static_workbench_structure_and_asset_set() -> None:
     ):
         assert html.count(f'id="{style_id}"') == 1
     assert html.count('id="workbenchUiScript"') == 1
-    assert html.count('src="/assets/model-results.js"') == 1
+    assert html.count(
+        f'src="/assets/model-results.js?v={web_model_results.WEB_BUILD_ID}"'
+    ) == 1
 
 
 def test_workbench_assembly_uses_field_anchors_not_copied_parameter_markup() -> None:
@@ -1019,7 +1032,7 @@ def test_workbench_parameter_rows_allow_nonsemantic_div_attributes() -> None:
 
     html = web_model_results._stabilize_workbench_html(changed_html)
     shared_start = html.index('<div class="group shared-preprocessing">')
-    shared_source = html[shared_start : html.index('<div class="candidate-tool-tabs"', shared_start)]
+    shared_source = html[shared_start : html.index('<div class="group candidate-manager">', shared_start)]
     model_start = html.index('<div class="group training-configuration">')
     model_source = html[
         model_start : html.index('<details class="advanced-parameters exploratory-model-tools">', model_start)
@@ -1048,6 +1061,16 @@ def test_supported_web_entrypoints_use_model_results_page() -> None:
         'pca-model-builder-web = "pca_model_builder.web_model_results:main"'
         in pyproject
     )
+
+
+def test_web_build_id_versions_html_and_static_assets() -> None:
+    html = web_model_results.INDEX_HTML
+    build_id = web_model_results.WEB_BUILD_ID
+
+    assert len(build_id) == 16
+    assert html.count(f'name="pca-model-builder-build" content="{build_id}"') == 1
+    for asset in ("plotly.min.js", "model-results.js"):
+        assert f'src="/assets/{asset}?v={build_id}"' in html
 
 
 def test_final_web_entry_exposes_candidate_window_manager() -> None:
@@ -1183,7 +1206,7 @@ def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     for element_id in ("qualityButton", "modelQualityStatus", "currentTagQuality"):
         assert f'id="{element_id}"' in model_source
         assert f'id="{element_id}"' not in candidate_source
-    assert "#modelPanel #modelQualityStatus," in html
+    assert "#modelPanel #modelQualityStatus,\n  #modelPanel #qualityButton" not in html
     assert "#modelPanel #qualityButton {" in html
     assert "#modelPanel #modelQualityStatus {" in html
     assert "height:42px;" in html
@@ -1211,6 +1234,22 @@ def test_model_quality_controls_and_detail_table_do_not_stretch() -> None:
     assert "#candidatePanel #modelQualityStatus" not in html
     assert "#candidatePanel #qualityButton" not in html
     assert "#candidatePanel #currentTagQuality" not in html
+
+
+def test_text_only_waiting_placeholders_use_compact_height() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert "#modelQualityResults > :is(#currentTagQuality, #qualityIssues).empty" in html
+    compact = html.split("#modelQualityResults > :is(#currentTagQuality, #qualityIssues).empty,", 1)[1].split("}", 1)[0]
+    assert ".final-training-review > .empty" in compact
+    assert "min-height:0;" in compact and "padding:var(--space-2);" in compact
+    assert ".dp-trend-stats > .empty { grid-column:1 / -1; min-height:0; padding:8px 10px; }" in html
+    assert ".table-wrap > .empty { min-height:0; padding:var(--space-2, 12px); }" in html
+    for element_id in (
+        "basicInspectionIssues", "explorationEmpty", "clusterEmpty",
+        "performanceEmpty", "modelEmpty", "validationEmpty", "releaseEmpty",
+    ):
+        assert f"#{element_id}.empty" in html
 
 
 def test_model_training_summary_reuses_quality_totals_and_clears_on_invalidation() -> None:
@@ -1707,7 +1746,9 @@ def test_last_training_window_removal_keeps_the_training_table_empty() -> None:
     assert "尚无已确认训练窗口" in render_source
 
 
-def test_cli_entry_restores_original_serve_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_entry_delegates_without_replacing_serve_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     original = cli_entry.cli._serve
     monkeypatch.setattr(cli_entry.cli, "main", lambda argv=None: 0)
 
@@ -2504,10 +2545,16 @@ def test_semantic_widths_keep_data_source_compact_and_responsive_exceptions() ->
     assert 'main .dp-trend-bar > label { flex:0 0 auto; max-width:none; }' in layout
     tag_grid = layout.split("/* Tag editor:", 1)[1]
     assert 'main #engineeringPanel .detail-fields {' in tag_grid
-    assert 'grid-template-columns:repeat(5,minmax(0,1fr));' in tag_grid
-    assert 'main #engineeringPanel .detail-fields { grid-template-columns:minmax(0,1fr); }' in tag_grid
+    assert 'grid-template-columns:minmax(0,1fr);' in tag_grid
+    assert 'grid-template-columns:repeat(5,minmax(0,1fr));' not in tag_grid
+    assert 'main #engineeringPanel .detail-fields > .row:has(#tagDescription)' in tag_grid
+    assert 'main #engineeringPanel .detail-fields > .row:has(#tagUnit)' in tag_grid
+    assert 'main #engineeringPanel .detail-fields > .row:has(#tagRole)' in tag_grid
+    for limit in ('engineeringMin', 'normalMin', 'alarmMin'):
+        assert f'.detail-fields > .row:has(#{limit}) > label' in tag_grid
+    assert 'main #engineeringPanel .detail-fields > .row { display:contents; }' not in layout
+    assert 'main :is(input, select, textarea) { min-width:0; max-width:100%; }' in style
     narrow = style.split('@media (max-width:760px)', 1)[1]
-    assert 'min-width:0; max-width:100%;' in narrow
     assert 'display:grid; grid-template-columns:minmax(0,1fr);' in narrow
     assert 'button' not in narrow
     for field_id in ('dpTrendVar1', 'dpTrendVar2', 'dpTrendVar3', 'dpTrendVar4'):

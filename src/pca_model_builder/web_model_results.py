@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+import hashlib
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import re
@@ -71,20 +72,18 @@ _FORM_WIDTH_STYLE = r"""
   }
   main .row:has(> label > #timestampColumn) > label { flex:0 1 var(--field-select-width); min-width:0; max-width:100%; }
   main .row:has(> label > #timestampColumn) > label:has(> #timestampColumn) { flex-basis:var(--field-tag-width); }
-  /* 数据源：文件选择仍独占一行，上传/清空/检查与时间列、编码列共 5 个控件同排，
-     两个 select 按语义基准分掉剩余宽度。 */
+  /* 数据源控件按内容角色自然换行：时间列用 Tag 宽度，编码选择保持短控件宽度。 */
   @media (min-width:761px) {
     main .group:has(#uploadButton) {
-      display:grid;
-      grid-template-columns:auto auto auto minmax(0,1fr) minmax(0,1fr);
+      display:flex;
+      flex-wrap:wrap;
       align-items:end;
     }
-    main .group:has(#uploadButton) > label { grid-column:1 / -1; }
+    main .group:has(#uploadButton) > label { flex:1 1 100%; min-width:0; }
     main .group:has(#uploadButton) > :is(.actions, .row) { display:contents; }
     main .group:has(#uploadButton) > :is(.actions, .row) > label > select { width:100%; }
   }
   @media (max-width:760px) {
-    main :is(input, select, textarea) { min-width:0; max-width:100%; }
     main .row:has(> label > #timestampColumn) { display:grid; grid-template-columns:minmax(0,1fr); }
   }
 </style>
@@ -136,7 +135,6 @@ _FORM_LAYOUT_STYLE = r"""
     align-items:end;
     max-width:none;
   }
-  main #engineeringPanel .detail-fields > .row { display:contents; }
 
   main #engineeringPanel .detail-fields > button,
   main .candidate-manager .row > button,
@@ -169,13 +167,28 @@ _FORM_LAYOUT_STYLE = r"""
 
     main #engineeringPanel .detail-fields > button { justify-self:start; }
   }
-  /* Tag editor: five columns at desktop, one column on narrow screens. */
+  /* Tag editor: text, unit, role, and paired limits keep their content roles. */
   main #engineeringPanel .detail-fields {
     display:grid;
-    grid-template-columns:repeat(5,minmax(0,1fr));
+    grid-template-columns:minmax(0,1fr);
   }
-  @media (max-width:760px) {
-    main #engineeringPanel .detail-fields { grid-template-columns:minmax(0,1fr); }
+  main #engineeringPanel .detail-fields > .row:has(#tagDescription) > label:has(> #tagDescription) {
+    flex:1 1 var(--field-text-width);
+    max-width:var(--field-text-width);
+  }
+  main #engineeringPanel .detail-fields > .row:has(#tagUnit) > label:has(> #tagUnit) {
+    flex:0 1 var(--field-number-width);
+    max-width:var(--field-number-width);
+  }
+  main #engineeringPanel .detail-fields > .row:has(#tagRole) > label:has(> #tagRole) {
+    flex:0 1 var(--field-select-width);
+    max-width:var(--field-select-width);
+  }
+  main #engineeringPanel .detail-fields > .row:has(#engineeringMin) > label,
+  main #engineeringPanel .detail-fields > .row:has(#normalMin) > label,
+  main #engineeringPanel .detail-fields > .row:has(#alarmMin) > label {
+    flex:0 1 var(--field-number-width);
+    max-width:var(--field-number-width);
   }
 </style>
 """
@@ -238,7 +251,6 @@ _FORM_ALIGNMENT_STYLE = r"""
 
   #clusterPanel .group, #performancePanel .group { gap:var(--space-2); }
   #clusterPanel .row, #performancePanel .row {
-    column-gap:var(--space-2);
     align-items:start;
   }
   #clusterPanel .row > label, #performancePanel .row > label {
@@ -256,7 +268,6 @@ _FORM_ALIGNMENT_STYLE = r"""
   }
 
   #engineeringPanel .detail-fields {
-    display:grid;
     max-width:100%;
     min-width:0;
     gap:var(--space-2);
@@ -506,7 +517,6 @@ _APPLE_DESIGN_STYLE = r"""
   .status.success { background:#e8f5e9; color:#0e6027; border-color:#24a148; }
   .status.warning, .notice { background:#fff8e1; color:#6f4e00; border-color:#f1c21b; }
   .status.error { background:#fff1f1; color:#a2191f; border-color:#da1e28; }
-  #modelPanel #modelQualityStatus,
   #modelPanel #qualityButton {
     width:fit-content;
     height:42px;
@@ -546,7 +556,6 @@ _APPLE_DESIGN_STYLE = r"""
   #modelPanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:6px; }
   .tag-row.selected { background:#edf5ff; }
-  .metric { padding:24px; }
   .metrics { grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:8px; }
   .metric { min-width:0; padding:10px 11px; }
   .metric strong { font-size:22px; font-weight:600; line-height:1.15; letter-spacing:0; }
@@ -639,8 +648,6 @@ _WORKBENCH_UI_STYLE = r"""
   #configPanel > .group { margin-bottom:var(--space-3); }
   #configPanel > #qualityPanel { display:grid; gap:var(--space-2); margin-top:var(--space-4); }
   .candidate-manager, .shared-preprocessing, .training-configuration { border-color:#bfd7ef; }
-  .candidate-manager .row > * { min-width:0; }
-  .candidate-manager .candidate-window-row > label { min-width:0; }
   .candidate-tool-tabs { display:flex; gap:var(--space-1); flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); padding-bottom:var(--space-2); }
   .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
@@ -676,13 +683,6 @@ _WORKBENCH_UI_STYLE = r"""
   }
   .advanced-parameters[open] > summary { margin-bottom:var(--space-2); }
   .advanced-parameters > .row { margin-top:var(--space-2); }
-  .training-parameter-grid {
-    display:flex;
-    flex-wrap:wrap;
-    justify-content:start;
-    align-items:end;
-    gap:var(--space-2);
-  }
   .training-parameter-grid > label,
   .filter-parameter-control,
   .model-name-field { min-width:0; }
@@ -751,20 +751,8 @@ _WORKBENCH_UI_STYLE = r"""
   }
   #stateExplorationPanel .exploration-controls { border:0; }
   #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
-  .validation-box, .exploration-controls { align-items:end; }
-  .validation-box > button, .exploration-controls > button, .validation-box > .download, .exploration-controls > .download { align-self:end; }
-  /* 验证/探索表单里的按钮按内容取宽，不随相邻字段拉伸。 */
-  .validation-box > button, .validation-box > .download {
-    justify-self:start;
-    width:auto;
-  }
-  .exploration-controls > button, .exploration-controls > .download {
-    justify-self:start;
-    width:auto;
-  }
   /* 标签换行时输入框仍需贴底对齐，否则同一行控件高低不齐。 */
   .exploration-controls > label { display:grid; align-content:start; }
-  .candidate-tool-tabs .candidate-tool-tab { height:var(--control-height); }
   .panel > .actions, .inner-panel > .actions { margin-top:var(--space-1); }
   .issue-card, .notice, .status, .metric, .chart-card, .table-wrap, .empty, .validation-box, .exploration-controls { min-width:0; }
   .issue-card, .notice { padding:var(--space-2); }
@@ -778,6 +766,14 @@ _WORKBENCH_UI_STYLE = r"""
   .table-wrap th { white-space:nowrap; }
   /* 列宽按内容取值，避免日期被压成多行；宽度不足时由 .table-wrap 横向滚动。 */
   .table-wrap table { width:max-content; min-width:100%; }
+  #modelQualityResults > :is(#currentTagQuality, #qualityIssues).empty,
+  .final-training-review > .empty,
+  #basicInspectionIssues.empty, #explorationEmpty.empty,
+  #clusterEmpty.empty, #performanceEmpty.empty, #modelEmpty.empty,
+  #validationEmpty.empty, #releaseEmpty.empty {
+    min-height:0;
+    padding:var(--space-2);
+  }
   .table-wrap td:has(> .status-label),
   .table-wrap td:has(> input[type=checkbox]) { white-space:nowrap; text-align:center; }
   tr:has(> td > input[type=checkbox]) > td:nth-child(2) { white-space:nowrap; }
@@ -803,17 +799,11 @@ _WORKBENCH_UI_STYLE = r"""
     .workflow-steps { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
   }
   @media (max-width:760px) {
-    main { grid-template-columns:minmax(0,1fr); padding:var(--space-2); gap:var(--space-2); }
+    main { padding:var(--space-2); gap:var(--space-2); }
     .workflow-sidebar { position:static; padding:var(--space-3); }
-    .workflow-steps { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
-    section { padding:var(--panel-padding); }
     .candidate-analysis-range { grid-template-columns:minmax(0,1fr); }
-    .row { grid-template-columns:minmax(0,1fr); }
     .candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }
     .candidate-tool-tabs > * { flex:0 0 auto; width:auto; }
-    #engineeringPanel .detail-fields .row,
-    .validation-box, .exploration-controls, .trend-controls,
-    .condition-row { grid-template-columns:minmax(0,1fr); }
     .actions { align-items:stretch; }
     /* 表单字段填满列宽；command button 保持 intrinsic 宽度并自然换行。 */
     .panel .actions > label, .inner-panel .actions > label { width:100%; }
@@ -1324,14 +1314,14 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
         </div>""",
             '        <div class="group candidate-analysis-group"><div class="group-title">候选分析范围</div>',
             '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
-            '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。</div></div>',
-            parameter_group,
+            '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。共享预处理参数可在下方配置；修改后请重新运行分析。</div></div>',
             '        <div class="candidate-tool-tabs" role="tablist">',
             '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="clusterPanel" role="tab" aria-selected="false">聚类辅助</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="performancePanel" role="tab" aria-selected="false">条件筛选</button>',
             '        </div>',
+            parameter_group,
             *candidate_panels,
             *other_candidate_panels,
             _candidate_manager_html(training_data_section),
@@ -1857,6 +1847,37 @@ def _candidate_deletion_block_reason(run_dir: Path) -> str | None:
 INDEX_HTML = apply_model_results_ui(quality_app.INDEX_HTML)
 
 
+def _compute_web_build_id(html: str) -> str:
+    digest = hashlib.sha256()
+    for name, content in (
+        ("index.html", html.encode("utf-8")),
+        (_ASSET_PATH.name, _ASSET_PATH.read_bytes()),
+        (
+            _BASE_WEB.PLOTLY_JS_PATH.name,
+            _BASE_WEB.PLOTLY_JS_PATH.read_bytes(),
+        ),
+    ):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()[:16]
+
+
+WEB_BUILD_ID = _compute_web_build_id(INDEX_HTML)
+for _asset_name in ("plotly.min.js", "model-results.js"):
+    INDEX_HTML = INDEX_HTML.replace(
+        f'src="/assets/{_asset_name}"',
+        f'src="/assets/{_asset_name}?v={WEB_BUILD_ID}"',
+        1,
+    )
+INDEX_HTML = INDEX_HTML.replace(
+    "</head>",
+    f'  <meta name="pca-model-builder-build" content="{WEB_BUILD_ID}">\n</head>',
+    1,
+)
+
+
 class ModelResultsHandler(_BASE_WEB._Handler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
@@ -1914,6 +1935,7 @@ def run_server(
     url = f"http://{host}:{port}"
     if open_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    print(f"PCA Model Builder WebUI build: {WEB_BUILD_ID}")
     print(f"PCA Model Builder 本地服务已启动：{url}")
     print("关闭此窗口即可停止服务。")
     server.serve_forever()

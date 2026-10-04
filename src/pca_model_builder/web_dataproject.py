@@ -28,11 +28,12 @@ _DATAPROJECT_TREND_CSS = r"""
   .dp-trend-bar input { min-width:0; }
   .dp-trend-bar > button { flex:0 0 auto; padding:8px 12px; font-size:13px; white-space:nowrap; }
   .dp-chart { min-height:660px; height:660px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:hidden; resize:vertical; }
-  .dp-chart.empty { height:auto; resize:none; }
+  .dp-chart.empty { min-height:0; height:auto; resize:none; }
   .dp-chart .plotly, .dp-chart .svg-container, .dp-chart .gl-container { width:100%!important; height:100%!important; }
   .dp-chart .modebar { top:2px; right:2px; }
   .dp-chart .js-plotly-plot .plotly .cursor-crosshair { cursor:crosshair; }
   .dp-trend-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; align-items:start; }
+  .dp-trend-stats > .empty { grid-column:1 / -1; min-height:0; padding:8px 10px; }
   .dp-trend-stat-card { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:10px; }
   .dp-trend-stat-card h3 { margin:0 0 8px; font-size:12px; overflow-wrap:anywhere; }
   .dp-trend-stat-card dl { display:grid; gap:4px; margin:0; }
@@ -838,9 +839,9 @@ def run_server(
     port: int = base_web.DEFAULT_PORT,
     open_browser: bool = True,
 ) -> None:
-    base_web.INDEX_HTML = INDEX_HTML
-    base_web.trend_payload = trend_payload
-    base_web.run_server(host, port, open_browser=open_browser)
+    from .web_model_results import run_server as start_server
+
+    start_server(host, port, open_browser=open_browser)
 
 
 def main(argv: Sequence[str] | None = None) -> None:

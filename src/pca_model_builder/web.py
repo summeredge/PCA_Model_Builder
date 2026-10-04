@@ -9,7 +9,7 @@ from email.parser import BytesParser
 from email.policy import default as email_policy
 import json
 import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import re
 import tempfile
@@ -17,7 +17,6 @@ import threading
 from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
 import uuid
-import webbrowser
 
 import numpy as np
 import pandas as pd
@@ -197,15 +196,9 @@ def run_server(
     port: int = DEFAULT_PORT,
     open_browser: bool = True,
 ) -> None:
-    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    server = ThreadingHTTPServer((host, port), _Handler)
-    url = f"http://{host}:{port}"
-    if open_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
-    print(f"PCA Model Builder 本地服务已启动：{url}")
-    print("关闭此窗口即可停止服务。")
-    server.serve_forever()
+    from .web_model_results import run_server as start_server
+
+    start_server(host, port, open_browser=open_browser)
 
 
 def save_upload(filename: str, content: bytes) -> dict[str, Any]:
@@ -343,6 +336,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(excluded, list)
         else []
     )
+    snapshot_exclusion_tags = _snapshot_exclusion_tags(payload.get("snapshot_excluded_tags"))
     performance_config = _training_performance_config(payload, tags)
     loaded = _load_modeling_upload(
         payload,
@@ -351,6 +345,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 [
                     *tags,
                     *excluded_tags,
+                    *snapshot_exclusion_tags,
                     *_state_filter_columns(payload),
                     *(
                         [performance_config.performance_tag]
@@ -382,12 +377,16 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         engineering_ranges(tag_configs),
         modeling_eligibility=payload.get("modeling_eligibility"),
         exclude_engineering_range=model_purpose == "normal_state",
-        reference_columns=excluded_tags,
+        reference_columns=[*excluded_tags, *snapshot_exclusion_tags],
     )
     with _web_stage("quality_check"):
         excluded_tag_records = _excluded_tag_records(
             payload.get("excluded_tags"), training_result.reference, tags, registry
         )
+    snapshot_excluded_tags = _snapshot_excluded_tags(
+        payload.get("snapshot_excluded_tags"), excluded_tag_records,
+        training_result.reference, tags, registry,
+    )
     dynamic = training_result.dynamic
     components_value = payload.get("n_components")
     n_components = None if components_value in {None, ""} else int(components_value)
@@ -438,7 +437,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
             timestamp_column=timestamp_column,
             tags=tags,
             tag_configs=tag_configs,
-            excluded_tag_records=excluded_tag_records,
+            snapshot_excluded_tags=snapshot_excluded_tags,
             training_windows=training_windows,
             training_result=training_result,
             config=config,
@@ -1063,9 +1062,12 @@ def _training_cluster_series(
                     observed.attrs["origin_source_ref"] = reference
                     recorded = matches[0].get("provenance")
                     recorded = recorded if isinstance(recorded, Mapping) else {}
-                    observed.attrs["origin_candidate"] = {
+                    observed.attrs["refinement"] = {
                         "id": matches[0].get("id"),
                         "source_ref": matches[0].get("source_ref"),
+                        "parent_candidate_id": recorded.get("parent_candidate_id"),
+                        "parent_source": recorded.get("parent_source"),
+                        "parent_source_ref": recorded.get("parent_source_ref"),
                         "scope_type": recorded.get("scope_type"),
                         "conditions": recorded.get("conditions"),
                     }
@@ -1101,7 +1103,7 @@ def _verified_training_window_origins(
             reference = str(points.attrs.get("origin_source_ref") or "") if points is not None else ""
             origin = candidate_cluster_source({"source": "cluster", "source_ref": reference})
             if origin.get("origin_source_ref") == reference and origin.get("exploration_run_id") and origin.get("cluster_id"):
-                origins[item["id"]] = {**origin, "origin_candidate": points.attrs.get("origin_candidate")}
+                origins[item["id"]] = {**origin, "refinement": points.attrs.get("refinement")}
     return origins
 
 
@@ -1144,7 +1146,7 @@ def _modeling_snapshot(
     timestamp_column: str,
     tags: Sequence[str],
     tag_configs: Mapping[str, Mapping[str, Any]],
-    excluded_tag_records: list[dict[str, Any]],
+    snapshot_excluded_tags: list[dict[str, Any]],
     training_windows: list[dict[str, Any]],
     training_result: Any,
     config: PreprocessingConfig,
@@ -1175,13 +1177,16 @@ def _modeling_snapshot(
                 "origin_source_ref": origin.get("origin_source_ref"),
             })
             if item["source"] == "performance":
-                candidate = origin.get("origin_candidate") or {}
+                refinement = origin.get("refinement") or {}
                 record.update({
-                    "parent_candidate_id": candidate.get("id"),
-                    "parent_source_ref": candidate.get("source_ref"),
+                    "refinement_candidate_id": refinement.get("id"),
+                    "refinement_source_ref": refinement.get("source_ref"),
+                    "parent_candidate_id": refinement.get("parent_candidate_id"),
+                    "parent_source": refinement.get("parent_source"),
+                    "parent_source_ref": refinement.get("parent_source_ref"),
                     "screening": {
-                        "scope_type": candidate.get("scope_type"),
-                        "conditions": candidate.get("conditions"),
+                        "scope_type": refinement.get("scope_type"),
+                        "conditions": refinement.get("conditions"),
                     },
                 })
         provenance.append(record)
@@ -1208,7 +1213,7 @@ def _modeling_snapshot(
             "size_bytes": source_path.stat().st_size if source_path is not None else None,
         },
         "modeling_tags": [{"tag": tag, **tag_configs[tag]} for tag in tags],
-        "excluded_tags": excluded_tag_records,
+        "excluded_tags": snapshot_excluded_tags,
         "modeling_eligibility": normalize_modeling_eligibility(payload.get("modeling_eligibility")),
         "training_windows": training_windows,
         "training_window_summary": training_result.window_summaries,
@@ -2545,6 +2550,56 @@ def _excluded_tag_records(
     return records
 
 
+def _snapshot_exclusion_tags(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    tags = [str(item.get("tag", "")).strip() for item in value if isinstance(item, dict)]
+    return [tag for tag in tags if tag]
+
+
+def _snapshot_excluded_tags(
+    value: object,
+    verified_records: list[dict[str, Any]],
+    reference: pd.DataFrame,
+    selected_tags: Sequence[str],
+    registry: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Confirmed exclusions for the review snapshot only; constant stats stay backend-verified."""
+    records = {record["tag"]: dict(record) for record in verified_records}
+    order = [record["tag"] for record in verified_records]
+    entries: list[Any] = [] if value in (None, "") else value
+    if not isinstance(entries, list):
+        raise ValueError("snapshot_excluded_tags必须是列表")
+    seen: set[str] = set()
+    pending_constants: list[dict[str, Any]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            raise ValueError("snapshot_excluded_tags记录必须是对象")
+        tag = str(item.get("tag", "")).strip()
+        reason = item.get("reason")
+        if not tag or tag not in registry:
+            raise ValueError("snapshot_excluded_tags包含空或未知Tag")
+        if tag in seen:
+            raise ValueError("snapshot_excluded_tags不能重复Tag")
+        if tag in selected_tags:
+            raise ValueError(f"已排除Tag仍在建模选择中：{tag}")
+        if registry[tag]["role"] != "exclude":
+            raise ValueError(f"{tag}尚未确认排除")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError(f"{tag}的排除原因无效")
+        seen.add(tag)
+        if reason.strip() == "constant_in_reference_window":
+            if tag not in records:
+                pending_constants.append({"tag": tag, "reason": "constant_in_reference_window"})
+            continue
+        records[tag] = {"tag": tag, "reason": reason.strip()}
+        order.append(tag)
+    for record in _excluded_tag_records(pending_constants, reference, selected_tags, registry):
+        records[record["tag"]] = record
+        order.append(record["tag"])
+    return [records[tag] for tag in order]
+
+
 def _select_window(
     frame: pd.DataFrame,
     timestamp_column: str,
@@ -3274,6 +3329,7 @@ INDEX_HTML = r"""<!doctype html>
     .preprocessing-preview-chart { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
     .preprocessing-preview-chart svg { display:block; width:100%; height:auto; }
     .table-wrap { overflow:auto; max-height:360px; border:1px solid var(--line); border-radius:7px; }
+    .table-wrap > .empty { min-height:0; padding:var(--space-2, 12px); }
     table { width:100%; border-collapse:collapse; font-size:12px; }
     th, td { padding:8px 9px; border-bottom:1px solid var(--line-soft); text-align:left; }
     th { background:#eef2f6; }
@@ -3330,7 +3386,7 @@ INDEX_HTML = r"""<!doctype html>
         <input id="tagSearch" placeholder="搜索 Tag">
         <div class="tag-toolbar"><button id="selectAllTags" class="secondary">全选</button><button id="clearAllTags" class="secondary">取消全选</button><button id="showProblemTags" class="secondary">只看问题Tag</button></div>
         <div id="tagOptions" class="tag-options"><span class="help">检查数据后显示连续数值列。</span></div>
-        <div class="help">仅勾选且角色为“连续输入”的 Tag 进入 PCA；点击 Tag 在右侧查看配置与质量。</div>
+        <div class="help">仅勾选且角色为“连续输入”的 Tag 进入 PCA；点击 Tag 后在 Tag 详情区查看配置与质量。</div>
       </div>
       <div class="group">
         <div class="group-title">3. 参考状态与 DPCA 参数</div>
@@ -3342,8 +3398,10 @@ INDEX_HTML = r"""<!doctype html>
         <h3>训练窗口</h3><div id="trainingWindows" class="table-wrap"><div class="empty">尚无已确认训练窗口。</div></div>
         <div class="help">只有此处的 training_windows 会参与质量检查和训练。</div>
         <div class="row preprocessing-parameter-row"><label>目标采样周期（分钟）<input id="sampleInterval" type="number" min="1" value="5"></label><label>重采样方法<select id="resamplingMethod"><option value="none">不重采样</option><option value="mean">均值</option><option value="median">中位数</option><option value="last">最后值</option></select></label><label>滤波方法<select id="filterMethod"><option value="none" selected>不滤波</option><option value="first_order">一阶低通滤波</option><option value="trailing_mean">移动平均</option></select></label><label hidden>一阶滤波 alpha<input id="firstOrderAlpha" type="number" min="0" max="1" step="any" placeholder="例如 0.2" disabled></label><label hidden>滤波窗口（分钟）<input id="smoothingWindow" type="number" min="0" value="10" disabled></label><label>物理缺口阈值（分钟，可选）<input id="gapThreshold" type="number" min="1" placeholder="沿用默认规则"></label></div>
+        <div class="sub-title">DPCA Lag 扩展</div>
+        <div class="row lag-expansion-parameter-row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label></div>
         <div class="sub-title">状态过滤条件</div>
-        <div class="row state-filter-parameter-row"><label>最大 Lag（分钟）<input id="maxLag" type="number" min="0" value="60"></label><label>Lag 步长（分钟）<input id="lagStep" type="number" min="1" value="5"></label><button id="addStateFilterCondition" class="secondary" type="button" disabled>添加状态过滤条件</button></div>
+        <div class="row state-filter-actions-row"><button id="addStateFilterCondition" class="secondary" type="button" disabled>添加状态过滤条件</button></div>
         <div id="stateFilterConditions" class="condition-list"><span class="help">把 Tag 角色设为“状态过滤”后，可在此配置上下限；多个条件按 AND 组合。状态过滤 Tag 不进入 PCA 连续输入。</span></div>
         <div class="row"><label>预览训练窗口<select id="preprocessingPreviewWindow" disabled></select></label><div><button id="preprocessingPreviewButton" class="secondary" disabled>预览预处理</button><div id="preprocessingPreview" class="muted">尚未预览</div></div></div>
         <div class="row"><label>累计解释率<input id="varianceThreshold" type="number" min="0.01" max="0.99" step="0.01" value="0.95"></label><label>主元数（可留空）<input id="components" type="number" min="2" placeholder="自动，至少2个"></label></div>
@@ -3355,15 +3413,15 @@ INDEX_HTML = r"""<!doctype html>
          </div>
          <div id="modelQualityResults">
            <div id="qualitySummary" class="metrics"></div>
-          <h3>当前 Tag 建模质量详情</h3>
+           <h4>当前 Tag 建模质量详情</h4>
           <label>查看 Tag：<select id="qualityTagSelect" disabled></select></label>
           <div id="currentTagQuality" class="empty">尚未执行建模质量检查。</div>
-          <h3>建模质量问题</h3>
+           <h4>建模质量问题</h4>
           <div class="actions"><button id="excludeAllConstants" class="secondary" disabled>排除全部精确常量 Tag</button></div>
           <div id="qualityIssues" class="empty">执行建模质量检查后，显示需要确认或阻止训练的 Tag。</div>
         </div>
         <section class="chart-card final-training-review" aria-labelledby="finalTrainingReviewTitle">
-          <h3 id="finalTrainingReviewTitle">最终训练集审查</h3>
+          <h4 id="finalTrainingReviewTitle">最终训练集审查</h4>
           <div id="trainingCompositionReview" class="empty" aria-live="polite">执行建模质量检查后显示训练集组成。</div>
         </section>
         <div class="actions"><button id="trainExploratoryButton" class="secondary" disabled>建立探索模型</button><button id="trainButton" disabled>确认并训练</button></div>
@@ -3392,7 +3450,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="actions"><a id="templateDownload" class="download" href="#">下载XLSX模板</a><label class="secondary">导入XLSX配置<input id="tagConfigFile" type="file" accept=".xlsx"></label><button id="importConfigButton" class="secondary" disabled>预览导入</button><button id="applyConfigButton" disabled>确认应用非空字段</button><button id="exportConfigButton" class="secondary" disabled>导出当前配置</button></div>
             <div id="importSummary" class="status info">XLSX是可选工程元数据，导入不会跳过质量检查，也不会立即覆盖当前配置。</div>
           </div>
-          <h3 id="selectedTagTitle">请选择左侧Tag</h3>
+          <h3 id="selectedTagTitle">选择 Tag 查看配置</h3>
           <div class="detail-fields">
             <div class="row"><label>描述<input id="tagDescription"></label><label>单位<input id="tagUnit"></label></div>
             <div class="row"><label>变量角色<select id="tagRole"><option value="continuous_input">连续输入</option><option value="state_filter">状态过滤</option><option value="label_only">仅标签</option><option value="exclude">排除</option></select></label></div>
@@ -3412,7 +3470,7 @@ INDEX_HTML = r"""<!doctype html>
       <div id="stateExplorationPanel" class="panel">
         <div class="group">
           <div class="group-title">状态探索工作台</div>
-          <div class="help">建模 Tag 复用左侧当前勾选的“连续输入”；预处理参数复用左侧表单。性能 Tag 仅用于 post-hoc 性能评价，选定后不会进入 PCA 或后续正常模型。探索结果仅用于运行状态浏览和候选窗口比较。</div>
+          <div class="help">建模 Tag 复用“数据与 Tag”阶段当前勾选的“连续输入”；预处理参数复用共享设置。性能 Tag 仅用于 post-hoc 性能评价，选定后不会进入 PCA 或后续正常模型。探索结果仅用于运行状态浏览和候选窗口比较。</div>
           <div class="exploration-controls">
             <label>探索开始时间<input id="explorationStart" type="datetime-local"></label>
             <label>探索结束时间<input id="explorationEnd" type="datetime-local"></label>
@@ -4525,7 +4583,7 @@ async function trainModel(modelPurpose) {
   const revision=eligibilityRevision;
   try {
     const components=el("components").value.trim();
-    const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),training_candidates:state.candidateWindows,training_candidate_provenance:state.trainingCandidateProvenance,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value,change_reason:el("changeReason").value.trim(),source_filename:state.fileName||null};
+    const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,snapshot_excluded_tags:state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude").map(record=>({tag:record.tag,reason:String(record.reason||"")})),model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),training_candidates:state.candidateWindows,training_candidate_provenance:state.trainingCandidateProvenance,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value,change_reason:el("changeReason").value.trim(),source_filename:state.fileName||null};
     const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }

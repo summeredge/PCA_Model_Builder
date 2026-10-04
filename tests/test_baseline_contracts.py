@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 from io import BytesIO
 import json
 from pathlib import Path
@@ -10,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pca_model_builder import cli_entry, web, web_model_results
+from pca_model_builder import web, web_model_results
 from pca_model_builder.cli import main
 from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.model_io import load_model_package
@@ -229,24 +228,6 @@ def test_legacy_continuous_type_maps_to_continuous_input_role() -> None:
     )
 
     assert registry["LEGACY"]["role"] == "continuous_input"
-
-
-def test_cli_serve_routes_to_final_model_results_server(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, int, bool]] = []
-    monkeypatch.setattr(
-        web_model_results,
-        "run_server",
-        lambda host, port, open_browser: calls.append((host, port, open_browser)),
-    )
-
-    result = cli_entry._serve_with_model_results(
-        argparse.Namespace(host="127.0.0.1", port=8775, no_open=True)
-    )
-
-    assert result == {"status": "stopped"}
-    assert calls == [("127.0.0.1", 8775, False)]
 
 
 def _history_frame() -> pd.DataFrame:

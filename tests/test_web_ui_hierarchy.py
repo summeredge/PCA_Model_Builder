@@ -140,6 +140,16 @@ def test_candidate_tools_share_one_level_and_analysis_range() -> None:
         "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"
     ]
     assert all(parent == ("candidatePanel",) for _, parent in parser.candidate_tools)
+    tabs_start = html.index('<div class="candidate-tool-tabs"')
+    shared_start = html.index('<div class="group shared-preprocessing">')
+    manager_start = html.index('<div class="group candidate-manager"', shared_start)
+    tool_positions = [
+        html.index(f'id="{panel}"', tabs_start)
+        for panel in ("trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel")
+    ]
+    assert tabs_start < shared_start < tool_positions[0]
+    assert tool_positions[0] < tool_positions[1] < tool_positions[2] < tool_positions[3]
+    assert tool_positions[-1] < manager_start
     assert len(parser.ids) == len(set(parser.ids))
     assert 'id="explorationStart"' not in html
     assert 'id="explorationEnd"' not in html
@@ -173,6 +183,14 @@ def test_training_validation_and_release_follow_decision_order() -> None:
         'id="scoreChart"', 'id="loadingChart"', 'id="modelStructureComparison"',
         'id="modelDownload"',
     ))
+    quality_section = model[
+        model.index('<h3>③ 建模质量检查</h3>') : model.index('<h3>④ 正式训练</h3>')
+    ]
+    for heading in ("当前 Tag 建模质量详情", "建模质量问题"):
+        assert f"<h4>{heading}</h4>" in quality_section
+        assert f"<h3>{heading}</h3>" not in quality_section
+    assert '<h4 id="finalTrainingReviewTitle">最终训练集审查</h4>' in quality_section
+    assert '<h3 id="finalTrainingReviewTitle">最终训练集审查</h3>' not in quality_section
     assert validation.index('id="validateButton"') < validation.index('id="validationMetrics"') < validation.index('id="validationMetricDetails"') < validation.index('id="recordValidationDecision"')
     assert release.index('id="validatedModelDownload"') < release.index('id="freezeDeployment"') < release.index('id="frozenModelDownload"') < release.index('id="frozenReplay"')
     assert 'id="modelPreprocessingSummary"' in model
@@ -276,3 +294,13 @@ def test_web_translates_display_labels_without_changing_option_values() -> None:
     assert 'value="continuous_input">连续输入' in html
     assert 'pending:"待决策"' in html
     assert ">待决策</option>" not in html
+
+
+def test_tag_instructions_name_regions_instead_of_left_or_right() -> None:
+    html = web_model_results.INDEX_HTML
+
+    assert "Tag 详情区查看配置与质量" in html
+    assert "数据与 Tag”阶段当前勾选" in html
+    assert "请选择左侧Tag" not in html
+    assert "左侧当前勾选" not in html
+    assert "右侧查看配置" not in html

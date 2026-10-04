@@ -921,7 +921,10 @@ def test_tag_config_save_button_matches_template_download_button_width():
     )
     assert len(controls) == 10
     assert "id=\"tagComment\"" not in tag_editor
-    assert "grid-template-columns:repeat(5,minmax(0,1fr));" in html
+    assert "grid-template-columns:repeat(5,minmax(0,1fr));" not in html
+    assert "main #engineeringPanel .detail-fields > .row:has(#engineeringMin) > label" in html
+    assert "main #engineeringPanel .detail-fields > .row:has(#normalMin) > label" in html
+    assert "main #engineeringPanel .detail-fields > .row:has(#alarmMin) > label" in html
     assert "grid-template-columns:minmax(414px,.54fr) minmax(0,1.7fr)" in html
     assert "@media (max-width:1480px)" in html
     assert "comment:state.registry[tag]?.comment??\"\"" in html
@@ -2263,7 +2266,7 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
         encoding="utf-8"
     )
 
-    assert 'src="/assets/model-results.js"' in html
+    assert f'src="/assets/model-results.js?v={web_model_results.WEB_BUILD_ID}"' in html
     assert "选择已训练候选模型" in html
     assert "选择 2—4 个已训练候选模型" not in source
     for text in (
@@ -2641,8 +2644,11 @@ def test_web_exposes_preprocessing_controls_and_preview_route():
 
 def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     html = web_model_results.INDEX_HTML
+    candidate_tools_start = html.index('<div class="candidate-tool-tabs"')
     shared_start = html.index('<div class="group shared-preprocessing">')
-    shared = html[shared_start : html.index('<div class="candidate-tool-tabs"', shared_start)]
+    shared = html[
+        shared_start : html.index('<div class="group candidate-manager"', shared_start)
+    ]
     model_start = html.index('<div class="group training-configuration">')
     model = html[
         model_start : html.index(
@@ -2651,6 +2657,10 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     ]
 
     assert 'class="training-parameter-grid"' in html
+    assert candidate_tools_start < shared_start < html.index('id="trendPanel"', shared_start)
+    assert html.index('id="performancePanel"', shared_start) < html.index(
+        '<div class="group candidate-manager"', shared_start
+    )
     layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
     desktop = layout.split("@media (max-width:760px)", 1)[0]
     assert ".training-parameter-grid" in desktop
@@ -2664,8 +2674,16 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     assert shared.index('id="firstOrderAlpha"') < shared.index('id="gapThreshold"')
     assert shared.index('id="gapThreshold"') < shared.index('id="maxLag"')
     assert shared.index('id="maxLag"') < shared.index('id="lagStep"')
-    # 状态过滤块按图2布局：最大 Lag、Lag 步长与添加按钮同排，条件列表紧随其后。
-    assert shared.index('id="lagStep"') < shared.index('id="addStateFilterCondition"')
+    # Lag 展开与状态过滤各自归组；过滤条件不再与 Lag 控件共用一行。
+    assert shared.index('<div class="sub-title">DPCA Lag 扩展</div>') < shared.index('id="maxLag"')
+    assert shared.index('id="maxLag"') < shared.index('id="lagStep"')
+    assert shared.index('id="lagStep"') < shared.index('<div class="sub-title">状态过滤条件')
+    lag_row_start = shared.index('class="row lag-expansion-parameter-row"')
+    lag_row_end = shared.index("</div>", lag_row_start)
+    assert 'id="maxLag"' in shared[lag_row_start:lag_row_end]
+    assert 'id="lagStep"' in shared[lag_row_start:lag_row_end]
+    assert 'id="addStateFilterCondition"' not in shared[lag_row_start:lag_row_end]
+    assert shared.index('<div class="sub-title">状态过滤条件') < shared.index('id="addStateFilterCondition"')
     assert shared.index('id="addStateFilterCondition"') < shared.index('id="stateFilterConditions"')
     for field_id in ("varianceThreshold", "components", "modelName"):
         assert f'id="{field_id}"' not in shared

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import re
 from types import SimpleNamespace
 
@@ -8,7 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pca_model_builder import cli, web_dataproject
+from pca_model_builder import (
+    cli,
+    web,
+    web_dataproject,
+    web_model_results,
+    web_quality_layout,
+)
 
 
 def _loaded(frame: pd.DataFrame) -> SimpleNamespace:
@@ -81,11 +86,36 @@ def test_trend_selection_fill_is_consistent_before_and_after_drag() -> None:
     assert 'yref: "paper"' in html
 
 
-def test_cli_serve_uses_dataproject_web_entry() -> None:
-    source = inspect.getsource(cli._serve)
+def test_cli_serve_uses_final_model_results_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int, bool]] = []
+    monkeypatch.setattr(
+        web_model_results,
+        "run_server",
+        lambda host, port, open_browser: calls.append((host, port, open_browser)),
+    )
 
-    assert "from .web_dataproject import run_server" in source
-    assert "from .web import run_server" not in source
+    result = cli._serve(SimpleNamespace(host="127.0.0.1", port=8775, no_open=True))
+
+    assert result == {"status": "stopped"}
+    assert calls == [("127.0.0.1", 8775, False)]
+
+
+def test_legacy_web_server_functions_use_final_model_results_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, int, bool]] = []
+    monkeypatch.setattr(
+        web_model_results,
+        "run_server",
+        lambda host, port, open_browser: calls.append((host, port, open_browser)),
+    )
+
+    for run_server in (web.run_server, web_dataproject.run_server, web_quality_layout.run_server):
+        run_server("127.0.0.1", 8775, open_browser=False)
+
+    assert calls == [("127.0.0.1", 8775, False)] * 3
 
 
 def test_dataproject_trend_payload_preserves_physical_gap_and_statistics(

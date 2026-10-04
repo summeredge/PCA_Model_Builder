@@ -180,8 +180,9 @@ def run_server(
     port: int = app.base_web.DEFAULT_PORT,
     open_browser: bool = True,
 ) -> None:
-    app.INDEX_HTML = INDEX_HTML
-    app.run_server(host, port, open_browser=open_browser)
+    from .web_model_results import run_server as start_server
+
+    start_server(host, port, open_browser=open_browser)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
