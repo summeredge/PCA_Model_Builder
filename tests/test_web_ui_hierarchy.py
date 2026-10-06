@@ -173,6 +173,20 @@ def test_candidate_tools_share_one_level_and_analysis_range() -> None:
     assert '$("analysisEnd").value = $("dpTrendEnd").value' in html
 
 
+def test_screening_groups_keep_configuration_execution_and_evidence_separate() -> None:
+    parser = _workbench()
+    html = web_model_results.INDEX_HTML
+    for field in ("analysisStart", "analysisEnd", "eligibilityKeepConditions", "eligibilityExcludeGroups"):
+        assert "modelingEligibility" in parser.ancestors_by_id[field]
+    panel = html.split('<div id="stateExplorationPanel"', 1)[1].split('<div id="clusterPanel"', 1)[0]
+    titles = ("状态识别参数", "状态筛选配置", "性能评价（可选）", 'class="actions screening-execute"', "结果预览", 'id="explorationContent"')
+    positions = [panel.index(title) for title in titles]
+    assert positions == sorted(positions)
+    assert 'id="stateExplorationButton" type="button" disabled>运行状态筛选' in panel
+    assert panel.index('id="explorationClusterQuality"') < panel.index('id="explorationWarnings"') < panel.index('id="explorationQualityDetails"') < panel.index('id="explorationVariableDiagnostics"')
+    assert len(parser.ids) == len(set(parser.ids))
+
+
 def test_training_validation_and_release_follow_decision_order() -> None:
     html = web_model_results.INDEX_HTML
     model = html[html.index('<div id="modelPanel"'):html.index('<div id="validationPanel"')]

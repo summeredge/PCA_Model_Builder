@@ -194,6 +194,78 @@ _FORM_LAYOUT_STYLE = r"""
 """
 
 
+_SCREENING_LAYOUT_STYLE = r"""
+<style id="screeningLayoutStyle">
+  #candidatePanel { gap:var(--space-3); }
+  #candidatePanel :is(#modelingEligibility, .shared-preprocessing),
+  #stateExplorationPanel > .group { padding:var(--space-3); gap:var(--space-1); }
+  #modelingEligibility p.help { margin:0; }
+  #candidatePanel :is(#modelingEligibility, .shared-preprocessing) > .group-title,
+  #stateExplorationPanel > .group > .group-title { font-size:17px; }
+  #modelingEligibility .screening-rules {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));
+    gap:var(--space-3); min-width:0;
+  }
+  #modelingEligibility .screening-rules > div { min-width:0; }
+  #modelingEligibility :is(h3,h4) { font-size:14px; }
+  #modelingEligibility .eligibility-exclude-group {
+    border:0; border-top:1px solid var(--line-soft); border-radius:0;
+    padding:var(--space-2) 0 0; margin:0;
+  }
+  #modelingEligibility .condition-row { gap:var(--space-1); }
+  #modelingEligibility .condition-row > label { flex:1 1 120px; }
+  #modelingEligibility .condition-row > label:first-child { flex-basis:200px; }
+  #modelingEligibility .condition-row :is(input,select) { width:100%; }
+  #eligibilitySummary { padding:var(--space-1) 0; font-size:13px; color:var(--text); }
+  #eligibilitySummary.warning { padding:var(--space-2); border-left:4px solid var(--warn); background:#fff8e7; color:#765000; }
+  #modelingEligibility .candidate-analysis-range { width:100%; }
+  #candidatePanel .shared-preprocessing { grid-template-columns:minmax(0,1fr); }
+  #candidatePanel .shared-preprocessing > * { grid-column:1 / -1; }
+  #candidatePanel .shared-preprocessing > .group-title + .help { grid-column:1; }
+  #candidatePanel .shared-preprocessing .row:not(.state-filter-actions-row),
+  #modelingEligibility .candidate-analysis-range > .row,
+  #stateExplorationPanel .exploration-controls {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));
+    gap:var(--space-1) var(--space-2); align-items:end; padding:0; background:transparent;
+  }
+  #modelingEligibility .candidate-analysis-range > .row {
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));
+  }
+  #candidatePanel .shared-preprocessing label,
+  #modelingEligibility .candidate-analysis-range label,
+  #stateExplorationPanel .exploration-controls > label { margin:0; gap:var(--space-1); }
+  #candidatePanel .shared-preprocessing :is(input,select),
+  #modelingEligibility .candidate-analysis-range input,
+  #stateExplorationPanel .exploration-controls :is(input,select) { width:100%; }
+  #candidatePanel .shared-preprocessing .lag-expansion-parameter-row {
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),240px));
+  }
+  #stateExplorationPanel { gap:var(--space-3); }
+  #stateExplorationPanel > .screening-execute { margin:0; padding:0 0 var(--space-3); border-bottom:1px solid var(--line); }
+  #stateExplorationPanel :is(.chart-card,.table-wrap) { border:0; border-radius:0; }
+  #stateExplorationPanel .chart-card { padding:var(--space-2) 0; }
+  #stateExplorationPanel .chart-card > h3 { font-size:17px; }
+  #stateExplorationPanel .screening-kpis { padding-top:0; }
+  #stateExplorationPanel .screening-kpis .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  #stateExplorationPanel .screening-kpis .metric { height:100%; }
+  #stateExplorationPanel .screening-judgment { border-left:3px solid var(--accent); padding:var(--space-3); background:var(--accent-soft); }
+  #stateExplorationPanel .screening-judgment p { margin:0; }
+  #stateExplorationPanel #explorationQualityDetails { border-top:1px solid var(--line); }
+  #stateExplorationPanel #explorationOverview .metric { border:0; padding:var(--space-1); min-height:0; }
+  #stateExplorationPanel :is(th,td) { padding:6px 8px; }
+  #stateExplorationPanel th { background:var(--line-soft); font-weight:600; }
+  #stateExplorationPanel :is(th,td):first-child { text-align:left; }
+  #stateExplorationPanel :is(th,td):not(:first-child) { text-align:right; font-variant-numeric:tabular-nums; }
+  @media (min-width:761px) {
+    #stateExplorationPanel .performance-controls > label:has(#explorationPerformanceTag) { grid-column:span 2; }
+  }
+  @media (max-width:760px) {
+    #stateExplorationPanel .screening-kpis .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
+</style>
+"""
+
+
 _FORM_ALIGNMENT_STYLE = r"""
 <style id="webFormAlignmentStyle">
   #engineeringPanel .batch-config {
@@ -653,22 +725,9 @@ _WORKBENCH_UI_STYLE = r"""
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   .candidate-tool-panel { display:none; gap:var(--space-3); }
   .candidate-tool-panel.active { display:grid; }
-  /* 日期控件按内容取宽，空间不足时由共用 .row 规则换行。 */
-  .candidate-analysis-range { display:grid; width:fit-content; max-width:100%; }
+  .candidate-analysis-range { display:grid; max-width:100%; }
   .candidate-analysis-range label { min-width:0; }
-  /* 说明最多占一段可读宽度；与日期控件放不下时自然换到下一行。 */
-  .candidate-analysis-group { display:flex; flex-wrap:wrap; align-items:flex-end; gap:var(--space-2) var(--space-3); }
-  .candidate-analysis-group > .group-title { flex:0 0 100%; }
-  .candidate-analysis-group > .help { flex:1 1 280px; min-width:0; max-width:520px; }
   .shared-preprocessing, .training-configuration { display:grid; gap:var(--space-2); }
-  /* 共享参数组的标题与紧随其后的说明同排：标题占左列（max-content），说明占右列并在
-     空间不足时自行折行；其余内容仍占整行。只在 ≥761px 生效，窄屏保持默认单列。 */
-  @media (min-width:761px) {
-    .shared-preprocessing { grid-template-columns:max-content minmax(0,1fr); }
-    .shared-preprocessing > * { grid-column:1 / -1; }
-    .shared-preprocessing > .group-title { grid-column:1; align-self:start; }
-    .shared-preprocessing > .group-title + .help { grid-column:2; align-self:start; }
-  }
   .panel.active { padding:var(--space-1) 0 var(--space-4); }
   .panel.active > h3 { margin:var(--space-1) 0 0; }
   .advanced-parameters {
@@ -1289,7 +1348,6 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
         '        <div class="group">\n          ' + conditions.strip() + '\n        </div>',
         1,
     )
-    state_panel = state_panel.replace('<div id="stateExplorationPanel" class="panel">', '<div id="stateExplorationPanel" class="panel"><p class="notice">当前探索仅使用建模资格通过的数据。</p>', 1)
     candidate_panels = [
         panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
         for panel in (trend_panel, state_panel)
@@ -1305,16 +1363,16 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
         (
             '      <div id="candidatePanel" class="panel">',
             """        <div id="modelingEligibility" class="group">
-          <div class="group-title">建模资格筛选</div>
+          <div class="group-title">筛选条件</div>
           <p class="help">只影响离线探索、候选与训练资格。上下限包含边界；保留条件全部满足（AND），排除组内全部满足（AND），任一排除组命中即剔除（OR），排除优先。条件列不会自动成为 PCA 输入。</p>
-          <div class="actions"><h3>保留条件</h3><button id="addEligibilityKeep" type="button" class="secondary">添加保留条件</button></div><div id="eligibilityKeepConditions"></div>
-          <div class="actions"><h3>排除条件</h3><button id="addEligibilityExcludeGroup" type="button" class="secondary">添加排除规则组</button></div><div id="eligibilityExcludeGroups"></div>
-          <div class="actions"><button id="refreshEligibilitySummary" type="button" class="secondary">更新资格摘要</button></div>
-          <div id="eligibilitySummary" class="notice" aria-live="polite">检查数据后显示资格摘要；无规则时全部样本具备资格。</div>
-        </div>""",
-            '        <div class="group candidate-analysis-group"><div class="group-title">候选分析范围</div>',
+          <div class="screening-rules">
+            <div><div class="actions"><h3>保留条件</h3><button id="addEligibilityKeep" type="button" class="secondary">添加保留条件</button></div><div id="eligibilityKeepConditions"></div></div>
+            <div><div class="actions"><h3>排除条件</h3><button id="addEligibilityExcludeGroup" type="button" class="secondary">添加排除规则组</button></div><div id="eligibilityExcludeGroups"></div></div>
+          </div>
+          <div class="actions"><button id="refreshEligibilitySummary" type="button" class="secondary">更新资格摘要</button><div id="eligibilitySummary" class="screening-summary" aria-live="polite">检查数据后显示资格摘要；无规则时全部样本具备资格。</div></div>
+          <div class="sub-title">分析时间范围</div>""",
             '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
-            '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。共享预处理参数可在下方配置；修改后请重新运行分析。</div></div>',
+            '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。修改后请重新运行分析。</div></div>',
             parameter_group,
             '        <div class="candidate-tool-tabs" role="tablist">',
             '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
@@ -1526,8 +1584,9 @@ def _stabilize_workbench_html(html: str) -> str:
     ).rstrip()
     parameter_group = (
         '      <div class="group shared-preprocessing">\n'
-        '        <div class="group-title">分析与建模共享参数</div>\n'
+        '        <div class="group-title">分析参数</div>\n'
         '        <div class="help">这些参数同时用于趋势浏览、状态探索、独立聚类、建模质量检查和正式训练；正式训练沿用同一套取值，不再重复配置。</div>\n'
+        '        <div class="sub-title">基础分析参数</div>\n'
         + shared_preprocessing_section
         + '\n      </div>'
     )
@@ -1640,6 +1699,7 @@ def _stabilize_workbench_html(html: str) -> str:
         state_panel, "stateExplorationButton", "button", "运行状态探索按钮"
     )
     state_panel = state_panel.replace(state_exploration_button, "", 1)
+    state_exploration_button = state_exploration_button.replace("运行状态探索", "运行状态筛选")
     exploration_controls_end = (
         '          </div>\n'
         '        </div>\n'
@@ -1650,8 +1710,9 @@ def _stabilize_workbench_html(html: str) -> str:
     state_panel = state_panel.replace(
         exploration_controls_end,
         f'          </div>\n'
-        f'          <div class="actions">{state_exploration_button}</div>\n'
         '        </div>\n'
+        f'        <div class="actions screening-execute">{state_exploration_button}</div>\n'
+        '        <h3>结果预览</h3>\n'
         '        <div id="explorationEmpty"',
         1,
     )
@@ -1661,12 +1722,12 @@ def _stabilize_workbench_html(html: str) -> str:
         )
     state_panel = state_panel.replace(
         '<div class="group-title">状态探索工作台</div>',
-        '<div class="group-title">状态探索配置</div>',
+        '<div class="group-title">状态识别参数</div>',
         1,
     )
     state_panel = state_panel.replace(
         '<div class="exploration-controls">',
-        '<div class="sub-title">状态空间设置</div>\n          <div class="exploration-controls">',
+        '<div class="sub-title">状态筛选配置</div>\n          <div class="exploration-controls">',
         1,
     ).replace(
         '<div class="exploration-controls performance-controls">',
@@ -1677,8 +1738,19 @@ def _stabilize_workbench_html(html: str) -> str:
     )
     state_panel = state_panel.replace(
         '探索结果仅用于运行状态浏览和候选窗口比较。',
-        '点击“运行状态探索”后查看完整探索证据；探索结果只提供候选，不自动判定正常状态。',
+        '点击“运行状态筛选”后查看完整探索证据；仅使用资格通过的数据，结果只提供候选，不自动判定正常状态。',
         1,
+    )
+    state_panel = state_panel.replace('<h3>结果概览</h3>', '', 1)
+    state_panel = state_panel.replace(
+        '<div id="explorationClusterQuality"></div>',
+        '<div id="explorationClusterQuality"></div>\n'
+        '          <div id="explorationWarnings" class="compact-list" aria-live="polite"></div>\n'
+        '          <div id="explorationQualityDetails"></div>',
+        1,
+    )
+    state_panel = state_panel.replace(
+        '<div id="explorationWarnings" class="compact-list"><span class="help">暂无结构化告警。</span></div>', '', 1
     )
 
     config_panel = _build_data_stage(config_panel, upload_group, tag_group)
@@ -1710,9 +1782,45 @@ def apply_model_results_ui(html: str) -> str:
     if "</head>" not in result or "</body>" not in result:
         raise ValueError("Web HTML缺少head或body结束标签")
     result = _stabilize_workbench_html(result)
+    # Only the final workbench presentation changes; payloads and calculations stay shared.
+    result = result.replace(
+        '  node.textContent=`${scope}：原始样本 ${summary.original_samples}；保留条件通过 ${summary.keep_pass_samples}；排除规则命中 ${summary.exclude_hit_samples}；最终合格 ${summary.eligible_samples}；合格占比 ${(summary.eligible_share*100).toFixed(1)}%；资格筛选后连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;',
+        '  node.classList.toggle("warning",!summary.eligible_samples);\n'
+        '  node.textContent=`${scope}：筛选后 ${summary.eligible_samples.toLocaleString()} 点 · 保留条件通过 ${summary.keep_pass_samples.toLocaleString()} · 排除 ${summary.exclude_hit_samples.toLocaleString()} · 合格占比 ${(summary.eligible_share*100).toFixed(1)}% · 连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;',
+        1,
+    )
+    result = result.replace(
+        'if(revision===eligibilityRevision) el("eligibilitySummary").textContent=error.message;',
+        'if(revision===eligibilityRevision) { el("eligibilitySummary").classList.add("warning"); el("eligibilitySummary").textContent=error.message; }',
+        1,
+    )
+    renderer = _required_html_match(
+        r'function renderClusterQuality\(.*?(?=function renderVariableDiagnostics)',
+        result, "聚类质量展示",
+    ).group()
+    screening_renderer = renderer.replace(
+        '  if(!quality',
+        '  if(perspective==="state_exploration") el("explorationQualityDetails").replaceChildren();\n  if(!quality',
+        1,
+    ).replace(
+        '<div class="chart-card"><h3>聚类质量摘要</h3><div class="metrics">',
+        '<div class="chart-card screening-kpis"><h3>聚类质量摘要</h3><div class="metrics">',
+        1,
+    ).replace(
+        '<div class="chart-card"><h3>${title}</h3>',
+        '<div class="chart-card screening-judgment"><h3>${title}</h3>'
+        '${perspective==="state_exploration"?`<p>识别 ${quality.cluster_count} 个工况组 · 中心排列：${escapeHtml(quality.center_orientation)}</p>`:""}',
+        1,
+    ).replace(
+        '${details}`;',
+        '${perspective==="state_exploration"?"":details}`;\n'
+        '  if(perspective==="state_exploration") el("explorationQualityDetails").innerHTML=details;',
+        1,
+    )
+    result = result.replace(renderer, screening_renderer, 1)
     result = result.replace(
         "</head>",
-        f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n{_MODEL_RESULTS_STYLE}\n{_FORM_WIDTH_STYLE}\n{_FORM_LAYOUT_STYLE}\n</head>",
+        f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n{_MODEL_RESULTS_STYLE}\n{_FORM_WIDTH_STYLE}\n{_FORM_LAYOUT_STYLE}\n{_SCREENING_LAYOUT_STYLE}\n</head>",
         1,
     )
     return result.replace(

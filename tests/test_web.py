@@ -2657,7 +2657,7 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     ]
 
     assert 'class="training-parameter-grid"' in html
-    assert candidate_tools_start < shared_start < html.index('id="trendPanel"', shared_start)
+    assert shared_start < candidate_tools_start < html.index('id="trendPanel"', shared_start)
     assert html.index('id="performancePanel"', shared_start) < html.index(
         '<div class="group candidate-manager"', shared_start
     )
@@ -3116,13 +3116,13 @@ def test_web_tag_selection_uses_persistent_state_not_rendered_dom():
     assert "columns.forEach(tag=>{ if(state.selectedModelTags.delete(tag)) changed=true; })" in html
     assert 'if(changed) invalidateModellingResults("性能筛选列已从建模Tag取消")' in html
     assert (
-        "if(config.role!==\"continuous_input\") "
+        "if(config.role!==\"continuous_input\"||tag===explorationPerformanceTag()) "
         "state.selectedModelTags.delete(tag)"
     ) in html
     assert "function explorationPerformanceTag()" in html
     assert "tag!==performanceTag" in render_source
     assert "state.selectedModelTags.delete(performanceTag)" in html
-    assert 'el("explorationPerformanceTag").addEventListener("change",syncExplorationPerformanceSelection)' in html
+    assert 'el("explorationPerformanceTag").addEventListener("change",()=>{ if(!syncExplorationPerformanceSelection()) invalidateModellingResults("状态探索性能 Tag 已修改"); });' in html
 
 
 def test_uploaded_tag_names_are_not_ellipsis_clipped_before_inspection():

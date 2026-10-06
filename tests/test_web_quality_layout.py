@@ -555,33 +555,33 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     )
 
 
-def test_shared_preprocessing_title_and_help_share_one_row() -> None:
+def test_screening_analysis_group_uses_one_column_with_responsive_field_rows() -> None:
     html = web_model_results.INDEX_HTML
 
-    # 标题占左列、紧随其后的说明占右列并自行折行；其余内容（参数行、子标题）仍占整行。
+    # 标题和说明占完整行，参数行按字段最小宽度自动换列，不生成隐式第二列。
     for rule in (
-        ".shared-preprocessing { grid-template-columns:max-content minmax(0,1fr); }",
-        ".shared-preprocessing > * { grid-column:1 / -1; }",
-        ".shared-preprocessing > .group-title { grid-column:1; align-self:start; }",
-        ".shared-preprocessing > .group-title + .help { grid-column:2; align-self:start; }",
+        "#candidatePanel .shared-preprocessing { grid-template-columns:minmax(0,1fr); }",
+        "#candidatePanel .shared-preprocessing > * { grid-column:1 / -1; }",
+        "#candidatePanel .shared-preprocessing > .group-title + .help { grid-column:1; }",
+        "grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));",
     ):
         assert rule in html
-    # 只在 ≥761px 生效：窄屏单列时若仍保留 grid-column:2 会生成隐式第二列，把标题压成 0 宽。
-    assert ".shared-preprocessing { grid-template-columns:minmax(0,1fr); }" not in html
-    assert "@media (min-width:761px) {\n    .shared-preprocessing { grid-template-columns:max-content minmax(0,1fr); }" in html
+    assert ".shared-preprocessing > .group-title + .help { grid-column:2;" not in html
+    assert '<div class="sub-title">基础分析参数</div>' in html
 
 
-def test_candidate_analysis_range_splits_available_width_without_overlap() -> None:
+def test_screening_conditions_own_the_full_width_analysis_range() -> None:
     html = web_model_results.INDEX_HTML
 
     range_rule = html.split(".candidate-analysis-range {", 1)[1].split("}", 1)[0]
-    assert "width:fit-content;" in range_rule
     assert "max-width:100%;" in range_rule
     assert ".candidate-analysis-range label { min-width:0; }" in html
-    assert 'class="group candidate-analysis-group"' in html
-    assert ".candidate-analysis-group { display:flex; flex-wrap:wrap;" in html
-    assert ".candidate-analysis-group > .group-title { flex:0 0 100%; }" in html
-    assert ".candidate-analysis-group > .help { flex:1 1" in html
+    conditions = html.split('<div id="modelingEligibility"', 1)[1].split('<div class="group shared-preprocessing">', 1)[0]
+    assert 'class="group candidate-analysis-group"' not in conditions
+    assert 'id="analysisStart"' in conditions and 'id="analysisEnd"' in conditions
+    assert '<div class="sub-title">分析时间范围</div>' in conditions
+    assert "#modelingEligibility .candidate-analysis-range { width:100%; }" in html
+    assert 'id="eligibilitySummary" class="screening-summary"' in conditions
     assert "@container (max-width:" not in html
     layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
     assert ".row" in layout and "flex-wrap:wrap;" in layout
@@ -815,7 +815,7 @@ def test_training_parameters_split_common_and_advanced_fields() -> None:
     ):
         assert f'id="{field_id}"' in shared_source, field_id
         assert f'id="{field_id}"' not in model_source, field_id
-    assert candidate_tools_start < shared_start < html.index('id="trendPanel"', shared_start)
+    assert shared_start < candidate_tools_start < html.index('id="trendPanel"', shared_start)
     for field_id in ("varianceThreshold", "components", "modelName"):
         assert f'id="{field_id}"' in model_source, field_id
         assert f'id="{field_id}"' not in shared_source, field_id
@@ -846,7 +846,8 @@ def test_training_parameters_split_common_and_advanced_fields() -> None:
         assert f'id="{field_id}"' not in shared_source, field_id
     assert "高级预处理与 DPCA 参数" not in html
     assert "模型训练配置（参考状态与 DPCA 参数）" not in html
-    assert "分析与建模共享参数" in shared_source
+    assert '<div class="group-title">分析参数</div>' in shared_source
+    assert "正式训练沿用同一套取值" in shared_source
     assert "PCA 模型配置与训练" in model_source
 
 

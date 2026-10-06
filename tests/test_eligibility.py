@@ -247,7 +247,7 @@ def test_validation_frozen_replay_and_deployment_ignore_offline_eligibility(uplo
 def test_ui_rules_above_discovery_unique_ids_and_stale_result_guards():
     html = web_model_results.INDEX_HTML
     assert html.index('id="modelingEligibility"') < html.index('id="stateExplorationPanel"')
-    assert "当前探索仅使用建模资格通过的数据" in html
+    assert "仅使用资格通过的数据，结果只提供候选，不自动判定正常状态" in html
     for field in ["modelingEligibility", "eligibilityKeepConditions", "eligibilityExcludeGroups", "eligibilitySummary"]:
         assert html.count(f'id="{field}"') == 1
     assert '<div class="actions"><h3>保留条件</h3><button id="addEligibilityKeep"' in html
@@ -269,7 +269,7 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
     helpers = "\n".join(next(line for line in html.splitlines() if line.startswith(f"function {name}(")) for name in ["windowSummary", "updateQualityButtonAvailability"])
     harness = r'''
       class Element {
-        constructor(tag="div") { this.tag=tag; this.children=[]; this.value=""; this.dataset={}; this.handlers={}; this.className=""; this.hidden=false; this.textContent=""; this.classList={contains:name=>this.className.split(" ").includes(name)}; }
+        constructor(tag="div") { this.tag=tag; this.children=[]; this.value=""; this.dataset={}; this.handlers={}; this.className=""; this.hidden=false; this.textContent=""; this.classList={contains:name=>this.className.split(" ").includes(name),toggle:(name,force)=>{ const classes=new Set(this.className.split(" ").filter(Boolean));if(force) classes.add(name);else classes.delete(name);this.className=[...classes].join(" "); }}; }
         append(...nodes) { nodes.forEach(node=>{node.parentElement=this;this.children.push(node);}); }
         remove() { this.parentElement.children=this.parentElement.children.filter(node=>node!==this); }
         replaceChildren() { this.children=[]; }
@@ -343,7 +343,7 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
     assert "待检查" in data["windowText"]
     assert data["modelHidden"] and data["tags"] == ["A"]
     assert "上下限反转" in data["error"]
-    for text in ["原始样本 10", "保留条件通过 8", "排除规则命中 3", "最终合格 5", "50.0%", "连续段 2"]:
+    for text in ["筛选后 5 点", "保留条件通过 8", "排除 3", "50.0%", "连续段 2"]:
         assert text in data["summary"]
 
 
