@@ -1307,21 +1307,21 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
             """        <div id="modelingEligibility" class="group">
           <div class="group-title">建模资格筛选</div>
           <p class="help">只影响离线探索、候选与训练资格。上下限包含边界；保留条件全部满足（AND），排除组内全部满足（AND），任一排除组命中即剔除（OR），排除优先。条件列不会自动成为 PCA 输入。</p>
-          <h3>保留条件</h3><div id="eligibilityKeepConditions"></div><button id="addEligibilityKeep" type="button" class="secondary">添加保留条件</button>
-          <h3>排除条件</h3><div id="eligibilityExcludeGroups"></div><button id="addEligibilityExcludeGroup" type="button" class="secondary">添加排除规则组</button>
+          <div class="actions"><h3>保留条件</h3><button id="addEligibilityKeep" type="button" class="secondary">添加保留条件</button></div><div id="eligibilityKeepConditions"></div>
+          <div class="actions"><h3>排除条件</h3><button id="addEligibilityExcludeGroup" type="button" class="secondary">添加排除规则组</button></div><div id="eligibilityExcludeGroups"></div>
           <div class="actions"><button id="refreshEligibilitySummary" type="button" class="secondary">更新资格摘要</button></div>
           <div id="eligibilitySummary" class="notice" aria-live="polite">检查数据后显示资格摘要；无规则时全部样本具备资格。</div>
         </div>""",
             '        <div class="group candidate-analysis-group"><div class="group-title">候选分析范围</div>',
             '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
             '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。共享预处理参数可在下方配置；修改后请重新运行分析。</div></div>',
+            parameter_group,
             '        <div class="candidate-tool-tabs" role="tablist">',
             '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="clusterPanel" role="tab" aria-selected="false">聚类辅助</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="performancePanel" role="tab" aria-selected="false">条件筛选</button>',
             '        </div>',
-            parameter_group,
             *candidate_panels,
             *other_candidate_panels,
             _candidate_manager_html(training_data_section),

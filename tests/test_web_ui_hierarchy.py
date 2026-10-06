@@ -147,15 +147,26 @@ def test_candidate_tools_share_one_level_and_analysis_range() -> None:
         html.index(f'id="{panel}"', tabs_start)
         for panel in ("trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel")
     ]
-    assert tabs_start < shared_start < tool_positions[0]
+    assert shared_start < tabs_start < tool_positions[0]
     assert tool_positions[0] < tool_positions[1] < tool_positions[2] < tool_positions[3]
     assert tool_positions[-1] < manager_start
     assert len(parser.ids) == len(set(parser.ids))
     assert 'id="explorationStart"' not in html
     assert 'id="explorationEnd"' not in html
+    assert 'id="analysisStart"' in html
+    assert 'id="analysisEnd"' in html
     assert 'data-panel="statePanels"' not in html
     assert 'exploration_start:(el("explorationStart")||el("analysisStart")).value' in html
     assert 'exploration_end:(el("explorationEnd")||el("analysisEnd")).value' in html
+    assert 'el("explorationStart") || el("analysisStart")' in html
+    assert 'el("explorationEnd") || el("analysisEnd")' in html
+    assert (
+        'explorationRangeControls.forEach(node =>\n'
+        '  node.addEventListener("change", () => {\n'
+        '    invalidateModellingResults("状态探索参数已修改");\n'
+        '  })\n'
+        ');'
+    ) in html
     assert 'analysis_start:el("analysisStart").value' in html
     assert 'analysis_end:el("analysisEnd").value' in html
     assert '$("analysisStart").value = $("dpTrendStart").value' in html

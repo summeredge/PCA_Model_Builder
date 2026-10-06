@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import numpy as np
@@ -65,6 +68,73 @@ def test_trend_bar_inputs_cannot_overflow_their_labels() -> None:
     # datetime-local 的固有宽度超过 label 的 flex 宽度时，min-width:auto 会让输入框
     # 盖住相邻输入框；必须显式 min-width:0 才能收缩。
     assert ".dp-trend-bar input { min-width:0; }" in html
+
+
+def test_trend_to_analysis_invalidates_only_when_exploration_range_changes() -> None:
+    html = web_dataproject.INDEX_HTML
+    handler = html.split(
+        '$("dpTrendToAnalysis").addEventListener("click", () => {', 1
+    )[1].split("\n  });", 1)[0]
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the DataProject range state test")
+
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            f"""
+            const handler = {json.dumps(handler)};
+            function scenario(values, expectedInvalidations) {{
+              const elements = {{
+                analysisStart:{{value:values.analysisStart}}, analysisEnd:{{value:values.analysisEnd}},
+                dpTrendStart:{{value:values.dpTrendStart}}, dpTrendEnd:{{value:values.dpTrendEnd}},
+              }};
+              if(values.explorationStart!==undefined) elements.explorationStart={{value:values.explorationStart}};
+              if(values.explorationEnd!==undefined) elements.explorationEnd={{value:values.explorationEnd}};
+              const $ = id => elements[id] || null;
+              const invalidations = [];
+              new Function("$","setStatus","invalidateModellingResults",handler)(
+                $, () => {{}}, reason => invalidations.push(reason)
+              );
+              if(elements.analysisStart.value!==values.dpTrendStart||elements.analysisEnd.value!==values.dpTrendEnd)
+                throw new Error("analysis range copy changed");
+              if(elements.explorationStart&&elements.explorationStart.value!==values.dpTrendStart)
+                throw new Error("independent exploration start was not copied");
+              if(elements.explorationEnd&&elements.explorationEnd.value!==values.dpTrendEnd)
+                throw new Error("independent exploration end was not copied");
+              if(invalidations.length!==expectedInvalidations)
+                throw new Error("expected "+expectedInvalidations+" invalidations, got "+invalidations.length);
+              if(invalidations.some(reason=>reason!=="状态探索参数已修改"))
+                throw new Error("unexpected invalidation reason");
+            }}
+            scenario({{
+              analysisStart:"analysis-old", analysisEnd:"analysis-old-end",
+              explorationStart:"same-start", explorationEnd:"same-end",
+              dpTrendStart:"same-start", dpTrendEnd:"same-end",
+            }},0);
+            scenario({{
+              analysisStart:"analysis-old", analysisEnd:"analysis-old-end",
+              explorationStart:"old-start", explorationEnd:"old-end",
+              dpTrendStart:"new-start", dpTrendEnd:"new-end",
+            }},1);
+            scenario({{
+              analysisStart:"same-start", analysisEnd:"same-end",
+              dpTrendStart:"same-start", dpTrendEnd:"same-end",
+            }},0);
+            scenario({{
+              analysisStart:"old-start", analysisEnd:"old-end",
+              dpTrendStart:"new-start", dpTrendEnd:"new-end",
+            }},1);
+            """,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
 
 
 def test_missing_values_are_not_converted_to_zero_by_frontend_contract() -> None:

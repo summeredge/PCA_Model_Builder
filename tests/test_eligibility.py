@@ -250,6 +250,9 @@ def test_ui_rules_above_discovery_unique_ids_and_stale_result_guards():
     assert "当前探索仅使用建模资格通过的数据" in html
     for field in ["modelingEligibility", "eligibilityKeepConditions", "eligibilityExcludeGroups", "eligibilitySummary"]:
         assert html.count(f'id="{field}"') == 1
+    assert '<div class="actions"><h3>保留条件</h3><button id="addEligibilityKeep"' in html
+    assert '<div class="actions"><h3>排除条件</h3><button id="addEligibilityExcludeGroup"' in html
+    assert "eligibility-action-rail" not in html
     assert "modeling_eligibility:modelingEligibilityPayload()" in html
     assert "if(revision!==eligibilityRevision)" in html
     assert "state.trainingWindows.map(window=>({...window,enabled:false}))" in html
@@ -296,11 +299,20 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
       __RENDERER__
       __HELPERS__
       __SCRIPT__
-      const keep=el("eligibilityKeepConditions"); addEligibilityCondition(keep); addEligibilityCondition(keep);
+      const keep=el("eligibilityKeepConditions"); el("addEligibilityKeep").handlers.click(); el("addEligibilityKeep").handlers.click();
       keep.children.forEach((row,index)=>{ row.querySelector('[data-field="minimum"]').value=String(index+1);row.querySelector('[data-field="maximum"]').value="10"; });
-      addEligibilityExcludeGroup();addEligibilityExcludeGroup();
+      el("addEligibilityExcludeGroup").handlers.click(); el("addEligibilityExcludeGroup").handlers.click();
+      const groupHeader=el("eligibilityExcludeGroups").children[0].children[0];
+      const groupActions=groupHeader.children.map(child=>child.text());
+      const groupHeaderClass=groupHeader.className;
       el("eligibilityExcludeGroups").children.forEach(group=>group.querySelector('[data-field="minimum"]').value="5");
       const payload=modelingEligibilityPayload();
+      el("addEligibilityExcludeGroup").handlers.click();
+      const extraGroup=el("eligibilityExcludeGroups").children[2],extraHeader=extraGroup.children[0];
+      extraHeader.children[1].handlers.click();
+      const extraConditionCount=extraGroup.querySelectorAll(".eligibility-condition").length;
+      extraHeader.children[2].handlers.click();
+      const groupsAfterExtraDelete=el("eligibilityExcludeGroups").children.length;
       const first=keep.children[0];first.children[3].handlers.click();
       const group=el("eligibilityExcludeGroups").children[0];group.querySelector(".eligibility-condition").children[3].handlers.click();
       state.candidateWindows=[{id:"stale"}];state.trainingWindows=[{id:"manual",source:"manual",enabled:true,source_ref:"manual"}];state.training={};state.runId="stale";
@@ -311,13 +323,16 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
       renderEligibilitySummary({original_samples:10,keep_pass_samples:8,exclude_hit_samples:3,eligible_samples:5,eligible_share:.5,segment_count:2});
       const invalid=keep.children[0];invalid.querySelector('[data-field="minimum"]').value="20";
       let error="";try { modelingEligibilityPayload(); } catch(caught) { error=caught.message; }
-      console.log(JSON.stringify({before,windowSummary:state.trainingWindowSummary,windowText:el("trainingWindows").text(),qualityDisabled:el("qualityButton").disabled,payload,keep:keep.children.length,groups:el("eligibilityExcludeGroups").children.length,invalidations,summary:el("eligibilitySummary").textContent,error,candidates:state.candidateWindows,windows:state.trainingWindows,training:state.training,runId:state.runId,tags:[...state.selectedModelTags],modelHidden:el("modelContent").hidden}));
+      console.log(JSON.stringify({before,windowSummary:state.trainingWindowSummary,windowText:el("trainingWindows").text(),qualityDisabled:el("qualityButton").disabled,payload,keep:keep.children.length,groups:el("eligibilityExcludeGroups").children.length,groupActions,groupHeaderClass,extraConditionCount,groupsAfterExtraDelete,invalidations,summary:el("eligibilitySummary").textContent,error,candidates:state.candidateWindows,windows:state.trainingWindows,training:state.training,runId:state.runId,tags:[...state.selectedModelTags],modelHidden:el("modelContent").hidden}));
     '''.replace("__SCRIPT__", script).replace("__RENDERER__", renderer).replace("__HELPERS__", helpers)
     result = subprocess.run([node, "-"], input=harness, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     assert data["payload"] == {"keep_conditions": [condition(minimum=1, maximum=10), condition(minimum=2, maximum=10)], "exclude_rule_groups": [[condition(minimum=5)], [condition(minimum=5)]]}
     assert data["keep"] == data["groups"] == 1
+    assert data["groupActions"] == ["排除规则组（组内 AND）", "添加组内条件", "删除规则组"]
+    assert data["groupHeaderClass"] == "actions"
+    assert data["extraConditionCount"] == 2 and data["groupsAfterExtraDelete"] == 2
     assert data["invalidations"] >= 7
     assert data["candidates"] == [] and data["training"] is None and data["runId"] is None
     assert data["windows"] == [{"id": "manual", "source": "manual", "enabled": False, "source_ref": "manual"}]

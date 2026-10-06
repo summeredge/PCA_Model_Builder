@@ -2103,12 +2103,29 @@ def test_stale_state_exploration_response_cannot_restore_results() -> None:
     handler = html.split('el("stateExplorationButton").addEventListener("click", async () => {', 1)[
         1
     ].split("\n  finally", 1)[0]
-    handler_source = "return (async()=>{" + handler + "})();"
+    selection_source = "function explorationPerformanceTag()" + html.split(
+        "function explorationPerformanceTag()", 1
+    )[1].split("function numberValue", 1)[0]
+    sync_source = "function syncExplorationPerformanceSelection()" + html.split(
+        "function syncExplorationPerformanceSelection()", 1
+    )[1].split("function performanceConfigPayload", 1)[0]
+    payload_source = "function stateExplorationPayload()" + html.split(
+        "function stateExplorationPayload()", 1
+    )[1].split("function explorationClusterNumber", 1)[0]
+    range_listener_source = "const explorationRangeControls = [" + html.split(
+        "const explorationRangeControls = [", 1
+    )[1].split('["explorationClusterCount"', 1)[0]
+    save_source = "function saveCurrentTagConfig()" + html.split(
+        "function saveCurrentTagConfig()", 1
+    )[1].split("\nfunction invalidateModellingResults", 1)[0]
 
     assert "explorationRevision:0" in html
+    assert "const payload=stateExplorationPayload();" in handler
     assert "const explorationRevision=state.explorationRevision;" in handler
     assert "if(explorationRevision!==state.explorationRevision)" in handler
-    assert handler.index("const explorationRevision=state.explorationRevision;") < handler.index(
+    assert handler.index("const payload=stateExplorationPayload();") < handler.index(
+        "const explorationRevision=state.explorationRevision;"
+    ) < handler.index(
         'api("/api/state-exploration/run"'
     )
     assert handler.index("if(explorationRevision!==state.explorationRevision)") < handler.index(
@@ -2118,54 +2135,111 @@ def test_stale_state_exploration_response_cannot_restore_results() -> None:
 
     _run_web_javascript(
         f"""
-        const handlerSource = {json.dumps(handler_source)};
+        const selectionSource = {json.dumps(selection_source)};
+        const syncSource = {json.dumps(sync_source)};
+        const payloadSource = {json.dumps(payload_source)};
+        const rangeListenerSource = {json.dumps(range_listener_source)};
+        const handler = {json.dumps(handler)};
+        const saveSource = {json.dumps(save_source)};
         const rendered = [];
+        const rangeNode = value => ({{value, listeners:new Map(), addEventListener(event, callback) {{ this.listeners.set(event, callback); }}}});
         const elements = new Map([
           ["stateExplorationButton", {{disabled:false, dataset:{{}}, textContent:"run"}}],
+          ["explorationPerformanceTag", {{value:"performance"}}],
+          ["analysisStart", rangeNode("analysis-start")],
+          ["analysisEnd", rangeNode("analysis-end")],
         ]);
         const el = id => elements.get(id);
-        const state = {{exploration:null, explorationRevision:0}};
+        let rangeRevision=0;
+        new Function("el","invalidateModellingResults",rangeListenerSource)(el,()=>{{ rangeRevision+=1; }});
+        if(elements.has("explorationStart")||elements.has("explorationEnd")) throw new Error("unexpected independent exploration range controls");
+        for(const id of ["analysisStart","analysisEnd"]) {{
+          const listener=elements.get(id).listeners.get("change");
+          if(!listener) throw new Error("analysis range listener missing for "+id);
+          listener();
+        }}
+        if(rangeRevision!==2) throw new Error("analysis range change did not invalidate exploration");
+        const configElements = new Map([
+          ["tagDescription", {{value:""}}], ["tagUnit", {{value:""}}],
+          ["tagRole", {{value:"continuous_input"}}],
+        ]);
+        const configState = {{
+          registry:{{performance:{{role:"exclude"}},ordinary:{{role:"exclude"}}}},
+          selectedModelTags:new Set(["performance"]), selectedTag:"performance", excludedTags:[],
+        }};
+        const saveTagConfig = new Function(
+          "state", "el", "explorationPerformanceTag", "optionalNumber", "setTagExclusion",
+          "reconcileExcludedTags", "reconcileStateFilterConditions", "invalidateModellingResults",
+          "renderTagList", saveSource + "\\nreturn saveCurrentTagConfig;"
+        )(
+          configState, id => configElements.get(id) || {{value:""}}, () => "performance", () => null,
+          () => {{}}, () => {{}}, () => {{}}, () => {{}}, () => {{}}
+        );
+        saveTagConfig();
+        if(configState.selectedModelTags.has("performance")) throw new Error("restored performance Tag selected for modeling");
+        configState.selectedTag="ordinary";
+        saveTagConfig();
+        if(!configState.selectedModelTags.has("ordinary")) throw new Error("ordinary Tag restore behavior changed");
+
+        const state = {{
+          exploration:null, explorationRevision:0,
+          inspection:{{numeric_columns:["performance","a","b"]}},
+          registry:{{performance:{{role:"continuous_input"}},a:{{role:"continuous_input"}},b:{{role:"continuous_input"}}}},
+          selectedModelTags:new Set(["performance","a","b"]),
+        }};
         const setBusy = () => {{}};
         const setStatus = () => {{}};
-        const stateExplorationPayload = () => ({{file_id:"file"}});
+        const commonPayload = () => ({{file_id:"file"}});
+        const numberValue = () => 1;
+        const performanceConfigPayload = () => null;
+        const invalidateModellingResults = () => {{ state.explorationRevision+=1; }};
+        const renderTagList = () => {{}};
         const resetExplorationRegion = () => {{}};
         const renderStateExploration = data => rendered.push(data.exploration_run_id);
         const document = {{querySelector: () => ({{click: () => {{}}}})}};
         const AsyncFunction = Object.getPrototypeOf(async function(){{}}).constructor;
         let resolveRun;
-        const api = () => new Promise(resolve => {{ resolveRun=resolve; }});
-        const invoke = () => new AsyncFunction("api","globalThis","document",handlerSource).call(
-          el("stateExplorationButton"), api, globalThis, document
+        let requestPayload;
+        const api = (path, options) => {{
+          if(path!=="/api/state-exploration/run") throw new Error("unexpected endpoint: "+path);
+          requestPayload=JSON.parse(options.body);
+          return new Promise(resolve => {{ resolveRun=resolve; }});
+        }};
+        const runHandler = new AsyncFunction(
+          "state","el","api","globalThis","document","setBusy","setStatus","commonPayload",
+          "numberValue","performanceConfigPayload","invalidateModellingResults","renderTagList",
+          "resetExplorationRegion","renderStateExploration",
+          selectionSource+"\\n"+syncSource+"\\n"+payloadSource+"\\nreturn (async()=>{{"+handler+"}})();"
+        );
+        const invoke = () => runHandler(
+          state,el,api,globalThis,document,setBusy,setStatus,commonPayload,numberValue,
+          performanceConfigPayload,invalidateModellingResults,renderTagList,resetExplorationRegion,
+          renderStateExploration
         );
 
         const run = async () => {{
-          // 请求进行中：Lag / Tag / state_filter 变化导致 revision 递增。
-          const staleLag=invoke();
-          state.explorationRevision+=1;
-          resolveRun({{exploration_run_id:"stale-lag", full_point_count:10, returned_point_count:10}});
-          await staleLag;
-          if(state.exploration!==null) throw new Error("stale Lag response restored exploration");
-          if(rendered.length) throw new Error("stale Lag response rendered");
-
-          const staleTag=invoke();
-          state.explorationRevision+=1;
-          resolveRun({{exploration_run_id:"stale-tag", full_point_count:10, returned_point_count:10}});
-          await staleTag;
-          if(state.exploration!==null) throw new Error("stale Tag response restored exploration");
-
-          const staleFilter=invoke();
-          state.explorationRevision+=1;
-          resolveRun({{exploration_run_id:"stale-filter", full_point_count:10, returned_point_count:10}});
-          await staleFilter;
-          if(state.exploration!==null) throw new Error("stale state_filter response restored exploration");
-          if(rendered.length) throw new Error("stale state_filter response rendered");
-
-          // revision 未变：当前请求正常写回并渲染。
+          // payload 归一化移除意外选中的性能 Tag，并提升 revision；当前请求以新 revision 为基线。
           const current=invoke();
+          if(state.explorationRevision!==1) throw new Error("request baseline did not follow normalization");
+          if(state.selectedModelTags.has("performance")) throw new Error("performance Tag remained selected");
+          if(JSON.stringify(requestPayload.tags)!==JSON.stringify(["a","b"])) throw new Error("performance Tag entered PCA payload");
+          if(requestPayload.exploration_start!=="analysis-start"||requestPayload.exploration_end!=="analysis-end") throw new Error("analysis range not used by final-page payload");
           resolveRun({{exploration_run_id:"current", full_point_count:20, returned_point_count:20}});
           await current;
           if(state.exploration?.exploration_run_id!=="current") throw new Error("current response dropped");
           if(JSON.stringify(rendered)!==JSON.stringify(["current"])) throw new Error("current response not rendered");
+
+          // 请求基线建立后，计算输入变化仍会丢弃旧响应。
+          for(const change of ["lag","tag","state_filter"]) {{
+            state.exploration=null;
+            const stale=invoke();
+            const resolveStale=resolveRun;
+            state.explorationRevision+=1;
+            resolveStale({{exploration_run_id:"stale-"+change, full_point_count:10, returned_point_count:10}});
+            await stale;
+            if(state.exploration!==null) throw new Error("stale "+change+" response restored exploration");
+            if(JSON.stringify(rendered)!==JSON.stringify(["current"])) throw new Error("stale "+change+" response rendered");
+          }}
         }};
         run().then(() => process.stdout.write("exploration-race-ok"), error => {{
           process.stderr.write(String(error.stack||error)); process.exitCode=1;

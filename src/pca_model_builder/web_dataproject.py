@@ -236,10 +236,18 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   });
 
   $("dpTrendToAnalysis").addEventListener("click", () => {
+    const explorationStart = $("explorationStart") || $("analysisStart");
+    const explorationEnd = $("explorationEnd") || $("analysisEnd");
+    const explorationRangeChanged =
+      explorationStart.value !== $("dpTrendStart").value ||
+      explorationEnd.value !== $("dpTrendEnd").value;
     $("analysisStart").value = $("dpTrendStart").value;
     $("analysisEnd").value = $("dpTrendEnd").value;
     if ($("explorationStart")) $("explorationStart").value = $("dpTrendStart").value;
     if ($("explorationEnd")) $("explorationEnd").value = $("dpTrendEnd").value;
+    if (explorationRangeChanged) {
+      invalidateModellingResults("状态探索参数已修改");
+    }
     setStatus("当前趋势窗口已设为候选分析范围，状态探索、聚类和条件筛选将共用此范围。", "success");
   });
 
