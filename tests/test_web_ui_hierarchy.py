@@ -139,7 +139,7 @@ def test_candidate_tools_share_one_level_and_analysis_range() -> None:
     assert [panel for panel, _ in parser.candidate_tools] == [
         "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"
     ]
-    assert all(parent == ("candidatePanel",) for _, parent in parser.candidate_tools)
+    assert all(parent == ("candidatePanel", "candidateAnalysis") for _, parent in parser.candidate_tools)
     tabs_start = html.index('<div class="candidate-tool-tabs"')
     shared_start = html.index('<div class="group shared-preprocessing">')
     manager_start = html.index('<div class="group candidate-manager"', shared_start)
@@ -184,6 +184,22 @@ def test_screening_groups_keep_configuration_execution_and_evidence_separate() -
     assert positions == sorted(positions)
     assert 'id="stateExplorationButton" type="button" disabled>运行状态筛选' in panel
     assert panel.index('id="explorationClusterQuality"') < panel.index('id="explorationWarnings"') < panel.index('id="explorationQualityDetails"') < panel.index('id="explorationVariableDiagnostics"')
+    assert len(parser.ids) == len(set(parser.ids))
+
+
+def test_candidate_secondary_navigation_has_only_location_links() -> None:
+    parser = _workbench()
+    html = web_model_results.INDEX_HTML
+    nav = html.split('<nav id="candidateSectionNav"', 1)[1].split('</nav>', 1)[0]
+    assert 'aria-label="正常状态候选页内导航" hidden' in nav
+    for anchor, text in (("modelingEligibility", "筛选准备"), ("candidateAnalysis", "状态分析"), ("trendEvidence", "结果证据"), ("candidateManagement", "候选管理")):
+        assert f'<a href="#{anchor}">{text}</a>' in nav
+    for forbidden in ('role="tab"', 'workflow-step-number', 'workflow-step-status', '已完成', '待开始'):
+        assert forbidden not in nav
+    for anchor in ("candidateAnalysis", "explorationEvidence", "clusterEvidence", "performanceEvidence", "candidateManagement"):
+        assert "candidatePanel" in parser.ancestors_by_id[anchor]
+    assert '<h3 id="trendEvidence">结果证据</h3>' in html
+    assert len(parser.workflow_steps) == 5
     assert len(parser.ids) == len(set(parser.ids))
 
 

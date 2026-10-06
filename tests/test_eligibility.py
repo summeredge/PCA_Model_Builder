@@ -257,6 +257,8 @@ def test_ui_rules_above_discovery_unique_ids_and_stale_result_guards():
     assert "if(revision!==eligibilityRevision)" in html
     assert "state.trainingWindows.map(window=>({...window,enabled:false}))" in html
     assert "exclude_rule_groups" in html and "keep_conditions" in html
+    assert 'id="refreshEligibilitySummary"' not in html
+    assert '"input",scheduleEligibilitySummary' in html
 
 
 def test_ui_editor_add_delete_payload_summary_and_invalidation():
@@ -281,7 +283,7 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
         }
         querySelector(selector) { return this.querySelectorAll(selector)[0]||null; }
       }
-      const nodes=Object.fromEntries(["eligibilityKeepConditions","eligibilityExcludeGroups","eligibilitySummary","addEligibilityKeep","addEligibilityExcludeGroup","refreshEligibilitySummary","modelContent","modelEmpty","modelDownload","validateButton","trainingWindows","qualityButton"].map(id=>[id,new Element()]));
+      const nodes=Object.fromEntries(["eligibilityKeepConditions","eligibilityExcludeGroups","eligibilitySummary","addEligibilityKeep","addEligibilityExcludeGroup","analysisStart","analysisEnd","modelContent","modelEmpty","modelDownload","validateButton","trainingWindows","qualityButton"].map(id=>[id,new Element()]));
       const el=id=>nodes[id]||null, document={createElement:tag=>new Element(tag)};
       const state={inspection:{numeric_columns:["gate","other"]},selectedModelTags:new Set(["A"]),candidateWindows:[],trainingWindows:[{id:"manual",enabled:true,source_ref:"manual"}],trainingWindowSummary:[],quality:{},training:{},runId:"old",exploratoryRunId:"old",clustering:{},performance:{}};
       let invalidations=0;
@@ -345,6 +347,45 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
     assert "上下限反转" in data["error"]
     for text in ["筛选后 5 点", "保留条件通过 8", "排除 3", "50.0%", "连续段 2"]:
         assert text in data["summary"]
+
+
+def test_automatic_summary_discards_stale_responses_and_recovers_from_errors():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for summary regression tests")
+    html = web_model_results.INDEX_HTML
+    script = html[html.index("let eligibilitySummaryRevision="):html.index("function eligibilityChanged()")]
+    harness = r'''
+    const assert=require('node:assert/strict');
+    const summary={textContent:'',warning:false,classList:{toggle:(name,value)=>{summary.warning=value;}}};
+    const nodes={eligibilitySummary:summary,analysisStart:{value:'start'},analysisEnd:{value:'end'}};
+    const el=id=>nodes[id],state={fileId:'fixture',inspection:{}},commonPayload=()=>({file_id:'fixture'});
+    let eligibilityRevision=0,eligibilitySummaryTimer=null,timer=null;const requests=[];
+    function setTimeout(callback,delay) {assert.equal(delay,250);timer=callback;return 1;}
+    function clearTimeout() {}
+    function api(url,options) {return new Promise((resolve,reject)=>requests.push({payload:JSON.parse(options.body),resolve,reject}));}
+    function renderEligibilitySummary(data,scope) {summary.textContent=scope+data.eligible_samples;summary.warning=false;}
+    __SCRIPT__
+    (async()=>{
+      scheduleEligibilitySummary();assert.equal(summary.textContent,'正在更新…');const old=timer();
+      nodes.analysisStart.value='new-start';scheduleEligibilitySummary();const latest=timer();
+      assert.deepEqual(requests[1].payload,{file_id:'fixture',candidate_start:'new-start',candidate_end:'end'});
+      requests[1].resolve({summary:{eligible_samples:7}});await latest;
+      requests[0].reject(new Error('stale failure'));await old;
+      assert.equal(summary.textContent,'分析时间范围7');assert.equal(summary.warning,false);
+      scheduleEligibilitySummary();const failed=timer();requests[2].reject(new Error('current failure'));await failed;
+      assert.equal(summary.warning,true);assert.equal(summary.textContent,'current failure');
+      scheduleEligibilitySummary();assert.equal(summary.warning,false);const recovered=timer();
+      requests[3].resolve({summary:{eligible_samples:8}});await recovered;
+      assert.equal(summary.textContent,'分析时间范围8');
+      const staleFile=refreshEligibilitySummary();eligibilityRevision+=1;
+      requests[4].resolve({summary:{eligible_samples:999}});await staleFile;
+      assert.equal(summary.textContent,'分析时间范围8');console.log('PASS');
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+    '''.replace("__SCRIPT__", script)
+    result = subprocess.run([node, "-"], input=harness, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "PASS"
 
 
 @pytest.mark.parametrize("action", ["confirm_candidate", "update", "remove", "set_enabled"])

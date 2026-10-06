@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 
@@ -118,7 +119,8 @@ def test_quality_cards_are_inside_existing_result_panels_and_share_renderer():
         assert html.count('id="assistanceClusterQuality"') == 1
         assert html.index('id="explorationClusterQuality"') < html.index('id="explorationPcChart"')
         assert html.index('id="assistanceClusterQuality"') < html.index('id="clusterChart"')
-        assert 'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration")' in html
+        centers_argument = ",data.cluster_centers" if html is web_model_results.INDEX_HTML else ""
+        assert f'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration"{centers_argument})' in html
         assert 'renderClusterQuality(el("assistanceClusterQuality"),data.cluster_quality,"cluster_assistance")' in html
         assert "状态探索工程提示" in html and "状态结构解释" in html
         for element_id in ("explorationTimeline", "explorationClusterTable", "explorationClusterCandidates", "explorationPerformanceCandidates", "explorationPreferredRegionCandidates"):
@@ -192,6 +194,84 @@ def test_state_exploration_quality_uses_full_samples_and_existing_centers():
         np.testing.assert_allclose([center["pc1"], center["pc2"]], result["cluster_centers"][center["cluster"]][:2])
     assert {item["tag"] for item in quality["top_features"]} <= {"A", "B", "C"}
     assert all(item["decision"] == "pending" for item in result["candidate_decisions"])
+
+
+@pytest.mark.parametrize("variances,columns,orientation,coverage", [
+    ([8, 2, 1, 1], [0, 1], "多主元分布明显", 10 / 12),
+    ([4, 0, 1], [0, 1], "主要沿 PC1", .8),
+    ([1, 0, 9, 0], [0, 1, 2], "主要沿 PC3", 1),
+    ([2, 2, 5, 1], [0, 1, 2], "多主元分布明显", .9),
+    ([1, 1, 4, 4], [0, 1, 2, 3], "多主元分布明显", 1),
+    ([1, 1, 0, 9], [0, 1, 3], "主要沿 PC4", 1),
+    ([1, 1, 2, 6], [0, 1, 3], "多主元分布明显", .8),
+    ([1, 1, 2, 3, 93], [0, 1, 2, 3], "主要沿 PC5", .07),
+    ([0, 0, 0, 0], [0, 1], "无明显方向", None),
+    ([1e-16, 0, 9e-16], [0, 1, 2], "主要沿 PC3", 1),
+])
+def test_screening_centers_choose_columns_from_center_variance_and_keep_time_values(
+    variances, columns, orientation, coverage,
+):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js unavailable")
+    coordinates = np.array([-np.sqrt(variances), np.sqrt(variances)])
+    coordinates += np.arange(len(variances)) * 3 + 10
+    index = pd.date_range("2026-01-01", periods=4, freq="1h")
+    scores = pd.DataFrame(np.repeat(coordinates, 2, axis=0), index=index)
+    quality = analyze_cluster_quality(scores, [1, 1, 2, 2], index,
+                                      explained_variance_ratio=[.95, .03], sample_interval_minutes=60)
+    centers = {"2": coordinates[1].tolist(), "1": coordinates[0].tolist()}
+    html = web_model_results.INDEX_HTML
+    renderer = "function screeningCenterView" + html.split("function screeningCenterView", 1)[1].split("function renderVariableDiagnostics", 1)[0]
+    legacy = "function renderClusterQuality" + web.INDEX_HTML.split("function renderClusterQuality", 1)[1].split("function renderVariableDiagnostics", 1)[0]
+    legacy = legacy.replace("function renderClusterQuality", "function renderLegacyClusterQuality", 1)
+    labels = "function clusterUiLabel" + html.split("function clusterUiLabel", 1)[1].split("\n", 1)[0]
+    source = r"""
+const assert=require('node:assert/strict');
+const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+const metric=(name,value)=>`<span>${escapeHtml(name)} ${escapeHtml(value)}</span>`;
+const details={innerHTML:'',replaceChildren(){this.innerHTML='';}},el=()=>details;
+""" + labels + renderer + legacy + f"const quality={json.dumps(quality, ensure_ascii=False)}, centers={json.dumps(centers)};" + r"""
+const before=JSON.stringify([quality,centers]),container={innerHTML:''};
+const view=screeningCenterView(quality.centers,centers);
+renderClusterQuality(container,quality,'state_exploration',centers);
+const result={view,details:details.innerHTML,summary:container.innerHTML};
+renderClusterQuality(container,quality,'state_exploration');
+result.fallback=details.innerHTML;
+renderClusterQuality(container,quality,'cluster_assistance',centers);
+const assistance=container.innerHTML.replace('chart-card screening-kpis','chart-card').replace('chart-card screening-judgment','chart-card');
+renderLegacyClusterQuality(container,quality,'cluster_assistance');
+assert.equal(assistance,container.innerHTML);
+assert.equal(JSON.stringify([quality,centers]),before);
+renderClusterQuality(container,null,'state_exploration');
+assert.equal(details.innerHTML,'');
+console.log(JSON.stringify(result));
+"""
+    output = subprocess.run([node, "-"], input=source, capture_output=True, text=True,
+                            encoding="utf-8", check=True)
+    rendered = json.loads(output.stdout)
+    view = rendered["view"]
+    assert view["columns"] == columns
+    assert view["orientation"] == orientation
+    if coverage is None:
+        assert view["coverage"] is None
+    else:
+        assert view["coverage"] == pytest.approx(coverage)
+    np.testing.assert_allclose(view["coordinates"], coordinates)
+    assert re.findall(r"<th>(PC\d+)</th>", rendered["details"]) == [f"PC{pc + 1}" for pc in columns]
+    assert re.findall(r"<th>(PC\d+)</th>", rendered["fallback"]) == ["PC1", "PC2"]
+    assert orientation in rendered["details"] and orientation in rendered["summary"]
+    if orientation != "主要沿 PC1":
+        assert "当前状态划分主要沿 PC1" not in rendered["summary"]
+    for pc in (0, 1):
+        for center in coordinates:
+            value = center[pc] if center[pc] != 0 else 0
+            assert f"<td>{value:.3f}</td>" in rendered["details"]
+    assert 'class="metrics"' not in rendered["details"]
+    assert '<dt>平均持续时间</dt><dd><strong>2.000 h</strong>' in rendered["details"]
+    assert '<dt>最长连续时间</dt><dd><strong>2.000 h</strong>' in rendered["details"]
+    assert '<dt>状态切换次数</dt><dd><strong>1</strong>' in rendered["details"]
+    assert "按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。" in rendered["details"]
 
 
 def test_all_feature_contrasts_keep_constant_means_and_explain_missing_cluster_values():

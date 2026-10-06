@@ -251,6 +251,17 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel .screening-judgment { border-left:3px solid var(--accent); padding:var(--space-3); background:var(--accent-soft); }
   #stateExplorationPanel .screening-judgment p { margin:0; }
   #stateExplorationPanel #explorationQualityDetails { border-top:1px solid var(--line); }
+  #stateExplorationPanel .screening-evidence-compact { grid-template-columns:minmax(0,1fr); gap:var(--space-1); }
+  #stateExplorationPanel .screening-evidence-compact .help { margin:0; }
+  #stateExplorationPanel .screening-center-heading { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--space-1) var(--space-3); }
+  #stateExplorationPanel .screening-center-heading h3 { margin:0; font-size:17px; }
+  #stateExplorationPanel .screening-center-table { width:max-content; max-width:100%; overflow-x:auto; }
+  #stateExplorationPanel .screening-center-table table { width:max-content; min-width:0; }
+  #stateExplorationPanel .screening-center-table :is(th,td) { padding:4px 10px; white-space:nowrap; }
+  #stateExplorationPanel .screening-temporal-summary { display:flex; flex-wrap:wrap; gap:var(--space-1) var(--space-4); margin:0; }
+  #stateExplorationPanel .screening-temporal-summary > div { display:flex; align-items:baseline; gap:var(--space-1); }
+  #stateExplorationPanel .screening-temporal-summary dt { color:var(--muted); font-size:12px; }
+  #stateExplorationPanel .screening-temporal-summary dd { margin:0; font-size:17px; font-variant-numeric:tabular-nums; }
   #stateExplorationPanel #explorationOverview .metric { border:0; padding:var(--space-1); min-height:0; }
   #stateExplorationPanel :is(th,td) { padding:6px 8px; }
   #stateExplorationPanel th { background:var(--line-soft); font-weight:600; }
@@ -712,6 +723,18 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step-status { align-self:start; color:var(--muted); font-size:12px; white-space:nowrap; }
   .workflow-step.active .workflow-step-status { color:var(--accent); font-weight:600; }
   .workflow-step.complete .workflow-step-status { color:var(--green); }
+  .candidate-workflow-step { min-width:0; align-self:start; }
+  .workflow-steps:has(#candidateSectionNav:not([hidden])) > .workflow-step { align-self:start; }
+  .candidate-section-nav { display:grid; gap:4px; padding:4px 0 8px 42px; }
+  .candidate-section-nav[hidden] { display:none; }
+  .candidate-section-nav a {
+    min-width:0; padding:6px 8px; border-left:2px solid transparent;
+    color:var(--muted); font-size:13px; line-height:1.4; text-decoration:none;
+  }
+  .candidate-section-nav a[aria-current="location"] { border-left-color:var(--accent); color:var(--accent); }
+  .candidate-section-nav a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  #candidatePanel :is(#modelingEligibility, #candidateAnalysis, #explorationEvidence,
+    #trendEvidence, #clusterEvidence, #performanceEvidence, #candidateManagement) { scroll-margin-top:var(--space-4); }
   .tag-workspace { display:grid; grid-template-columns:minmax(414px,.54fr) minmax(0,1.7fr); gap:var(--space-3); align-items:start; }
   @media (max-width:1480px) {
     .tag-workspace { grid-template-columns:minmax(0,1fr); }
@@ -889,6 +912,49 @@ document.addEventListener("DOMContentLoaded", () => {
   const trainingTable = document.getElementById("trainingWindows");
   const releasePanel = document.getElementById("releasePanel");
   const workflowSteps = document.getElementById("workflowSteps");
+  const candidateNavigation = document.getElementById("candidateSectionNav");
+  const sectionLinks = [...candidateNavigation.querySelectorAll("a")];
+  const evidenceIds = {trendPanel:"trendEvidence", stateExplorationPanel:"explorationEvidence", clusterPanel:"clusterEvidence", performancePanel:"performanceEvidence"};
+  let currentSection = 0, requestedSection = null, spyFrame = 0;
+  const highlightCandidateSection = index => {
+    currentSection = index;
+    sectionLinks.forEach((link, position) => {
+      if (position === index) link.setAttribute("aria-current", "location");
+      else link.removeAttribute("aria-current");
+    });
+  };
+  const updateCandidateSpy = () => {
+    spyFrame = 0;
+    if (candidateNavigation.hidden) return;
+    const positions = sectionLinks.map(link => document.getElementById(link.hash.slice(1)).getBoundingClientRect().top);
+    const atBottom = scrollY + innerHeight >= document.documentElement.scrollHeight - 2;
+    if (requestedSection !== null) {
+      if (positions[requestedSection] > 64 && !atBottom) return;
+      highlightCandidateSection(requestedSection);
+      requestedSection = null;
+    }
+    let index = 0;
+    positions.forEach((top, position) => { if (top <= 64) index = position; });
+    if (atBottom) {
+      // Short empty results cannot reach the top: retain the selected, visible heading.
+      if (positions[currentSection] >= 0) return;
+      index = positions.length - 1;
+    } else if ((index > currentSection && positions[index] > 48) || (index < currentSection && positions[currentSection] < 80)) return;
+    if (index !== currentSection) highlightCandidateSection(index);
+  };
+  const scheduleCandidateSpy = () => { if (!spyFrame) spyFrame = requestAnimationFrame(updateCandidateSpy); };
+  sectionLinks.forEach((link, index) => link.addEventListener("click", event => {
+    event.preventDefault();
+    requestedSection = index;
+    highlightCandidateSection(index);
+    document.getElementById(link.hash.slice(1)).scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block:"start"});
+    scheduleCandidateSpy();
+  }));
+  window.addEventListener("scroll", scheduleCandidateSpy, {passive:true});
+  window.addEventListener("scrollend", () => { requestedSection = null; scheduleCandidateSpy(); });
+  window.addEventListener("resize", scheduleCandidateSpy);
+  new ResizeObserver(scheduleCandidateSpy).observe(candidatePanel);
+  highlightCandidateSection(0);
   const toolPanels = ["trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"].map(id => document.getElementById(id));
   const showCandidateTool = target => {
     toolPanels.forEach(panel => panel.classList.toggle("active", panel.id === target));
@@ -897,6 +963,8 @@ document.addEventListener("DOMContentLoaded", () => {
       button.classList.toggle("active", selected);
       button.setAttribute("aria-selected", String(selected));
     });
+    sectionLinks[2].setAttribute("href", "#" + evidenceIds[target]);
+    scheduleCandidateSpy();
   };
   globalThis.showCandidateTool = showCandidateTool;
   document.querySelectorAll(".candidate-tool-tab").forEach(button => button.addEventListener("click", () => {
@@ -909,6 +977,8 @@ document.addEventListener("DOMContentLoaded", () => {
   globalThis.showWorkflowStage = target => {
     globalThis.refreshValidationInvestigationContext?.();
     [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.toggle("active", panel.id === target));
+    candidateNavigation.hidden = target !== "candidatePanel";
+    scheduleCandidateSpy();
     if (target === "modelPanel") {
       const fields = [["采样周期", "sampleInterval"], ["重采样", "resamplingMethod"], ["滤波", "filterMethod"], ["缺口阈值", "gapThreshold"], ["最大 Lag", "maxLag"], ["Lag 步长", "lagStep"]];
       document.getElementById("modelPreprocessingSummary").textContent = fields.map(([label, id]) => {
@@ -1181,7 +1251,7 @@ def _candidate_manager_html(training_data_section: str) -> str:
         '<h3>训练窗口</h3>', '<h3>已确认训练窗口</h3>', 1
     )
     return """      <div class="group candidate-manager">
-        <div class="group-title">正常状态候选管理</div>
+        <div class="group-title" id="candidateManagement">正常状态候选管理</div>
         <div class="help">趋势、状态探索、聚类和条件筛选仅提供证据；候选必须由工程师确认后才能进入训练。</div>
         <div class="row candidate-window-row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
@@ -1199,7 +1269,7 @@ def _workflow_sidebar_html() -> str:
         ("validationPanel", "模型验证", "独立验证窗口并记录工程师结论"),
         ("releasePanel", "冻结与部署", "仅已验证模型可冻结并导出部署包"),
     )
-    buttons = "\n".join(
+    buttons = [
         "        <button type=\"button\" class=\"workflow-step{}\" data-panel=\"{}\" role=\"tab\" aria-selected=\"{}\"><span class=\"workflow-step-number\">{}</span><span class=\"workflow-step-copy\"><span class=\"workflow-step-title\">{}</span><span class=\"workflow-step-next\">下一步：{}</span></span><span class=\"workflow-step-status\">{}</span></button>".format(
             " active" if index == 0 else "",
             panel,
@@ -1210,7 +1280,19 @@ def _workflow_sidebar_html() -> str:
             "当前" if index == 0 else "待开始",
         )
         for index, (panel, title, next_step) in enumerate(steps)
-    )
+    ]
+    buttons[1] = '\n'.join((
+        '        <div class="candidate-workflow-step">',
+        buttons[1],
+        '          <nav id="candidateSectionNav" class="candidate-section-nav" aria-label="正常状态候选页内导航" hidden>',
+        '            <a href="#modelingEligibility">筛选准备</a>',
+        '            <a href="#candidateAnalysis">状态分析</a>',
+        '            <a href="#trendEvidence">结果证据</a>',
+        '            <a href="#candidateManagement">候选管理</a>',
+        '          </nav>',
+        '        </div>',
+    ))
+    buttons = "\n".join(buttons)
     return f"""    <section class="controls workflow-sidebar" aria-label="建模流程">
       <h2 class="workflow-sidebar-title">建模流程</h2>
       <div id="workflowSteps" class="workflow-steps" role="tablist">
@@ -1348,6 +1430,8 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
         '        <div class="group">\n          ' + conditions.strip() + '\n        </div>',
         1,
     )
+    cluster_panel = cluster_panel.replace('<div id="clusterEmpty"', '<h3 id="clusterEvidence">结果证据</h3>\n        <div id="clusterEmpty"', 1)
+    performance_panel = performance_panel.replace('<div id="performanceEmpty"', '<h3 id="performanceEvidence">结果证据</h3>\n        <div id="performanceEmpty"', 1)
     candidate_panels = [
         panel.replace('class="panel"', 'class="candidate-tool-panel"', 1)
         for panel in (trend_panel, state_panel)
@@ -1369,12 +1453,12 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
             <div><div class="actions"><h3>保留条件</h3><button id="addEligibilityKeep" type="button" class="secondary">添加保留条件</button></div><div id="eligibilityKeepConditions"></div></div>
             <div><div class="actions"><h3>排除条件</h3><button id="addEligibilityExcludeGroup" type="button" class="secondary">添加排除规则组</button></div><div id="eligibilityExcludeGroups"></div></div>
           </div>
-          <div class="actions"><button id="refreshEligibilitySummary" type="button" class="secondary">更新资格摘要</button><div id="eligibilitySummary" class="screening-summary" aria-live="polite">检查数据后显示资格摘要；无规则时全部样本具备资格。</div></div>
+          <div id="eligibilitySummary" class="screening-summary" aria-live="polite">检查数据后显示资格摘要；无规则时全部样本具备资格。</div>
           <div class="sub-title">分析时间范围</div>""",
             '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
             '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。修改后请重新运行分析。</div></div>',
             parameter_group,
-            '        <div class="candidate-tool-tabs" role="tablist">',
+            '        <div class="candidate-tool-tabs" id="candidateAnalysis" role="tablist">',
             '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
             '          <button type="button" class="candidate-tool-tab" data-panel="clusterPanel" role="tab" aria-selected="false">聚类辅助</button>',
@@ -1712,7 +1796,7 @@ def _stabilize_workbench_html(html: str) -> str:
         f'          </div>\n'
         '        </div>\n'
         f'        <div class="actions screening-execute">{state_exploration_button}</div>\n'
-        '        <h3>结果预览</h3>\n'
+        '        <h3 id="explorationEvidence">结果预览</h3>\n'
         '        <div id="explorationEmpty"',
         1,
     )
@@ -1782,6 +1866,7 @@ def apply_model_results_ui(html: str) -> str:
     if "</head>" not in result or "</body>" not in result:
         raise ValueError("Web HTML缺少head或body结束标签")
     result = _stabilize_workbench_html(result)
+    result = result.replace('<div id="dpTrendChart"', '<h3 id="trendEvidence">结果证据</h3>\n    <div id="dpTrendChart"', 1)
     # Only the final workbench presentation changes; payloads and calculations stay shared.
     result = result.replace(
         '  node.textContent=`${scope}：原始样本 ${summary.original_samples}；保留条件通过 ${summary.keep_pass_samples}；排除规则命中 ${summary.exclude_hit_samples}；最终合格 ${summary.eligible_samples}；合格占比 ${(summary.eligible_share*100).toFixed(1)}%；资格筛选后连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;',
@@ -1789,18 +1874,100 @@ def apply_model_results_ui(html: str) -> str:
         '  node.textContent=`${scope}：筛选后 ${summary.eligible_samples.toLocaleString()} 点 · 保留条件通过 ${summary.keep_pass_samples.toLocaleString()} · 排除 ${summary.exclude_hit_samples.toLocaleString()} · 合格占比 ${(summary.eligible_share*100).toFixed(1)}% · 连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;',
         1,
     )
+    summary_refresh = _required_html_match(
+        r'async function refreshEligibilitySummary\(\).*?(?=function eligibilityChanged)',
+        result, "资格摘要刷新",
+    ).group()
+    result = result.replace(summary_refresh, '''let eligibilitySummaryRevision=0;
+function scheduleEligibilitySummary() {
+  eligibilitySummaryRevision+=1;
+  clearTimeout(eligibilitySummaryTimer);
+  const node=el("eligibilitySummary");
+  if(node&&state.fileId&&state.inspection) { node.classList.toggle("warning",false); node.textContent="正在更新…"; }
+  eligibilitySummaryTimer=setTimeout(refreshEligibilitySummary,250);
+}
+async function refreshEligibilitySummary() {
+  if(!state.fileId||!state.inspection||!el("eligibilitySummary")) return;
+  const revision=++eligibilitySummaryRevision, rulesRevision=eligibilityRevision;
+  try {
+    const payload={...commonPayload(),candidate_start:el("analysisStart").value,candidate_end:el("analysisEnd").value};
+    const data=await api("/api/modeling-eligibility",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(revision===eligibilitySummaryRevision&&rulesRevision===eligibilityRevision) renderEligibilitySummary(data.summary,"分析时间范围");
+  } catch(error) {
+    if(revision===eligibilitySummaryRevision&&rulesRevision===eligibilityRevision) { const node=el("eligibilitySummary"); node.classList.toggle("warning",true); node.textContent=error.message; }
+  }
+}
+''', 1)
+    result = result.replace('  clearTimeout(eligibilitySummaryTimer); eligibilitySummaryTimer=setTimeout(refreshEligibilitySummary,250);', '  scheduleEligibilitySummary();', 1)
     result = result.replace(
-        'if(revision===eligibilityRevision) el("eligibilitySummary").textContent=error.message;',
-        'if(revision===eligibilityRevision) { el("eligibilitySummary").classList.add("warning"); el("eligibilitySummary").textContent=error.message; }',
+        '[select,minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("change",eligibilityChanged));',
+        '[select,minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("change",eligibilityChanged));\n'
+        '  [minimum,maximum].forEach(label=>label.querySelector("input").addEventListener("input",scheduleEligibilitySummary));',
         1,
     )
+    result = result.replace(
+        'el("refreshEligibilitySummary")?.addEventListener("click",refreshEligibilitySummary);',
+        '["analysisStart","analysisEnd"].forEach(id=>["input","change"].forEach(event=>el(id).addEventListener(event,scheduleEligibilitySummary)));',
+        1,
+    )
+    result = result.replace('renderPerformanceConditions(data.numeric_columns); refreshEligibilitySummary();', 'renderPerformanceConditions(data.numeric_columns); scheduleEligibilitySummary();', 1)
+    result = result.replace('$("analysisEnd").value = $("dpTrendEnd").value;', '$("analysisEnd").value = $("dpTrendEnd").value;\n    globalThis.scheduleEligibilitySummary?.();', 1)
     renderer = _required_html_match(
         r'function renderClusterQuality\(.*?(?=function renderVariableDiagnostics)',
         result, "聚类质量展示",
     ).group()
     screening_renderer = renderer.replace(
+        'function renderClusterQuality(container, quality, perspective) {',
+        '''function screeningCenterView(centers, clusterCenters) {
+  const coordinates=centers.map(item=>[item.pc1,item.pc2,...(clusterCenters[item.cluster]||[]).slice(2)]);
+  const dimensions=coordinates.length?Math.min(...coordinates.map(row=>row.length)):2;
+  const variance=Array.from({length:dimensions},(_,pc)=>{
+    const values=coordinates.map(row=>row[pc]);
+    if(!values.length||!values.every(Number.isFinite)) return 0;
+    const mean=values.reduce((sum,value)=>sum+value,0)/values.length;
+    return values.reduce((sum,value)=>sum+(value-mean)**2,0)/values.length;
+  });
+  const total=variance.reduce((sum,value)=>sum+value,0), columns=[0,1];
+  const threshold=0.8-1e-12; // Absorb roundoff at the 80% boundary.
+  let covered=variance[0]+variance[1];
+  const ranked=variance.map((value,pc)=>pc).sort((a,b)=>variance[b]-variance[a]||a-b);
+  for(const pc of ranked.filter(pc=>pc>=2&&pc<4)) {
+    if(total<=0||covered/total>=threshold) break;
+    if(variance[pc]>0) { columns.push(pc); covered+=variance[pc]; }
+  }
+  const primary=ranked[0];
+  return {columns:columns.sort((a,b)=>a-b), coordinates, coverage:total>0?covered/total:null,
+    orientation:total<=0?"无明显方向":variance[primary]/total>=threshold?`主要沿 PC${primary+1}`:dimensions>2?"多主元分布明显":"二维分布明显"};
+}
+function renderClusterQuality(container, quality, perspective, clusterCenters={}) {''',
+        1,
+    ).replace(
         '  if(!quality',
         '  if(perspective==="state_exploration") el("explorationQualityDetails").replaceChildren();\n  if(!quality',
+        1,
+    ).replace(
+        '  const centers=',
+        '  const centerView=perspective==="state_exploration"?screeningCenterView(quality.centers||[],clusterCenters):null;\n'
+        '  let engineeringHint=quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。";\n'
+        '  if(centerView&&centerView.orientation!=="主要沿 PC1") engineeringHint=engineeringHint.replace("当前状态划分主要沿 PC1 方向分离，可能反映连续运行变量变化，建议结合工艺变量确认。","");\n'
+        '  const centerRows=centerView?(quality.centers||[]).map((item,index)=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster))}</td>${centerView.columns.map(pc=>`<td>${number(centerView.coordinates[index][pc])}</td>`).join("")}</tr>`).join(""):"";\n'
+        '  const centers=',
+        1,
+    ).replace(
+        '  const centerCard=',
+        '  const centerCard=centerView?`<div class="chart-card screening-evidence-compact"><div class="screening-center-heading"><h3>工况组中心与分离情况</h3><span class="help">${escapeHtml(centerView.orientation)}</span></div><div class="table-wrap screening-center-table" tabindex="0" role="region" aria-label="工况组中心坐标"><table><thead><tr><th>工况组</th>${centerView.columns.map(pc=>`<th>PC${pc+1}</th>`).join("")}</tr></thead><tbody>${centerRows}</tbody></table></div><p class="help">按工况中心方差选择主元，累计覆盖 ${centerView.coverage===null?"—":percent(centerView.coverage)}；单轴 ≥80% 为主要方向，最多 PC4。</p></div>`:',
+        1,
+    ).replace(
+        '  const time=temporal?',
+        '  const time=temporal&&centerView?`<dl class="screening-temporal-summary"><div><dt>平均持续时间</dt><dd><strong>${number(temporal.average_duration_hours)} h</strong></dd></div><div><dt>最长连续时间</dt><dd><strong>${number(temporal.longest_duration_hours)} h</strong></dd></div><div><dt>状态切换次数</dt><dd><strong>${escapeHtml(temporal.state_switch_count)}</strong></dd></div></dl><p class="help">按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。</p>`:temporal?',
+        1,
+    ).replace(
+        'const timeCard=`<div class="chart-card">',
+        'const timeCard=`<div class="${centerView?"chart-card screening-evidence-compact":"chart-card"}">',
+        1,
+    ).replace(
+        'quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。"))}',
+        'engineeringHint))}',
         1,
     ).replace(
         '<div class="chart-card"><h3>聚类质量摘要</h3><div class="metrics">',
@@ -1809,7 +1976,7 @@ def apply_model_results_ui(html: str) -> str:
     ).replace(
         '<div class="chart-card"><h3>${title}</h3>',
         '<div class="chart-card screening-judgment"><h3>${title}</h3>'
-        '${perspective==="state_exploration"?`<p>识别 ${quality.cluster_count} 个工况组 · 中心排列：${escapeHtml(quality.center_orientation)}</p>`:""}',
+        '${perspective==="state_exploration"?`<p>识别 ${quality.cluster_count} 个工况组 · 中心排列：${escapeHtml(centerView.orientation)}</p>`:""}',
         1,
     ).replace(
         '${details}`;',
@@ -1818,6 +1985,11 @@ def apply_model_results_ui(html: str) -> str:
         1,
     )
     result = result.replace(renderer, screening_renderer, 1)
+    result = result.replace(
+        'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration");',
+        'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration",data.cluster_centers);',
+        1,
+    )
     result = result.replace(
         "</head>",
         f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n{_MODEL_RESULTS_STYLE}\n{_FORM_WIDTH_STYLE}\n{_FORM_LAYOUT_STYLE}\n{_SCREENING_LAYOUT_STYLE}\n</head>",
