@@ -78,7 +78,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       <label>数据 2<select id="dpTrendVar2"></select></label>
       <label>数据 3<select id="dpTrendVar3"></select></label>
       <label>数据 4<select id="dpTrendVar4"></select></label>
-      <label>Y 轴<select id="dpTrendAxisMode"><option value="shared">同一 Y 轴</option><option value="independent">独立 Y 轴</option></select></label>
+      <label>Y 轴<select id="dpTrendAxisMode"><option value="shared">同一 Y 轴</option><option value="independent" selected>独立 Y 轴</option></select></label>
       <button id="dpDrawTrend" type="button" disabled>显示趋势</button>
     </div>
     <div class="dp-trend-bar">

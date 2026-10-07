@@ -43,6 +43,7 @@ def test_dataproject_trend_layout_is_injected_without_removing_legacy_controls()
     assert 'id="dpTrendVar1"' in html
     assert 'id="dpTrendVar4"' in html
     assert 'id="dpTrendAxisMode"' in html
+    assert '<option value="independent" selected>独立 Y 轴</option>' in html
     assert 'id="dpTrendMaxPoints"' in html
     assert 'id="dpTrendStats"' in html
     assert 'id="dpScatterX1"' in html
