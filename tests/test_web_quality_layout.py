@@ -2673,3 +2673,52 @@ def test_modeling_snapshot_view_renders_context_and_missing_state() -> None:
         assert.equal(el('modelingSnapshot').hidden,false);
         assert.equal(el('modelingSnapshot').className,'');
     """)
+
+
+def test_webui_consistency_contracts_for_this_ui_repair_round() -> None:
+    """Pins the four approved WebUI consistency/accessibility fixes.
+
+    Each assertion maps to one defect confirmed in review, and each one is the
+    minimal invariant that would silently regress if the fix were reverted.
+    """
+    html = web_model_results.INDEX_HTML
+
+    # P1 窄屏横向溢出：.candidate-tool-panel 的 display:grid 会生成一条按内容定尺的隐式
+    # auto 轨道，宽表把轨道连同整页顶宽（实测 390px 下 133px）。修复点是给轨道 0 下限。
+    assert ".candidate-tool-panel.active { display:grid; grid-template-columns:minmax(0,1fr); }" in html
+    # .candidate-tool-panel 由 .panel 改名而来，需与兄弟面板同列补齐 min-width:0。
+    assert "min-width:0; }" in html and ".panel, .inner-panel, .candidate-tool-panel," in html
+
+    # P2 数值列语义：th 与 td 共用 .numeric（数值列取同一对齐边），
+    # 状态/勾选列改用 .control 居中，二者都不再把「候选窗口状态 badge」推向右侧。
+    assert ".table-wrap td.numeric, .table-wrap th.numeric {" in html
+    assert ".table-wrap th.control { text-align:center; }" in html
+    assert "markNumericColumns" in html
+    assert 'th.classList.toggle("numeric", numeric);' in html
+    assert 'th.classList.toggle("control", control);' in html
+
+    # P3 标题层级：收敛为三档 token，按视觉角色分配而非跟随 heading 标签。
+    assert "--type-page:21px;" in html
+    assert "--type-section:17px;" in html
+    assert "--type-sub:14px;" in html
+    assert "h1 { margin:0 0 4px; font-size:var(--type-page);" in html
+    assert "h2, h3 { font-size:var(--type-section);" in html
+    assert "h4 { font-size:var(--type-sub);" in html
+    assert ".chart-card h3 { font-size:var(--type-sub); }" in html
+    assert ".group-title { margin:0; font-size:var(--type-section);" in html
+    # 局部覆盖改为引用 token，不再写死第三档以外的字号。
+    assert "#modelingEligibility :is(h3,h4) { font-size:var(--type-sub); }" in html
+    # .screening-center-heading 的 h3 在 .chart-card 内，属卡片标题（14px），
+    # 不再被 ID 级规则抬到 17px，避免同面板出现两种卡片标题字号。
+    assert "#stateExplorationPanel .screening-center-heading h3 { margin:0; }" in html
+    assert "screening-center-heading h3 { margin:0; font-size:17px; }" not in html
+
+    # P4 对比度：说明文字需要 WCAG AA 4.5:1；交互控件边界需要 3:1 非文本对比度。
+    assert "--muted:#6b6b6b;" in html
+    assert "--line-control:#8a8a8a;" in html
+    assert "border-color:var(--line-control);" in html
+    # 停用态同样从 token 继承，不再硬编码在白底上只有 4.39:1 的灰色。
+    disabled_rule = html.split("button:disabled, input:disabled, select:disabled, textarea:disabled {", 1)[1].split("}", 1)[0]
+    assert "background:var(--bg);" in disabled_rule
+    assert "color:var(--muted);" in disabled_rule
+    assert "#" not in disabled_rule, disabled_rule

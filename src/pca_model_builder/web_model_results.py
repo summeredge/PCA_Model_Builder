@@ -200,14 +200,13 @@ _SCREENING_LAYOUT_STYLE = r"""
   #candidatePanel :is(#modelingEligibility, .shared-preprocessing),
   #stateExplorationPanel > .group { padding:var(--space-3); gap:var(--space-1); }
   #modelingEligibility p.help { margin:0; }
-  #candidatePanel :is(#modelingEligibility, .shared-preprocessing) > .group-title,
-  #stateExplorationPanel > .group > .group-title { font-size:17px; }
   #modelingEligibility .screening-rules {
     display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));
     gap:var(--space-3); min-width:0;
   }
   #modelingEligibility .screening-rules > div { min-width:0; }
-  #modelingEligibility :is(h3,h4) { font-size:14px; }
+  /* 筛选准备区块内的 h3/h4 是小节标题：区块标题由 .group-title(17) 承担。 */
+  #modelingEligibility :is(h3,h4) { font-size:var(--type-sub); }
   #modelingEligibility .eligibility-exclude-group {
     border:0; border-top:1px solid var(--line-soft); border-radius:0;
     padding:var(--space-2) 0 0; margin:0;
@@ -244,7 +243,6 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel > .screening-execute { margin:0; padding:0 0 var(--space-3); border-bottom:1px solid var(--line); }
   #stateExplorationPanel :is(.chart-card,.table-wrap) { border:0; border-radius:0; }
   #stateExplorationPanel .chart-card { padding:var(--space-2) 0; }
-  #stateExplorationPanel .chart-card > h3 { font-size:17px; }
   #stateExplorationPanel .screening-kpis { padding-top:0; }
   #stateExplorationPanel .screening-kpis .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); }
   #stateExplorationPanel .screening-kpis .metric { height:100%; }
@@ -254,7 +252,9 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel .screening-evidence-compact { grid-template-columns:minmax(0,1fr); gap:var(--space-1); }
   #stateExplorationPanel .screening-evidence-compact .help { margin:0; }
   #stateExplorationPanel .screening-center-heading { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--space-1) var(--space-3); }
-  #stateExplorationPanel .screening-center-heading h3 { margin:0; font-size:17px; }
+  /* 该标题位于 .chart-card 内，属卡片标题（第三档 14px），与同面板其他卡片标题取同一字号；
+     仅需清掉 h3 的默认外边距。 */
+  #stateExplorationPanel .screening-center-heading h3 { margin:0; }
   #stateExplorationPanel .screening-center-table { width:max-content; max-width:100%; overflow-x:auto; }
   #stateExplorationPanel .screening-center-table table { width:max-content; min-width:0; }
   #stateExplorationPanel .screening-center-table :is(th,td) { padding:4px 10px; white-space:nowrap; }
@@ -390,8 +390,12 @@ _APPLE_DESIGN_STYLE = r"""
     --panel:#ffffff;
     --line:#e0e0e0;
     --line-soft:#f0f0f0;
+    /* 交互控件的可选边界需要 3:1 非文本对比；--line-soft(1.14:1) 只适合装饰分隔线。 */
+    --line-control:#8a8a8a;
     --text:#1d1d1f;
-    --muted:#7a7a7a;
+    /* 说明文字要在白底(5.3:1)与 --bg 浅灰底(4.9:1)上都满足 WCAG AA 4.5:1；
+       #7a7a7a 实测 4.29:1 / 3.94:1 不达标。 */
+    --muted:#6b6b6b;
     --accent:#0066cc;
     --accent-soft:#f5f5f7;
     --green:#24a148;
@@ -409,6 +413,11 @@ _APPLE_DESIGN_STYLE = r"""
     --space-3:16px;
     --space-4:24px;
     --panel-padding:24px;
+    /* 三级字号：页面标题 21 / 区块标题 17 / 小节与卡片标题 14。
+       层级按视觉角色分配，不跟 heading 标签绑定。 */
+    --type-page:21px;
+    --type-section:17px;
+    --type-sub:14px;
   }
 
   *, *::before, *::after { box-shadow:none !important; }
@@ -422,12 +431,13 @@ _APPLE_DESIGN_STYLE = r"""
     line-height:1.5;
   }
   header { padding:16px clamp(20px,3vw,40px); background:#000000; border-bottom:0; color:#ffffff; }
-  h1 { margin:0 0 4px; font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
-  /* Application UI 里的 h2 与 h3 同级：34px 是营销页标题尺寸，会与工作台内
-     25 个 21px 小节标题产生不必要的量级跳跃，破坏层级扫描。 */
-  h2 { font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
-  h3 { font-size:21px; font-weight:600; line-height:1.19; letter-spacing:.231px; }
-  h4 { font-size:17px; font-weight:600; line-height:1.24; letter-spacing:0; }
+  h1 { margin:0 0 4px; font-size:var(--type-page); font-weight:600; line-height:1.19; letter-spacing:.231px; }
+  /* 同一个 h3 既可能是区块标题（17），也可能是卡片小节标题（14），
+     由角色类选择器决定层级，不再让 h3 出现第三种字号。 */
+  h2, h3 { font-size:var(--type-section); font-weight:600; line-height:1.19; letter-spacing:.231px; }
+  h4 { font-size:var(--type-sub); font-weight:600; line-height:1.24; letter-spacing:0; }
+  /* 卡片标题与 h4 同属第三档：同一层级共用字号，避免同一区域内出现两种小节字号。 */
+  .chart-card h3 { font-size:var(--type-sub); }
   .subtitle, .help, label, .legend, .dp-legend { color:var(--muted); }
   .subtitle { color:#cccccc; font-size:14px; line-height:1.43; }
   .help, label, .legend, .dp-legend { font-size:14px; line-height:1.43; }
@@ -441,7 +451,10 @@ _APPLE_DESIGN_STYLE = r"""
     align-items:start;
   }
   section { min-width:0; border:0; border-radius:0; padding:var(--panel-padding); background:var(--panel); }
-  main > section, .results > *, .panel, .inner-panel, .group, .chart-card { min-width:0; }
+  /* .candidate-tool-panel 由 .panel 改名而来，应与 .panel/.inner-panel 同列补齐 min-width:0。
+     注意：这一条单独并不能修好窄屏溢出（实测仅加它仍是 133px），真正的修复在
+     .candidate-tool-panel.active 的 minmax(0,1fr) 轨道上；这里保留只是消除改名遗漏。 */
+  main > section, .results > *, .panel, .inner-panel, .candidate-tool-panel, .group, .chart-card { min-width:0; }
   .controls, .controls .group { min-width:0; }
   .controls { gap:var(--space-3); }
   .results { gap:24px; }
@@ -455,7 +468,8 @@ _APPLE_DESIGN_STYLE = r"""
     border-radius:6px;
   }
   .group { gap:var(--space-2); padding:var(--panel-padding); }
-  .group-title, .sub-title { margin:0; font-size:14px; font-weight:600; line-height:1.4; }
+  .group-title { margin:0; font-size:var(--type-section); font-weight:600; line-height:1.4; }
+  .sub-title { margin:0; font-size:var(--type-sub); font-weight:600; line-height:1.4; }
   .sub-title { border-top-color:var(--line); }
   input, select, textarea {
     width:100%;
@@ -515,7 +529,7 @@ _APPLE_DESIGN_STYLE = r"""
   button:not(:disabled):active, .download:active { filter:brightness(.9); }
   button.secondary {
     background:var(--bg);
-    border-color:var(--line-soft);
+    border-color:var(--line-control);
     color:var(--accent);
     border-radius:var(--control-radius);
   }
@@ -689,7 +703,7 @@ _WORKBENCH_UI_STYLE = r"""
     overflow-y:auto;
     overscroll-behavior-y:contain;
   }
-  .workflow-sidebar-title { margin:0; font-size:17px; font-weight:600; }
+  .workflow-sidebar-title { margin:0; font-size:var(--type-section); font-weight:600; }
   .workflow-steps { display:grid; gap:var(--space-1); }
   .workflow-step {
     display:grid;
@@ -747,7 +761,10 @@ _WORKBENCH_UI_STYLE = r"""
   .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   .candidate-tool-panel { display:none; gap:var(--space-3); }
-  .candidate-tool-panel.active { display:grid; }
+  /* 窄屏溢出的修复点：display:grid 的隐式 auto 轨道按内容 min-content 定尺，宽表会把
+     轨道连同整页顶宽（实测 390px 下 133px 溢出）。minmax(0,1fr) 给轨道 0 下限，让面板内的
+     .table-wrap 拿到有界宽度，改由它自己的 overflow:auto 承接横向滚动。 */
+  .candidate-tool-panel.active { display:grid; grid-template-columns:minmax(0,1fr); }
   .candidate-analysis-range { display:grid; max-width:100%; }
   .candidate-analysis-range label { min-width:0; }
   .shared-preprocessing, .training-configuration { display:grid; gap:var(--space-2); }
@@ -792,10 +809,12 @@ _WORKBENCH_UI_STYLE = r"""
     font-size:12px;
     font-weight:700;
   }
+  /* 停用态改为继承 token：硬编码的 #6b7280 on #f3f4f6 只有 4.39:1，低于 WCAG AA 的
+     4.5:1（停用控件虽属 1.4.3 豁免，但没必要时贴着下限）。 */
   button:disabled, input:disabled, select:disabled, textarea:disabled {
-    background:#f3f4f6;
+    background:var(--bg);
     border-color:var(--line);
-    color:#6b7280;
+    color:var(--muted);
     opacity:1;
   }
   button:disabled { cursor:not-allowed; }
@@ -826,11 +845,16 @@ _WORKBENCH_UI_STYLE = r"""
     box-shadow:1px 0 0 var(--line);
   }
   .table-wrap tbody tr:hover td:first-child { background:#f7fbff; }
-  .table-wrap td.numeric {
+  /* 数值语义由 th 与 td 共用：数值列的标题与内容取同一对齐边。
+     状态、文字、操作列不带 .numeric，继续左对齐或居中。 */
+  .table-wrap td.numeric, .table-wrap th.numeric {
     text-align:right;
     font-variant-numeric:tabular-nums;
-    white-space:nowrap;
   }
+  .table-wrap td.numeric { white-space:nowrap; }
+  /* 状态/勾选列的单元格由 .table-wrap td:has(> .status-label) 与 td:has(> input[type=checkbox])
+     居中；这里让同一列的表头跟随该对齐边，避免表头左对齐、内容居中的错位。 */
+  .table-wrap th.control { text-align:center; }
   #stateExplorationPanel .exploration-controls { border:0; }
   #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
   /* 标签换行时输入框仍需贴底对齐，否则同一行控件高低不齐。 */
@@ -1064,19 +1088,40 @@ document.addEventListener("DOMContentLoaded", () => {
     rejected:"已拒绝", used:"已使用", dropped:"已丢弃",
   };
   const numericPattern = /^[-+]?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?(?:\s*\/\s*[-+]?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?)?(?:\s*(?:%|分钟|点|样本|条))?$/i;
-  const enhanceTables = () => document.querySelectorAll(".table-wrap td").forEach(cell => {
-    const value = cell.textContent.trim();
-    const key = Object.keys(labels).find(statusKey => value === statusKey);
-    if (key && !cell.dataset.uiEnhanced) {
-      cell.dataset.uiEnhanced = "true";
-      const badge = document.createElement("span");
-      badge.className = `status-label ${key}`;
-      badge.textContent = labels[key];
-      cell.replaceChildren(badge);
-      return;
-    }
-    if (numericPattern.test(value)) cell.classList.add("numeric");
+  // 数值列的表头与内容共用一个 .numeric 语义：整列数据（忽略空单元格）都是数值时，
+  // 表头取同一对齐边；文字、状态、操作列不标记，维持左对齐或居中。
+  const markNumericColumns = () => document.querySelectorAll(".table-wrap table").forEach(table => {
+    const header = table.tHead?.rows?.[0];
+    const rows = table.tBodies?.[0]?.rows;
+    if (!header || !rows?.length) return;
+    [...header.cells].forEach((th, index) => {
+      const cells = [...rows].map(row => row.cells[index]).filter(Boolean);
+      const isEmpty = cell => cell.textContent.trim() === "";
+      // 至少一个数值单元格，且其余单元格同为数值或为空：避免把只有复选框的空列判成数值列。
+      const numeric = cells.some(cell => cell.classList.contains("numeric"))
+        && cells.every(cell => cell.classList.contains("numeric") || isEmpty(cell));
+      th.classList.toggle("numeric", numeric);
+      // 勾选/状态列的内容居中，表头取同一边，保证每列自洽。
+      const control = cells.some(cell => cell.querySelector("input[type=checkbox], .status-label"));
+      th.classList.toggle("control", control);
+    });
   });
+  const enhanceTables = () => {
+    document.querySelectorAll(".table-wrap td").forEach(cell => {
+      const value = cell.textContent.trim();
+      const key = Object.keys(labels).find(statusKey => value === statusKey);
+      if (key && !cell.dataset.uiEnhanced) {
+        cell.dataset.uiEnhanced = "true";
+        const badge = document.createElement("span");
+        badge.className = `status-label ${key}`;
+        badge.textContent = labels[key];
+        cell.replaceChildren(badge);
+        return;
+      }
+      if (numericPattern.test(value)) cell.classList.add("numeric");
+    });
+    markNumericColumns();
+  };
   enhanceTables();
   new MutationObserver(enhanceTables).observe(document.body, { childList:true, subtree:true });
 });
