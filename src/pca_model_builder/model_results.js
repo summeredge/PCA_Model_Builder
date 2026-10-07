@@ -180,6 +180,42 @@
     judgment.append(rules);
   }
 
+  function trainingAnomalyPeaks(points, intervalMinutes) {
+    const events = [];
+    let peak = null, previous = null;
+    const finish = () => { if (peak) events.push(peak); peak = null; };
+    for (const point of points) {
+      const time = Date.parse(point.timestamp);
+      if (point.break_before || (previous && (point.segment_id !== previous.segment_id || point.window_id !== previous.window_id || time <= Date.parse(previous.timestamp) || (intervalMinutes > 0 && time - Date.parse(previous.timestamp) !== intervalMinutes * 60000)))) finish();
+      const t2 = Number.isFinite(point.t2_limit_ratio) ? point.t2_limit_ratio : -Infinity;
+      const spe = Number.isFinite(point.spe_limit_ratio) ? point.spe_limit_ratio : -Infinity;
+      const severity = Math.max(t2, spe);
+      if (!Number.isFinite(time) || severity < 1) finish();
+      else if (!peak || severity > peak.severity) peak = {...point, severity, peakType: t2 >= 1 && spe >= 1 ? "T² + SPE" : t2 >= 1 ? "T²" : "SPE"};
+      previous = Number.isFinite(time) ? point : null;
+    }
+    finish();
+    return events.sort((a, b) => b.severity - a.severity).slice(0, 10);
+  }
+
+  async function focusTrainingAnomalyPeak(diagnostic, peak) {
+    if (state.training?.model_quality?.training_condition_diagnostic !== diagnostic || state.trainingDiagnosticInvalidated || !state.inspection) return setStatus("训练诊断已失效，请重新训练后定位。", "warning");
+    const time = Date.parse(peak.timestamp);
+    const start = Math.max(time - 30 * 60000, Date.parse(state.inspection.time_start));
+    const end = Math.min(time + 30 * 60000, Date.parse(state.inspection.time_end));
+    const tags = state.validationInvestigationModel?.training === state.training ? state.validationInvestigationModel.tags : [...state.selectedModelTags];
+    if (!tags.length || !Number.isFinite(start) || !Number.isFinite(end) || start > end) return setStatus("当前数据没有可定位的模型 Tag 或时间范围。", "warning");
+    const training = state.training;
+    const inputTime = value => { const date = new Date(value); return new Date(value - date.getTimezoneOffset() * 60000).toISOString().slice(0,19); };
+    const focus = {start: inputTime(start), end: inputTime(end)};
+    el("trendStart").value = focus.start; el("trendEnd").value = focus.end; el("trendPreset").value = "custom";
+    globalThis.showWorkflowStage("candidatePanel"); globalThis.showCandidateTool("trendPanel");
+    try {
+      await globalThis.showModelTagsTrend(tags, focus, () => state.training === training && !state.trainingDiagnosticInvalidated);
+      if (state.training === training && !state.trainingDiagnosticInvalidated) setStatus(`已定位训练 ${peak.peakType} 峰值：${displayTime(peak.timestamp,19)}，查看前后各30分钟趋势（按数据边界裁剪）。`, "success");
+    } catch (error) { setStatus(error.message || String(error), "error"); }
+  }
+
   function renderTrainingConditionDiagnostic(diagnostic) {
     const ids = ["modelTrainingConditionMessage", "modelTrainingConditionGroups", "modelTrainingConditionTrend", "modelTrainingConditionSwitch", "modelTrainingConditionHints"];
     const nodes = ids.map(id => document.getElementById(id));
@@ -189,6 +225,25 @@
     message.textContent = diagnostic?.message || "当前结果未提供训练工况诊断，请重新训练后查看。";
     const section = document.getElementById("modelTrainingConditionDiagnostic");
     if (section) section.classList.toggle("condition-unavailable", !diagnostic?.available);
+    const peaks = document.getElementById("modelTrainingAnomalyPeaks");
+    if (peaks) {
+      peaks.replaceChildren();
+      const rows = trainingAnomalyPeaks(diagnostic?.timeline || [], Number(el("sampleInterval").value));
+      if (!rows.length) peaks.textContent = "当前训练评分未发现 T²/SPE 95% 超限事件。";
+      else {
+        const table = document.createElement("table");
+        table.innerHTML = "<thead><tr><th>时间</th><th>T²/95</th><th>SPE/95</th><th>工况组</th><th>训练窗口</th><th>峰值类型</th><th>操作</th></tr></thead>";
+        const body = document.createElement("tbody");
+        rows.forEach(peak => {
+          const row = document.createElement("tr");
+          [displayTime(peak.timestamp,19), ...[peak.t2_limit_ratio, peak.spe_limit_ratio].map(value => Number.isFinite(value) ? value.toFixed(3) : "—"), peak.cluster_id ? clusterUiLabel(peak.cluster_id) : "未归属", peak.window_id ?? "—", peak.peakType].forEach(value => { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); });
+          const cell = document.createElement("td"), button = document.createElement("button");
+          button.type = "button"; button.className = "secondary"; button.textContent = "定位趋势";
+          button.onclick = () => focusTrainingAnomalyPeak(diagnostic, peak); cell.append(button); row.append(cell); body.append(row);
+        });
+        table.append(body); peaks.append(table);
+      }
+    }
     if (!diagnostic?.available) return;
     const percent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
     const number = value => Number.isFinite(value) ? value.toFixed(3) : "—";

@@ -189,29 +189,30 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     });
   }
 
-  globalThis.showValidationInvestigationTrend = async (tags, focus) => {
+  globalThis.showModelTagsTrend = async (tags, focus, isCurrent) => {
     populateSelectors();
     trendIds.forEach((id, index) => { $(id).value = tags[index] || ""; });
     $("dpTrendStart").value = focus.start.slice(0,19);
     $("dpTrendEnd").value = focus.end.slice(0,19);
     hasDraggedTrendSelection = false;
     $("dpTrendChart").className = "dp-chart empty";
-    $("dpTrendChart").textContent = "正在读取当前模型全部输入 Tag 的验证窗口趋势…";
+    $("dpTrendChart").textContent = "正在读取当前模型全部输入 Tag 的原始趋势…";
     $("dpTrendStats").replaceChildren();
     const requests = [];
     for (let position = 0; position < tags.length; position += 4) requests.push(requestTrend(tags.slice(position,position+4), "trend", {start:focus.start,end:focus.end}));
     let batches;
     try { batches = await Promise.all(requests); }
     catch (error) {
-      if (currentValidationInvestigationFocus() === focus) { $("dpTrendChart").className = "dp-chart empty"; $("dpTrendChart").textContent = error.message || String(error); }
+      if (isCurrent()) { $("dpTrendChart").className = "dp-chart empty"; $("dpTrendChart").textContent = error.message || String(error); }
       throw error;
     }
-    if (currentValidationInvestigationFocus() !== focus || !batches.length) return;
+    if (!isCurrent() || !batches.length) return;
     const data = {...batches[0], tags:[...tags], series:batches.flatMap(batch=>batch.series)};
     ["statistics", "histograms", "axis_limits", "ranges"].forEach(key => { data[key] = Object.assign({}, ...batches.map(batch=>batch[key])); });
     lastTrend = data;
     renderTrendPage(data);
   };
+  globalThis.showValidationInvestigationTrend = (tags, focus) => globalThis.showModelTagsTrend(tags, focus, () => currentValidationInvestigationFocus() === focus);
 
   $("dpDrawTrend").addEventListener("click", async () => {
     const tags = chosen(trendIds);

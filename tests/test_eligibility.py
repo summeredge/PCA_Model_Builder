@@ -269,6 +269,7 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
     script = html[html.index("let eligibilityRevision="):html.index("function stateFilterTags()")]
     renderer = html[html.index("function renderTrainingWindows()"):html.index("async function updateTrainingWindows(")]
     helpers = "\n".join(next(line for line in html.splitlines() if line.startswith(f"function {name}(")) for name in ["windowSummary", "updateQualityButtonAvailability"])
+    helpers += "\n" + html[html.index("function windowTimeRange("):html.index("function trainingWindowsPayload(")]
     harness = r'''
       class Element {
         constructor(tag="div") { this.tag=tag; this.children=[]; this.value=""; this.dataset={}; this.handlers={}; this.className=""; this.hidden=false; this.textContent=""; this.classList={contains:name=>this.className.split(" ").includes(name),toggle:(name,force)=>{ const classes=new Set(this.className.split(" ").filter(Boolean));if(force) classes.add(name);else classes.delete(name);this.className=[...classes].join(" "); }}; }

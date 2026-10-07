@@ -228,7 +228,7 @@ def test_training_condition_ui_draws_separate_segments_and_clears_old_results():
     assert "重新训练" in result["empty"]
 
 
-def test_candidate_window_display_numbers_keep_internal_ids_for_actions():
+def test_candidate_window_ranges_hide_ids_and_keep_them_for_actions():
     html = web.INDEX_HTML
     helpers = html[html.index("function clusterUiLabel("):html.index("function trainingWindowsPayload(")]
     renderer = html[html.index("function renderCandidateWindows("):html.index("function renderTrainingWindows(")]
@@ -241,10 +241,10 @@ def test_candidate_window_display_numbers_keep_internal_ids_for_actions():
         text(){return this.textContent+this.children.map(node=>node.text()).join(" ");}
       }
       const container=new Element(), calls=[];
-      const state={candidateWindows:[{id:"ab004836-2619-4298-9b21-be5282f6d92f",source:"cluster",source_ref:"state-exploration-e3add35a3e7f46c9824233f9fae8e0a0-cluster_002-candidate-001",start:"2026-01-01",end:"2026-01-02"},{id:"manual-id",source:"manual",source_ref:null,start:"2026-01-03",end:"2026-01-04"}],exploration:null};
+      const state={candidateWindows:[{id:"ab004836-2619-4298-9b21-be5282f6d92f",source:"cluster",source_ref:"state-exploration-e3add35a3e7f46c9824233f9fae8e0a0-cluster_002-candidate-001",start:"2026-01-01T09:15:33",end:"2026-01-02T11:45:10"},{id:"manual-id",source:"manual",source_ref:null,start:"2026-01-01T09:15:00",end:"2026-01-02T11:45:00"}],exploration:null};
       const document={createElement:()=>new Element()};
       function el(){return container;}
-      function displayTime(value){return value;}
+      function displayTime(value){return value.slice(0,16).replace("T"," ");}
       function displayUiValue(value){return value;}
       function candidateTrainingWindows(){return [];}
       function candidateTrainingConflicts(){return [];}
@@ -254,22 +254,74 @@ def test_candidate_window_display_numbers_keep_internal_ids_for_actions():
       __RENDERER__
       renderCandidateWindows();
       const rows=container.children[0].children[1].children;
-      const initial=rows.map(row=>({name:row.children[0].textContent,id:row.children[0].title,source:row.children[1].textContent,reference:row.children[1].title}));
+      const initial=rows.map(row=>({range:row.children[0].textContent,source:row.children[1].textContent,reference:row.children[1].title}));
       const visible=container.text();
-      rows[0].children[4].children[1].handlers.click();
-      rows[0].children[4].children[0].handlers.click();
-      rows[0].children[4].children[2].handlers.click();
+      rows[0].children[3].children[1].handlers.click();
+      rows[0].children[3].children[0].handlers.click();
+      rows[0].children[3].children[2].handlers.click();
       const remaining=container.children[0].children[1].children[0].children[0];
-      console.log(JSON.stringify({initial,visible,calls,remaining:{name:remaining.textContent,id:remaining.title},sources:["manual","trend","performance","preferred_region","suggested","cluster"].map(source=>candidateSourceLabel({source}))}));
+      console.log(JSON.stringify({initial,visible,calls,remaining:remaining.textContent,sources:["manual","trend","performance","preferred_region","suggested","cluster"].map(source=>candidateSourceLabel({source}))}));
     """.replace("__HELPERS__", helpers).replace("__RENDERER__", renderer))
-    assert result["initial"][0]["name"] == "候选 01"
+    assert result["initial"][0]["range"] == "2026-01-01 09:15 ~ 2026-01-02 11:45（同范围 1）"
     assert result["initial"][0]["source"] == "工况组 2 · 候选 1"
-    assert result["initial"][1]["name"] == "候选 02"
-    assert result["calls"] == [result["initial"][0]["id"],result["initial"][0]["reference"]]
-    assert result["initial"][0]["id"] not in result["visible"]
-    assert result["initial"][0]["reference"] not in result["visible"]
-    assert result["remaining"] == {"name":"候选 01","id":"manual-id"}
+    assert result["initial"][1]["range"] == "2026-01-01 09:15 ~ 2026-01-02 11:45（同范围 2）"
+    assert result["calls"] == ["ab004836-2619-4298-9b21-be5282f6d92f","state-exploration-e3add35a3e7f46c9824233f9fae8e0a0-cluster_002-candidate-001"]
+    assert "ab004836-2619-4298-9b21-be5282f6d92f" not in result["visible"]
+    assert "state-exploration-e3add35a3e7f46c9824233f9fae8e0a0" not in result["visible"]
+    assert result["remaining"] == "2026-01-01 09:15 ~ 2026-01-02 11:45"
     assert result["sources"] == ["手工窗口","趋势候选","性能候选","区域候选","建议窗口","工况组候选"]
+
+
+def test_training_window_list_and_summary_use_ranges_but_actions_keep_ids():
+    html = web.INDEX_HTML
+    helpers = html[html.index("function candidateSourceLabel("):html.index("function trainingWindowsPayload(")]
+    renderer = html[html.index("function renderTrainingWindows()"):html.index("async function updateTrainingWindows(")]
+    summary = html[html.index("function renderTrainingWindowSummary(windows)"):html.index("function validationInvestigationWindowsKey(")]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(){this.children=[];this.handlers={};this.textContent="";this.style={};}
+        append(...nodes){this.children.push(...nodes);}
+        replaceChildren(){this.children=[];this.textContent="";}
+        addEventListener(name,handler){this.handlers[name]=handler;}
+        text(){return this.textContent+this.children.map(node=>node.text()).join(" ");}
+      }
+      const calls=[], container=new Element(), summaryContainer=new Element();
+      const elements=new Map([["trainingWindows",container],["trainingWindowSummary",summaryContainer]]);
+      const el=id=>elements.get(id);
+      const state={trainingWindows:[
+        {id:"training-a0d5e836-1",start:"2026-05-17T23:59:00",end:"2026-05-18T06:35:00",enabled:true,source:"manual"},
+        {id:"training-a0d5e836-2",start:"2026-05-17T23:59:00",end:"2026-05-18T06:35:00",enabled:false,source:"manual"},
+      ],trainingWindowSummary:[]};
+      const document={createElement:()=>new Element()};
+      function displayTime(value){return value.slice(0,16).replace("T"," ");}
+      function displayUiValue(value){return value;}
+      function renderPreprocessingPreviewWindow(){}
+      function windowSummary(){return {duration_minutes:396,raw_samples:80,effective_samples:78,quality_status:"usable"};}
+      function updateTrainingWindows(operation){calls.push(operation);return Promise.resolve();}
+      function showCandidateTrend(window){calls.push(window.id);}
+      function editTrainingWindow(){}
+      globalThis.currentTrainingDiagnosticFocus=()=>null;
+      __HELPERS__
+      __RENDERER__
+      __SUMMARY__
+      renderTrainingWindows();
+      const rows=container.children[0].children[1].children;
+      const labels=rows.map(row=>row.children[2].textContent);
+      rows[0].children[0].children[0].handlers.change();
+      rows[0].children[7].children[0].handlers.click();
+      renderTrainingWindowSummary(state.trainingWindows.map(window=>({...window,status:"used",effective_samples:78,segments:[]})));
+      console.log(JSON.stringify({labels,list:container.text(),summary:summaryContainer.text(),calls}));
+    """.replace("__HELPERS__", helpers).replace("__RENDERER__", renderer).replace("__SUMMARY__", summary))
+    assert result["labels"] == [
+        "2026-05-17 23:59 ~ 2026-05-18 06:35（同范围 1）",
+        "2026-05-17 23:59 ~ 2026-05-18 06:35（同范围 2）",
+    ]
+    assert "training-a0d5e836" not in result["list"]
+    assert "training-a0d5e836" not in result["summary"]
+    assert result["calls"] == [
+        {"action":"set_enabled","id":"training-a0d5e836-1","enabled":True},
+        "training-a0d5e836-1",
+    ]
 
 
 def test_training_condition_api_reads_cached_full_series_and_checks_provenance(tmp_path, monkeypatch):
@@ -1309,12 +1361,13 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "next.break_before||next.segment_id!==row.segment_id" in timeline
     assert "物理连续段断点" in timeline
     assert "候选窗口" in timeline
-    assert "candidate.candidate_id" in timeline
+    assert "candidate.candidate_id" not in timeline
     assert '<title>${escapeHtml(clusterUiLabel(row.cluster_id))}&#10;开始时间：' in timeline
-    assert '<title>${escapeHtml(candidate.candidate_id)}&#10;${escapeHtml(clusterUiLabel(candidate.cluster_id))}&#10;开始时间：' in timeline
+    assert '时间范围：${escapeHtml(windowRangeLabel(candidate,candidates))}' in timeline
     assert "explorationTimelineTick" not in html
     assert "${ticks}" not in timeline
-    renderer = html[
+    range_helpers = html[html.index("function windowTimeRange("):html.index("function trainingWindowsPayload(")]
+    renderer = range_helpers + html[
         html.index("function renderExplorationTimeline(rows,candidates"):
         html.index("function renderExplorationClusterTable")
     ]
@@ -1322,7 +1375,7 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
       const container={innerHTML:""};
       function el() { return container; }
       function escapeHtml(value) { return String(value); }
-      function displayTime(value) { return String(value); }
+      function displayTime(value,length=16) { return String(value).slice(0,length).replace("T"," "); }
       function explorationClusterColor() { return "#7ab"; }
       function clusterUiLabel(value) { return String(value).replace(/cluster_(\d+)/gi,(_,n)=>`工况组 ${Number(n)}`); }
       __RENDERER__
@@ -1337,8 +1390,8 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
       const labels=[...svg.matchAll(/<text\b[^>]*>(.*?)<\/text>/g)].map(match=>match[1]);
       console.log(JSON.stringify({
         labels,
-        rowTooltip:svg.includes("<title>工况组 1&#10;开始时间：2026-01-01T00:00:00"),
-        candidateTooltip:svg.includes("<title>candidate-1&#10;工况组 1&#10;开始时间：2026-01-01T00:15:00")
+        rowTooltip:svg.includes("<title>工况组 1&#10;开始时间：2026-01-01 00:00:00"),
+        candidateTooltip:svg.includes("<title>工况组 1&#10;时间范围：2026-01-01 00:15 ~ 2026-01-01 00:45")
       }));
     """.replace("__RENDERER__", renderer))
     assert rendered["labels"] == ["工况组 状态", "候选窗口"]
@@ -6133,7 +6186,8 @@ def _assert_refined_diagnostic_focus(tmp_path, exploration, parent, performance,
     def function(name):
         start = html.index(f"function {name}(")
         return html[start:html.index("\nfunction ", start)]
-    helpers = html[html.index("function trainingDiagnosticCandidateMatches("):html.index("function renderExplorationTimeline(")]
+    range_helpers = html[html.index("function windowTimeRange("):html.index("function trainingWindowsPayload(")]
+    helpers = range_helpers + html[html.index("function trainingDiagnosticCandidateMatches("):html.index("function renderExplorationTimeline(")]
     script = r'''
 const assert=require('node:assert/strict');
 class Element {

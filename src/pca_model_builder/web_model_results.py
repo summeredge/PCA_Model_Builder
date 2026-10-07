@@ -1101,7 +1101,7 @@ _MODEL_RESULTS_STYLE = r"""
   .model-quality-copy, #modelTrainingDataQuality > p { max-width:72ch; }
   #modelTrainingConditionDiagnostic { min-width:0; max-width:100%; }
   .training-condition-trend svg { display:block; width:100%; height:auto; }
-  #modelTrainingConditionDiagnostic.condition-unavailable > :is(h4, .table-wrap, .training-condition-trend, #modelTrainingConditionHints) { display:none; }
+  #modelTrainingConditionDiagnostic.condition-unavailable > :is(h4, .table-wrap, .training-condition-trend, #modelTrainingConditionHints):not(#modelTrainingAnomalyTitle):not(#modelTrainingAnomalyPeaks) { display:none; }
   .model-training-source-reference { overflow-wrap:anywhere; }
   .model-overview-grid {
     display:grid;
@@ -1265,7 +1265,7 @@ def _candidate_manager_html(training_data_section: str) -> str:
     return """      <div class="group candidate-manager">
         <div class="group-title" id="candidateManagement">正常状态候选管理</div>
         <div class="help">趋势、状态探索、聚类和条件筛选仅提供证据；候选必须由工程师确认后才能进入训练。</div>
-        <div class="row candidate-window-row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
+        <div class="row candidate-window-row"><label>开始时间<input id="candidateStart" type="datetime-local"></label><label>结束时间<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
         <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
         <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>
@@ -1350,6 +1350,9 @@ def _model_results_content_html() -> str:
             <div id="modelTrainingConditionGroups" class="table-wrap"></div>
             <h4>训练工况与统计量趋势</h4>
             <div id="modelTrainingConditionTrend" class="training-condition-trend"></div>
+            <h4 id="modelTrainingAnomalyTitle">训练异常峰值</h4>
+            <div class="help">Top10 连续超限事件峰值，仅用于定位统计异常时间，不代表工艺异常或根因。</div>
+            <div id="modelTrainingAnomalyPeaks" class="table-wrap"></div>
             <h4>稳定工况区 / 工况切换附近</h4>
             <div id="modelTrainingConditionSwitch" class="table-wrap"></div>
             <div id="modelTrainingConditionHints" class="help"></div>
@@ -1635,7 +1638,7 @@ def _stabilize_workbench_html(html: str) -> str:
         1,
     ).rstrip()
     parameter_group = (parameters_marker + parameter_group).rstrip()
-    candidate_anchor = '        <div class="row"><label>候选开始<input id="candidateStart"'
+    candidate_anchor = '        <div class="row"><label>开始时间<input id="candidateStart"'
     training_windows_anchor = '        <h3>训练窗口</h3><div id="trainingWindows"'
     parameter_prefix, candidate_section = _split_at_unique_anchor(
         parameter_group, candidate_anchor, "候选窗口"

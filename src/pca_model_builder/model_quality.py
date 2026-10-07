@@ -248,17 +248,16 @@ def _training_condition_diagnostic(
         if any(switches["near_switch"][key] > switches["stable"][key] for key in ("t2_95_exceedance_rate", "spe_95_exceedance_rate")):
             messages.append("工况切换附近的 T²/SPE 超限比例高于稳定工况区，建议检查训练窗口是否包含较多状态过渡过程；该比较不表示切换造成异常。")
     timeline = []
-    if rows:
-        for position in range(count):
-            timeline.append({
-                "timestamp": times[position].isoformat() if pd.notna(times[position]) else None,
-                "cluster_id": labels[position] if valid[position] else None,
-                "window_id": str(windows[owner[position]].get("id", owner[position])) if owner[position] >= 0 else None,
-                "segment_id": int(segment_numbers[position]), "break_before": bool(breaks[position]),
-                "t2_limit_ratio": float(ratios["t2"][position]) if valid[position] and np.isfinite(ratios["t2"][position]) else None,
-                "spe_limit_ratio": float(ratios["spe"][position]) if valid[position] and np.isfinite(ratios["spe"][position]) else None,
-                "near_switch": bool(near[position]) if available else None,
-            })
+    for position in range(count):
+        timeline.append({
+            "timestamp": times[position].isoformat() if pd.notna(times[position]) else None,
+            "cluster_id": labels[position] if valid[position] else None,
+            "window_id": str(windows[owner[position]].get("id", owner[position])) if owner[position] >= 0 else None,
+            "segment_id": int(segment_numbers[position]), "break_before": bool(breaks[position]),
+            "t2_limit_ratio": float(ratios["t2"][position]) if valid[position] and np.isfinite(ratios["t2"][position]) else None,
+            "spe_limit_ratio": float(ratios["spe"][position]) if valid[position] and np.isfinite(ratios["spe"][position]) else None,
+            "near_switch": bool(near[position]) if available else None,
+        })
     traced = sum(row["samples"] for row in rows)
     return {
         "available": bool(rows), "groups": rows, "traceable_samples": traced,
