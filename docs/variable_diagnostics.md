@@ -16,7 +16,7 @@
 
 ## UI 与交互
 
-复用现有 Card、表格滚动容器和原生 `details`，位于聚类质量后、图表前。高相关表默认前 20 对，其余折叠；Cluster 区分默认前 10 个 Tag，其余可展开；变量质量默认折叠。所有表格限制高度并在本地滚动，支持键盘进入滚动容器。
+复用现有 Card、表格滚动容器和原生 `details`，位于连续候选后的详情区。高相关表默认前 20 对，其余折叠；完整工况组变量对比与变量质量默认折叠。完整对比默认前 10 个 Tag，其余可展开。所有表格限制高度并在本地滚动，支持键盘进入滚动容器。
 
 长 Tag 在诊断单元格内断行，避免固定首列遮住数值列。真实浏览器检查还发现既有优选区域卡片在窄视口下由内部 Grid 的自动轨道撑宽；增加一条该卡片的 `minmax(0, 1fr)` 轨道约束，保留原有结果列和统计宽度。
 
@@ -56,3 +56,17 @@
 | `docs/variable_diagnostics.md` | 数据口径、架构决策、限制与验证说明 |
 
 开始任务前已存在的其他 WebUI、脚本、测试和布局报告修改保持原样；本任务没有改动模型算法、模型包、评分或正式训练逻辑。
+
+## 工况组画像与时间证据
+
+两入口继续共用 `analyze_cluster_quality()`，新增 `group_profiles`，保留 `feature_contrasts` 与 `top_features` 的既有含义。仅用完整有效动态样本索引对齐 `processed.resampled` 的建模原始 Tag，工程量为重采样后、滤波前数值，不使用显示抽样或 Lag 列。
+
+每组返回样本数、占比、各 Tag 均值、相对总体偏离 `z = (组均值 - 全部样本均值) / 全部样本总体标准差`，总体按样本加权。默认展示非零有限偏离的 Top3，展开最多 Top5；完整变量始终可达。并列排名采用竞争排名并明确标记；不可计算保持 `null` 和原因。接近总体的组仍展示全局主要区分 Tag 的本组均值与位置，排名不表示正常范围或分布完全分离。
+
+状态探索的 episode 复用 `_contiguous_runs()` 和 `_coverage_duration_minutes()`：同组、同 segment、时间差等于采样间隔才连续。覆盖为末点减首点加采样间隔，单点覆盖一个间隔；各 episode 覆盖之和等于组总覆盖。输出完整起止、中位、最长、平均和总覆盖时长。转换只统计同 segment 内按采样间隔相邻且标签不同的样本，不含自转换；未观测到转换不代表永不转换。聚类辅助首版只提供静态画像，保留原代表窗口。
+
+正式页面顺序为概览、紧凑组列表及单组选中画像、PC 图与时间轴、连续候选、技术和变量详情。弱分离提示保持在概览。临时 `groupProfileSelection` 与训练诊断状态独立，两入口互不串用，结果替换及参数失效清除选择。PC 图使用现有容器的透明度更新，保留缩放、平移与椭圆；时间高亮使用后端完整 episode，只有显式定位按钮才滚动。关联候选数仅计本组已有 `cluster_candidates`，受最小时长和每组上限约束；定位不勾选、不接受、不生成训练窗口，候选来源及 ID 不变。
+
+2026-10-06 验收：Python 使用已验证的 `PythonEnvs/process-model-builder`（3.11.9），完整 `python -m pytest -q` 通过 802 项；32 条警告来自既有 `training.py` 和 `data_session.py`。真实 Chromium 覆盖两入口、1440px / 900px、50 Tag（含长 Tag）、10 组、无候选、键盘选择、PC 缩放状态和椭圆保留、完整 episode 定位、候选人工确认、实际质量检查与训练、训练诊断定位及配置失效。页面横向溢出 0px；Geometry Validation: PASS，截图已复核。另直接对正式 8787 服务执行画像浏览器用例，通过；旧服务已重启，当前 build `cdb5b289d276bdbd`，HTML SHA-256 `356c29851228c6ddf17c44f640a6de3484269237ac1a6bd9b69225ee11ef87ec`，HTML 与两个 JS 资源均与当前源码一致。未安装依赖，未 commit、push 或创建 PR。
+
+本轮修改：`cluster_quality.py`、`state_exploration.py`、`web.py`、`web_model_results.py`；新增 `tests/test_group_profiles.py`，更新 `tests/test_variable_diagnostics_browser.py`、`tests/test_screening_layout_browser.py`、`tests/test_web.py`、`tests/test_web_quality_layout.py`、`tests/test_web_ui_hierarchy.py`；文档为本文件。模型算法、模型包 schema、候选 ID / 来源和人工确认逻辑不变。

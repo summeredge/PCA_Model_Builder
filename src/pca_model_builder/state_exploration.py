@@ -231,7 +231,17 @@ def run_state_exploration(
         points.index, diagnostic_data, tag_columns,
         model.explained_variance_ratio, preprocessing_config.sample_interval_minutes,
         cluster_centers=centers,
+        segment_ids=points["segment_id"].to_numpy(),
     )
+    _attach_group_time_profiles(cluster_quality, points, candidates, preprocessing_config.sample_interval_minutes)
+    summaries_by_cluster = {item["cluster_id"]: item for item in summaries}
+    for profile in cluster_quality["group_profiles"]:
+        summary = summaries_by_cluster[profile["cluster_id"]]
+        if "performance_valid_count" in summary:
+            profile.update({key: summary[key] for key in (
+                "performance_valid_count", "performance_target_count",
+                "performance_target_ratio", "performance_median",
+            )})
     variable_diagnostics = analyze_variable_diagnostics(diagnostic_data)
     variable_diagnostics["cluster_features"] = cluster_quality["feature_contrasts"]
     variable_diagnostics["cluster_ids"] = [item["cluster"] for item in cluster_quality["centers"]]
@@ -253,6 +263,7 @@ def run_state_exploration(
             "model_purpose": "exploratory",
             "model_status": "draft",
             "n_components": model.n_components,
+            "cumulative_explained_variance": float(sum(model.explained_variance_ratio[:model.n_components])),
             "pc_columns": list(clustered.pc_columns),
             "cluster_count": exploration_config.cluster_count,
         },
@@ -839,6 +850,38 @@ def _normalize_preferred_region_ellipses(
             raise ValueError("椭圆半轴必须为正且有限")
         normalized.append(ellipse)
     return normalized
+
+
+def _attach_group_time_profiles(quality, points, candidates, interval):
+    runs = _contiguous_runs(points, interval, split_cluster=True)
+    transitions = []
+    previous = None
+    for timestamp, row in points.sort_index().iterrows():
+        if previous is not None:
+            prior_time, prior = previous
+            if timestamp - prior_time == pd.Timedelta(minutes=interval) and row.segment_id == prior.segment_id and row.cluster_id != prior.cluster_id:
+                pair = (str(prior.cluster_id), str(row.cluster_id))
+                record = next((item for item in transitions if (item["from"], item["to"]) == pair), None)
+                if record is None:
+                    record = {"from": pair[0], "to": pair[1], "count": 0}
+                    transitions.append(record)
+                record["count"] += 1
+        previous = timestamp, row
+    quality["transitions"] = transitions
+    for profile in quality["group_profiles"]:
+        cluster = profile["cluster_id"]
+        episodes = [{"start": run.index[0].isoformat(), "end": run.index[-1].isoformat(),
+                     "duration_minutes": _coverage_duration_minutes(run, interval)}
+                    for run in runs if str(run.cluster_id.iloc[0]) == cluster]
+        durations = [item["duration_minutes"] for item in episodes]
+        profile.update({"episodes": episodes, "episode_count": len(episodes),
+                        "median_duration_minutes": float(np.median(durations)) if durations else None,
+                        "longest_duration_minutes": max(durations) if durations else None,
+                        "total_duration_minutes": sum(durations),
+                        "average_duration_minutes": float(np.mean(durations)) if durations else None,
+                        "candidate_count": sum(str(item["cluster_id"]) == cluster for item in candidates),
+                        "incoming": sorted([item for item in transitions if item["to"] == cluster], key=lambda item: -item["count"]),
+                        "outgoing": sorted([item for item in transitions if item["from"] == cluster], key=lambda item: -item["count"])})
 
 
 def _summaries(

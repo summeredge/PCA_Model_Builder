@@ -14,6 +14,7 @@ def analyze_cluster_quality(
     explained_variance_ratio=(),
     sample_interval_minutes: float = 5,
     cluster_centers=None,
+    segment_ids=None,
 ) -> dict[str, object]:
     """Explain existing clusters; never fit or select a model or candidate.
 
@@ -27,7 +28,7 @@ def analyze_cluster_quality(
         "explained_variance": {"pc1": None, "pc2": None},
         "centers": [], "center_orientation": "无明显方向",
         "temporal_metrics": None, "top_features": [], "feature_contrasts": [],
-        "engineering_hint": {}, "unavailable_reasons": {},
+        "engineering_hint": {}, "unavailable_reasons": {}, "group_profiles": [],
     }
     reasons = result["unavailable_reasons"]
     values = scores.to_numpy(dtype=float)
@@ -43,10 +44,13 @@ def analyze_cluster_quality(
         return result
     clusters = pd.unique(labels)
     result["cluster_count"] = len(clusters)
+    result["sample_count"] = len(values)
+    result["n_components"] = values.shape[1]
     if values.shape[1] < 2 or not np.isfinite(values).all():
         reasons["analysis"] = "需要至少两个主元且得分必须全部有效"
         return result
     ratios = np.asarray(explained_variance_ratio, dtype=float)
+    result["cumulative_explained_variance"] = float(ratios[:values.shape[1]].sum()) if len(ratios) >= values.shape[1] and np.isfinite(ratios[:values.shape[1]]).all() else None
     for position, key in enumerate(("pc1", "pc2")):
         if position < len(ratios) and np.isfinite(ratios[position]) and 0 <= ratios[position] <= 1:
             result["explained_variance"][key] = float(ratios[position])
@@ -95,7 +99,7 @@ def analyze_cluster_quality(
             start = 0
             switches = 0
             for position in range(1, len(index) + 1):
-                adjacent = position < len(index) and index[position] - index[position - 1] == interval
+                adjacent = position < len(index) and index[position] - index[position - 1] == interval and (segment_ids is None or segment_ids[position] == segment_ids[position - 1])
                 changed = position < len(index) and labels[position] != labels[position - 1]
                 if adjacent and changed:
                     switches += 1
@@ -138,12 +142,42 @@ def analyze_cluster_quality(
                 "cluster_means": {str(cluster): float(mean) if np.isfinite(mean) else None for cluster, mean in zip(clusters, means, strict=True)},
                 "unavailable_reason": reason,
             })
+            overall = numeric.mean()
+            finite_means = [mean for mean in means if np.isfinite(mean)]
+            for cluster, mean in zip(clusters, means, strict=True):
+                profile = next((item for item in result["group_profiles"] if item["cluster_id"] == str(cluster)), None)
+                if profile is None:
+                    count = int(np.count_nonzero(labels == cluster))
+                    profile = {"cluster_id": str(cluster), "sample_count": count, "share": count / len(labels), "variables": []}
+                    result["group_profiles"].append(profile)
+                unavailable = ("本组无有效均值" if not np.isfinite(mean) else
+                               "有效样本不足" if numeric.count() < 2 else
+                               "总体标准差不可计算" if not np.isfinite(std) else
+                               "精确常量" if std <= 0 else None)
+                deviation = float((mean - overall) / std) if unavailable is None else None
+                if deviation is not None and not np.isfinite(deviation):
+                    deviation, unavailable = None, "相对总体偏离不可计算"
+                rank = 1 + sum(bool(value > mean) for value in finite_means) if np.isfinite(mean) else None
+                profile["variables"].append({"tag": tag, "mean": float(mean) if np.isfinite(mean) else None,
+                    "overall_mean": float(overall) if np.isfinite(overall) else None,
+                    "deviation": deviation, "rank": rank, "rank_count": len(finite_means),
+                    "tied": sum(bool(value == mean) for value in finite_means) > 1,
+                    "unavailable_reason": unavailable})
         result["feature_contrasts"] = sorted(
             result["feature_contrasts"],
             key=lambda item: (item["standardized_difference"] is None, -(item["standardized_difference"] or 0)),
         )
         result["top_features"] = [
             item for item in result["feature_contrasts"] if item["unavailable_reason"] is None
+        ][:5]
+    for profile in result["group_profiles"]:
+        profile["top_variables"] = sorted(
+            [item for item in profile["variables"] if item["deviation"] is not None and item["deviation"] != 0],
+            key=lambda item: -abs(item["deviation"]),
+        )[:5]
+        profile["comparison_variables"] = [
+            item for feature in result["top_features"] if feature["standardized_difference"] > 0
+            for item in profile["variables"] if item["tag"] == feature["tag"]
         ][:5]
     if not result["top_features"]:
         reasons["top_features"] = "无可比较的有效建模 Tag（需至少两个 Cluster、非恒定数值及各 Cluster 有效均值）"

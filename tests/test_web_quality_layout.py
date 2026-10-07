@@ -105,14 +105,25 @@ def test_variable_diagnostics_use_existing_cards_and_local_scroll_boundaries() -
     html = web_model_results.INDEX_HTML
     for element_id in ("variableDiagnosticsTitle", "explorationVariableDiagnostics", "diagnosticsTagConfig"):
         assert html.count(f'id="{element_id}"') == 1
-    assert html.index('id="explorationClusterQuality"') < html.index('id="explorationVariableDiagnostics"') < html.index('id="explorationPcChart"')
+    assert html.index('id="explorationClusterQuality"') < html.index('id="explorationPcChart"') < html.index('id="explorationClusterCandidates"') < html.index('id="explorationVariableDiagnostics"')
     assert 'class="chart-card variable-diagnostics"' in html
+    assert '<details>\n              <summary id="variableDiagnosticsTitle">' in html
+    assert 'if(title) title.textContent=`变量诊断 · 建模 Tag ' in html
     assert '#explorationContent:has(> .variable-diagnostics) { min-width:0; }' in html
     assert '.variable-diagnostics .table-wrap { max-height:280px; }' in html
     assert '.variable-diagnostics td { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }' in html
-    assert '.exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); }' in html
+    assert '#stateExplorationPanel .exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); min-width:0; }' in html
+    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));' in html
+    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,128px),1fr)); }' in html
+    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,148px),1fr)); }' in html
+    assert 'const qualityMetrics=el("explorationClusterQuality").querySelector(".screening-kpis > .metrics")' in html
+    assert 'qualityMetrics.replaceWith(el("explorationOverview"))' in html
+    assert '<details id="explorationClusterDetails"><summary>工况明细（<span id="explorationClusterSummaryCount">0</span> 组）</summary>' in html
+    assert 'id="explorationClusterCandidateCount"' in html
+    assert 'id="explorationPerformanceCandidatesCount"' in html
+    assert 'id="explorationPreferredRegionCandidateCount"' in html
     assert '<details open><summary>高相关变量</summary>' in html
-    assert '<details open><summary>工况组区分</summary>' in html
+    assert '<details><summary>完整工况组变量对比</summary>' in html
     assert '<details><summary>变量质量</summary>' in html
     assert 'renderVariableDiagnostics(el("explorationVariableDiagnostics"),data.variable_diagnostics)' in html
     assert '调整建模 Tag 后本次状态探索将失效，请重新运行状态探索。' in html

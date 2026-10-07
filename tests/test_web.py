@@ -304,14 +304,14 @@ def test_training_condition_api_reads_cached_full_series_and_checks_provenance(t
 
 def _pc_renderer_source() -> str:
     return web.INDEX_HTML.split("function renderExplorationPcChart(data)", 1)[1].split(
-        "function renderExplorationTimeline(rows,candidates)", 1
+        "function renderExplorationTimeline(rows,candidates", 1
     )[0]
 
 
 def _pc_overlay_source() -> str:
     source = web.INDEX_HTML
     start = source.index("function bindExplorationRegionOverlay(plot,overlay)")
-    return source[start : source.index("function renderExplorationTimeline(rows,candidates)", start)]
+    return source[start : source.index("function renderExplorationTimeline(rows,candidates", start)]
 
 
 def _history_frame() -> pd.DataFrame:
@@ -1294,16 +1294,17 @@ def test_final_web_workbench_orders_lifecycle_and_downgrades_exploratory_entries
 
 def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     html = web.INDEX_HTML
-    timeline = html.split("function renderExplorationTimeline(rows,candidates)", 1)[1].split(
+    timeline = html.split("function renderExplorationTimeline(rows,candidates", 1)[1].split(
         "function renderExplorationClusterTable", 1
     )[0]
 
     assert "const EXPLORATION_CLUSTER_PALETTE" in html
     assert "function explorationClusterColor(clusterId)" in html
     assert "explorationClusterColor(row.cluster_id)" in html
-    assert "renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[])" in html
-    assert "const width=760,height=84,left=94,right=18,statusTop=16,statusHeight=30,candidateTop=58,candidateHeight=12" in timeline
-    assert 'min-height:112px' in html
+    assert 'renderExplorationTimeline(data.cluster_series||[],data.cluster_candidates||[],data.cluster_quality?.group_profiles||[],state.groupProfileSelection?.state_exploration,Number(el("sampleInterval").value))' in html
+    assert "const width=Math.max(1,container.clientWidth||760),height=112,left=94,right=18,statusTop=18,statusHeight=34,candidateTop=76,candidateHeight=14" in timeline
+    assert 'height:112px' in html
+    assert 'new ResizeObserver' in timeline
     assert '<svg viewBox="0 0 ${width} ${height}"' in timeline
     assert "next.break_before||next.segment_id!==row.segment_id" in timeline
     assert "物理连续段断点" in timeline
@@ -1314,7 +1315,7 @@ def test_state_exploration_timeline_uses_shared_colors_and_time_boundaries():
     assert "explorationTimelineTick" not in html
     assert "${ticks}" not in timeline
     renderer = html[
-        html.index("function renderExplorationTimeline(rows,candidates)"):
+        html.index("function renderExplorationTimeline(rows,candidates"):
         html.index("function renderExplorationClusterTable")
     ]
     rendered = _run_node_javascript(r"""
@@ -1421,50 +1422,27 @@ def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
 def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
     for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
         grid = html.split('<div class="exploration-result-grid">', 1)[1].split(
-            "工况组摘要表", 1
+            'id="explorationClusterDetails"', 1
         )[0]
-        positions = [
-            grid.index('id="explorationPcChart"'),
-            grid.index('id="explorationRegionSummary"'),
-            grid.index('id="explorationTimeline"'),
-        ]
-        # 散点图与时间轴在左列内上下相邻，优选区域统计占右列整行。
-        assert grid.index('id="explorationPcChart"') < grid.index('id="explorationTimeline"')
-        assert grid.count('<div class="chart-card">') == 3
-        assert '<div class="chart-grid">' not in grid
-        # 左列是独立容器：散点图与时间轴同属 .exploration-result-column。
-        column = grid.split('<div class="exploration-result-column">', 1)[1].split(
-            '<div class="chart-card"><h3>优选运行区域质量统计</h3>', 1
-        )[0]
-        assert 'id="explorationPcChart"' in column
-        assert 'id="explorationTimeline"' in column
-        assert "优选运行区域质量统计" not in column
-        assert column.index("工况组 PC1 / PC2 与中心") < column.index("工况组时间轴")
-        # 优选区域工具与 PC 标题同行并右对齐，不再单独占一行。
-        head = column.split('<div class="chart-card-head">', 1)[1].split("</div></div>", 1)[
-            0
-        ]
-        assert "工况组 PC1 / PC2 与中心" in head
-        assert 'class="exploration-region-tools"' in head
-        assert column.index('<div class="chart-card-head">') < column.index(
-            'id="explorationPcChart"'
-        )
-        # 工况组摘要表保持在两行结果之后并占满整行。
-        assert html.index('<div class="exploration-result-grid">') < html.index(
-            "工况组摘要表"
-        )
-        assert html.index('id="explorationClusterTable"') > html.index(
-            'id="explorationTimeline"'
-        )
-        assert html.index('id="explorationClusterTable"') < html.index(
-            'id="explorationClusterCandidates"'
-        )
+        positions = [grid.index(f'id="{element_id}"') for element_id in (
+            "explorationPcChart", "explorationRegionSummary", "explorationTimeline"
+        )]
+        assert positions == sorted(positions)
+        assert grid.count('class="chart-card ') == 3
+        assert "exploration-result-column" not in grid
+        assert "exploration-timeline-card" in grid
+        assert 'id="explorationClusterDetails"' in html
+        assert '<summary>工况明细（<span id="explorationClusterSummaryCount">0</span> 组）</summary>' in html
+        assert 'id="explorationClusterCandidateCount"' in html
+        assert 'id="explorationPerformanceCandidatesCount"' in html
+        assert 'id="explorationPreferredRegionCandidateCount"' in html
+        assert html.index('id="explorationTimeline"') < html.index('id="explorationClusterDetails"')
 
     css = web_model_results.INDEX_HTML
-    assert ".exploration-result-grid { display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,540px); gap:12px; align-items:start; }" in css
-    assert ".exploration-result-column { display:grid; gap:var(--space-2); min-width:0; align-content:start; }" in css
-    assert "@media (max-width:1050px) { .exploration-result-grid { grid-template-columns:minmax(0,1fr); } }" in css
-    assert "exploration-result-grid > .chart-card:nth-child(3)" not in css
+    assert "#stateExplorationPanel .exploration-result-grid { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:12px; align-items:stretch; }" in css
+    assert "#stateExplorationPanel .exploration-timeline-card { grid-column:1 / -1; }" in css
+    assert "#stateExplorationPanel #explorationPcChart { height:clamp(420px,32vw,480px); min-height:420px; }" in css
+    assert "#stateExplorationPanel .exploration-timeline-card { grid-column:1; }" in css
 
 
 def test_preferred_region_statistics_use_a_compact_scoped_metric_style():
