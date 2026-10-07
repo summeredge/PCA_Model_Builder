@@ -325,9 +325,9 @@ _FORM_ALIGNMENT_STYLE = r"""
   #engineeringPanel .batch-config .actions > .download {
     min-width:var(--batch-action-width);
   }
-  /* 文件选择控件吃掉行内剩余宽度，放不下就整行换行；按钮不再参与固定列宽预算。 */
+  /* 文件选择控件固定宽度；按钮按内容宽度靠左排布，不够时自然换行。 */
   #engineeringPanel .batch-config .actions > label.secondary {
-    flex:1 1 280px;
+    flex:0 0 200px;
     display:grid;
     gap:4px;
     align-content:start;
@@ -386,11 +386,6 @@ _FORM_ALIGNMENT_STYLE = r"""
     /* 与批量配置区的下载按钮等宽：两者共用 min-width，文本变长也不会让下方按钮超出上方宽度。 */
     min-width:var(--batch-action-width);
     justify-self:start;
-  }
-
-  @media (max-width:760px) {
-    /* 最窄一档让文件选择控件独占一行。 */
-    #engineeringPanel .batch-config .actions > label.secondary { flex:1 1 100%; }
   }
 </style>
 """

@@ -541,8 +541,7 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert 'class="batch-config"' in html
     assert 'data-inner="batchPanel"' not in html
     assert "#engineeringPanel .batch-config .actions" in html
-    # 批量配置是内容驱动的 flex-wrap：文件选择吃剩余宽度，按钮按 intrinsic 宽度换行，
-    # 不再按“5 个固定列宽刚好塞进一行”的预算排布。
+    # 批量配置使用内容驱动的 flex-wrap：文件选择固定为 200px，按钮靠左并按需换行。
     batch_actions = html.split("#engineeringPanel .batch-config .actions {", 1)[1].split(
         "}", 1
     )[0]
@@ -550,7 +549,11 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert "flex-wrap:wrap;" in batch_actions
     assert "grid-template-columns" not in batch_actions
     assert "#engineeringPanel .batch-config .actions > label.secondary" in html
-    assert "flex:1 1 280px;" in html
+    assert "flex:0 0 200px;" in html
+    assert (
+        "#engineeringPanel .batch-config .actions > label.secondary { flex:1 1 100%; }"
+        not in html
+    )
     assert "#engineeringPanel .batch-config #tagConfigFile" in html
     assert "#clusterPanel #clusterButton" in html
     assert "align-self:end;" in html
@@ -559,8 +562,6 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert "#engineeringPanel #tagRole" in html
     assert "#tagComment" not in html
     assert "@media (max-width:900px)" in html
-    # 窄屏下文件选择控件独占一行：grid 两列形态用 grid-column，flex 形态用 flex-basis。
-    assert "flex:1 1 100%;" in html
     assert html.rindex("#engineeringPanel .batch-config .actions") > html.index(
         ".actions { display:flex"
     )

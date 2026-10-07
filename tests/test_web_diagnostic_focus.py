@@ -211,7 +211,7 @@ def test_diagnostic_group_buttons_share_context_and_hide_untraceable_sources():
     if not node:
         pytest.skip("Node.js is required")
     source = Path(web.__file__).with_name("model_results.js").read_text(encoding="utf-8")
-    renderer = source[source.index("  function renderTrainingConditionDiagnostic("):source.index("  function drawTrainingConditionTrend(")]
+    renderer = source[source.index("  function trainingAnomalyPeaks("):source.index("  async function focusTrainingAnomalyPeak(")] + source[source.index("  function renderTrainingConditionDiagnostic("):source.index("  function drawTrainingConditionTrend(")]
     html = web.INDEX_HTML
     parser = html[html.index("function trainingDiagnosticRun("):html.index("function trainingDiagnosticTrainingWindowMatches(")]
     script = r'''
@@ -223,6 +223,7 @@ class Element {
 const nodes={},document={getElementById:id=>nodes[id]??=new Element(),createElement:()=>new Element()};
 function clusterUiLabel(id){return id}
 function drawTrainingConditionTrend(){}
+    function el(){return {value:"5"}}
 const calls=[];globalThis.focusTrainingDiagnostic=(...args)=>calls.push(args);
 __PARSER__
 __RENDERER__
