@@ -163,15 +163,13 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
     assert "状态结构解释" in rendered["assistance"]
     for perspective in ("exploration", "assistance"):
         assert "聚类质量摘要" in rendered[perspective]
-        assert "没有时间列" in rendered[perspective]
-    assert "主要区分变量" not in rendered["exploration"]  # merged into variable diagnostics
-    assert "&lt;driver&gt;" in rendered["assistance"]
-    assert "<driver>" not in rendered["assistance"]
-    assert "<th>标准化差异</th><th>原始均值差</th><th>工况组 1</th><th>工况组 2</th>" in rendered["assistance"]
-    assert "<tr><td>&lt;driver&gt;</td><td>2.000</td><td>1.000</td><td>0.000</td><td>1.000</td></tr>" in rendered["assistance"]
-    assert "Top5" in rendered["assistance"]
-    assert "<td>—</td><td>—</td>" in rendered["degradedMeans"]
-    assert "<td>—</td><td>—</td>" in rendered["unavailableMeans"]
+    for perspective in ("exploration", "assistance"):
+        for label in ("时间连续性", "平均持续时间", "最长连续时间", "状态切换次数", "没有时间列", "主要区分变量", "Top5", "<driver>"):
+            assert label not in rendered[perspective]
+        assert "工况组中心与分离情况" in rendered[perspective]
+    assert rendered["degradedMeans"] == rendered["assistance"]
+    assert rendered["unavailableMeans"] == rendered["assistance"]
+    assert quality["top_features"][0]["tag"] == "<driver>"
     assert "尚无聚类分析数据" in rendered["missing"]
     assert "样本不足" in rendered["invalid"]
 
@@ -237,7 +235,7 @@ const view=screeningCenterView(quality.centers,centers);
 renderClusterQuality(container,quality,'state_exploration',centers);
 const result={view,details:details.innerHTML,summary:container.innerHTML};
 renderClusterQuality(container,quality,'state_exploration');
-result.fallback=details.innerHTML;
+result.fallback=container.innerHTML;
 renderClusterQuality(container,quality,'cluster_assistance',centers);
 const assistance=container.innerHTML.replace('chart-card screening-kpis','chart-card').replace('chart-card screening-judgment','chart-card');
 renderLegacyClusterQuality(container,quality,'cluster_assistance');
@@ -258,20 +256,18 @@ console.log(JSON.stringify(result));
     else:
         assert view["coverage"] == pytest.approx(coverage)
     np.testing.assert_allclose(view["coordinates"], coordinates)
-    assert re.findall(r"<th>(PC\d+)</th>", rendered["details"]) == [f"PC{pc + 1}" for pc in columns]
+    assert re.findall(r"<th>(PC\d+)</th>", rendered["summary"]) == [f"PC{pc + 1}" for pc in columns]
     assert re.findall(r"<th>(PC\d+)</th>", rendered["fallback"]) == ["PC1", "PC2"]
-    assert orientation in rendered["details"] and orientation in rendered["summary"]
+    assert orientation in rendered["summary"]
     if orientation != "主要沿 PC1":
         assert "当前状态划分主要沿 PC1" not in rendered["summary"]
     for pc in (0, 1):
         for center in coordinates:
             value = center[pc] if center[pc] != 0 else 0
-            assert f"<td>{value:.3f}</td>" in rendered["details"]
+            assert f"<td>{value:.3f}</td>" in rendered["summary"]
     assert 'class="metrics"' not in rendered["details"]
-    assert '<dt>平均持续时间</dt><dd><strong>2.000 h</strong>' in rendered["details"]
-    assert '<dt>最长连续时间</dt><dd><strong>2.000 h</strong>' in rendered["details"]
-    assert '<dt>状态切换次数</dt><dd><strong>1</strong>' in rendered["details"]
-    assert "按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。" in rendered["details"]
+    for label in ("时间连续性", "平均持续时间", "最长连续时间", "状态切换次数"):
+        assert label not in rendered["details"]
 
 
 def test_all_feature_contrasts_keep_constant_means_and_explain_missing_cluster_values():

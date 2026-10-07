@@ -243,12 +243,22 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel > .screening-execute { margin:0; padding:0 0 var(--space-3); border-bottom:1px solid var(--line); }
   #stateExplorationPanel :is(.chart-card,.table-wrap) { border:0; border-radius:0; }
   #stateExplorationPanel .chart-card { padding:var(--space-2) 0; }
-  #stateExplorationPanel .screening-kpis { padding-top:0; }
-  #stateExplorationPanel .screening-kpis .metrics { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  /* 卡片标题统一到第三档 14px（见 .chart-card h3）；本条原有的 17px 覆盖已随标题分层修复移除。 */
+  #stateExplorationPanel #explorationEvidence { margin:0; }
+  #stateExplorationPanel #explorationContent { gap:var(--space-2); }
+  #stateExplorationPanel #explorationClusterQuality { display:grid; gap:var(--space-2); min-width:0; }
+  #stateExplorationPanel .screening-kpis { gap:var(--space-1); padding-top:0; }
+  #stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); gap:var(--space-1); }
   #stateExplorationPanel .screening-kpis .metric { height:100%; }
+  #stateExplorationPanel .screening-kpis > p { margin:0; line-height:1.45; }
   #stateExplorationPanel .screening-judgment { border-left:3px solid var(--accent); padding:var(--space-3); background:var(--accent-soft); }
   #stateExplorationPanel .screening-judgment p { margin:0; }
   #stateExplorationPanel #explorationQualityDetails { border-top:1px solid var(--line); }
+  #stateExplorationPanel :is(#explorationClusterDetails,.exploration-candidate-details) > summary,
+  #stateExplorationPanel .variable-diagnostics summary { cursor:pointer; }
+  #stateExplorationPanel :is(#explorationClusterDetails,.exploration-candidate-details) .table-wrap { max-height:280px; }
+  #stateExplorationPanel .exploration-candidate-details .table-wrap { max-width:100%; }
+  #stateExplorationPanel .variable-diagnostics > details { min-width:0; }
   #stateExplorationPanel .screening-evidence-compact { grid-template-columns:minmax(0,1fr); gap:var(--space-1); }
   #stateExplorationPanel .screening-evidence-compact .help { margin:0; }
   #stateExplorationPanel .screening-center-heading { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--space-1) var(--space-3); }
@@ -270,8 +280,11 @@ _SCREENING_LAYOUT_STYLE = r"""
   @media (min-width:761px) {
     #stateExplorationPanel .performance-controls > label:has(#explorationPerformanceTag) { grid-column:span 2; }
   }
+  @media (min-width:1200px) {
+    #stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,128px),1fr)); }
+  }
   @media (max-width:760px) {
-    #stateExplorationPanel .screening-kpis .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    #stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,148px),1fr)); }
   }
 </style>
 """
@@ -1134,7 +1147,7 @@ _MODEL_RESULTS_STYLE = r"""
   .model-quality-copy, #modelTrainingDataQuality > p { max-width:72ch; }
   #modelTrainingConditionDiagnostic { min-width:0; max-width:100%; }
   .training-condition-trend svg { display:block; width:100%; height:auto; }
-  #modelTrainingConditionDiagnostic.condition-unavailable > :is(h4, .table-wrap, .training-condition-trend, #modelTrainingConditionHints) { display:none; }
+  #modelTrainingConditionDiagnostic.condition-unavailable > :is(h4, .table-wrap, .training-condition-trend, #modelTrainingConditionHints):not(#modelTrainingAnomalyTitle):not(#modelTrainingAnomalyPeaks) { display:none; }
   .model-training-source-reference { overflow-wrap:anywhere; }
   .model-overview-grid {
     display:grid;
@@ -1298,7 +1311,7 @@ def _candidate_manager_html(training_data_section: str) -> str:
     return """      <div class="group candidate-manager">
         <div class="group-title" id="candidateManagement">正常状态候选管理</div>
         <div class="help">趋势、状态探索、聚类和条件筛选仅提供证据；候选必须由工程师确认后才能进入训练。</div>
-        <div class="row candidate-window-row"><label>候选开始<input id="candidateStart" type="datetime-local"></label><label>候选结束<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
+        <div class="row candidate-window-row"><label>开始时间<input id="candidateStart" type="datetime-local"></label><label>结束时间<input id="candidateEnd" type="datetime-local"></label><label>备注<input id="candidateComment" type="text"></label><button id="addManualCandidate" class="secondary" type="button">加入候选窗口</button></div>
         <h3>候选窗口列表</h3><div id="candidateWindows" class="table-wrap"><div class="empty">检查数据后可管理候选窗口。</div></div>
         <div class="help">候选窗口不会修改训练窗口；确认作为训练窗口后才会生成训练窗口。</div>
         <h3>排除窗口</h3><div id="excludedWindows" class="table-wrap"><div class="empty">尚无排除窗口。</div></div>
@@ -1383,6 +1396,9 @@ def _model_results_content_html() -> str:
             <div id="modelTrainingConditionGroups" class="table-wrap"></div>
             <h4>训练工况与统计量趋势</h4>
             <div id="modelTrainingConditionTrend" class="training-condition-trend"></div>
+            <h4 id="modelTrainingAnomalyTitle">训练异常峰值</h4>
+            <div class="help">Top10 连续超限事件峰值，仅用于定位统计异常时间，不代表工艺异常或根因。</div>
+            <div id="modelTrainingAnomalyPeaks" class="table-wrap"></div>
             <h4>稳定工况区 / 工况切换附近</h4>
             <div id="modelTrainingConditionSwitch" class="table-wrap"></div>
             <div id="modelTrainingConditionHints" class="help"></div>
@@ -1668,7 +1684,7 @@ def _stabilize_workbench_html(html: str) -> str:
         1,
     ).rstrip()
     parameter_group = (parameters_marker + parameter_group).rstrip()
-    candidate_anchor = '        <div class="row"><label>候选开始<input id="candidateStart"'
+    candidate_anchor = '        <div class="row"><label>开始时间<input id="candidateStart"'
     training_windows_anchor = '        <h3>训练窗口</h3><div id="trainingWindows"'
     parameter_prefix, candidate_section = _split_at_unique_anchor(
         parameter_group, candidate_anchor, "候选窗口"
@@ -2003,20 +2019,12 @@ function renderClusterQuality(container, quality, perspective, clusterCenters={}
         '  const centerCard=centerView?`<div class="chart-card screening-evidence-compact"><div class="screening-center-heading"><h3>工况组中心与分离情况</h3><span class="help">${escapeHtml(centerView.orientation)}</span></div><div class="table-wrap screening-center-table" tabindex="0" role="region" aria-label="工况组中心坐标"><table><thead><tr><th>工况组</th>${centerView.columns.map(pc=>`<th>PC${pc+1}</th>`).join("")}</tr></thead><tbody>${centerRows}</tbody></table></div><p class="help">按工况中心方差选择主元，累计覆盖 ${centerView.coverage===null?"—":percent(centerView.coverage)}；单轴 ≥80% 为主要方向，最多 PC4。</p></div>`:',
         1,
     ).replace(
-        '  const time=temporal?',
-        '  const time=temporal&&centerView?`<dl class="screening-temporal-summary"><div><dt>平均持续时间</dt><dd><strong>${number(temporal.average_duration_hours)} h</strong></dd></div><div><dt>最长连续时间</dt><dd><strong>${number(temporal.longest_duration_hours)} h</strong></dd></div><div><dt>状态切换次数</dt><dd><strong>${escapeHtml(temporal.state_switch_count)}</strong></dd></div></dl><p class="help">按采样覆盖时长统计；物理缺口分段，缺口两侧不计状态切换。</p>`:temporal?',
-        1,
-    ).replace(
-        'const timeCard=`<div class="chart-card">',
-        'const timeCard=`<div class="${centerView?"chart-card screening-evidence-compact":"chart-card"}">',
-        1,
-    ).replace(
         'quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。"))}',
         'engineeringHint))}',
         1,
     ).replace(
         '<div class="chart-card"><h3>聚类质量摘要</h3><div class="metrics">',
-        '<div class="chart-card screening-kpis"><h3>聚类质量摘要</h3><div class="metrics">',
+        '<div class="chart-card screening-kpis">${perspective==="state_exploration"?"":"<h3>聚类质量摘要</h3>"}<div class="metrics">',
         1,
     ).replace(
         '<div class="chart-card"><h3>${title}</h3>',
@@ -2025,11 +2033,27 @@ function renderClusterQuality(container, quality, perspective, clusterCenters={}
         1,
     ).replace(
         '${details}`;',
-        '${perspective==="state_exploration"?"":details}`;\n'
-        '  if(perspective==="state_exploration") el("explorationQualityDetails").innerHTML=details;',
+        '${perspective==="state_exploration"?centerCard:details}`;\n'
+        '  if(perspective==="state_exploration") el("explorationQualityDetails").replaceChildren();',
         1,
     )
     result = result.replace(renderer, screening_renderer, 1)
+    # Keep the existing single-control assembly; move technical evidence below candidates.
+    result = result.replace('<div id="explorationQualityDetails"></div>', '', 1)
+    result = result.replace(
+        '<details id="explorationClusterDetails">',
+        '<details class="screening-technical-details"><summary>工况组技术详情</summary><div id="explorationQualityDetails"></div></details>'
+        '<details id="explorationClusterDetails">', 1,
+    )
+    technical = _required_html_match(r'<details class="screening-technical-details">.*?</details>', result, "工况组技术详情").group()
+    diagnostics = _required_html_match(r'<section class="chart-card variable-diagnostics".*?</section>', result, "变量诊断详情").group()
+    result = result.replace(technical, '', 1).replace(diagnostics, '', 1)
+    notice = '<div class="notice">选择候选后加入统一候选窗口列表；加入后仍需在候选窗口列表确认作为训练窗口。</div>'
+    result = result.replace(notice, notice + technical + diagnostics, 1)
+    overview = '<div id="explorationOverview" class="metrics"></div>'
+    result = result.replace(overview, '', 1).replace('<div id="explorationClusterQuality"></div>', overview + '<div id="explorationClusterQuality"></div>', 1)
+    result = result.replace('<details open><summary>工况组区分</summary>', '<details><summary>完整工况组变量对比</summary>', 1)
+    result = result.replace('</head>', '<style>.group-profiles { min-width:0; grid-template-columns:minmax(0,1fr); } #clusterContent, #assistanceClusterQuality { min-width:0; }.group-profiles .table-wrap { max-height:280px; overflow:auto; }.group-profiles td { white-space:normal; overflow-wrap:anywhere; }.group-profiles pre { white-space:pre-wrap; overflow-wrap:anywhere; }</style></head>', 1)
     result = result.replace(
         'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration");',
         'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration",data.cluster_centers);',

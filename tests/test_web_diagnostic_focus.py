@@ -13,7 +13,7 @@ def test_diagnostic_navigation_checks_run_and_preserves_discontinuous_ranges():
     if not node:
         pytest.skip("Node.js is required")
     html = web.INDEX_HTML
-    helpers = html[html.index("function trainingDiagnosticRun("):html.index("function renderExplorationTimeline(")]
+    helpers = html[html.index("function windowTimeRange("):html.index("function trainingWindowsPayload(")] + html[html.index("function trainingDiagnosticRun("):html.index("function renderExplorationTimeline(")]
     script = r'''
 const state={candidateWindows:[{id:"c1"},{id:"c2"}],trainingWindows:[{id:"w1"}],exploration:{exploration_run_id:"run-a",cluster_summaries:[{cluster_id:"cluster_001"}]}};
 const calls=[],messages=[];
@@ -73,7 +73,7 @@ def test_diagnostic_actions_select_exact_parents_and_locate_current_training_win
         start = html.index(f"function {name}(")
         return html[start:html.index("\nfunction ", start)]
 
-    helpers = html[html.index("function trainingDiagnosticCandidateMatches("):html.index("function renderExplorationTimeline(")]
+    helpers = html[html.index("function windowTimeRange("):html.index("function trainingWindowsPayload(")] + html[html.index("function trainingDiagnosticCandidateMatches("):html.index("function renderExplorationTimeline(")]
     scope = html[html.index("let performanceRevision=0;"):html.index("function addPerformanceCandidate(")]
     script = r'''
 const assert=require("node:assert/strict");
@@ -246,7 +246,7 @@ def test_diagnostic_focus_renders_timeline_cluster_and_multiple_candidates():
     if not node:
         pytest.skip("Node.js is required")
     html = web.INDEX_HTML
-    helpers = html[html.index("function trainingDiagnosticRun("):html.index("function renderExplorationTimeline(")]
+    helpers = html[html.index("function windowTimeRange("):html.index("function trainingWindowsPayload(")] + html[html.index("function trainingDiagnosticRun("):html.index("function renderExplorationTimeline(")]
     renderers = html[html.index("function renderExplorationTimeline("):html.index("function resetExplorationRegion(")]
     script = r'''
 class Element {

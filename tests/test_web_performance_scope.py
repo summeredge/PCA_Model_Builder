@@ -100,7 +100,8 @@ def test_performance_scope_payload_rendering_provenance_and_stale_requests():
         return html[start:html.index("\nfunction ", start)]
 
     start = html.index("let performanceRevision=0;")
-    helpers = html[start:html.index("\nfunction performanceConditionPayload(", start)]
+    range_helpers = html[html.index("function windowTimeRange("):html.index("function trainingWindowsPayload(")]
+    helpers = range_helpers + html[start:html.index("\nfunction performanceConditionPayload(", start)]
     start = html.index('el("performanceButton").addEventListener("click", async')
     handler = html[start:html.index('\nel("performanceScope")', start)]
     script = r'''
@@ -117,7 +118,7 @@ def test_performance_scope_payload_rendering_provenance_and_stale_requests():
       const state={candidateWindows:[],trainingWindows:[],performance:null,fileId:"file-1"};
       let eligibilityRevision=0,sequence=0,requests=[],onApi=()=>{},excluded=0;
       function candidateId(){return `ui-${++sequence}`;}
-      function displayTime(value){return value;}
+      function displayTime(value){return value.slice(0,16).replace("T"," ");}
       function displayUiValue(value){return value;}
       function metric(label,value){return `${label}:${value};`;}
       function clusterUiLabel(value){return value.replace(/cluster_(\d+)/,(_,n)=>`工况组 ${Number(n)}`);}
@@ -162,7 +163,7 @@ def test_performance_scope_payload_rendering_provenance_and_stale_requests():
         refreshPerformanceScopeOptions();
         assert.equal(el("performanceParents").selectedOptions.length,2);
         assert.equal(el("performanceParentsLabel").hidden,false);
-        assert.match(el("performanceScopeSummary").textContent,/候选 01/);
+        assert.match(el("performanceScopeSummary").textContent,/2026-01-01 00:00 ~ 2026-01-01 00:05/);
         el("performanceScope").value="cluster";
         assert.throws(performanceScopePayload,/没有可用于/);
         el("performanceClusters").children[0].selected=true;
@@ -181,7 +182,7 @@ def test_performance_scope_payload_rendering_provenance_and_stale_requests():
         assert.deepEqual(requests[0].parent_windows,[first,second]);
         assert.equal(state.performance,result);
         assert.equal(el("performanceTable").children.length,1);
-        const button=el("performanceTable").children[0].children[3].children[0];
+        const button=el("performanceTable").children[0].children[2].children[0];
         button.listeners.click();button.listeners.click();
         assert.equal(state.candidateWindows.length,3);
         assert.equal(state.trainingWindows.length,0);

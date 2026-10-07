@@ -183,7 +183,7 @@ def test_screening_groups_keep_configuration_execution_and_evidence_separate() -
     positions = [panel.index(title) for title in titles]
     assert positions == sorted(positions)
     assert 'id="stateExplorationButton" type="button" disabled>运行状态筛选' in panel
-    assert panel.index('id="explorationClusterQuality"') < panel.index('id="explorationWarnings"') < panel.index('id="explorationQualityDetails"') < panel.index('id="explorationVariableDiagnostics"')
+    assert panel.index('id="explorationOverview"') < panel.index('id="explorationClusterQuality"') < panel.index('id="explorationWarnings"') < panel.index('id="explorationPcChart"') < panel.index('id="explorationClusterCandidates"') < panel.index('id="explorationQualityDetails"') < panel.index('id="explorationVariableDiagnostics"')
     assert len(parser.ids) == len(set(parser.ids))
 
 

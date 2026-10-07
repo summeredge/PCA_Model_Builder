@@ -16,6 +16,7 @@ def test_validation_investigation_navigation_evidence_and_stale_context():
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required")
+    range_helpers = web.INDEX_HTML[web.INDEX_HTML.index("function windowTimeRange("):web.INDEX_HTML.index("function trainingWindowsPayload(")]
     helpers = web.INDEX_HTML.split("function validationInvestigationWindowsKey(", 1)[1].split("function renderValidation(data)", 1)[0]
     script = r'''
 const assert=require("node:assert/strict");
@@ -37,6 +38,7 @@ function escapeHtml(x){return String(x).replaceAll("<","&lt;")}
 function displayTime(x){return x}
 function displayUiValue(x){return x}
 function clusterUiLabel(x){return x}
+function candidateSourceLabel(window){return window.source||"未知来源"}
 function percent(x){return x==null?"—":`${(x*100).toFixed(1)}%`}
 function selectedTags(){return [...state.selectedModelTags]}
 function setStatus(message){messages.push(message)}
@@ -87,8 +89,9 @@ __HELPERS__
   // Snapshot evidence belongs to the trained run, not editable trainingWindows.
   training.training_window_summary.push({id:"overlap",start:a.end,end:a.end,enabled:true,status:"dropped",source:"performance",source_ref:"candidate-1"},{id:"disabled-overlap",start:a.start,end:a.end,enabled:false,status:"disabled"});
   await focusValidationInvestigation(context,"A02","training");
-  assert.match(banner().text(),/存在时间重叠.*overlap/);
-  assert.match(banner().text(),/dropped.*candidate-1/);
+  assert.match(banner().text(),/2026-01-02T02:03:04 ~ 2026-01-02T02:03:04/);
+  assert(!banner().text().includes("overlap"));
+  assert.match(banner().text(),/dropped.*来源 performance/);
   assert(!banner().text().includes("disabled-overlap"));
   assert.match(banner().text(),/不证明重叠样本实际参与/);
   for(const summary of [{t2_exceedance_95:1,spe_exceedance_95:0},{t2_exceedance_95:0,spe_exceedance_95:1},{t2_exceedance_95:1,spe_exceedance_95:1}]) {
@@ -120,7 +123,7 @@ __HELPERS__
   assert.equal(state.validationInvestigationContext,null);
   console.log(JSON.stringify({ok:true}));
 })().catch(error=>{console.error(error);process.exitCode=1});
-'''.replace("__HELPERS__", "function validationInvestigationWindowsKey(" + helpers)
+'''.replace("__HELPERS__", range_helpers + "\nfunction validationInvestigationWindowsKey(" + helpers)
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["ok"]

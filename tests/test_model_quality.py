@@ -195,7 +195,11 @@ def test_condition_groups_keep_runs_separate_and_independent_events_short():
     result = _condition_summary(scores,windows)
     assert [row["samples"] for row in result["groups"]] == [4,2]
     assert [row["longest_overall_95_minutes"] for row in result["groups"]] == [10,10]
-    assert _condition_summary(scores,[{**windows[0],"source":"manual"}])["available"] is False
+    manual = _condition_summary(scores,[{**windows[0],"source":"manual"}])
+    assert manual["available"] is False
+    assert len(manual["timeline"]) == len(scores)
+    assert manual["timeline"][0]["cluster_id"] is None
+    assert manual["timeline"][0]["t2_limit_ratio"] == 1.5
 
 
 @pytest.mark.parametrize("method,expected", [("none",5),("trailing_mean",15),("first_order",None)])

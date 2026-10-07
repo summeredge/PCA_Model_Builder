@@ -130,7 +130,8 @@ def test_candidate_conflict_ui_and_replacement_lifecycle():
         pytest.skip("Node.js is required for WebUI regression tests")
     html = web_model_results.INDEX_HTML
     names = ["candidateTrainingWindows", "windowsOverlap", "candidateTrainingConflicts", "isParentTrainingWindow",
-             "previewCandidateConflicts", "showCandidateConflicts", "renderCandidateWindows", "trainingWindowsPayload", "updateTrainingWindows", "confirmCandidateWindow"]
+             "previewCandidateConflicts", "showCandidateConflicts", "renderCandidateWindows", "trainingWindowsPayload", "updateTrainingWindows", "confirmCandidateWindow",
+             "windowTimeRange", "windowRangeLabel"]
     functions = []
     for name in names:
         start = html.index(f"function {name}(")
@@ -156,8 +157,8 @@ def test_candidate_conflict_ui_and_replacement_lifecycle():
     const other={...parent,id:'unrelated',enabled:true};
     const state={candidateWindows:[parent,child],trainingWindows:[first],excludedWindows:[],trainingWindowSummary:[]};
     function commonPayload(){return {};} function trainingWindowsPayload(){return state.trainingWindows;}
-    function displayTime(value){return value;}function displayUiValue(value){return value;}
-    function candidateSourceLabel(value){return value.id;}
+    function displayTime(value){return value.slice(0,16).replace('T',' ');}function displayUiValue(value){return value;}
+    function candidateSourceLabel(value){return value.source||'未知来源';}
     function renderTrainingWindows(){} function updateQualityButtonAvailability(){}
     function invalidateQuality(){invalidated++;} function setStatus(){} function showCandidateTrend(){}
     async function api(url,options){const body=JSON.parse(options.body);requests.push(body);onApi();
@@ -181,7 +182,8 @@ def test_candidate_conflict_ui_and_replacement_lifecycle():
       const details=new Element();await showCandidateConflicts(child,details);
       assert.match(details.text(),/与 2 个启用训练窗口冲突/);
       assert.match(details.text(),/父候选训练窗口/);assert.match(details.text(),/其它训练窗口/);
-      assert.match(details.text(),/parent-ref/);assert.match(details.text(),/2026-01-01T00:10:00/);
+      assert.match(details.text(),/2026-01-01 00:00 ~ 2026-01-01 00:10/);
+      assert.doesNotMatch(details.text(),/training-A|parent-ref/);
       const before=JSON.stringify(state);details.buttons()[0].listeners.click();assert.equal(JSON.stringify(state),before);
       await showCandidateConflicts(child,details);
       state.trainingWindows.pop();await details.buttons()[1].listeners.click();assert.equal(requests.length,2);

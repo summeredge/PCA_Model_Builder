@@ -24,7 +24,7 @@ def test_training_condition_diagnostic_uses_responsive_svg_and_scoped_tables():
     assert '#modelTrainingConditionDiagnostic { min-width:0; max-width:100%; }' in html
     assert '.training-condition-trend svg { display:block; width:100%; height:auto; }' in html
     assert '#modelTrainingConditionDiagnostic.condition-unavailable' in html
-    assert '.training-condition-trend, #modelTrainingConditionHints) { display:none; }' in html
+    assert ':not(#modelTrainingAnomalyTitle):not(#modelTrainingAnomalyPeaks) { display:none; }' in html
 
 
 def _run_web_javascript(source: str) -> None:
@@ -105,14 +105,25 @@ def test_variable_diagnostics_use_existing_cards_and_local_scroll_boundaries() -
     html = web_model_results.INDEX_HTML
     for element_id in ("variableDiagnosticsTitle", "explorationVariableDiagnostics", "diagnosticsTagConfig"):
         assert html.count(f'id="{element_id}"') == 1
-    assert html.index('id="explorationClusterQuality"') < html.index('id="explorationVariableDiagnostics"') < html.index('id="explorationPcChart"')
+    assert html.index('id="explorationClusterQuality"') < html.index('id="explorationPcChart"') < html.index('id="explorationClusterCandidates"') < html.index('id="explorationVariableDiagnostics"')
     assert 'class="chart-card variable-diagnostics"' in html
+    assert '<details>\n              <summary id="variableDiagnosticsTitle">' in html
+    assert 'if(title) title.textContent=`变量诊断 · 建模 Tag ' in html
     assert '#explorationContent:has(> .variable-diagnostics) { min-width:0; }' in html
     assert '.variable-diagnostics .table-wrap { max-height:280px; }' in html
     assert '.variable-diagnostics td { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }' in html
-    assert '.exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); }' in html
+    assert '#stateExplorationPanel .exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); min-width:0; }' in html
+    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));' in html
+    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,128px),1fr)); }' in html
+    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,148px),1fr)); }' in html
+    assert 'const qualityMetrics=el("explorationClusterQuality").querySelector(".screening-kpis > .metrics")' in html
+    assert 'qualityMetrics.replaceWith(el("explorationOverview"))' in html
+    assert '<details id="explorationClusterDetails"><summary>工况明细（<span id="explorationClusterSummaryCount">0</span> 组）</summary>' in html
+    assert 'id="explorationClusterCandidateCount"' in html
+    assert 'id="explorationPerformanceCandidatesCount"' in html
+    assert 'id="explorationPreferredRegionCandidateCount"' in html
     assert '<details open><summary>高相关变量</summary>' in html
-    assert '<details open><summary>工况组区分</summary>' in html
+    assert '<details><summary>完整工况组变量对比</summary>' in html
     assert '<details><summary>变量质量</summary>' in html
     assert 'renderVariableDiagnostics(el("explorationVariableDiagnostics"),data.variable_diagnostics)' in html
     assert '调整建模 Tag 后本次状态探索将失效，请重新运行状态探索。' in html
@@ -1759,6 +1770,9 @@ def test_cli_entry_delegates_without_replacing_serve_handler(
 
 def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> None:
     html = web_model_results.INDEX_HTML
+    range_helper_source = "function windowTimeRange" + html.split(
+        "function windowTimeRange", 1
+    )[1].split("function trainingWindowsPayload", 1)[0]
     render_source = "function renderPreprocessingPreviewWindow" + html.split(
         "function renderPreprocessingPreviewWindow", 1
     )[1].split("function selectedPreprocessingPreviewWindow", 1)[0]
@@ -1796,10 +1810,13 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         "function preprocessingPreviewStages", 1
     )[0]
     assert "预览训练窗口：" in preview_render
+    assert "windowRangeLabel(window,state.trainingWindows)" in preview_render
+    assert 'escapeHtml(window.id)' not in preview_render
 
     _run_web_javascript(
         f"""
         const invalidatePreviewSource = {json.dumps(invalidate_preview_source)};
+        const rangeHelperSource = {json.dumps(range_helper_source)};
         const renderSource = {json.dumps(render_source)};
         const makeOption = () => ({{value:"", textContent:"", disabled:false, selected:false}});
         const makeSelect = () => ({{
@@ -1814,8 +1831,9 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         ]);
         const el = id => elements.get(id);
         const state = {{trainingWindows:[], preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null}};
-        const displayTime = value => value;
+        const displayTime = value => value.slice(0,16).replace("T"," ");
         globalThis.document = {{createElement: tag => tag === "option" ? makeOption() : makeSelect()}};
+        eval(rangeHelperSource);
         eval(invalidatePreviewSource);
         eval(renderSource);
 
@@ -1830,7 +1848,7 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         state.trainingWindows=[
           {{id:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00", enabled:true}},
           {{id:"training-b", start:"2026-01-01T13:00", end:"2026-01-01T15:00", enabled:false}},
-          {{id:"training-c", start:"2026-01-01T16:00", end:"2026-01-01T18:00", enabled:true}},
+          {{id:"training-c", start:"2026-01-01T10:00", end:"2026-01-01T12:00", enabled:true}},
         ];
         state.preprocessingPreview={{data:{{}}, tags:["A"], windowId:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00"}};
         renderPreprocessingPreviewWindow();
@@ -1838,8 +1856,8 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         const options=el("preprocessingPreviewWindow").children;
         if(options.length!==2) throw new Error("disabled window must not be listed");
         if(options[0].value!=="training-a"||options[1].value!=="training-c") throw new Error("wrong options");
-        if(!el("preprocessingPreviewWindow").children[0].textContent.includes("training-a"))
-          throw new Error("option text must show the window id and range");
+        if(options[0].textContent!=="2026-01-01 10:00 ~ 2026-01-01 12:00（同范围 1）"||options[1].textContent!=="2026-01-01 10:00 ~ 2026-01-01 12:00（同范围 2）")
+          throw new Error("options must show readable ranges and distinguish duplicates");
         if(state.preprocessingPreview===null) throw new Error("valid preview must be kept");
         if(el("preprocessingPreviewButton").disabled) throw new Error("button must be enabled");
 
@@ -1867,6 +1885,7 @@ def test_preprocessing_preview_uses_the_selected_enabled_training_window() -> No
         // 删除当前预览窗口：预览失效。
         state.trainingWindows[0].enabled=true;
         state.preprocessingPreview={{data:{{}}, tags:["A"], windowId:"training-a", start:"2026-01-01T10:00", end:"2026-01-01T12:00"}};
+        state.preprocessingPreviewWindowId="training-a";
         state.trainingWindows=state.trainingWindows.filter(window=>window.id!=="training-a");
         renderPreprocessingPreviewWindow();
         if(state.preprocessingPreview!==null) throw new Error("removed window must drop preview");
@@ -2502,9 +2521,12 @@ def test_training_window_summary_uses_numeric_table_wrapper_and_runtime_labels()
     html = web_model_results.INDEX_HTML
     summary_source = html.split(
         "function renderTrainingWindowSummary(windows)", 1
-    )[1].split("function renderValidation(data)", 1)[0]
+    )[1].split("function validationInvestigationWindowsKey(", 1)[0]
 
     assert 'id="trainingWindowSummary" class="table-wrap"' in html
+    assert '["时间范围","状态"' in summary_source
+    assert "windowRangeLabel(window,windows)" in summary_source
+    assert "window.id" not in summary_source
     for field in (
         "重采样减少",
         "部分桶",
@@ -2640,6 +2662,9 @@ def test_semantic_widths_keep_data_source_compact_and_responsive_exceptions() ->
 
 def test_modeling_snapshot_view_renders_context_and_missing_state() -> None:
     html = web_model_results.INDEX_HTML
+    range_helper_source = "function windowTimeRange" + html.split(
+        "function windowTimeRange", 1
+    )[1].split("function trainingWindowsPayload", 1)[0]
     source = "function modelingSnapshotValue" + html.split("function modelingSnapshotValue", 1)[1].split(
         'el("modelingSnapshotButton")', 1
     )[0]
@@ -2650,7 +2675,9 @@ def test_modeling_snapshot_view_renders_context_and_missing_state() -> None:
         const el=id=>{{ if(!nodes.has(id)) nodes.set(id,{{innerHTML:'',textContent:'',hidden:true,className:''}}); return nodes.get(id); }};
         const escapeHtml=value=>String(value).replaceAll('<','&lt;');
         const displayUiValue=value=>value;
+        const displayTime=value=>value?value.slice(0,16).replace('T',' '):'';
         const clusterUiLabel=value=>'工况组 '+value;
+        {range_helper_source}
         {source}
         renderModelingSnapshot({{}});
         assert.equal(el('modelingSnapshot').textContent,'该模型运行没有建模快照。');
@@ -2663,13 +2690,14 @@ def test_modeling_snapshot_view_renders_context_and_missing_state() -> None:
           modeling_tags:[{{tag:'A',role:'continuous_input',unit:'degC',description:'温度'}}],
           excluded_tags:[{{tag:'C',reason:'constant_in_reference_window'}}],
           modeling_eligibility:{{keep_conditions:[{{column:'A',minimum:0,maximum:1}}],exclude_rule_groups:[[{{column:'B',minimum:null,maximum:5}}]]}},
-          training_windows:[{{id:'w1'}}],
+          training_windows:[{{id:'w1',start:'2026-05-17T23:59:00',end:'2026-05-18T06:35:00'}}],
           training_window_totals:{{enabled_window_count:1,used_window_count:1,dropped_window_count:0,training_rows:77,covered_day_count:1}},
           window_provenance:[{{window_id:'w1',source:'cluster',traceable:true,cluster_id:'cluster_001',origin_source_ref:'state-exploration-run-cluster_001-candidate-001'}},
             {{window_id:'w2',source:'manual',traceable:false}}],
           model_config:{{sample_interval_minutes:5,filter_method:'first_order',first_order_alpha:0.4,state_filters:[{{column:'A',minimum:0}}],n_components:6}}}}}});
         const card=el('modelingSnapshot').innerHTML;
-        for(const text of ['DEMO','history.csv','建模资格','degC','工况组 cluster_001','来源不可追溯','77','1 / 1 / 0','排除每日清洗状态并细化高负荷工况','first_order','constant_in_reference_window','A ≥ 0 ≤ 1']) assert(card.includes(text),text);
+        for(const text of ['DEMO','history.csv','建模资格','degC','工况组 cluster_001','来源不可追溯','2026-05-17 23:59 ~ 2026-05-18 06:35','77','1 / 1 / 0','排除每日清洗状态并细化高负荷工况','first_order','constant_in_reference_window','A ≥ 0 ≤ 1']) assert(card.includes(text),text);
+        assert(!card.includes('<td>w1</td>'));
         assert.equal(el('modelingSnapshot').hidden,false);
         assert.equal(el('modelingSnapshot').className,'');
     """)

@@ -105,13 +105,42 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    const baseline=JSON.parse(fs.readFileSync(process.env.SCREENING_BASELINE_JSON,'utf8'));
    for(const key of comparisonKeys)assert.deepEqual(data[key],baseline[key],key);
   }
-  assert.equal(await page.locator('.screening-kpis .metric').count(),4);
-  assert((await page.locator('.screening-judgment').innerText()).includes(data.cluster_quality.engineering_hint.state_exploration));
-  assert((await page.locator('#explorationQualityDetails').innerText()).includes('时间连续性'));
-  assert.equal(await page.locator('#explorationQualityDetails .metric').count(),0);
-  const temporal=data.cluster_quality.temporal_metrics;
-  assert.deepEqual(await page.locator('.screening-temporal-summary dd').allTextContents(),[
-   `${temporal.average_duration_hours.toFixed(3)} h`,`${temporal.longest_duration_hours.toFixed(3)} h`,String(temporal.state_switch_count)]);
+  assert.equal(await page.locator('.screening-kpis .metric').count(),6);
+  assert.equal(await page.locator('#explorationOverview .metric').count(),6);
+  assert.equal(await page.locator('#explorationClusterQuality .screening-kpis h3').count(),0);
+  assert.equal(await page.locator('#explorationEvidence').innerText(),'结果预览');
+  const expectedKpis=[
+   ['完整样本',String(data.full_point_count)],
+   ['有效覆盖率',`${(data.preprocessing_summary.effective_coverage_ratio*100).toFixed(1)}%`],
+   ['工况组数量',String(data.cluster_quality.cluster_count)],
+   ['Silhouette Score',typeof data.cluster_quality.silhouette_score==='number'?data.cluster_quality.silhouette_score.toFixed(3):'—'],
+   ['保留主元数',String(data.cluster_quality.n_components??'—')],
+   ['累计解释率',typeof data.cluster_quality.cumulative_explained_variance==='number'?`${(data.cluster_quality.cumulative_explained_variance*100).toFixed(1)}%`:'—']
+  ];
+  assert.deepEqual(await page.locator('#explorationOverview .metric').evaluateAll(nodes=>nodes.map(node=>[node.querySelector('span').innerText,node.querySelector('strong').innerText])),expectedKpis);
+  assert((await page.locator('.screening-kpis').innerText()).includes('人工确认'));
+  if(data.cluster_quality.silhouette_score<.25) assert((await page.locator('.screening-kpis').innerText()).includes('分离度较弱'));
+  assert.equal(await page.locator('#explorationClusterDetails').evaluate(node=>node.open),false);
+  assert.equal(await page.locator('#explorationClusterDetails summary span').innerText(),String(data.cluster_summaries.length));
+  assert.equal(await page.locator('.exploration-candidate-details').count(),3);
+  assert.deepEqual(await page.locator('.exploration-candidate-details').evaluateAll(nodes=>nodes.map(node=>node.open)),[false,false,false]);
+  assert.equal(await page.locator('.exploration-candidate-details').nth(0).locator('summary span').innerText(),String(data.cluster_candidates.length));
+  assert.equal(await page.locator('.exploration-candidate-details').nth(1).locator('summary span').innerText(),String(data.performance_candidates.length));
+  assert.equal(await page.locator('.exploration-candidate-details').nth(2).locator('summary span').innerText(),String(data.preferred_region_candidates.length));
+  assert.equal(await page.locator('.variable-diagnostics > details').evaluate(node=>node.open),false);
+  const diagnosticTitle=await page.locator('#variableDiagnosticsTitle').innerText();
+  for(const count of [data.variable_diagnostics.summary.tag_count,data.variable_diagnostics.summary.high_correlation_pair_count,data.variable_diagnostics.summary.attention_tag_count]) assert(diagnosticTitle.includes(String(count)));
+  const summaryGeometry=await page.locator('.screening-kpis').evaluate(node=>({gap:parseFloat(getComputedStyle(node).rowGap),paragraphMargins:[...node.querySelectorAll(':scope > p')].map(p=>[getComputedStyle(p).marginTop,getComputedStyle(p).marginBottom])}));
+  assert(summaryGeometry.gap<=8,JSON.stringify(summaryGeometry));
+  assert(summaryGeometry.paragraphMargins.flat().every(value=>value==='0px'),JSON.stringify(summaryGeometry));
+  await page.evaluate(async()=>Plotly.relayout(state.preferredRegionPlot,{shapes:[{type:'circle',xref:'x',yref:'y',x0:-.5,x1:.5,y0:-.5,y1:.5,fillcolor:'rgba(23,107,135,.08)',line:{color:'#176b87',width:2}}]}));
+  await page.locator('#explorationQualityDetails').evaluate(node=>node.closest('details').open=true);
+  const technicalText=await page.locator('#explorationQualityDetails').innerText();
+  assert(technicalText.includes('样本与绘图详情'));
+  assert(await page.locator('#explorationClusterQuality .screening-center-heading').isVisible());
+  for(const label of ['时间连续性','平均持续时间','最长连续时间','状态切换次数']) assert(!technicalText.includes(label));
+  assert.equal(await page.locator('#explorationQualityDetails .screening-evidence-compact .metric').count(),0);
+  assert.equal(await page.locator('.screening-temporal-summary').count(),0);
   assert(await page.locator('#explorationClusterTable tr').count()>0);
   const artifacts=process.env.SCREENING_ARTIFACT_DIR||process.env.SCREENING_TEST_DIR;
   const snapshot=()=>page.evaluate(()=>JSON.stringify({config:commonPayload(),selectedModelTags:[...state.selectedModelTags],
@@ -152,10 +181,15 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    });
    assert.deepEqual(geometry,{outside:false,overlap:false});
   }
-  for(const [width,zoom] of [[1920,1],[1440,1],[1200,1],[900,1],[390,1],[1440,2]]) {
+  for(const [width,zoom] of [[1440,1],[900,1],[390,1],[1440,2]]) {
    await page.setViewportSize({width,height:1000});
    await page.evaluate(zoom=>{document.body.style.zoom=zoom;},zoom);
    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+   await page.waitForFunction(()=>{
+    const timeline=document.querySelector('#explorationTimeline'),svg=timeline?.querySelector('svg'),plot=state.preferredRegionPlot;
+    const viewBox=svg?.getAttribute('viewBox')?.trim().split(/\s+/).map(Number);
+    return plot?._fullLayout?._size&&viewBox&&Math.abs(viewBox[2]-Math.round(timeline.clientWidth))<=1;
+   });
    if(zoom===1&&[1440,900,390].includes(width)) {
     await checkNavigation();
     await page.locator('.workflow-sidebar').screenshot({path:path.join(artifacts,`candidate-nav-${width}.png`)});
@@ -165,29 +199,58 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     const fields=[...document.querySelectorAll('#modelingEligibility input,#candidatePanel .shared-preprocessing input,#candidatePanel .shared-preprocessing select,#stateExplorationPanel .exploration-controls input,#stateExplorationPanel .exploration-controls select')].filter(e=>e.getClientRects().length);
     const controls=fields.map(rect),kpis=[...document.querySelectorAll('.screening-kpis .metric')].map(rect);
     const dates=['analysisStart','analysisEnd'].map(id=>rect(document.getElementById(id)));
-    const evidence=[...document.querySelectorAll('#explorationQualityDetails .chart-card')],table=document.querySelector('.screening-center-table');
-    const time=[...document.querySelectorAll('.screening-temporal-summary > div')].map(rect);
+    const evidence=[...document.querySelectorAll('#explorationClusterQuality .screening-evidence-compact')],table=document.querySelector('.screening-center-table');
+    const grid=document.querySelector('.exploration-result-grid'),pc=document.querySelector('.exploration-pc-card'),region=document.querySelector('.exploration-region-card'),timelineCard=document.querySelector('.exploration-timeline-card');
+    const plotContainer=document.querySelector('#explorationPcChart'),plot=state.preferredRegionPlot,plotNode=plotContainer.querySelector('.js-plotly-plot'),overlay=plotContainer.querySelector('.exploration-pc-overlay');
+    const modebar=plotContainer.querySelector('.modebar-container'),legend=plotContainer.querySelector('.legend'),modebarRect=modebar?.getBoundingClientRect(),legendRect=legend?.getBoundingClientRect();
+    const overlaps=modebarRect&&legendRect&&Math.min(modebarRect.right,legendRect.right)>Math.max(modebarRect.left,legendRect.left)&&Math.min(modebarRect.bottom,legendRect.bottom)>Math.max(modebarRect.top,legendRect.top);
+    const timeline=document.querySelector('#explorationTimeline'),timelineSvg=timeline.querySelector('svg'),viewBox=timelineSvg.getAttribute('viewBox').trim().split(/\s+/).map(Number);
+    const kpiRows=[...new Set(kpis.map(r=>Math.round(r.top)))],kpiColumns=Math.max(...kpiRows.map(top=>kpis.filter(r=>Math.round(r.top)===top).length)),sameRow=Math.abs(rect(pc).top-rect(region).top)<1;
     return {width:innerWidth,zoom:document.body.style.zoom,
      evidenceHeight:evidence.map(e=>rect(e).height),centerTableWidth:rect(table).width,
      evidenceWidth:rect(evidence[0]).width,centerTableOffset:rect(table).left-rect(evidence[0]).left,
-     temporalTopSpread:spread(time.map(r=>r.top)),
      configHeight:rect(document.getElementById('stateExplorationButton')).bottom-rect(document.getElementById('modelingEligibility')).top,
      overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
      kpiWidthSpread:spread(kpis.map(r=>r.width)),kpiHeightSpread:spread(kpis.map(r=>r.height)),dateWidthSpread:spread(dates.map(r=>r.width)),
+     kpiCount:kpis.length,kpiRows:kpiRows.length,kpiColumns,
+     resultGridWidth:rect(grid).width,pcWidth:rect(pc).width,pcHeight:rect(plotContainer).height,plotNodeWidth:rect(plotNode).width,plotNodeHeight:rect(plotNode).height,
+     plotWidth:plot._fullLayout.width,plotHeight:plot._fullLayout.height,plotAreaHeight:plot._fullLayout._size.h,shapeCount:plot._fullLayout.shapes.length,overlayWidth:rect(overlay).width,overlayHeight:rect(overlay).height,
+     regionWidth:rect(region).width,regionHeight:rect(region).height,sameRow,heightSpread:Math.abs(rect(pc).height-rect(region).height),
+     timelineWidth:rect(timeline).width,timelineClientWidth:timeline.clientWidth,timelineCardWidth:rect(timelineCard).width,timelineHeight:rect(timelineSvg).height,timelineViewBoxWidth:viewBox[2],timelineColumnStart:getComputedStyle(timelineCard).gridColumnStart,
+     timelineBelow:rect(timelineCard).top>=Math.max(rect(pc).bottom,rect(region).bottom)-1,
+     modebarCount:modebar?.querySelectorAll('.modebar-btn').length||0,legendPresent:Boolean(legend),modebarLegendOverlap:overlaps,
      clipped:fields.filter(e=>{const r=rect(e),p=rect(e.parentElement);return r.left<p.left-1||r.right>p.right+1||r.width<100;}).map(e=>e.id),
      overlap:controls.some((a,i)=>controls.slice(i+1).some(b=>Math.min(a.right,b.right)-Math.max(a.left,b.left)>1&&Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>1))};
    });
    assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.overlap,JSON.stringify(report));assert.deepEqual(report.clipped,[],JSON.stringify(report));
    assert(report.centerTableWidth<report.evidenceWidth,JSON.stringify(report));assert.equal(report.centerTableOffset,0);
-   if(zoom===1&&[1440,900].includes(width)) assert(report.temporalTopSpread<=1,JSON.stringify(report));
    assert(report.kpiWidthSpread<=1&&report.kpiHeightSpread<=1&&report.dateWidthSpread<=1,JSON.stringify(report));
+   assert.equal(report.kpiCount,6,JSON.stringify(report));assert(report.timelineBelow,JSON.stringify(report));
+   assert(Math.abs(report.timelineWidth-report.resultGridWidth)<=1,JSON.stringify(report));
+   assert(Math.abs(report.timelineHeight-112*Number(zoom))<=1,JSON.stringify(report));assert(Math.abs(report.timelineViewBoxWidth-report.timelineClientWidth)<=1,JSON.stringify(report));
+   assert(report.plotNodeWidth>0&&report.plotNodeHeight>0&&report.plotAreaHeight>200,JSON.stringify(report));
+   assert.equal(report.shapeCount,1,JSON.stringify(report));
+   assert(Math.abs(report.overlayWidth-report.pcWidth)<=2*Number(zoom)+1&&Math.abs(report.overlayHeight-report.pcHeight)<=2*Number(zoom)+1,JSON.stringify(report));
+   assert(report.modebarCount>=3&&report.legendPresent&&!report.modebarLegendOverlap,JSON.stringify(report));
+   if(width===1440&&zoom===1) assert.equal(report.kpiRows,1,JSON.stringify(report));
+   if(width===900&&zoom===1) assert(report.kpiRows===2&&report.kpiColumns===3,JSON.stringify(report));
+   if(width===390&&zoom===1) assert(report.kpiRows===3&&report.kpiColumns===2,JSON.stringify(report));
+   if(width>=761&&zoom===1) {
+    assert(report.sameRow&&report.heightSpread<=1,JSON.stringify(report));
+    assert(report.pcHeight>=420&&report.pcHeight<=480,JSON.stringify(report));
+   }
+   if(width===390&&zoom===1) assert.equal(report.pcHeight,340,JSON.stringify(report));
    reports.push(report);
    if(width===1440&&zoom===1) {
     await page.screenshot({path:path.join(artifacts,'screening-after.png'),fullPage:true});
     await page.locator('#modelingEligibility').screenshot({path:path.join(artifacts,'screening-conditions.png')});
     await page.locator('#explorationClusterQuality').screenshot({path:path.join(artifacts,'screening-results.png')});
    }
+   if(zoom===1&&[900,390].includes(width)) await page.locator('#explorationContent').screenshot({path:path.join(artifacts,`screening-results-${width}.png`)});
   }
+  await page.locator('.variable-diagnostics > details > summary').click();
+  assert(await page.locator('#explorationVariableDiagnostics .metrics').isVisible());
+  await page.locator('.variable-diagnostics > details > summary').click();
   await page.evaluate(()=>{document.body.style.zoom=1;});
   await page.setViewportSize({width:1440,height:1000});
   const centerReports=[];
@@ -217,7 +280,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     assert.deepEqual(report.columns,example.columns);assert.equal(report.orientation,example.orientation);
     assert.deepEqual(report.align,['left',...example.columns.map(()=>'right')]);
     assert.equal(report.overflow,0,JSON.stringify(report));assert(report.tableWidth<=report.availableWidth,JSON.stringify(report));
-    assert.deepEqual(report.temporal,[`${temporal.average_duration_hours.toFixed(3)} h`,`${temporal.longest_duration_hours.toFixed(3)} h`,String(temporal.state_switch_count)]);
+    assert.deepEqual(report.temporal,[]);
     centerReports.push(report);
     if(width===1440&&example.columns.length===4&&example.variance.length===4) {
      await page.locator('#explorationQualityDetails').screenshot({path:path.join(artifacts,'screening-centers-pc4.png')});
@@ -243,6 +306,46 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    assert.equal(await nav.locator('[aria-current="location"]').innerText(),'结果证据');
    assert.equal(await snapshot(),before);assert.equal(requests.length,count);
   }
+  // Existing candidate IDs and explicit human confirmation remain the only training path.
+  await page.evaluate(()=>renderStateExploration(state.exploration));
+  assert(data.cluster_candidates.length>0);
+  const candidate=data.cluster_candidates[0];
+  await page.locator('#explorationClusterQuality [data-profile]').first().click();
+  const profileCandidateButton=page.locator('#explorationClusterQuality [data-profile-candidates]').first();
+  if(await profileCandidateButton.count()) { await profileCandidateButton.click(); assert(await page.locator('#explorationClusterCandidates').evaluate(node=>node.closest('details').open)); }
+  const performanceProfile=data.cluster_quality.group_profiles[0];
+  const performanceSummary=data.cluster_summaries.find(item=>item.cluster_id===performanceProfile.cluster_id);
+  for(const key of ['performance_valid_count','performance_target_count','performance_target_ratio','performance_median']) assert.equal(performanceProfile[key],performanceSummary[key]);
+  const performanceText=await page.locator('[data-profile-performance]').innerText();
+  assert(performanceText.includes('性能后验评价')&&performanceText.includes('不参与 PCA 聚类'));
+  for(const value of [performanceSummary.performance_valid_count,performanceSummary.performance_target_count,`${(performanceSummary.performance_target_ratio*100).toFixed(1)}%`,String(Number(performanceSummary.performance_median.toPrecision(5)))]) assert(performanceText.includes(String(value)));
+  for(const width of [900,1440]) {
+   await page.setViewportSize({width,height:1000});
+   const geometry=await page.locator('[data-profile-performance]').evaluate(node=>{const r=node.getBoundingClientRect();return {width:r.width,right:r.right,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};});
+   assert(geometry.width>0&&geometry.right<=width+1,JSON.stringify(geometry));assert.equal(geometry.overflow,0);
+  }
+  if(!await page.locator('.exploration-candidate-details').first().evaluate(node=>node.open)) await page.locator('.exploration-candidate-details').first().locator('summary').click();
+  assert.equal(await page.locator('#explorationClusterCandidates thead th').count(),11);
+  await page.locator('#explorationClusterCandidates .exploration-candidate-select').first().check();
+  await page.locator('#convertExplorationCandidates').click();
+  const sourceRef=`state-exploration-${data.exploration_run_id}-${candidate.candidate_id}`;
+  assert(await page.evaluate(ref=>state.candidateWindows.some(item=>item.source_ref===ref&&item.source==='cluster'),sourceRef));
+  const pending=page.waitForResponse(r=>r.url().endsWith('/api/training-windows'));
+  await page.locator('#candidateWindows').getByRole('button',{name:'确认作为训练窗口',exact:true}).last().click();
+  assert((await pending).ok());await page.waitForFunction(ref=>state.trainingWindows.some(item=>item.source_ref===ref),sourceRef);
+  await page.evaluate(()=>showWorkflowStage('modelPanel'));
+  const quality=await action('qualityButton','/api/quality');assert(quality.training_readiness.normal_state.can_train);
+  const training=await action('trainButton','/api/train');assert(training.model_quality.training_condition_diagnostic.available);
+  const diagnostic=await page.evaluate(()=>{
+   const diagnostic=state.training.model_quality.training_condition_diagnostic,group=diagnostic.groups[0];
+   focusTrainingDiagnostic(diagnostic,group);return {id:state.trainingDiagnosticFocus?.clusterId,windows:JSON.stringify(state.trainingWindows)};
+  });
+  assert.equal(diagnostic.id,candidate.cluster_id);
+  assert(await page.locator('#explorationClusterDetails').evaluate(node=>node.open));
+  await page.locator('#explorationClusterQuality [data-profile]').last().click();
+  assert.equal(await page.evaluate(()=>state.trainingDiagnosticFocus.clusterId),candidate.cluster_id);
+  assert.equal(await page.evaluate(()=>JSON.stringify(state.trainingWindows)),diagnostic.windows);
+  await page.locator('.variable-diagnostics > details > summary').click();
   await page.locator('#diagnosticsTagConfig').click();
   assert(await page.locator('#configPanel').evaluate(e=>e.classList.contains('active')));
   assert(!await nav.isVisible());assert.equal(await nav.evaluate(e=>e.getBoundingClientRect().height),0);
