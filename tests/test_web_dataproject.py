@@ -71,6 +71,16 @@ def test_trend_bar_inputs_cannot_overflow_their_labels() -> None:
     assert ".dp-trend-bar input { min-width:0; }" in html
 
 
+def test_tag_statistics_keep_multivalue_groups_without_clipping_values() -> None:
+    html = web_dataproject.INDEX_HTML
+    assert '.dp-trend-stat-card dl { display:grid; gap:2px; margin:0; }' in html
+    assert 'grid-template-columns:82px minmax(0,1fr);' in html
+    assert '.dp-trend-stat-card dd {' in html
+    card = html.split('.dp-trend-stat-card {', 1)[1].split('}', 1)[0]
+    assert 'padding:8px;' in card and 'overflow:hidden' not in card
+    assert '<dl>${rows.map(' in html
+
+
 def test_trend_to_analysis_invalidates_only_when_exploration_range_changes() -> None:
     html = web_dataproject.INDEX_HTML
     handler = html.split(

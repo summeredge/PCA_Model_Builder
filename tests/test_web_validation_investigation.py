@@ -241,7 +241,7 @@ def test_validation_investigation_in_real_browser(tmp_path, monkeypatch):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     script = r'''
-const {chromium}=require(process.env.WEB_GEOMETRY_PLAYWRIGHT),assert=require("node:assert/strict");
+const {chromium}=require(process.env.WEB_GEOMETRY_PLAYWRIGHT),assert=require("node:assert/strict"),fs=require('node:fs'),path=require('node:path');
 const fixture=JSON.parse(require("node:fs").readFileSync(process.env.INVESTIGATION_FIXTURE,"utf8"));
 (async()=>{
  const browser=await chromium.launch({headless:true,executablePath:process.env.WEB_GEOMETRY_BROWSER});
@@ -259,6 +259,24 @@ const fixture=JSON.parse(require("node:fs").readFileSync(process.env.INVESTIGATI
    el("sampleInterval").value="5";el("filterMethod").value="none";el("maxLag").value="0";
    renderTraining(f.trained);renderValidationWindows();renderTagList();renderValidation(f.validated);showWorkflowStage("validationPanel");
   },fixture);
+  const geometryReports=[];
+  for(const width of [1440,900,390]) {
+   await page.setViewportSize({width,height:1000});await page.evaluate(()=>document.fonts.ready);
+   const report=await page.locator('#validationMetrics').evaluate(node=>{
+    const bounds=node.getBoundingClientRect(),items=[...node.querySelectorAll('.metric')],rect=e=>e.getBoundingClientRect();
+    return {width:innerWidth,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,height:bounds.height,
+     metrics:items.map(e=>[e.querySelector('span').textContent,e.querySelector('strong').textContent]),
+     escaped:items.some(e=>rect(e).right>bounds.right+1||rect(e).left<bounds.left-1),
+     clipped:items.flatMap(e=>[...e.children]).some(e=>e.scrollWidth>e.clientWidth+1),
+     overlap:items.some((e,i)=>items.slice(i+1).some(other=>Math.min(rect(e).right,rect(other).right)>Math.max(rect(e).left,rect(other).left)+1&&Math.min(rect(e).bottom,rect(other).bottom)>Math.max(rect(e).top,rect(other).top)+1))};
+   });
+   assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.escaped&&!report.clipped&&!report.overlap,JSON.stringify(report));
+   assert.deepEqual(report.metrics,[['验证样本',String(fixture.validated.scored_rows)],...['normal','attention','abnormal'].map((key,index)=>[['正常','关注','异常'][index],String(fixture.validated.status_counts[key])]),['模型用途','正常状态模型'],['模型状态','候选'],['验证状态','验证回放完成，待工程师确认']]);
+   geometryReports.push(report);
+   if(process.env.SCREENING_ARTIFACT_DIR) await page.locator('#validationContent').screenshot({path:path.join(process.env.SCREENING_ARTIFACT_DIR,`validation-results-${width}.png`)});
+  }
+  if(process.env.SCREENING_ARTIFACT_DIR) fs.writeFileSync(path.join(process.env.SCREENING_ARTIFACT_DIR,'validation-summary-geometry.json'),JSON.stringify(geometryReports,null,2));
+  await page.setViewportSize({width:1440,height:1000});
   const snapshot=()=>page.evaluate(()=>JSON.stringify([state.trainingWindows,state.candidateWindows,state.validationWindows,[...state.selectedModelTags],state.training,state.validation]));
   const before=await snapshot();
   await page.locator('[data-validation-investigation-window="N03"]').getByRole('button',{name:'查看该窗口趋势'}).click();

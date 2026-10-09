@@ -114,43 +114,42 @@
       item.textContent = text;
       return item;
     };
-    const metric = (value, label) => {
-      const item = document.createElement("div");
-      item.className = "metric";
-      const strong = document.createElement("strong");
-      strong.textContent = value;
-      const caption = document.createElement("span");
-      caption.textContent = label;
-      item.append(strong, caption);
-      return item;
-    };
     const number = value => value == null || !Number.isFinite(value) ? "—" : value.toFixed(3);
     const percent = value => value == null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`;
-    [["t2", "T²统计"], ["spe", "SPE/Q统计"]].forEach(([key, title]) => {
-      const statistic = quality.statistics[key];
-      const card = document.createElement("section");
-      card.className = "chart-card";
-      const heading = document.createElement("h4");
-      heading.textContent = title;
-      const values = document.createElement("div");
-      values.className = "metrics";
-      const trend = ({stable:"较稳定（经验检查）", changing:"存在变化", insufficient:"数据不足"})[statistic.trend] || "未知";
-      values.append(
-        metric(number(statistic.mean), "平均值"),
-        metric(number(statistic.limits["95"]), "95% 控制限"),
-        metric(percent(statistic.exceedance_rates["95"]), "95% 超限比例"),
-        metric(trend, "趋势状态"),
-      );
-      card.append(heading, values, paragraph(`有效 / 无效评分：${statistic.valid_samples} / ${statistic.invalid_samples}；99% 控制限：${number(statistic.limits["99"])}；99% 超限比例：${percent(statistic.exceedance_rates["99"])}；已检查 ${statistic.trend_segments_checked ?? 0} 段。`));
-      target.append(card);
+    const statistics = document.createElement("table");
+    const head = document.createElement("thead"), heading = document.createElement("tr");
+    ["指标", "T²统计", "SPE/Q统计"].forEach(label => {
+      const cell = document.createElement("th"); cell.textContent = label; heading.append(cell);
     });
+    head.append(heading);
+    const body = document.createElement("tbody");
+    [
+      ["平均值", statistic => number(statistic.mean)],
+      ["95% 控制限", statistic => number(statistic.limits["95"])],
+      ["99% 控制限", statistic => number(statistic.limits["99"])],
+      ["95% 超限比例", statistic => percent(statistic.exceedance_rates["95"])],
+      ["99% 超限比例", statistic => percent(statistic.exceedance_rates["99"])],
+      ["有效 / 无效评分", statistic => `${statistic.valid_samples} / ${statistic.invalid_samples}`],
+      ["趋势状态", statistic => ({stable:"较稳定（经验检查）", changing:"存在变化", insufficient:"数据不足"})[statistic.trend] || "未知"],
+      ["已检查连续段", statistic => statistic.trend_segments_checked ?? 0],
+    ].forEach(([label, value]) => {
+      const row = document.createElement("tr"), title = document.createElement("th");
+      title.textContent = label; row.append(title);
+      ["t2", "spe"].forEach(key => {
+        const cell = document.createElement("td"); cell.textContent = value(quality.statistics[key]); row.append(cell);
+      });
+      body.append(row);
+    });
+    statistics.append(head, body);
+    const wrap = document.createElement("div"); wrap.className = "table-wrap"; wrap.tabIndex = 0;
+    wrap.append(statistics); target.append(wrap);
     notice.append(paragraph(quality.notice));
     const ratio = quality.pc1_pc2_explained_variance;
     const ratioValue = document.createElement("strong");
     ratioValue.textContent = percent(ratio);
     const ratioLabel = document.createElement("span");
     ratioLabel.textContent = "PC1+PC2 二维解释率";
-    projection.append(ratioValue, ratioLabel, paragraph(ratio == null ? "当前模型不足两个主元。" : ratio >= 0.8 ? "二维图具有较好代表性。" : "二维图仅覆盖部分变化，建议结合更多主元和统计量判断。"));
+    projection.append(ratioLabel, ratioValue, paragraph(ratio == null ? "当前模型不足两个主元。" : ratio >= 0.8 ? "二维图具有较好代表性。" : "二维图仅覆盖部分变化，建议结合更多主元和统计量判断。"));
     const data = quality.training_data;
     training.append(paragraph(`有效训练样本：${quality.training_samples}；有效样本覆盖时长：${number(data.effective_sample_hours)} h；覆盖日期数：${totals.covered_day_count ?? "—"}；已使用窗口：${totals.used_window_count ?? "—"}；已使用连续段：${totals.used_segment_count ?? "—"}；可回溯工况组来源数：${data.traceable_cluster_count ?? "未记录"}`),
       paragraph(`有效评分时间范围：${data.time_start ? displayTime(data.time_start) : "—"} ～ ${data.time_end ? displayTime(data.time_end) : "—"}。覆盖时长按有效样本数 × 采样周期计算，不包含窗口之间的空档。`));
@@ -168,7 +167,7 @@
       details.className = "model-training-source-reference";
       details.textContent = `${row.samples} 有效样本`;
       details.title = reference;
-      item.append(share, label, details);
+      item.append(label, share, details);
       sources.append(item);
     });
     training.append(sources, paragraph(`工况组仅表示已确认训练窗口的来源，不能等同于实际状态数量；手工、趋势和性能窗口不能自动推断工况组。工况组来源缺失样本：${data.unattributed_samples}。`));

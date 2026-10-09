@@ -113,9 +113,9 @@ def test_variable_diagnostics_use_existing_cards_and_local_scroll_boundaries() -
     assert '.variable-diagnostics .table-wrap { max-height:280px; }' in html
     assert '.variable-diagnostics td { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }' in html
     assert '#stateExplorationPanel .exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); min-width:0; }' in html
-    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));' in html
-    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,128px),1fr)); }' in html
-    assert '#stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,148px),1fr)); }' in html
+    assert '.metrics { display:flex; flex-wrap:wrap; align-items:baseline;' in html
+    assert '.screening-kpis > .metrics { grid-template-columns:' not in html
+    assert '.screening-kpis .metric { height:100%; }' not in html
     assert 'const qualityMetrics=el("explorationClusterQuality").querySelector(".screening-kpis > .metrics")' in html
     assert 'qualityMetrics.replaceWith(el("explorationOverview"))' in html
     assert '<details id="explorationClusterDetails"><summary>工况明细（<span id="explorationClusterSummaryCount">0</span> 组）</summary>' in html
@@ -700,15 +700,15 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert "grid-template-columns:630px minmax(0,1fr);" not in html
     assert ".controls, .controls .group { min-width:0; }" in html
     assert "max-width:100%;" in html
-    assert ".results { gap:24px; }" in html
+    assert ".results { gap:var(--space-3); }" in html
     assert ".empty, .variance, .exploration-timeline" in html
     assert "#engineeringPanel #tagRole {" in html
     assert "height:42px;" in html
     assert "height:30px;" in html
-    assert "grid-template-columns:repeat(auto-fit,minmax(132px,1fr));" in html
-    assert "font-size:22px;" in html
-    assert ".metric { min-height:64px; align-content:start; }" in html
-    assert "th, td { border-bottom-color:var(--line); padding:8px 12px; }" in html
+    assert '.metric { display:flex; flex-wrap:wrap; align-items:baseline;' in html
+    assert '.metric { min-height:64px;' not in html
+    assert '.metric strong { font-size:inherit;' in html
+    assert "th, td { border-bottom-color:var(--line); padding:6px 10px; }" in html
     assert "input[type=checkbox] {" in html
     assert "accent-color:var(--accent);" in html
     assert ".exploration-candidate-comment {" in html
@@ -746,7 +746,7 @@ def test_final_web_uses_shared_control_and_responsive_layout_tokens() -> None:
         "--space-2:12px;",
         "--space-3:16px;",
         "--space-4:24px;",
-        "--panel-padding:24px;",
+        "--panel-padding:16px;",
     ):
         assert token in html
     for rule in (
@@ -900,7 +900,8 @@ def test_training_configuration_precedes_model_results() -> None:
     assert "grid-template-columns:minmax(0,.9fr) minmax(0,1fr) minmax(0,1.3fr);" in html
     assert "@media (max-width:1599px)" in html
     assert ".model-overview-grid { grid-template-columns:1fr; }" in html
-    assert "#modelQualitySummary { grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); }" in html
+    assert "#modelQualitySummary { display:block; }" in html
+    assert "#modelContent > section, .model-overview-grid > section { padding:0; }" in html
     assert ".chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }" in html
     assert ".chart-grid,.validation-box,.exploration-controls,.trend-controls { grid-template-columns:1fr; }" in html
 

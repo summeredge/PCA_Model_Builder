@@ -197,7 +197,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    const report=await page.evaluate(()=>{
     const rect=e=>e.getBoundingClientRect(),spread=a=>Math.max(...a)-Math.min(...a);
     const fields=[...document.querySelectorAll('#modelingEligibility input,#candidatePanel .shared-preprocessing input,#candidatePanel .shared-preprocessing select,#stateExplorationPanel .exploration-controls input,#stateExplorationPanel .exploration-controls select')].filter(e=>e.getClientRects().length);
-    const controls=fields.map(rect),kpis=[...document.querySelectorAll('.screening-kpis .metric')].map(rect);
+    const controls=fields.map(rect),metrics=[...document.querySelectorAll('#explorationOverview .metric')],kpis=metrics.map(rect);
     const dates=['analysisStart','analysisEnd'].map(id=>rect(document.getElementById(id)));
     const evidence=[...document.querySelectorAll('#explorationClusterQuality .screening-evidence-compact')],table=document.querySelector('.screening-center-table');
     const grid=document.querySelector('.exploration-result-grid'),pc=document.querySelector('.exploration-pc-card'),region=document.querySelector('.exploration-region-card'),timelineCard=document.querySelector('.exploration-timeline-card');
@@ -211,7 +211,10 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
      evidenceWidth:rect(evidence[0]).width,centerTableOffset:rect(table).left-rect(evidence[0]).left,
      configHeight:rect(document.getElementById('stateExplorationButton')).bottom-rect(document.getElementById('modelingEligibility')).top,
      overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
-     kpiWidthSpread:spread(kpis.map(r=>r.width)),kpiHeightSpread:spread(kpis.map(r=>r.height)),dateWidthSpread:spread(dates.map(r=>r.width)),
+     dateWidthSpread:spread(dates.map(r=>r.width)),
+     summaryStyle:metrics.map(node=>{const css=getComputedStyle(node);return {minHeight:css.minHeight,padding:css.padding,border:css.borderWidth,background:css.backgroundColor,font:parseFloat(getComputedStyle(node.querySelector('strong')).fontSize)};}),
+     summaryOverlap:kpis.some((a,i)=>kpis.slice(i+1).some(b=>Math.min(a.right,b.right)>Math.max(a.left,b.left)+1&&Math.min(a.bottom,b.bottom)>Math.max(a.top,b.top)+1)),
+     summaryEscapes:kpis.some(r=>r.left<rect(document.querySelector('#explorationOverview')).left-1||r.right>rect(document.querySelector('#explorationOverview')).right+1),
      kpiCount:kpis.length,kpiRows:kpiRows.length,kpiColumns,
      resultGridWidth:rect(grid).width,pcWidth:rect(pc).width,pcHeight:rect(plotContainer).height,plotNodeWidth:rect(plotNode).width,plotNodeHeight:rect(plotNode).height,
      plotWidth:plot._fullLayout.width,plotHeight:plot._fullLayout.height,plotAreaHeight:plot._fullLayout._size.h,shapeCount:plot._fullLayout.shapes.length,overlayWidth:rect(overlay).width,overlayHeight:rect(overlay).height,
@@ -224,7 +227,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    });
    assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.overlap,JSON.stringify(report));assert.deepEqual(report.clipped,[],JSON.stringify(report));
    assert(report.centerTableWidth<report.evidenceWidth,JSON.stringify(report));assert.equal(report.centerTableOffset,0);
-   assert(report.kpiWidthSpread<=1&&report.kpiHeightSpread<=1&&report.dateWidthSpread<=1,JSON.stringify(report));
+   assert(report.dateWidthSpread<=1,JSON.stringify(report));
+   assert(!report.summaryOverlap&&!report.summaryEscapes,JSON.stringify(report));
+   assert(report.summaryStyle.every(css=>css.minHeight==='0px'&&css.padding==='0px'&&css.border==='0px'&&css.background==='rgba(0, 0, 0, 0)'&&css.font<=14),JSON.stringify(report));
    assert.equal(report.kpiCount,6,JSON.stringify(report));assert(report.timelineBelow,JSON.stringify(report));
    assert(Math.abs(report.timelineWidth-report.resultGridWidth)<=1,JSON.stringify(report));
    assert(Math.abs(report.timelineHeight-112*Number(zoom))<=1,JSON.stringify(report));assert(Math.abs(report.timelineViewBoxWidth-report.timelineClientWidth)<=1,JSON.stringify(report));
@@ -232,9 +237,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    assert.equal(report.shapeCount,1,JSON.stringify(report));
    assert(Math.abs(report.overlayWidth-report.pcWidth)<=2*Number(zoom)+1&&Math.abs(report.overlayHeight-report.pcHeight)<=2*Number(zoom)+1,JSON.stringify(report));
    assert(report.modebarCount>=3&&report.legendPresent&&!report.modebarLegendOverlap,JSON.stringify(report));
-   if(width===1440&&zoom===1) assert.equal(report.kpiRows,1,JSON.stringify(report));
-   if(width===900&&zoom===1) assert(report.kpiRows===2&&report.kpiColumns===3,JSON.stringify(report));
-   if(width===390&&zoom===1) assert(report.kpiRows===3&&report.kpiColumns===2,JSON.stringify(report));
+   assert(report.kpiRows>=1&&report.kpiRows<=report.kpiCount,JSON.stringify(report));
    if(width>=761&&zoom===1) {
     assert(report.sameRow&&report.heightSpread<=1,JSON.stringify(report));
     assert(report.pcHeight>=420&&report.pcHeight<=480,JSON.stringify(report));
@@ -308,6 +311,8 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   }
   // Existing candidate IDs and explicit human confirmation remain the only training path.
   await page.evaluate(()=>renderStateExploration(state.exploration));
+  assert.equal(await page.locator('[id="explorationOverview"]').count(),1);
+  assert.deepEqual(await page.locator('#explorationOverview .metric').evaluateAll(nodes=>nodes.map(node=>[node.querySelector('span').innerText,node.querySelector('strong').innerText])),expectedKpis);
   assert(data.cluster_candidates.length>0);
   const candidate=data.cluster_candidates[0];
   await page.locator('#explorationClusterQuality [data-profile]').first().click();
@@ -325,7 +330,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    assert(geometry.width>0&&geometry.right<=width+1,JSON.stringify(geometry));assert.equal(geometry.overflow,0);
   }
   if(!await page.locator('.exploration-candidate-details').first().evaluate(node=>node.open)) await page.locator('.exploration-candidate-details').first().locator('summary').click();
-  assert.equal(await page.locator('#explorationClusterCandidates thead th').count(),11);
+  assert.deepEqual(await page.locator('#explorationClusterCandidates thead th').allTextContents(),['选择','状态','备注','工况组','时间范围','覆盖时长','样本数','中心距离','稳定性','排名']);
   await page.locator('#explorationClusterCandidates .exploration-candidate-select').first().check();
   await page.locator('#convertExplorationCandidates').click();
   const sourceRef=`state-exploration-${data.exploration_run_id}-${candidate.candidate_id}`;
@@ -336,6 +341,27 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await page.evaluate(()=>showWorkflowStage('modelPanel'));
   const quality=await action('qualityButton','/api/quality');assert(quality.training_readiness.normal_state.can_train);
   const training=await action('trainButton','/api/train');assert(training.model_quality.training_condition_diagnostic.available);
+  const modelReports=[];
+  for(const width of [1440,900,390]) {
+   await page.setViewportSize({width,height:1000});
+   await page.evaluate(()=>document.fonts.ready);
+   const report=await page.evaluate(()=>{
+    const summary=document.querySelector('#modelMetrics'),items=[...summary.querySelectorAll('.metric')],rect=e=>e.getBoundingClientRect(),bounds=rect(summary);
+    const table=document.querySelector('#modelQualitySummary table');
+    return {width:innerWidth,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
+     metricCount:items.length,summaryHeight:bounds.height,
+     escaped:items.some(e=>rect(e).left<bounds.left-1||rect(e).right>bounds.right+1),
+     headings:[...table.querySelectorAll('thead th')].map(e=>e.textContent),rows:table.querySelectorAll('tbody tr').length,
+     nestedPadding:[...document.querySelectorAll('#modelContent > section,.model-overview-grid > section')].map(e=>getComputedStyle(e).padding)};
+   });
+   assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.escaped,JSON.stringify(report));
+   assert.equal(report.metricCount,8);assert.deepEqual(report.headings,['指标','T²统计','SPE/Q统计']);assert.equal(report.rows,8);
+   assert(report.nestedPadding.every(value=>value==='0px'),JSON.stringify(report));
+   modelReports.push(report);
+   await page.locator('#modelContent').screenshot({path:path.join(artifacts,`model-results-${width}.png`)});
+  }
+  fs.writeFileSync(path.join(artifacts,'model-summary-geometry.json'),JSON.stringify(modelReports,null,2));
+  await page.setViewportSize({width:1440,height:1000});
   const diagnostic=await page.evaluate(()=>{
    const diagnostic=state.training.model_quality.training_condition_diagnostic,group=diagnostic.groups[0];
    focusTrainingDiagnostic(diagnostic,group);return {id:state.trainingDiagnosticFocus?.clusterId,windows:JSON.stringify(state.trainingWindows)};

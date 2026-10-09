@@ -128,9 +128,11 @@ def test_model_quality_ui_renders_and_clears_stale_results():
       __RENDERER__
       const statistic={valid_samples:100,invalid_samples:0,mean:0.5,limits:{95:2,99:3},exceedance_rates:{95:0.05,99:0.01},trend:"stable"};
       const quality={training_samples:100,retained_explained_variance:0.82,pc1_pc2_explained_variance:0.65,statistics:{spe:statistic,t2:statistic},notice:"不能替代独立验证",rules:"经验规则",engineering_messages:["检查运行状态"],training_data:{effective_sample_hours:8.333,time_start:"2026-01-01",time_end:"2026-01-02",traceable_cluster_count:1,unattributed_samples:0,sources:[{label:"Cluster_001",source_ref:"<script>来源</script>",samples:100,share:1}]}};
+      quality.statistics.spe={...statistic,mean:null,limits:{95:4,99:5},trend:'changing',trend_segments_checked:2};
       renderModelQuality(quality,{covered_day_count:2,used_window_count:1,used_segment_count:1});
       const filled=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
-      const statistics=nodes.modelQualitySummary.children.map(card=>({className:card.className,title:card.children[0].textContent}));
+      const wrap=nodes.modelQualitySummary.children[0],table=wrap.children[0];
+      const statistics={className:wrap.className,head:table.children[0].children[0].children.map(cell=>cell.textContent),rows:table.children[1].children.map(row=>row.children.map(cell=>cell.textContent))};
       renderModelQuality(null);
       const cleared=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
       console.log(JSON.stringify({filled,cleared,statistics}));
@@ -145,10 +147,13 @@ def test_model_quality_ui_renders_and_clears_stale_results():
     assert "2026-01-01" in result["filled"]["modelTrainingDataQuality"]
     assert "检查运行状态" in result["filled"]["modelEngineeringJudgment"]
     assert "不能替代独立验证" in result["filled"]["modelQualityNotice"]
-    assert result["statistics"] == [
-        {"className": "chart-card", "title": "T²统计"},
-        {"className": "chart-card", "title": "SPE/Q统计"},
-    ]
+    assert result["statistics"] == {
+        "className": "table-wrap", "head": ["指标", "T²统计", "SPE/Q统计"],
+        "rows": [["平均值", "0.500", "—"], ["95% 控制限", "2.000", "4.000"],
+                 ["99% 控制限", "3.000", "5.000"], ["95% 超限比例", "5.0%", "5.0%"],
+                 ["99% 超限比例", "1.0%", "1.0%"], ["有效 / 无效评分", "100 / 0", "100 / 0"],
+                 ["趋势状态", "较稳定（经验检查）", "存在变化"], ["已检查连续段", 0, 2]],
+    }
     assert "重新训练" in result["cleared"]["modelQualitySummary"]
     assert "质量判断" in result["cleared"]["modelEngineeringJudgment"]
     assert all(result["cleared"][key] == "" for key in ("modelProjectionSummary", "modelTrainingDataQuality", "modelQualityNotice"))
@@ -1498,14 +1503,12 @@ def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
     assert "#stateExplorationPanel .exploration-timeline-card { grid-column:1; }" in css
 
 
-def test_preferred_region_statistics_use_a_compact_scoped_metric_style():
+def test_preferred_region_statistics_reuse_shared_compact_metrics():
     for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
         assert 'class="table-wrap region-stats"' in html
-        # 仅优选区域统计使用紧凑样式，全局 .metric 保持原样。
-        assert ".region-stats .metric { min-height:0; padding:7px 9px; }" in html
-        assert ".region-stats .metric strong { font-size:16px; line-height:1.2; }" in html
-        assert ".region-stats .metric span { font-size:11px; }" in html
-        assert ".region-stats .metrics { grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:8px; }" in html
+        assert '.metrics { display:flex; flex-wrap:wrap; align-items:baseline;' in html
+        assert 'min-height:0; padding:0; background:transparent; border:0;' in html
+        assert '.region-stats .metric' not in html
         assert ".region-stats table { font-size:12px; }" in html
         assert ".region-stats th, .region-stats td { padding:6px 8px; }" in html
         # 统计区高度由内容决定：不设最小高度、不留固定顶部偏移。

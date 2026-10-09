@@ -248,8 +248,6 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel #explorationContent { gap:var(--space-2); }
   #stateExplorationPanel #explorationClusterQuality { display:grid; gap:var(--space-2); min-width:0; }
   #stateExplorationPanel .screening-kpis { gap:var(--space-1); padding-top:0; }
-  #stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); gap:var(--space-1); }
-  #stateExplorationPanel .screening-kpis .metric { height:100%; }
   #stateExplorationPanel .screening-kpis > p { margin:0; line-height:1.45; }
   #stateExplorationPanel .screening-judgment { border-left:3px solid var(--accent); padding:var(--space-3); background:var(--accent-soft); }
   #stateExplorationPanel .screening-judgment p { margin:0; }
@@ -272,19 +270,12 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel .screening-temporal-summary > div { display:flex; align-items:baseline; gap:var(--space-1); }
   #stateExplorationPanel .screening-temporal-summary dt { color:var(--muted); font-size:12px; }
   #stateExplorationPanel .screening-temporal-summary dd { margin:0; font-size:17px; font-variant-numeric:tabular-nums; }
-  #stateExplorationPanel #explorationOverview .metric { border:0; padding:var(--space-1); min-height:0; }
   #stateExplorationPanel :is(th,td) { padding:6px 8px; }
   #stateExplorationPanel th { background:var(--line-soft); font-weight:600; }
   #stateExplorationPanel :is(th,td):first-child { text-align:left; }
   #stateExplorationPanel :is(th,td):not(:first-child) { text-align:right; font-variant-numeric:tabular-nums; }
   @media (min-width:761px) {
     #stateExplorationPanel .performance-controls > label:has(#explorationPerformanceTag) { grid-column:span 2; }
-  }
-  @media (min-width:1200px) {
-    #stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,128px),1fr)); }
-  }
-  @media (max-width:760px) {
-    #stateExplorationPanel .screening-kpis > .metrics { grid-template-columns:repeat(auto-fit,minmax(min(100%,148px),1fr)); }
   }
 </style>
 """
@@ -420,7 +411,7 @@ _APPLE_DESIGN_STYLE = r"""
     --space-2:12px;
     --space-3:16px;
     --space-4:24px;
-    --panel-padding:24px;
+    --panel-padding:16px;
     /* 三级字号：页面标题 21 / 区块标题 17 / 小节与卡片标题 14。
        层级按视觉角色分配，不跟 heading 标签绑定。 */
     --type-page:21px;
@@ -465,12 +456,12 @@ _APPLE_DESIGN_STYLE = r"""
   main > section, .results > *, .panel, .inner-panel, .candidate-tool-panel, .group, .chart-card { min-width:0; }
   .controls, .controls .group { min-width:0; }
   .controls { gap:var(--space-3); }
-  .results { gap:24px; }
+  .results { gap:var(--space-3); }
   .row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-2); align-items:end; }
   .actions, .tag-toolbar, .detail-fields { gap:var(--space-2); }
   .actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-start; }
-  .inner-panel.active, .panel.active { gap:24px; }
-  .group, .metric, .validation-box, .exploration-controls, .dp-inline-help {
+  .inner-panel.active, .panel.active { gap:var(--space-3); }
+  .group, .validation-box, .exploration-controls, .dp-inline-help {
     background:var(--panel);
     border:1px solid var(--line);
     border-radius:6px;
@@ -661,10 +652,6 @@ _APPLE_DESIGN_STYLE = r"""
   #modelPanel #currentTagQuality { max-width:1200px; }
   .issue-card, .notice { border-left-width:4px; border-radius:6px; }
   .tag-row.selected { background:#edf5ff; }
-  .metrics { grid-template-columns:repeat(auto-fit,minmax(132px,1fr)); gap:8px; }
-  .metric { min-width:0; padding:10px 11px; }
-  .metric strong { font-size:22px; font-weight:600; line-height:1.15; letter-spacing:0; }
-  .metric span { font-size:12px; line-height:1.35; }
   .chart-card { gap:12px; }
   .chart-card h3 { margin:0; }
   .chart, .dp-chart, .trend-chart { background:var(--panel); }
@@ -672,7 +659,7 @@ _APPLE_DESIGN_STYLE = r"""
   .variance-bar { background:var(--accent); }
   .variance-bar.selected { background:var(--green); }
   .table-wrap, .exploration-timeline { border:1px solid var(--line); }
-  th, td { border-bottom-color:var(--line); padding:8px 12px; }
+  th, td { border-bottom-color:var(--line); padding:6px 10px; }
   th { background:var(--line-soft); color:var(--text); font-weight:600; }
   a:not(.download) { color:var(--accent); }
   button:focus-visible, .download:focus-visible, a:focus-visible {
@@ -687,7 +674,6 @@ _APPLE_DESIGN_STYLE = r"""
     h2 { font-size:21px; }
     button, .download, input, select, textarea { height:var(--control-height); min-height:var(--control-height); }
     textarea, select[multiple] { height:auto; }
-    .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
 </style>
 """
@@ -870,7 +856,6 @@ _WORKBENCH_UI_STYLE = r"""
   .panel > .actions, .inner-panel > .actions { margin-top:var(--space-1); }
   .issue-card, .notice, .status, .metric, .chart-card, .table-wrap, .empty, .validation-box, .exploration-controls { min-width:0; }
   .issue-card, .notice { padding:var(--space-2); }
-  .metric { min-height:64px; align-content:start; }
   .chart-card { gap:var(--space-2); }
   .chart-grid { align-items:stretch; }
   .table-wrap { width:100%; }
@@ -922,12 +907,7 @@ _WORKBENCH_UI_STYLE = r"""
     /* 表单字段填满列宽；command button 保持 intrinsic 宽度并自然换行。 */
     .panel .actions > label, .inner-panel .actions > label { width:100%; }
     .tabs > *, .inner-tabs > * { flex:1 1 0; width:auto; min-width:0; }
-    .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .metric strong { font-size:20px; }
     .table-wrap { max-width:100%; }
-  }
-  @media (max-width:520px) {
-    .metrics { grid-template-columns:minmax(0,1fr); }
   }
 </style>
 """
@@ -1151,7 +1131,10 @@ _MODEL_RESULTS_STYLE = r"""
     align-items:start;
   }
   .model-overview-grid > .chart-card { min-width:0; margin:0; }
-  #modelQualitySummary { grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr)); }
+  #modelContent > section, .model-overview-grid > section { padding:0; }
+  #modelTrainingDataQuality > p { margin:4px 0 8px; }
+  #modelQualitySummary { display:block; }
+  #modelQualitySummary :is(th,td) { padding:5px 8px; }
   .model-projection-grid {
     display:grid;
     grid-template-columns:minmax(0,1fr) minmax(0,1fr);

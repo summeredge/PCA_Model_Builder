@@ -3296,11 +3296,13 @@ INDEX_HTML = r"""<!doctype html>
     .tab.active { background:var(--accent); color:#fff; }
     .panel { display:none; gap:14px; }
     .panel.active { display:grid; }
-    .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:9px; }
-    .metric { padding:11px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
-    .metric strong { display:block; font-size:21px; }
-    .metric.time-range strong { font-size:14px; line-height:1.35; white-space:pre-line; }
-    .metric span { color:var(--muted); font-size:12px; }
+    /* 普通指标按内容排布；状态与阻断信息由独立提示组件强调。 */
+    .metrics { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 20px; min-width:0; }
+    .metric { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px; min-width:0; max-width:100%; min-height:0; padding:0; background:transparent; border:0; border-radius:0; font-size:14px; line-height:1.45; }
+    .metric strong { font-size:inherit; font-weight:600; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+    .metric.time-range strong { white-space:pre-line; }
+    .metric span { color:var(--muted); font-size:inherit; overflow-wrap:anywhere; }
+    .metric > p { flex-basis:100%; margin:0; font-size:13px; }
     .chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .chart-card { display:grid; gap:7px; min-width:0; }
     .final-training-review { grid-template-columns:minmax(0,1fr); }
@@ -3354,10 +3356,6 @@ INDEX_HTML = r"""<!doctype html>
      #stateExplorationPanel .exploration-timeline .timeline-note { margin:0; padding:9px 10px; color:var(--muted); font-size:12px; line-height:1.45; }
      .chart-note { margin:0; color:var(--muted); font-size:12px; line-height:1.45; }
      .region-stats { max-height:none; padding:10px; }
-     .region-stats .metrics { grid-template-columns:repeat(auto-fit,minmax(112px,1fr)); gap:8px; }
-     .region-stats .metric { min-height:0; padding:7px 9px; }
-     .region-stats .metric strong { font-size:16px; line-height:1.2; }
-     .region-stats .metric span { font-size:11px; }
      .region-stats .help { display:block; margin:8px 0; font-size:12px; line-height:1.45; }
      .region-stats table { font-size:12px; }
      .region-stats th, .region-stats td { padding:6px 8px; }
@@ -4747,7 +4745,7 @@ el("freezeDeployment").addEventListener("click",async()=>{
   finally { setBusy(button,false,""); }
 });
 
-function metric(label,value,className="") { return `<div class="metric${className?` ${className}`:""}"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`; }
+function metric(label,value,className="") { return `<div class="metric${className?` ${className}`:""}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`; }
 function qualityProfileTable(title,profile) {
   const fields=[["sample_count","样本数"],["valid_count","有效数"],["missing_count","缺失数"],["missing_rate","缺失率"],["non_numeric_count","非数值数"],["non_finite_count","非有限值数"],["unique_count","唯一值"],["minimum","最小值"],["maximum","最大值"],["mean","均值"],["median","中位数"],["standard_deviation","标准差"],["p01","P1"],["p05","P5"],["p95","P95"],["p99","P99"],["engineering_range_outside_count","工程范围越界"],["normal_range_outside_count","正常范围外"],["alarm_range_outside_count","报警范围外"]];
   return `<h4>${title}</h4><div class="table-wrap"><table><tbody>${fields.map(([key,label])=>`<tr><th>${label}</th><td>${formatStat(key,profile[key])}</td></tr>`).join("")}</tbody></table></div>`;

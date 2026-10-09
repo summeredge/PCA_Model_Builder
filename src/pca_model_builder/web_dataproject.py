@@ -34,12 +34,12 @@ _DATAPROJECT_TREND_CSS = r"""
   .dp-chart .js-plotly-plot .plotly .cursor-crosshair { cursor:crosshair; }
   .dp-trend-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; align-items:start; }
   .dp-trend-stats > .empty { grid-column:1 / -1; min-height:0; padding:8px 10px; }
-  .dp-trend-stat-card { min-width:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:var(--panel); padding:10px; }
-  .dp-trend-stat-card h3 { margin:0 0 8px; font-size:12px; overflow-wrap:anywhere; }
-  .dp-trend-stat-card dl { display:grid; gap:4px; margin:0; }
-  .dp-trend-stat-card dl div { display:grid; grid-template-columns:82px 1fr; gap:8px; font-size:11px; }
+  .dp-trend-stat-card { min-width:0; border:1px solid var(--line); border-radius:6px; background:var(--panel); padding:8px; }
+  .dp-trend-stat-card h3 { margin:0 0 6px; font-size:12px; overflow-wrap:anywhere; }
+  .dp-trend-stat-card dl { display:grid; gap:2px; margin:0; }
+  .dp-trend-stat-card dl div { display:grid; grid-template-columns:82px minmax(0,1fr); gap:8px; font-size:11px; }
   .dp-trend-stat-card dt { color:var(--muted); }
-  .dp-trend-stat-card dd { margin:0; color:var(--text); text-align:right; font-variant-numeric:tabular-nums; }
+  .dp-trend-stat-card dd { margin:0; color:var(--text); text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
   .dp-histogram { width:100%; min-width:0; margin-top:10px; }
   .dp-histogram-title { margin-bottom:4px; color:var(--muted); font-size:11px; }
   .dp-histogram-bars { position:relative; display:flex; align-items:flex-end; gap:2px; width:100%; height:72px; overflow:hidden; border-bottom:1px solid var(--line); }
