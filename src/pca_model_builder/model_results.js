@@ -407,15 +407,17 @@
       const data = await exceedanceQuery("interval",{start,end},session,() => request === intervalRequest);
       if (!data || request !== intervalRequest) return;
       exceedanceInterval = data;
-      const rows = [["分析区间",`${data.start} — ${data.end}`,`${data.start} — ${data.end}`],["有效样本数",String(data.valid_samples),String(data.valid_samples)]];
+      const rows = [["分析区间",`${data.start} — ${data.end}`],["有效样本数",String(data.valid_samples)]];
       for (const [label, field] of [["平均值","mean"],["最大值","max"],["最大超限倍数（95%）","max_limit_ratio"]])
         rows.push([label,...["t2","spe"].map(metric => exceedanceNumber(data.statistics[metric][field]))]);
       for (const level of [95,99]) rows.push([`${level}% 超限样本数 / 比例`,...["t2","spe"].map(metric => {
         const value = data.statistics[metric][`exceedance_${level}`]; return `${value.count} / ${ablationPercent(value.rate)}`;
       })]);
       exceedanceTable(el("exceedanceStatistics"),["统计项目","T²","SPE"],rows);
+      // 「区间」「样本数」对 T²/SPE 取值相同：跨两列显示，并标 .numeric 取右对齐，
+      // 与下方数值列的右边线一致（此前 T² 表头左对齐、数据右对齐）。
       [...el("exceedanceStatistics").querySelectorAll("tbody tr")].slice(0,2).forEach(row => {
-        row.cells[1].colSpan = 2; row.cells[2].remove();
+        row.cells[1].colSpan = 2; row.cells[1].classList.add("numeric");
       });
       renderExceedanceContributions();
       exceedanceMessage(data.valid_samples ? "区间分析完成。" : "所选区间没有有效评分样本。");
@@ -692,8 +694,11 @@
     const percent = value => value == null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`;
     const statistics = document.createElement("table");
     const head = document.createElement("thead"), heading = document.createElement("tr");
-    ["指标", "T²统计", "SPE/Q统计"].forEach(label => {
-      const cell = document.createElement("th"); cell.textContent = label; heading.append(cell);
+    // 表头与数值列取同一对齐边：数值列右对齐，标签列左对齐。
+    [["指标", false], ["T²统计", true], ["SPE/Q统计", true]].forEach(([label, numeric]) => {
+      const cell = document.createElement("th"); cell.textContent = label;
+      if (numeric) cell.classList.add("numeric");
+      heading.append(cell);
     });
     head.append(heading);
     const body = document.createElement("tbody");

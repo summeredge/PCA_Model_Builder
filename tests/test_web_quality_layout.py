@@ -708,7 +708,8 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert '.metric { display:flex; flex-wrap:wrap; align-items:baseline;' in html
     assert '.metric { min-height:64px;' not in html
     assert '.metric strong { font-size:inherit;' in html
-    assert "th, td { border-bottom-color:var(--line); padding:6px 10px; }" in html
+    # 单元格内边距统一到两档（面板级 6px 8px / 全局 6px 8px），行高不再有五档混排。
+    assert "th, td { border-bottom-color:var(--line); padding:6px 8px; }" in html
     assert "input[type=checkbox] {" in html
     assert "accent-color:var(--accent);" in html
     assert ".exploration-candidate-comment {" in html
@@ -2496,9 +2497,12 @@ def test_workbench_tables_map_all_runtime_statuses_and_align_numeric_cells() -> 
     assert "#explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }" not in html
     assert "#stateExplorationPanel .region-stats .region-metric-table td:nth-child(odd)," in html
     assert "#stateExplorationPanel .region-stats .region-metric-table td:nth-child(even)," in html
-    # 状态探索结果表统一居中；.numeric 的右对齐在本面板内被覆盖。
-    assert "#stateExplorationPanel table th, #stateExplorationPanel table td { text-align:center; }" in html
-    assert html.index("#stateExplorationPanel table th") > html.index(".table-wrap td.numeric")
+    # 状态探索结果表按列语义对齐：只有数值列（.numeric）右对齐，文本列保持左对齐；
+    # 原先的整表居中 / :not(:first-child) 右对齐会把「主要变量」「时间范围」也推向右。
+    assert "#stateExplorationPanel :is(th,td).numeric { text-align:right; font-variant-numeric:tabular-nums; }" in html
+    assert "#stateExplorationPanel :is(th,td):not(:first-child) { text-align:right" not in html
+    assert "#stateExplorationPanel table th, #stateExplorationPanel table td { text-align:center; }" not in html
+    assert html.index("#stateExplorationPanel :is(th,td).numeric") > html.index(".table-wrap td.numeric")
     comment_rule = html.split(".exploration-candidate-comment {", 1)[1].split("}", 1)[0]
     assert "text-align:center;" in comment_rule
     # 居中规则只覆盖状态探索面板内的表格，其他阶段表格不受影响。

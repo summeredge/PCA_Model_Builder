@@ -251,7 +251,7 @@ def test_diagnostic_focus_renders_timeline_cluster_and_multiple_candidates():
     renderers = html[html.index("function renderExplorationTimeline("):html.index("function resetExplorationRegion(")]
     script = r'''
 class Element {
-  constructor(){this.children=[];this.style={};this.attrs={};this.innerHTML="";}
+  constructor(){this.children=[];this.style={};this.attrs={};this.innerHTML="";this.className="";this.classList={values:new Set(),add(...names){names.forEach(name=>this.values.add(name));},contains(name){return this.values.has(name);},toggle(){}};}
   append(...nodes){this.children.push(...nodes)}
   replaceChildren(){this.children=[]}
   setAttribute(k,v){this.attrs[k]=v}

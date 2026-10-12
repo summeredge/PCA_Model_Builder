@@ -264,7 +264,8 @@ console.log(JSON.stringify(result));
     for pc in (0, 1):
         for center in coordinates:
             value = center[pc] if center[pc] != 0 else 0
-            assert f"<td>{value:.3f}</td>" in rendered["summary"]
+            # 中心坐标是数值列，带 .numeric 保证与表头同边右对齐。
+            assert f'<td class="numeric">{value:.3f}</td>' in rendered["summary"]
     assert 'class="metrics"' not in rendered["details"]
     for label in ("时间连续性", "平均持续时间", "最长连续时间", "状态切换次数"):
         assert label not in rendered["details"]

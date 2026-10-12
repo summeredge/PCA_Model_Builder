@@ -275,15 +275,12 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel .screening-center-heading h3 { margin:0; }
   #stateExplorationPanel .screening-center-table { width:max-content; max-width:100%; overflow-x:auto; }
   #stateExplorationPanel .screening-center-table table { width:max-content; min-width:0; }
-  #stateExplorationPanel .screening-center-table :is(th,td) { padding:4px 10px; white-space:nowrap; }
-  #stateExplorationPanel .screening-temporal-summary { display:flex; flex-wrap:wrap; gap:var(--space-1) var(--space-4); margin:0; }
-  #stateExplorationPanel .screening-temporal-summary > div { display:flex; align-items:baseline; gap:var(--space-1); }
-  #stateExplorationPanel .screening-temporal-summary dt { color:var(--muted); font-size:12px; }
-  #stateExplorationPanel .screening-temporal-summary dd { margin:0; font-size:17px; font-variant-numeric:tabular-nums; }
+  #stateExplorationPanel .screening-center-table :is(th,td) { padding:6px 8px; white-space:nowrap; }
   #stateExplorationPanel :is(th,td) { padding:6px 8px; }
   #stateExplorationPanel th { background:var(--line-soft); font-weight:600; }
-  #stateExplorationPanel :is(th,td):first-child { text-align:left; }
-  #stateExplorationPanel :is(th,td):not(:first-child) { text-align:right; font-variant-numeric:tabular-nums; }
+  /* 对齐按语义：只把数值列右对齐，文本列回落默认左对齐。
+     原来对 :not(:first-child) 一刀切右对齐，会把「主要变量」「时间范围」等文本列也右推。 */
+  #stateExplorationPanel :is(th,td).numeric { text-align:right; font-variant-numeric:tabular-nums; }
   @media (min-width:761px) {
     #stateExplorationPanel .performance-controls > label:has(#explorationPerformanceTag) { grid-column:span 2; }
   }
@@ -666,10 +663,10 @@ _APPLE_DESIGN_STYLE = r"""
   .chart-card h3 { margin:0; }
   .chart, .dp-chart, .trend-chart { background:var(--panel); }
   .empty { border-style:dashed; color:var(--muted); }
-  .variance-bar { background:var(--accent); }
-  .variance-bar.selected { background:var(--green); }
+  .variance-item { color:var(--muted); }
+  .variance-item.selected { color:var(--green); font-weight:600; }
   .table-wrap, .exploration-timeline { border:1px solid var(--line); }
-  th, td { border-bottom-color:var(--line); padding:6px 10px; }
+  th, td { border-bottom-color:var(--line); padding:6px 8px; }
   th { background:var(--line-soft); color:var(--text); font-weight:600; }
   a:not(.download) { color:var(--accent); }
   button:focus-visible, .download:focus-visible, a:focus-visible {
@@ -834,7 +831,7 @@ _WORKBENCH_UI_STYLE = r"""
     padding:1px 6px;
     border:1px solid currentColor;
     border-radius:3px;
-    font-size:11px;
+    font-size:12px;
     font-weight:600;
     line-height:1.45;
     white-space:nowrap;
@@ -848,12 +845,13 @@ _WORKBENCH_UI_STYLE = r"""
   .table-wrap tbody tr:hover { background:#f7fbff; }
   .table-wrap th:first-child, .table-wrap td:first-child { position:sticky; left:0; z-index:1; }
   .table-wrap th:first-child { background:var(--line-soft); }
+  /* 限高表格纵向滚动时表头跟随，否则滚动到底部后看不到列名。 */
+  .table-wrap thead th { position:sticky; top:0; z-index:2; background:var(--line-soft); }
+  .table-wrap thead th:first-child { z-index:3; }
   /* 固定首列必须自带不透明底色：tr/table 背景是透明的，继承过来仍是透明，
      横向滚动时右邻列文字会直接透过 sticky 列叠印在一起。 */
-  .table-wrap td:first-child {
-    background:var(--panel);
-    box-shadow:1px 0 0 var(--line);
-  }
+  /* 分隔线改用 border：全局 box-shadow:none !important 会吃掉原来的首列投影。 */
+  .table-wrap td:first-child { background:var(--panel); border-right:1px solid var(--line); }
   .table-wrap tbody tr:hover td:first-child { background:#f7fbff; }
   /* 数值语义由 th 与 td 共用：数值列的标题与内容取同一对齐边。
      状态、文字、操作列不带 .numeric，继续左对齐或居中。 */
@@ -878,6 +876,8 @@ _WORKBENCH_UI_STYLE = r"""
   .table-wrap th { white-space:nowrap; }
   /* 列宽按内容取值，避免日期被压成多行；宽度不足时由 .table-wrap 横向滚动。 */
   .table-wrap table { width:max-content; min-width:100%; }
+  /* 两列键值表（验证指标、建模快照等）按内容定宽：撑满容器会让值列留出数百像素空白。 */
+  .table-wrap table:has(tbody tr > th:first-child:nth-last-child(2)) { min-width:0; }
   /* 优选运行区域统计：两张表按内容定宽左对齐，窄屏由 .table-wrap 在本区域内滚动。
      上面的 min-width:100% 与面板居中规则同样命中新表，因此紧凑覆盖放在其后。 */
   #stateExplorationPanel .region-stats table { min-width:0; font-size:12.5px; }
@@ -886,9 +886,8 @@ _WORKBENCH_UI_STYLE = r"""
   #stateExplorationPanel .region-stats .region-cluster-table :is(th,td):first-child { text-align:left; }
   #stateExplorationPanel .region-stats .region-metric-table td:nth-child(even),
   #stateExplorationPanel .region-stats .region-cluster-table :is(th,td):not(:first-child) { text-align:right; font-variant-numeric:tabular-nums; }
-  /* 两张紧凑表按内容定宽、通常不横向滚动，因此不做固定首列，
-     也去掉 .table-wrap td:first-child 自带的分隔阴影。 */
-  #stateExplorationPanel .region-stats :is(th,td):first-child { position:static; box-shadow:none; }
+  /* 两张紧凑表按内容定宽、通常不横向滚动，因此不做固定首列，也去掉首列分隔线。 */
+  #stateExplorationPanel .region-stats :is(th,td):first-child { position:static; border-right:0; }
   #modelQualityResults > :is(#currentTagQuality, #qualityIssues).empty,
   .final-training-review > .empty,
   #basicInspectionIssues.empty, #explorationEmpty.empty,
@@ -900,8 +899,8 @@ _WORKBENCH_UI_STYLE = r"""
   .table-wrap td:has(> .status-label),
   .table-wrap td:has(> input[type=checkbox]) { white-space:nowrap; text-align:center; }
   tr:has(> td > input[type=checkbox]) > td:nth-child(2) { white-space:nowrap; }
-  /* 状态探索结果表统一居中：表头、单元格（含复选框、状态、数值列）都在单元格内水平居中；仅限本面板，不影响其他阶段表格。 */
-  #stateExplorationPanel table th, #stateExplorationPanel table td { text-align:center; }
+  /* 状态探索结果表不再整表居中：整表居中会覆盖 .numeric，使数值列失去对齐语义。
+     勾选 / 状态列沿用上方 .table-wrap 的居中规则；文本列回落默认左对齐。 */
   /* 候选表内的勾选与备注控件按单元格密度收敛，不继承 42px 全高控件。 */
   .exploration-candidate-select { display:inline-block; }
   .exploration-candidate-comment {
@@ -913,6 +912,9 @@ _WORKBENCH_UI_STYLE = r"""
     font-size:12px;
     text-align:center;
   }
+  /* 表格内命令按钮按单元格密度收敛：42px 全高控件会把所在行撑到 55px，
+     与同表 31px 的纯文本行交替出现。 */
+  .table-wrap button { height:30px; min-height:30px; padding:0 10px; font-size:12px; }
   @media (max-width:1050px) {
     main { grid-template-columns:minmax(0,1fr); }
     .workflow-sidebar { position:static; }
@@ -1001,7 +1003,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // 只读候选分析范围的资格节点：趋势窗口摘要写入 #trendEligibilitySummary，不参与此栏。
     const eligibility = document.getElementById("eligibilitySummary");
     const filterMethod = document.getElementById("filterMethod").value;
-    summary.querySelector("span").textContent = [
+    const summaryText = [
       eligibility.dataset.compact || eligibility.textContent,
       `分析范围：${value("analysisStart")} 至 ${value("analysisEnd")}`,
       `采样周期：${value("sampleInterval")} 分钟`,
@@ -1012,6 +1014,10 @@ document.addEventListener("DOMContentLoaded", () => {
       `重采样：${value("resamplingMethod")}`,
       `缺口阈值：${value("gapThreshold")}${document.getElementById("gapThreshold").value ? " 分钟" : ""}`
     ].join(" · ");
+    // 单行 nowrap + ellipsis 会截断尾部参数，用 title 保留完整文本供悬停查看。
+    const summarySpan = summary.querySelector("span");
+    summarySpan.textContent = summaryText;
+    summarySpan.title = summaryText;
   };
   summary.querySelector("button").addEventListener("click", () => showCandidateTool("candidatePreparationPanel"));
   candidatePanel.addEventListener("input", refreshCandidateConfigSummary);
@@ -1190,7 +1196,7 @@ _MODEL_RESULTS_STYLE = r"""
   #modelContent > section, .model-overview-grid > section { padding:0; }
   #modelTrainingDataQuality > p { margin:4px 0 8px; }
   #modelQualitySummary { display:block; }
-  #modelQualitySummary :is(th,td) { padding:5px 8px; }
+  #modelQualitySummary :is(th,td) { padding:6px 8px; }
   .model-projection-grid {
     display:grid;
     grid-template-columns:minmax(0,1fr) minmax(0,1fr);
@@ -1236,7 +1242,7 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-energy-table th:nth-child(2),
   #modelStructureComparison .model-energy-table td:nth-child(2) { width:7.5em; text-align:right; white-space:nowrap; }
   #modelStructureComparison .model-energy-table th,
-  #modelStructureComparison .model-energy-table td { padding:5px 8px; }
+  #modelStructureComparison .model-energy-table td { padding:6px 8px; }
   #modelStructureComparison .lag-energy-table { width:min(100%,220px); }
   #modelStructureComparison .lag-energy-table th:first-child,
   #modelStructureComparison .lag-energy-table td:first-child { text-align:right; white-space:nowrap; }
@@ -1411,7 +1417,7 @@ def _model_results_content_html() -> str:
               #trainingExceedanceDialog .exceedance-compare-group input { width:100%; }
               #trainingExceedanceDialog .exceedance-pair-plot { height:300px; min-width:0; }
               #trainingExceedanceDialog label { display:flex; flex-direction:column; gap:4px; }
-              #trainingExceedanceDialog input { width:240px; max-width:100%; }
+              #trainingExceedanceDialog input { width:min(100%,var(--field-datetime-width,240px)); }
               #trainingExceedanceDialog .exceedance-plot { height:250px; min-width:0; }
               #trainingExceedanceDialog .table-wrap { overflow-x:auto; }
               #trainingExceedanceDialog h4 { margin:12px 0 6px; }
@@ -2136,7 +2142,7 @@ function renderClusterQuality(container, quality, perspective, clusterCenters={}
         '  const centerView=perspective==="state_exploration"?screeningCenterView(quality.centers||[],clusterCenters):null;\n'
         '  let engineeringHint=quality.engineering_hint?.[perspective]||"请结合工艺状态人工确认。";\n'
         '  if(centerView&&centerView.orientation!=="主要沿 PC1") engineeringHint=engineeringHint.replace("当前状态划分主要沿 PC1 方向分离，可能反映连续运行变量变化，建议结合工艺变量确认。","");\n'
-        '  const centerRows=centerView?(quality.centers||[]).map((item,index)=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster))}</td>${centerView.columns.map(pc=>`<td>${number(centerView.coordinates[index][pc])}</td>`).join("")}</tr>`).join(""):"";\n'
+        '  const centerRows=centerView?(quality.centers||[]).map((item,index)=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster))}</td>${centerView.columns.map(pc=>`<td class="numeric">${number(centerView.coordinates[index][pc])}</td>`).join("")}</tr>`).join(""):"";\n'
         '  const centers=',
         1,
     ).replace(

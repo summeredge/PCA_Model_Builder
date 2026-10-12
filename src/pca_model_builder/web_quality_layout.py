@@ -35,7 +35,7 @@ _QUALITY_GRID_CSS = r"""
   .quality-profile-section .quality-profile-table th,
   .quality-profile-section .quality-profile-table td {
     width:auto;
-    padding:5px 7px;
+    padding:6px 8px;
   }
   .quality-profile-section .quality-profile-table th:nth-child(odd) {
     width:24%;

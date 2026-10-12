@@ -115,7 +115,7 @@ def test_model_quality_ui_renders_and_clears_stale_results():
     renderer = source[source.index("  function renderModelQuality("):source.index('  document.getElementById("compareModelsButton")')]
     result = _run_node_javascript(r"""
       class Element {
-        constructor() { this.children=[]; this.textContent=""; this.className=""; }
+        constructor() { this.children=[]; this.textContent=""; this.className=""; this.classList={values:new Set(),add(...names){names.forEach(name=>this.values.add(name));},contains(name){return this.values.has(name);}}; }
         append(...items) { this.children.push(...items); }
         replaceChildren(...items) { this.children=items; this.textContent=""; }
         text() { return this.textContent + this.children.map(item=>item.text()).join(" "); }
@@ -132,7 +132,9 @@ def test_model_quality_ui_renders_and_clears_stale_results():
       renderModelQuality(quality,{covered_day_count:2,used_window_count:1,used_segment_count:1});
       const filled=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
       const wrap=nodes.modelQualitySummary.children[0],table=wrap.children[0];
-      const statistics={className:wrap.className,head:table.children[0].children[0].children.map(cell=>cell.textContent),rows:table.children[1].children.map(row=>row.children.map(cell=>cell.textContent))};
+      const statistics={className:wrap.className,head:table.children[0].children[0].children.map(cell=>cell.textContent),
+        headNumeric:table.children[0].children[0].children.map(cell=>cell.classList.contains("numeric")),
+        rows:table.children[1].children.map(row=>row.children.map(cell=>cell.textContent))};
       renderModelQuality(null);
       const cleared=Object.fromEntries(ids.map(id=>[id,nodes[id].text()]));
       console.log(JSON.stringify({filled,cleared,statistics}));
@@ -149,6 +151,8 @@ def test_model_quality_ui_renders_and_clears_stale_results():
     assert "不能替代独立验证" in result["filled"]["modelQualityNotice"]
     assert result["statistics"] == {
         "className": "table-wrap", "head": ["指标", "T²统计", "SPE/Q统计"],
+        # 表头与数值列取同一对齐边：T²/SPE 列的表头带 .numeric，标签列不带。
+        "headNumeric": [False, True, True],
         "rows": [["平均值", "0.500", "—"], ["95% 控制限", "2.000", "4.000"],
                  ["99% 控制限", "3.000", "5.000"], ["95% 超限比例", "5.0%", "5.0%"],
                  ["99% 超限比例", "1.0%", "1.0%"], ["有效 / 无效评分", "100 / 0", "100 / 0"],

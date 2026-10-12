@@ -37,16 +37,16 @@ _DATAPROJECT_TREND_CSS = r"""
   .dp-trend-stat-card { min-width:0; border:1px solid var(--line); border-radius:6px; background:var(--panel); padding:8px; }
   .dp-trend-stat-card h3 { margin:0 0 6px; font-size:12px; overflow-wrap:anywhere; }
   .dp-trend-stat-card dl { display:grid; gap:2px; margin:0; }
-  .dp-trend-stat-card dl div { display:grid; grid-template-columns:82px minmax(0,1fr); gap:8px; font-size:11px; }
+  .dp-trend-stat-card dl div { display:grid; grid-template-columns:82px minmax(0,1fr); gap:8px; font-size:12px; }
   .dp-trend-stat-card dt { color:var(--muted); }
   .dp-trend-stat-card dd { margin:0; color:var(--text); text-align:right; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
   .dp-histogram { width:100%; min-width:0; margin-top:10px; }
-  .dp-histogram-title { margin-bottom:4px; color:var(--muted); font-size:11px; }
+  .dp-histogram-title { margin-bottom:4px; color:var(--muted); font-size:12px; }
   .dp-histogram-bars { position:relative; display:flex; align-items:flex-end; gap:2px; width:100%; height:72px; overflow:hidden; border-bottom:1px solid var(--line); }
   .dp-histogram-bar { position:relative; z-index:1; flex:1 1 0; min-width:0; opacity:.58; border-radius:2px 2px 0 0; }
   .dp-histogram-curve { position:absolute; inset:0; z-index:2; width:100%; height:100%; pointer-events:none; }
   .dp-histogram-curve polyline { fill:none; stroke-width:2; vector-effect:non-scaling-stroke; }
-  .dp-histogram-labels { display:flex; justify-content:space-between; gap:8px; margin-top:3px; color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums; }
+  .dp-histogram-labels { display:flex; justify-content:space-between; gap:8px; margin-top:3px; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
   .dp-scatter-section { display:grid; gap:12px; margin-top:10px; padding:0; border:0; }
   .dp-scatter-controls { display:grid; grid-template-columns:repeat(3,minmax(150px,1fr)); gap:10px; align-items:end; }
   .dp-scatter-chart { min-height:280px; border:1px solid var(--line); border-radius:6px; background:var(--panel); overflow:auto; }

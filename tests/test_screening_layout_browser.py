@@ -521,6 +521,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   // 趋势浏览范围不同于候选分析范围时，配置摘要仍使用候选分析范围资格结果。
   // 放在几何用例之后：绘制趋势会让后续视口变更重绘 Plotly，拖慢用例。
   await page.locator('[data-panel="trendPanel"]').click();
+  // 切页签后数据项目趋势会在下一帧把旧版时间控件同步到 dpTrendStart/End；
+  // 不等这一帧就填值，刚填入的窗口会被旧范围覆盖（基线同样存在此竞态）。
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   await page.locator('#dpTrendVar1').selectOption('TAG_A');
   await page.locator('#dpTrendStart').fill('2026-01-01T01:00');
   // 短趋势窗口：只需与候选分析范围不同，避免大范围 Plotly 重绘拖慢用例。
