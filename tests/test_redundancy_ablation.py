@@ -328,3 +328,55 @@ def test_real_evaluation_reports_independent_window_counts(trained):
                 key = f"{statistic}_detected_window_count_{confidence}"
                 assert scheme["detection_delta"][key] == 0
                 assert scheme["validation"]["known_abnormal"]["metrics"][key] == baseline[key]
+
+
+def _independent_windows(scheme):
+    return scheme["validation"]["known_abnormal"]["window_detections"]
+
+
+def _detected(detections, statistic, confidence):
+    return [item["validation_window_id"] for item in detections if item[f"{statistic}_detected_{confidence}"]]
+
+
+@pytest.mark.parametrize("statistic", ["t2", "spe"])
+@pytest.mark.parametrize("confidence", [95, 99])
+def test_per_window_cancellation_cannot_recommend_deletion(trained, statistic, confidence):
+    """基准检出 A、B，消融检出 B、C：汇总数量相同，但窗口 A 的独立检出已丢失。"""
+    result = web.redundancy_ablation_payload(trained[2])
+    base = result["schemes"][0]
+    same = copy.deepcopy(base)
+    same["dropped_tag"] = "A"
+    identifiers = [item["validation_window_id"] for item in _independent_windows(base)]
+    first, second, third = identifiers
+    metrics = same["validation"]["known_abnormal"]["metrics"]
+    metrics[f"{statistic}_detected_window_count_{confidence}"] = 2
+    base["validation"]["known_abnormal"]["metrics"][f"{statistic}_detected_window_count_{confidence}"] = 2
+    key = f"{statistic}_detected_{confidence}"
+    for item in _independent_windows(base):
+        item[key] = item["validation_window_id"] == first or item["validation_window_id"] == second
+    for item in _independent_windows(same):
+        item[key] = item["validation_window_id"] == second or item["validation_window_id"] == third
+    assert _detected(_independent_windows(base), statistic, confidence) == [first, second]
+    assert _detected(_independent_windows(same), statistic, confidence) == [second, third]
+    conclusion, reasons, delta = ablation.ablation_conclusion(base, same)
+    assert metrics[f"{statistic}_detected_window_count_{confidence}"] == \
+        base["validation"]["known_abnormal"]["metrics"][f"{statistic}_detected_window_count_{confidence}"]
+    assert delta[f"{statistic}_detected_window_count_{confidence}"] == 0
+    assert metrics["detection_rate_95"] == base["validation"]["known_abnormal"]["metrics"]["detection_rate_95"]
+    assert metrics["detection_coverage_rate_95"] == base["validation"]["known_abnormal"]["metrics"]["detection_coverage_rate_95"]
+    assert conclusion == "建议保留"
+    assert f"异常窗口 {first} {statistic.upper()} {confidence}% 检出丢失。" in reasons
+
+
+def test_real_evaluation_reports_per_window_independent_detections(trained):
+    result = web.redundancy_ablation_payload(trained[2])
+    for scheme in result["schemes"]:
+        abnormal = scheme["validation"]["known_abnormal"]
+        detections = {item["validation_window_id"]: item for item in _independent_windows(scheme)}
+        assert [item["validation_window_id"] for item in _independent_windows(scheme)] == \
+            [item["validation_window_id"] for item in abnormal["metrics"]["windows"]]
+        for statistic, key in (("t2", "t2_detected_window_count"), ("spe", "spe_detected_window_count")):
+            for confidence in (95, 99):
+                assert sum(item[f"{statistic}_detected_{confidence}"] for item in detections.values()) == \
+                    abnormal["metrics"][f"{key}_{confidence}"]
+    json.dumps(result, allow_nan=False)

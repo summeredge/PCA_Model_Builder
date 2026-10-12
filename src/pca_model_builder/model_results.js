@@ -279,6 +279,7 @@
   const originalRenderTraining = window.renderTraining;
   window.renderTraining = function renderTrainingWithLoadings(data) {
     originalRenderTraining(data);
+    if (exceedanceDialog.open) exceedanceDialog.close();
     ablationInvalid = false;
     window.invalidateRedundancyAblation();
     ablationMessage(ablationEligible() ? "正常状态候选模型已就绪，可加载冗余候选组。" : "仅支持 normal_state / candidate 基准模型，请先训练正常状态候选模型。");
@@ -289,6 +290,385 @@
     renderSingleModelDiagnostic(data.model_diagnostic);
     refreshCandidateOptions(data.run_id);
   };
+
+  const exceedanceDialog = el("trainingExceedanceDialog");
+  let exceedanceTimezoneAware = false, exceedanceSelectionRevision = 0;
+  let exceedanceSession = 0, intervalRequest = 0, trendRequest = 0, compareRequest = 0;
+  let exceedanceIdentity = null, exceedanceOverview = null, exceedanceInterval = null, exceedanceComparison = null;
+  let exceedanceSelectionMode = "single";
+  let exceedanceQueue = Promise.resolve();
+  const exceedancePlots = [el("exceedanceT2"), el("exceedanceSpe")];
+  exceedancePlots.forEach(plot => plot.addEventListener("pointerdown",() => {
+    plot._exceedanceSelection={mode:exceedanceSelectionMode,revision:exceedanceSelectionRevision};
+  },true));
+  const exceedanceNumber = value => Number.isFinite(value) ? value.toPrecision(6) : "—";
+  const exceedanceTime = value => {
+    if (typeof value !== "number") return String(value).replace(" ", "T");
+    const iso = new Date(value).toISOString();
+    return exceedanceTimezoneAware ? iso : iso.replace(/Z$/, "");
+  };
+  function exceedanceCurrent(session) {
+    return !state.trainingDiagnosticInvalidated && exceedanceDialog.open && session === exceedanceSession && exceedanceIdentity &&
+      state.runId === exceedanceIdentity.runId && state.training === exceedanceIdentity.training &&
+      state.training?.run_id === state.runId;
+  }
+  function exceedanceMessage(text) { el("exceedanceStatus").textContent = text; }
+  function exceedanceQuery(action, fields, session, current = () => true) {
+    const runId = exceedanceIdentity.runId;
+    // 同一训练运行的后端查询持有生命周期锁；串行并跳过已经被新选择替代的请求。
+    exceedanceQueue = exceedanceQueue.catch(() => {}).then(async () => {
+      if (!exceedanceCurrent(session) || !current()) return null;
+      const data = await api("/api/training-exceedance", {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({run_id:runId, action, ...fields})});
+      if (!exceedanceCurrent(session) || !current()) return null;
+      if (data.run_id !== runId) throw new Error("训练身份不匹配，请重新打开诊断。");
+      return data;
+    });
+    return exceedanceQueue;
+  }
+  function exceedanceTable(target, headers, rows) {
+    const table = document.createElement("table"), head = table.createTHead().insertRow();
+    headers.forEach(text => { const th = document.createElement("th"); th.textContent = text; head.append(th); });
+    const body = table.createTBody();
+    rows.forEach(values => { const row = body.insertRow(); values.forEach(value => {
+      const td = row.insertCell(); if (value instanceof Node) td.append(value); else td.textContent = value;
+    }); });
+    target.replaceChildren(table);
+  }
+  function exceedanceShapes(start, end) {
+    return [{type:"rect", xref:"x", yref:"paper", x0:start, x1:end, y0:0, y1:1,
+      fillcolor:"rgba(234,179,8,.16)", line:{width:0}, layer:"below"}];
+  }
+  function validExceedanceRange(start,end) {
+    start=start.trim();end=end.trim();
+    return start&&end&&Number.isFinite(Date.parse(start))&&Number.isFinite(Date.parse(end))&&Date.parse(start)<=Date.parse(end)
+      ? {start,end} : null;
+  }
+  function syncExceedanceShapes() {
+    const shapes = [];
+    const single=validExceedanceRange(el("exceedanceStart").value,el("exceedanceEnd").value);
+    if (single) shapes.push({...exceedanceShapes(single.start,single.end)[0],name:"单区间"});
+    for (const [kind,color] of [["anomaly","rgba(220,38,38,.18)"],["reference","rgba(37,99,235,.18)"]]) {
+      const range = compareRangeFromInputs(kind);
+      if (range) shapes.push({type:"rect",xref:"x",yref:"paper",x0:range.start,x1:range.end,y0:0,y1:1,
+        fillcolor:color,line:{width:1,color:kind==="anomaly"?"#dc2626":"#2563eb"},layer:"below",name:kind});
+    }
+    exceedancePlots.forEach(plot => { if (plot._fullLayout) Plotly.relayout(plot,{shapes}); });
+  }
+  function exceedanceSeries(rows, field, gapField) {
+    const x = [], y = [];
+    rows.forEach(row => { if (row[gapField]) { x.push(row.timestamp); y.push(null); }
+      x.push(row.timestamp); y.push(Number.isFinite(row[field]) ? row[field] : null); });
+    return {x,y,type:"scatter",mode:"lines",connectgaps:false};
+  }
+  async function drawExceedanceOverview(data, session) {
+    for (const [index, metric, limits, title] of [[0,"t2",data.t2_limits,"T²"],[1,"spe",data.q_limits,"SPE"]]) {
+      const target = exceedancePlots[index];
+      await Plotly.newPlot(target, [{...exceedanceSeries(data.scores,metric,"break_before"),name:title},
+        ...[95,99].map(level => ({x:[data.start,data.end],y:[limits[level],limits[level]],type:"scatter",mode:"lines",
+          name:`${level}% 控制限`,line:{dash:level === 95 ? "dash" : "dot"}}))],
+        {title:{text:title},margin:{l:65,r:20,t:35,b:35},dragmode:"select",selectdirection:"h",
+          xaxis:{type:"date",range:[data.start,data.end]},yaxis:{fixedrange:false},legend:{orientation:"h"}},
+        {responsive:true,displaylogo:false,modeBarButtonsToAdd:["select2d","zoom2d","pan2d","resetScale2d"]});
+      if (!exceedanceCurrent(session)) return;
+      target.on("plotly_selected", event => {
+        const selection=target._exceedanceSelection;target._exceedanceSelection=null;
+        if (!selection || selection.revision!==exceedanceSelectionRevision || !exceedanceCurrent(session) || !event?.range?.x) return;
+        const range = event.range.x.map(exceedanceTime);
+        if (selection.mode === "anomaly" || selection.mode === "reference")
+          setExceedanceCompareRange(selection.mode,...range);
+        else selectExceedanceInterval(...range);
+      });
+      target.on("plotly_relayout", event => {
+        if (!exceedanceCurrent(session)) return;
+        const other = exceedancePlots[1-index];
+        if (!other._fullLayout) return;
+        const range = event["xaxis.range"] || (event["xaxis.range[0]"] !== undefined ? [event["xaxis.range[0]"],event["xaxis.range[1]"]] : null);
+        if (range && JSON.stringify(other.layout.xaxis.range) !== JSON.stringify(range)) Plotly.relayout(other,{"xaxis.range":range});
+        else if (event["xaxis.autorange"] === true && other.layout.xaxis.autorange !== true) Plotly.relayout(other,{"xaxis.autorange":true});
+      });
+    }
+  }
+  async function selectExceedanceInterval(start, end) {
+    const session = exceedanceSession, request = ++intervalRequest;
+    ++trendRequest; ++exceedanceSelectionRevision;
+    exceedanceInterval = null;
+    el("exceedanceRawSection").hidden = true;
+    el("exceedanceStatistics").replaceChildren(); el("exceedanceContributions").replaceChildren();
+    if (!exceedanceCurrent(session)) { exceedanceMessage("训练结果已变化，请关闭后重新打开诊断。"); return; }
+    if (!start || !end || !Number.isFinite(Date.parse(start)) || !Number.isFinite(Date.parse(end)) || Date.parse(start) > Date.parse(end)) {
+      syncExceedanceShapes();
+      exceedanceMessage("请输入有效的开始、结束时间，且开始时间不晚于结束时间。"); return;
+    }
+    el("exceedanceStart").value = exceedanceTime(start); el("exceedanceEnd").value = exceedanceTime(end);
+    syncExceedanceShapes();
+    exceedanceMessage("正在计算区间统计与贡献…");
+    try {
+      const data = await exceedanceQuery("interval",{start,end},session,() => request === intervalRequest);
+      if (!data || request !== intervalRequest) return;
+      exceedanceInterval = data;
+      const rows = [["分析区间",`${data.start} — ${data.end}`,`${data.start} — ${data.end}`],["有效样本数",String(data.valid_samples),String(data.valid_samples)]];
+      for (const [label, field] of [["平均值","mean"],["最大值","max"],["最大超限倍数（95%）","max_limit_ratio"]])
+        rows.push([label,...["t2","spe"].map(metric => exceedanceNumber(data.statistics[metric][field]))]);
+      for (const level of [95,99]) rows.push([`${level}% 超限样本数 / 比例`,...["t2","spe"].map(metric => {
+        const value = data.statistics[metric][`exceedance_${level}`]; return `${value.count} / ${ablationPercent(value.rate)}`;
+      })]);
+      exceedanceTable(el("exceedanceStatistics"),["统计项目","T²","SPE"],rows);
+      [...el("exceedanceStatistics").querySelectorAll("tbody tr")].slice(0,2).forEach(row => {
+        row.cells[1].colSpan = 2; row.cells[2].remove();
+      });
+      renderExceedanceContributions();
+      exceedanceMessage(data.valid_samples ? "区间分析完成。" : "所选区间没有有效评分样本。");
+    } catch (error) { if (exceedanceCurrent(session) && request === intervalRequest) exceedanceMessage(error.message); }
+  }
+  function renderExceedanceContributions() {
+    const target = el("exceedanceContributions");
+    ++trendRequest; el("exceedanceRawSection").hidden = true;
+    if (!exceedanceCurrent(exceedanceSession)) { target.replaceChildren(); exceedanceMessage("训练结果已变化，请关闭后重新打开诊断。"); return; }
+    if (!exceedanceInterval) return;
+    const contribution = exceedanceInterval.contributions[el("exceedanceMetric").value];
+    if (!contribution.sample_count || !contribution.rows.length) { target.textContent = "当前统计量没有超限样本或可用贡献。"; return; }
+    const showPct = contribution.rows.some(row => Number.isFinite(row.contribution_pct));
+    exceedanceTable(target,["排名","原始 Tag","平均贡献",...(showPct ? ["贡献占比"] : []),"主要 Lag（min）"],
+      contribution.rows.slice(0,10).map((row,index) => {
+        const button = document.createElement("button"); button.type = "button"; button.className = "secondary"; button.textContent = row.tag;
+        button.addEventListener("click", () => showExceedanceTag(row.tag));
+        return [String(index+1),button,exceedanceNumber(row.mean_contribution),
+          ...(showPct ? [Number.isFinite(row.contribution_pct) ? `${exceedanceNumber(row.contribution_pct)}%` : "—"] : []),
+          `${row.lag_start_minutes ?? "—"} – ${row.lag_end_minutes ?? "—"}`];
+      }));
+  }
+  async function showExceedanceTag(tag) {
+    const session = exceedanceSession, request = ++trendRequest, interval = exceedanceInterval;
+    if (!interval || !exceedanceCurrent(session)) return;
+    el("exceedanceRawSection").hidden = false;
+    el("exceedanceRawTitle").textContent = `${tag} · 原始趋势`;
+    el("exceedanceRawStatus").textContent = "正在加载原始数据…";
+    Plotly.purge(el("exceedanceRaw"));
+    try {
+      const data = await exceedanceQuery("trend",{start:interval.start,end:interval.end,tag},session,() => request === trendRequest);
+      if (!data || request !== trendRequest) return;
+      if (data.tag !== tag) throw new Error("原始 Tag 身份不匹配。");
+      el("exceedanceRawTitle").textContent = `${data.tag}${data.unit ? `（${data.unit}）` : ""} · 原始趋势`;
+      el("exceedanceRawStatus").textContent = !data.rows.some(row => Number.isFinite(row.value)) ? "没有可用原始数据，不进行插值。" :
+        data.rows.some(row => !Number.isFinite(row.value)) ? "原始数据存在缺失，按缺失断线，不插值。" : "";
+      await Plotly.newPlot(el("exceedanceRaw"),[{...exceedanceSeries(data.rows,"value","gap_start"),name:data.tag}],
+        {margin:{l:65,r:20,t:20,b:35},xaxis:{type:"date",range:[data.start,data.end]},yaxis:{title:data.unit || "原始值"},
+          shapes:exceedanceShapes(data.analysis_start,data.analysis_end)}, {responsive:true,displaylogo:false});
+    } catch (error) { if (exceedanceCurrent(session) && request === trendRequest) el("exceedanceRawStatus").textContent = error.message; }
+  }
+  function compareRangeFromInputs(kind) {
+    const prefix = kind === "anomaly" ? "exceedanceAnomaly" : "exceedanceReference";
+    return validExceedanceRange(el(`${prefix}Start`).value,el(`${prefix}End`).value);
+  }
+  function clearExceedanceCompareOutput() {
+    exceedanceComparison = null;
+    el("exceedanceCompareStatistics").replaceChildren();
+    el("exceedanceCompareContributions").replaceChildren();
+    el("exceedanceCompareRawSection").hidden = true;
+    if (globalThis.Plotly) { Plotly.purge(el("exceedanceCompareRaw")); Plotly.purge(el("exceedanceCompareLoadRaw")); }
+  }
+  function invalidateExceedanceCompare(message = "") {
+    ++compareRequest; ++trendRequest; clearExceedanceCompareOutput();
+    if (message) el("exceedanceCompareStatus").textContent = message;
+  }
+  function setExceedanceCompareRange(kind, start, end) {
+    const prefix = kind === "anomaly" ? "exceedanceAnomaly" : "exceedanceReference";
+    el(`${prefix}Start`).value = start; el(`${prefix}End`).value = end;
+    invalidateExceedanceCompare(); syncExceedanceShapes();
+    el("exceedanceCompareStatus").textContent = `${kind === "anomaly" ? "异常" : "参考"}区间已选，可修改时间或清除。`;
+  }
+  function editExceedanceCompareRange() {
+    ++exceedanceSelectionRevision;
+    invalidateExceedanceCompare("时间范围已修改，请重新比较。"); syncExceedanceShapes();
+  }
+  function setExceedanceSelectionMode(mode) {
+    ++exceedanceSelectionRevision;exceedanceSelectionMode = mode;
+    for (const [key,id] of [["single","exceedanceModeSingle"],["anomaly","exceedanceModeAnomaly"],["reference","exceedanceModeReference"]])
+      el(id).setAttribute("aria-pressed",String(key===mode));
+    exceedanceMessage(mode === "single" ? "横向框选单区间，或手动输入时间。" : `横向框选${mode === "anomaly" ? "异常" : "参考"}区间。`);
+  }
+  function exceedancePercent(value) { return Number.isFinite(value) ? `${(value*100).toFixed(1)}%` : "—"; }
+  function exceedanceShare(value) { return Number.isFinite(value) ? `${value.toFixed(1)}%` : "—"; }
+  function showExceedanceComparison(data) {
+    const groups = [data.anomaly,data.reference], labels = ["异常组","低 SPE 参考组"];
+    const loadStatus = {insufficient_evidence:"证据不足；不能认定同负荷",
+      body_disjoint:"主体分布分离；请重新选择参考区间",
+      manual_review:"需工程师核对；不自动认定同负荷"}[data.load_comparability_status] || "负荷可比性不可判断，请工程师核对";
+    const loadCentralOverlap = data.load_p10_p90_overlap === true ? "相交（仍需工程师核对）" :
+      data.load_p10_p90_overlap === false ? "不重叠" : "不可判断（负荷有效样本不足）";
+    const rows = [
+      ["时间区间",`${data.anomaly_start} — ${data.anomaly_end}`,`${data.reference_start} — ${data.reference_end}`],
+      ["区间有效评分样本",...groups.map(group=>String(group.interval_valid_samples))],
+      ["实际纳入样本",...groups.map(group=>String(group.sample_count))],
+      ["SPE 均值",...groups.map(group=>exceedanceNumber(group.spe_mean))],
+      ["SPE ≥ 95% 控制限",...groups.map(group=>`${group.spe_exceedance_count} / ${exceedancePercent(group.spe_exceedance_rate)}`)],
+      ["负荷有效样本 / 缺失率",...groups.map(group=>`${group.load.valid_samples} / ${exceedancePercent(group.load.missing_rate)}`)],
+      ["负荷均值 / 中位数",...groups.map(group=>`${exceedanceNumber(group.load.mean)} / ${exceedanceNumber(group.load.median)}`)],
+      ["负荷 P10 / P90",...groups.map(group=>`${exceedanceNumber(group.load.p10)} / ${exceedanceNumber(group.load.p90)}`)],
+      ["负荷范围",...groups.map(group=>`${exceedanceNumber(group.load.minimum)} – ${exceedanceNumber(group.load.maximum)}`)],
+      ["负荷范围重叠",...groups.map(()=>data.load_ranges_overlap===null?"不可判断":data.load_ranges_overlap?"是":"否")],
+      ["负荷可比性状态",loadStatus,loadStatus],
+      ["P10–P90 主体区间重叠",loadCentralOverlap,loadCentralOverlap],
+    ];
+    exceedanceTable(el("exceedanceCompareStatistics"),["统计项",...labels],rows);
+    [...el("exceedanceCompareStatistics").querySelectorAll("tbody tr")].slice(-2).forEach(row=>{
+      row.cells[1].colSpan=2;row.cells[2].remove();
+    });
+    const warnings = data.warnings || [];
+    el("exceedanceCompareStatus").textContent = warnings.join(" ") || (data.analysis_available ? "两区间统计完成。" : "样本不足，未生成贡献对比。");
+    if (!data.contributions.length) {
+      el("exceedanceCompareContributions").textContent = data.analysis_available ? "没有可显示的 SPE 残差²贡献。" : "异常组或参考组样本不足，未生成贡献对比。";
+      return;
+    }
+    exceedanceTable(el("exceedanceCompareContributions"),["排名","原始 Tag","异常残差²均值","参考残差²均值","绝对差值","异常组占比","参考组占比","异常主要 Lag（min）","参考主要 Lag（min）"],
+      data.contributions.map((row,index)=>{
+        const button=document.createElement("button");button.type="button";button.className="secondary";button.textContent=row.tag;
+        button.addEventListener("click",()=>showExceedanceComparisonTag(row.tag));
+        const lag=(start,end)=>start==null?"—":start===end?String(start):`${start}–${end}`;
+        return [String(index+1),button,exceedanceNumber(row.anomaly_mean),exceedanceNumber(row.reference_mean),
+          exceedanceNumber(row.absolute_difference),exceedanceShare(row.anomaly_share_pct),
+          exceedanceShare(row.reference_share_pct),lag(row.anomaly_lag_start_minutes,row.anomaly_lag_end_minutes),
+          lag(row.reference_lag_start_minutes,row.reference_lag_end_minutes)];
+      }));
+  }
+  async function compareExceedanceRanges() {
+    const session=exceedanceSession, request=++compareRequest;
+    ++trendRequest;clearExceedanceCompareOutput();
+    if(!exceedanceCurrent(session)){el("exceedanceCompareStatus").textContent="训练结果已变化，请关闭后重新打开诊断。";return;}
+    const anomaly=compareRangeFromInputs("anomaly"), reference=compareRangeFromInputs("reference"), loadTag=el("exceedanceLoadTag").value;
+    if(!anomaly||!reference){el("exceedanceCompareStatus").textContent="请为异常区间和参考区间输入有效起止时间。";return;}
+    if(Date.parse(anomaly.start)<=Date.parse(reference.end)&&Date.parse(reference.start)<=Date.parse(anomaly.end)){
+      el("exceedanceCompareStatus").textContent="异常区间与参考区间不能重叠（边界时间也计入区间）。";return;
+    }
+    if(!loadTag){el("exceedanceCompareStatus").textContent="请选择训练源数据中的数值型负荷 Tag。";return;}
+    syncExceedanceShapes();
+    el("exceedanceCompareStatus").textContent="正在计算两区间 SPE 与负荷分布…";
+    try{
+      const data=await exceedanceQuery("compare",{anomaly_start:anomaly.start,anomaly_end:anomaly.end,
+        reference_start:reference.start,reference_end:reference.end,load_tag:loadTag},session,()=>request===compareRequest);
+      if(!data||request!==compareRequest)return;
+      if(data.load_tag!==loadTag)throw new Error("负荷 Tag 身份不匹配，请重新选择。");
+      exceedanceComparison=data;showExceedanceComparison(data);
+    }catch(error){if(exceedanceCurrent(session)&&request===compareRequest)el("exceedanceCompareStatus").textContent=error.message;}
+  }
+  function pairedTrendAxis(rowsA,rowsB) {
+    const values=[...rowsA,...rowsB].map(row=>row.value).filter(Number.isFinite);
+    if(!values.length)return undefined;
+    const low=Math.min(...values),high=Math.max(...values),pad=high>low?(high-low)*.05:Math.max(Math.abs(low)*.05,1e-6);
+    return [low-pad,high+pad];
+  }
+  function drawPairedRawTrend(target,tag,unit,anomaly,reference) {
+    const series=(range)=>range.series.find(item=>item.tag===tag)||{rows:[]};
+    const a=series(anomaly),r=series(reference),axis=pairedTrendAxis(a.rows,r.rows);
+    const traces=[{...exceedanceSeries(a.rows,"value","gap_start"),name:`异常 ${tag}`,xaxis:"x",yaxis:"y"},
+      {...exceedanceSeries(r.rows,"value","gap_start"),name:`参考 ${tag}`,xaxis:"x2",yaxis:"y"}];
+    const shapes=[{type:"rect",xref:"x",yref:"paper",x0:anomaly.analysis_start,x1:anomaly.analysis_end,y0:0,y1:1,
+      fillcolor:"rgba(220,38,38,.12)",line:{width:1,color:"#dc2626"},layer:"below"},
+      {type:"rect",xref:"x2",yref:"paper",x0:reference.analysis_start,x1:reference.analysis_end,y0:0,y1:1,
+      fillcolor:"rgba(37,99,235,.12)",line:{width:1,color:"#2563eb"},layer:"below"}];
+    return Plotly.newPlot(target,traces,{margin:{l:65,r:20,t:20,b:55},
+      xaxis:{type:"date",domain:[0,.48],range:[anomaly.start,anomaly.end],title:{text:"异常区间时间"}},
+      xaxis2:{type:"date",domain:[.52,1],anchor:"y",range:[reference.start,reference.end],title:{text:"参考区间时间"}},
+      yaxis:{title:unit||"原始值",...(axis?{range:axis}:{})},shapes,legend:{orientation:"h"}},
+      {responsive:true,displaylogo:false});
+  }
+  function rawPairStatus(anomaly,reference,tag) {
+    const series=[anomaly.series.find(item=>item.tag===tag),reference.series.find(item=>item.tag===tag)].filter(Boolean);
+    const rows=series.flatMap(item=>item.rows),finite=rows.some(row=>Number.isFinite(row.value));
+    const missing=rows.some(row=>!Number.isFinite(row.value));
+    return `${anomaly.analysis_start} — ${anomaly.analysis_end}（异常）；${reference.analysis_start} — ${reference.analysis_end}（参考）。`+
+      (!finite?"没有有效原始值；未插值。":missing?"原始缺失按断线显示，未插值":"");
+  }
+  async function showExceedanceComparisonTag(tag) {
+    const session=exceedanceSession,request=++trendRequest,comparison=exceedanceComparison;
+    if(!comparison||!exceedanceCurrent(session))return;
+    el("exceedanceCompareRawSection").hidden=false;
+    el("exceedanceCompareRawTitle").textContent=`${tag} · 异常与参考原始趋势`;
+    el("exceedanceCompareRawStatus").textContent="正在加载原始趋势…";
+    el("exceedanceCompareLoadTitle").textContent="";el("exceedanceCompareLoadStatus").textContent="";
+    Plotly.purge(el("exceedanceCompareRaw"));Plotly.purge(el("exceedanceCompareLoadRaw"));
+    try{
+      const data=await exceedanceQuery("compare_trend",{tag,load_tag:comparison.load_tag,
+        anomaly_start:comparison.anomaly_start,anomaly_end:comparison.anomaly_end,
+        reference_start:comparison.reference_start,reference_end:comparison.reference_end},session,
+        ()=>request===trendRequest&&comparison===exceedanceComparison);
+      if(!data||request!==trendRequest)return;
+      if(data.tag!==tag||data.load_tag!==comparison.load_tag)throw new Error("趋势 Tag 身份不匹配。");
+      const unit=data.anomaly.series.find(item=>item.tag===tag)?.unit||"";
+      el("exceedanceCompareRawTitle").textContent=`${tag}${unit?`（${unit}）`:""} · 异常与参考原始趋势`;
+      el("exceedanceCompareRawStatus").textContent=rawPairStatus(data.anomaly,data.reference,tag);
+      await drawPairedRawTrend(el("exceedanceCompareRaw"),tag,unit,data.anomaly,data.reference);
+      if(!exceedanceCurrent(session)||request!==trendRequest||comparison!==exceedanceComparison)return;
+      if(data.load_tag!==tag){
+        const loadUnit=data.anomaly.series.find(item=>item.tag===data.load_tag)?.unit||"";
+        const loadRows=[data.anomaly.series.find(item=>item.tag===data.load_tag),data.reference.series.find(item=>item.tag===data.load_tag)].filter(Boolean).flatMap(item=>item.rows);
+        el("exceedanceCompareLoadTitle").textContent=`${data.load_tag}${loadUnit?`（${loadUnit}）`:""} · 负荷原始趋势`;
+        el("exceedanceCompareLoadStatus").textContent=loadRows.some(row=>Number.isFinite(row.value))?rawPairStatus(data.anomaly,data.reference,data.load_tag):"负荷 Tag 在所选区间内没有有效原始值；未插值。";
+        await drawPairedRawTrend(el("exceedanceCompareLoadRaw"),data.load_tag,loadUnit,data.anomaly,data.reference);
+      }
+    }catch(error){if(exceedanceCurrent(session)&&request===trendRequest)el("exceedanceCompareRawStatus").textContent=error.message;}
+  }
+  el("trainingExceedanceButton").addEventListener("click", async () => {
+    if (state.trainingDiagnosticInvalidated || !state.runId || state.training?.run_id !== state.runId) { alert("请先完成当前模型训练。"); return; }
+    if (exceedanceIdentity?.runId !== state.runId) exceedanceQueue = Promise.resolve();
+    exceedanceIdentity = {runId:state.runId,training:state.training};
+    const session = ++exceedanceSession;
+    exceedanceOverview = null; exceedanceInterval = null;
+    exceedanceComparison = null;
+    el("exceedanceStatistics").replaceChildren(); el("exceedanceContributions").replaceChildren();
+    el("exceedanceRawSection").hidden = true; el("exceedanceStart").value = ""; el("exceedanceEnd").value = "";
+    el("exceedanceApply").disabled = true; el("exceedanceReset").disabled = true;
+    ["exceedanceAnomalyStart","exceedanceAnomalyEnd","exceedanceReferenceStart","exceedanceReferenceEnd"].forEach(id=>el(id).value="");
+    el("exceedanceLoadTag").replaceChildren(new Option("请选择数值型 Tag",""));el("exceedanceLoadTag").disabled=true;
+    el("exceedanceCompareApply").disabled=true;clearExceedanceCompareOutput();
+    exceedancePlots.forEach(plot => { if (globalThis.Plotly) Plotly.purge(plot); plot.replaceChildren(); });
+    exceedanceDialog.showModal(); setExceedanceSelectionMode("single"); exceedanceMessage("正在加载完整训练趋势…");
+    try {
+      if (!globalThis.Plotly) throw new Error("Plotly 未加载，无法显示诊断趋势。");
+      const data = await exceedanceQuery("overview",{},session);
+      if (!data) return;
+      exceedanceOverview = data;
+      exceedanceTimezoneAware = /(?:Z|[+-]\d{2}:\d{2})$/i.test(data.start);
+      const loadSelector=el("exceedanceLoadTag");
+      loadSelector.replaceChildren(new Option("请选择数值型 Tag",""));
+      (data.load_tags||[]).forEach(tag=>loadSelector.add(new Option(tag,tag)));
+      loadSelector.disabled=false;el("exceedanceCompareApply").disabled=false;
+      await drawExceedanceOverview(data,session);
+      if (!exceedanceCurrent(session)) return;
+      syncExceedanceShapes();
+      el("exceedanceStart").value = exceedanceTime(data.start); el("exceedanceEnd").value = exceedanceTime(data.end);
+      el("exceedanceApply").disabled = false; el("exceedanceReset").disabled = false;
+      exceedanceMessage("请选择分析区间，随后计算统计与贡献。");
+    } catch (error) { if (exceedanceCurrent(session)) exceedanceMessage(error.message); }
+  });
+  el("exceedanceClose").addEventListener("click", () => exceedanceDialog.close());
+  exceedanceDialog.addEventListener("close", () => { ++exceedanceSession; ++intervalRequest; ++trendRequest; ++compareRequest; ++exceedanceSelectionRevision; });
+  el("exceedanceModeSingle").addEventListener("click",()=>setExceedanceSelectionMode("single"));
+  el("exceedanceModeAnomaly").addEventListener("click",()=>setExceedanceSelectionMode("anomaly"));
+  el("exceedanceModeReference").addEventListener("click",()=>setExceedanceSelectionMode("reference"));
+  el("exceedanceApply").addEventListener("click", () => selectExceedanceInterval(el("exceedanceStart").value,el("exceedanceEnd").value));
+  ["exceedanceStart","exceedanceEnd"].forEach(id => el(id).addEventListener("change", () => {
+    if (exceedanceOverview) selectExceedanceInterval(el("exceedanceStart").value,el("exceedanceEnd").value);
+  }));
+  [["anomaly","exceedanceAnomalyStart","exceedanceAnomalyEnd"],["reference","exceedanceReferenceStart","exceedanceReferenceEnd"]].forEach(([kind,start,end])=>{
+    [start,end].forEach(id=>el(id).addEventListener("input",editExceedanceCompareRange));
+  });
+  el("exceedanceAnomalyClear").addEventListener("click",()=>{
+    ++exceedanceSelectionRevision;el("exceedanceAnomalyStart").value="";el("exceedanceAnomalyEnd").value="";
+    invalidateExceedanceCompare("异常区间已清除。");syncExceedanceShapes();
+  });
+  el("exceedanceReferenceClear").addEventListener("click",()=>{
+    ++exceedanceSelectionRevision;el("exceedanceReferenceStart").value="";el("exceedanceReferenceEnd").value="";
+    invalidateExceedanceCompare("参考区间已清除。");syncExceedanceShapes();
+  });
+  el("exceedanceLoadTag").addEventListener("change",()=>invalidateExceedanceCompare("负荷 Tag 已修改，请重新比较。"));
+  el("exceedanceCompareApply").addEventListener("click",compareExceedanceRanges);
+  el("exceedanceMetric").addEventListener("change",renderExceedanceContributions);
+  el("exceedanceReset").addEventListener("click", () => {
+    if (!exceedanceOverview || !exceedanceCurrent(exceedanceSession)) return;
+    exceedancePlots.forEach(plot => Plotly.relayout(plot,{"xaxis.range":[exceedanceOverview.start,exceedanceOverview.end],"yaxis.autorange":true}));
+  });
 
   function renderModelQuality(quality, totals = {}) {
     const target = document.getElementById("modelQualitySummary");

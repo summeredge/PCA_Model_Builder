@@ -974,7 +974,11 @@ def test_component_loadings_show_first_six_in_responsive_grid() -> None:
     assert "cell(formatLoading(Number(row?.aggregated_loading)))" in source
     assert "T²/SPE 异常贡献" in html
     assert html.index('id="componentLoadings"') < html.index('id="modelStructureComparison"')
-    assert "grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));" in html
+    loadings_rule = html[html.index("#componentLoadings .component-loading-list {"):]
+    loadings_rule = loadings_rule[: loadings_rule.index("}")]
+    assert "grid-template-columns:repeat(3,minmax(0,1fr));" in loadings_rule
+    assert "#componentLoadings .component-loading-list { grid-template-columns:repeat(2,minmax(0,1fr)); }" in html
+    assert "#componentLoadings .component-loading-list { grid-template-columns:minmax(0,1fr); }" in html
     assert "#componentLoadings .component-loading-table" in html
 
 
@@ -2595,7 +2599,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
          'explorationTargetMax explorationPerformanceMinimumDuration '
          'explorationPerformanceCandidateCount frozenModelVersion'),
         ('main select', 'select', 220,
-         'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope ablationGroup'),
+             'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope ablationGroup exceedanceMetric exceedanceLoadTag'),
         ('main input[type="datetime-local"]', 'datetime', 240,
          'analysisStart analysisEnd candidateStart candidateEnd trendStart trendEnd '
          'validationStart validationEnd frozenReplayStart frozenReplayEnd'),
@@ -2603,8 +2607,9 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
          'timestampColumn qualityTagSelect explorationPerformanceTag labelColumn '
          'preprocessingPreviewWindow'),
         ('main input:not([type]), main input[type="text"]', 'text', 420,
-         'modelName tagDescription tagUnit candidateComment validationComment '
-         'validationDecisionComment frozenModelId frozenBy freezeComment changeReason'),
+             'modelName tagDescription tagUnit candidateComment validationComment '
+             'validationDecisionComment frozenModelId frozenBy freezeComment changeReason exceedanceStart exceedanceEnd '
+             'exceedanceAnomalyStart exceedanceAnomalyEnd exceedanceReferenceStart exceedanceReferenceEnd'),
         ('main select[multiple]', 'multiple', 420, 'trendTags modelComparisonRuns performanceParents performanceClusters'),
     )
     for selector, semantic, width, field_ids in groups:
@@ -2626,7 +2631,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
     assert all(tag != 'input' or attrs.get('type', 'text') in
                ('text', 'number', 'datetime-local', 'file', 'range')
                for tag, attrs in controls.fields.values())
-    assert len(controls.fields) == 71
+    assert len(controls.fields) == 79
     assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
 
 

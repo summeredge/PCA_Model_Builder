@@ -246,6 +246,37 @@ def test_pure_contributions_match_existing_formula_and_tag_aggregation():
     assert sum(item.contribution_pct for item in tied) == pytest.approx(100.0)
 
 
+def test_batched_contributions_match_single_sample_formula_at_model_dimensions(monkeypatch):
+    rng = np.random.default_rng(804)
+    feature_count, component_count = 1406, 30
+    components = np.linalg.qr(rng.normal(size=(feature_count, component_count)))[0].T
+    eigenvalues = rng.uniform(0.2, 3.0, size=component_count)
+    mean = rng.normal(size=feature_count)
+    scale = rng.uniform(0.5, 2.0, size=feature_count)
+    samples = rng.normal(size=(8, feature_count))
+    standardized = (samples - mean) / scale
+    inverse_covariance = (
+        components.T @ np.diag(1.0 / eigenvalues) @ components
+    )
+    expected_t2 = np.stack([
+        np.abs(sample * (inverse_covariance @ sample)) for sample in standardized
+    ])
+    principal_scores = standardized @ components.T
+    expected_spe = (standardized - principal_scores @ components) ** 2
+    names = tuple(f"T{i}__lag_0min" for i in range(feature_count))
+
+    def no_dense_t2_covariance(*args, **kwargs):
+        raise AssertionError("batched T² contributions must not build a dense covariance")
+
+    monkeypatch.setattr(np, "diag", no_dense_t2_covariance)
+    parameters = dict(feature_names=names, mean=mean, scale=scale,
+                      components=components, eigenvalues=eigenvalues)
+    np.testing.assert_allclose(t2_feature_contributions(samples, **parameters), expected_t2,
+                               rtol=1e-11, atol=1e-12)
+    np.testing.assert_allclose(spe_feature_contributions(samples, **parameters), expected_spe,
+                               rtol=1e-11, atol=1e-12)
+
+
 def test_single_point_contributions_require_the_matching_statistic_threshold():
     model = _model()
     parameters = _parameters(model)

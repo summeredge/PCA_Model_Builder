@@ -35,6 +35,7 @@ def build_training_matrix(
     reference_columns: Sequence[str] = (),
     exclude_engineering_range: bool = False,
     modeling_eligibility: object = None,
+    validate_quality: bool = True,
 ) -> TrainingBuildResult:
     """Build each enabled window and physical segment independently."""
     windows = normalize_training_windows(training_windows)
@@ -111,6 +112,7 @@ def build_training_matrix(
                 tag_columns,
                 config,
                 engineering_ranges,
+                validate_quality=validate_quality,
                 include_intermediates=True,
                 include_variability=False,
                 preserve_columns=reference_columns,

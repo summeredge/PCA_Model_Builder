@@ -198,16 +198,22 @@ def t2_feature_contributions(
     components: np.ndarray,
     eigenvalues: np.ndarray,
 ) -> np.ndarray:
-    """Return ordered T² contribution magnitudes for one dynamic feature vector."""
+    """Return ordered T² contribution magnitudes for one or more feature vectors."""
     standardized, component_values, eigenvalue_values = _standardize_for_contribution(
         dynamic_feature, feature_names, mean, scale, components, eigenvalues
     )
-    inverse_covariance = (
-        component_values.T
-        @ np.diag(1.0 / eigenvalue_values[: component_values.shape[0]])
-        @ component_values
+    if standardized.ndim == 1:
+        inverse_covariance = (
+            component_values.T
+            @ np.diag(1.0 / eigenvalue_values[: component_values.shape[0]])
+            @ component_values
+        )
+        return _immutable_array(np.abs(standardized * (inverse_covariance @ standardized)))
+    component_scores = standardized @ component_values.T
+    weighted_scores = component_scores / eigenvalue_values[: component_values.shape[0]]
+    return _immutable_array(
+        np.abs(standardized * (weighted_scores @ component_values))
     )
-    return _immutable_array(np.abs(standardized * (inverse_covariance @ standardized)))
 
 
 def spe_feature_contributions(
@@ -219,7 +225,7 @@ def spe_feature_contributions(
     components: np.ndarray,
     eigenvalues: np.ndarray,
 ) -> np.ndarray:
-    """Return ordered SPE contribution magnitudes for one dynamic feature vector."""
+    """Return ordered SPE contribution magnitudes for one or more feature vectors."""
     standardized, component_values, _ = _standardize_for_contribution(
         dynamic_feature, feature_names, mean, scale, components, eigenvalues
     )
@@ -351,8 +357,8 @@ def _standardize_for_contribution(
     eigenvalues: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     values = np.asarray(dynamic_feature, dtype=float)
-    if values.ndim != 1:
-        raise ValueError("single dynamic feature must be one-dimensional")
+    if values.ndim not in (1, 2):
+        raise ValueError("dynamic features must be one- or two-dimensional")
     mean_values, scale_values, component_values, eigenvalue_values = _validate_model_parameters(
         feature_names,
         mean,
@@ -360,7 +366,7 @@ def _standardize_for_contribution(
         components,
         eigenvalues,
     )
-    if values.shape[0] != len(feature_names):
+    if values.shape[-1] != len(feature_names):
         raise ValueError("dynamic feature count does not match model feature_names")
     if not np.isfinite(values).all():
         raise ValueError("model inputs contain non-finite values")

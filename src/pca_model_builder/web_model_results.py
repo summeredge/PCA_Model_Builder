@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import webbrowser
 
 from . import web_quality_layout as quality_app
+from . import training_exceedance
 from .loading_plot import loading_plot_payload
 from .model_diagnostics import compare_candidate_runs, model_structure_diagnostic
 
@@ -1208,7 +1209,8 @@ _MODEL_RESULTS_STYLE = r"""
   .model-projection-grid #loadingChart svg { width:100%; height:420px; display:block; }
   #componentLoadings .component-loading-list {
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));
+    /* 自动列数在 1440px 排到 4 列：卡片 256px、变量名列 54px、名称折 6 行，故固定三档。 */
+    grid-template-columns:repeat(3,minmax(0,1fr));
     gap:12px;
   }
   #componentLoadings .component-loading-item { border:1px solid var(--line); border-radius:6px; padding:12px; }
@@ -1255,10 +1257,12 @@ _MODEL_RESULTS_STYLE = r"""
     .model-projection-grid > .chart-card > .chart { min-height:360px; }
     .model-projection-grid #scoreChart svg,
     .model-projection-grid #loadingChart svg { height:360px; }
+    #componentLoadings .component-loading-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
   @media (max-width:760px) {
     #modelStructureComparison .model-energy-grid { grid-template-columns:1fr; }
     #modelStructureComparison .lag-energy-table { width:100%; }
+    #componentLoadings .component-loading-list { grid-template-columns:minmax(0,1fr); }
   }
 </style>
 """
@@ -1394,6 +1398,66 @@ def _workflow_sidebar_html() -> str:
 def _model_results_content_html() -> str:
     return """        <div id="modelContent" hidden>
           <h3>训练结果概览</h3>
+          <button id="trainingExceedanceButton" type="button" class="secondary">超限诊断</button>
+          <dialog id="trainingExceedanceDialog" aria-labelledby="exceedanceTitle">
+            <style>
+              #trainingExceedanceDialog { box-sizing:border-box; width:90vw; height:90vh; max-width:90vw; max-height:90vh; padding:16px; overflow:auto; border:1px solid #94a3b8; border-radius:8px; }
+              #trainingExceedanceDialog::backdrop { background:rgba(15,23,42,.45); }
+              #trainingExceedanceDialog .exceedance-controls { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:8px 0; }
+              #trainingExceedanceDialog .exceedance-modes button[aria-pressed="true"] { border-color:#2563eb; color:#1d4ed8; }
+              #trainingExceedanceDialog .exceedance-compare-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+              #trainingExceedanceDialog .exceedance-compare-group { min-width:0; border:1px solid #cbd5e1; border-radius:6px; padding:10px; }
+              #trainingExceedanceDialog .exceedance-compare-group h5 { margin:0 0 8px; }
+              #trainingExceedanceDialog .exceedance-compare-group input { width:100%; }
+              #trainingExceedanceDialog .exceedance-pair-plot { height:300px; min-width:0; }
+              #trainingExceedanceDialog label { display:flex; flex-direction:column; gap:4px; }
+              #trainingExceedanceDialog input { width:240px; max-width:100%; }
+              #trainingExceedanceDialog .exceedance-plot { height:250px; min-width:0; }
+              #trainingExceedanceDialog .table-wrap { overflow-x:auto; }
+              #trainingExceedanceDialog h4 { margin:12px 0 6px; }
+              @media (max-width:640px) { #trainingExceedanceDialog .exceedance-compare-grid { grid-template-columns:minmax(0,1fr); } }
+            </style>
+            <div class="exceedance-controls"><h3 id="exceedanceTitle">T² / SPE 超限诊断</h3><button id="exceedanceClose" type="button" class="secondary">关闭</button></div>
+            <div id="exceedanceStatus" role="status" aria-live="polite"></div>
+            <div class="exceedance-controls exceedance-modes" aria-label="趋势框选模式">
+              <span>框选模式</span>
+              <button id="exceedanceModeSingle" type="button" class="secondary" aria-pressed="true">单区间诊断</button>
+              <button id="exceedanceModeAnomaly" type="button" class="secondary" aria-pressed="false">选择异常区间</button>
+              <button id="exceedanceModeReference" type="button" class="secondary" aria-pressed="false">选择参考区间</button>
+            </div>
+            <div class="exceedance-controls">
+              <label>开始时间<input id="exceedanceStart" type="text" placeholder="ISO 时间，可含微秒及时区"></label>
+              <label>结束时间<input id="exceedanceEnd" type="text" placeholder="ISO 时间，可含微秒及时区"></label>
+              <button id="exceedanceApply" type="button">分析区间</button>
+              <button id="exceedanceReset" type="button" class="secondary">恢复全局视图</button>
+            </div>
+            <div class="help">横向框选分析区间；工具栏支持缩放和平移。贡献表示统计偏离来源，不表示工艺根因。</div>
+            <div id="exceedanceT2" class="exceedance-plot"></div><div id="exceedanceSpe" class="exceedance-plot"></div>
+            <h4>区间统计</h4><div id="exceedanceStatistics" class="table-wrap"></div>
+            <div class="exceedance-controls"><h4>变量贡献 Top10</h4><label>统计量<select id="exceedanceMetric"><option value="t2">T²</option><option value="spe">SPE</option></select></label></div>
+            <div id="exceedanceContributions" class="table-wrap"></div>
+            <section id="exceedanceComparePanel">
+              <h4>SPE 两区间比较</h4>
+              <div class="exceedance-compare-grid">
+                <div class="exceedance-compare-group">
+                  <h5>高 SPE 异常区间</h5>
+                  <div class="exceedance-controls"><label>开始时间<input id="exceedanceAnomalyStart" type="text" placeholder="ISO 时间"></label><label>结束时间<input id="exceedanceAnomalyEnd" type="text" placeholder="ISO 时间"></label><button id="exceedanceAnomalyClear" type="button" class="secondary">清除</button></div>
+                </div>
+                <div class="exceedance-compare-group">
+                  <h5>低 SPE 参考区间</h5>
+                  <div class="exceedance-controls"><label>开始时间<input id="exceedanceReferenceStart" type="text" placeholder="ISO 时间"></label><label>结束时间<input id="exceedanceReferenceEnd" type="text" placeholder="ISO 时间"></label><button id="exceedanceReferenceClear" type="button" class="secondary">清除</button></div>
+                </div>
+              </div>
+              <div class="exceedance-controls"><label>负荷 Tag<select id="exceedanceLoadTag"><option value="">请选择数值型 Tag</option></select></label><button id="exceedanceCompareApply" type="button">比较两区间</button></div>
+              <div id="exceedanceCompareStatus" role="status" aria-live="polite"></div>
+              <div id="exceedanceCompareStatistics" class="table-wrap"></div>
+              <h5>异常组 SPE 残差²均值与低 SPE 参考残差能量</h5>
+              <div id="exceedanceCompareContributions" class="table-wrap"></div>
+              <div class="help">参考列表示低 SPE 样本的残差能量分解。负荷范围重叠不等于同负荷，需工程师核对分布。</div>
+            </section>
+            <section id="exceedanceRawSection" hidden><h4 id="exceedanceRawTitle">原始趋势</h4><div id="exceedanceRawStatus" role="status"></div><div id="exceedanceRaw" class="exceedance-plot"></div></section>
+            <section id="exceedanceCompareRawSection" hidden><h4 id="exceedanceCompareRawTitle">异常与参考原始趋势</h4><div id="exceedanceCompareRawStatus" role="status"></div><div id="exceedanceCompareRaw" class="exceedance-pair-plot"></div><div id="exceedanceCompareLoadTitle"></div><div id="exceedanceCompareLoadStatus" role="status"></div><div id="exceedanceCompareLoadRaw" class="exceedance-pair-plot"></div></section>
+          </dialog>
           <div class="model-overview-grid">
             <section class="chart-card model-quality-conclusion" aria-labelledby="modelQualityTitle">
               <h3 id="modelQualityTitle">模型质量判断</h3>
@@ -2321,6 +2385,7 @@ class ModelResultsHandler(_BASE_WEB._Handler):
         path = urlparse(self.path).path
         if path not in {
             "/api/train",
+            "/api/training-exceedance",
             "/api/trend",
             "/api/model-diagnostics",
             "/api/model-comparison",
@@ -2331,6 +2396,9 @@ class ModelResultsHandler(_BASE_WEB._Handler):
         try:
             payload = self._json_body()
             result = (
+                training_exceedance.training_exceedance_payload(payload)
+                if path == "/api/training-exceedance"
+                else
                 train_payload(payload)
                 if path == "/api/train"
                 else _TREND_APP.trend_payload(payload)

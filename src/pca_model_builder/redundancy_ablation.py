@@ -28,6 +28,20 @@ EVIDENCE_POLICY = {"minimum_normal_rows": 100, "minimum_abnormal_rows": 30,
                    "minimum_abnormal_windows": 3, "allowed_degradation": 0}
 
 
+def _window_independent_detections(scored_windows: Sequence[Mapping[str, Any]], model: DPCAModel) -> list[dict[str, Any]]:
+    """Per-window T²/SPE detection flags at 95%/99%, using each model's own limits."""
+    detections = []
+    for window in scored_windows:
+        scores = window["scores"]
+        item: dict[str, Any] = {"validation_window_id": window["id"]}
+        for confidence in (95, 99):
+            limit = confidence / 100
+            item[f"t2_detected_{confidence}"] = bool((scores["t2"] >= model.t2_limits[limit]).any())
+            item[f"spe_detected_{confidence}"] = bool((scores["spe"] >= model.q_limits[limit]).any())
+        detections.append(item)
+    return detections
+
+
 def redundancy_candidates(reference: pd.DataFrame) -> dict[str, Any]:
     diagnostics = analyze_variable_diagnostics(reference)
     diagnostics["sample_scope"] = "baseline_effective_training_timestamps"
@@ -145,6 +159,8 @@ def evaluate_ablation(
                                           "expected_rows": expected, "coverage": len(scores) / expected if expected else None,
                                           "common_coverage": len(aligned) / len(scores) if len(scores) else None,
                                           "metrics": metrics}
+            if kind == "known_abnormal":
+                scheme["validation"][kind]["window_detections"] = _window_independent_detections(scored_windows, model)
             if label_column and not aligned.empty:
                 labels = indexed[label_column].reindex(aligned.index)
                 scheme["validation"][kind]["status_by_engineering_label"] = {
@@ -206,6 +222,17 @@ def ablation_conclusion(baseline: dict, scheme: dict) -> tuple[str, list[str], d
             if delta[key] is not None and delta[key] < 0:
                 worse.append(f"{statistic.upper()} {confidence}% 独立检出窗口数下降"
                              f"（{base_abnormal['metrics'][key]} → {abnormal['metrics'][key]}），监测能力损失。")
+    # 逐窗口比较：汇总数可能被其它窗口的新增检出抵消，单窗口丢失仍算监测能力损失。
+    base_windows = {item["validation_window_id"]: item for item in base_abnormal.get("window_detections", [])}
+    for window in abnormal.get("window_detections", []):
+        previous = base_windows.get(window["validation_window_id"])
+        if previous is None:
+            continue
+        for statistic in ("t2", "spe"):
+            for confidence in (95, 99):
+                key = f"{statistic}_detected_{confidence}"
+                if previous[key] and not window[key]:
+                    worse.append(f"异常窗口 {window['validation_window_id']} {statistic.upper()} {confidence}% 检出丢失。")
     baseline_windows = {item["validation_window_id"]: item for item in base_abnormal["metrics"]["windows"]}
     for window in abnormal["metrics"]["windows"]:
         previous = baseline_windows[window["validation_window_id"]]
