@@ -78,6 +78,7 @@ from .tag_config_io import (
 )
 from .tag_profile import model_quality_payload, profile_tag
 from .training import _validate_dynamic_matrix, build_training_matrix
+from .redundancy_ablation import MAX_DROP_TAGS, evaluate_ablation, redundancy_candidates
 from .trend import downsample_trend, trend_payload_data
 from .validation import (
     _file_sha256,
@@ -494,6 +495,72 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         len(training_result.reference),
         len(result["scores"]),
     )
+
+
+def redundancy_ablation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    with _lifecycle_lock(run_id):
+        model_path = RUNS_DIR / run_id / "model.pcamodel"
+        model, manifest = load_model_package(model_path)
+        if manifest["model_purpose"] != "normal_state" or manifest["model_status"] != "candidate":
+            raise ValueError("仅支持 normal_state/candidate 基准模型")
+        if manifest["schema_version"] != 5:
+            raise ValueError("旧预处理语义的候选模型请重新正式训练后评估；原模型包保持不变")
+        snapshot_result = modeling_snapshot_payload(run_id)
+        if not snapshot_result["available"]:
+            raise ValueError("基准模型缺少建模快照，请重新正式训练")
+        snapshot = snapshot_result["snapshot"]
+        model_sha = _file_sha256(model_path)
+        if snapshot["candidate_model"]["sha256"] != model_sha or payload.get("model_sha256") not in (None, model_sha):
+            raise ValueError("基准模型已变化，消融结果已失效，请重新加载")
+        source = snapshot["data_source"]
+        if payload.get("file_id") != source["file_id"]:
+            raise ValueError("数据源与基准模型不一致，请重新训练")
+        stored = manifest["config"]
+        tags = stored["tags"]
+        config = _preprocessing_config(stored)
+        request = {"file_id": source["file_id"], "timestamp_column": source["timestamp_column"],
+                   "encoding": source.get("encoding", payload.get("encoding", "utf-8-sig")),
+                   "modeling_eligibility": snapshot["modeling_eligibility"]}
+        label_column = str(payload.get("label_column", "")).strip()
+        loaded = _load_modeling_upload(request, [*tags, *(condition.column for condition in config.state_filters),
+                                                *([label_column] if label_column else [])], "找不到 Tag / 工程标签列：")
+        if not source.get("sha256") or _file_sha256(loaded.metadata.source_path) != source["sha256"]:
+            raise ValueError("基准训练数据已变化，请重新训练")
+        tag_configs = stored["tag_configs"]
+        training = build_training_matrix(loaded.frame, source["timestamp_column"], tags, config,
+                                         manifest["training_windows"], engineering_ranges(tag_configs),
+                                         exclude_engineering_range=True, modeling_eligibility=snapshot["modeling_eligibility"])
+        if (tuple(training.dynamic.columns) != model.feature_names or len(training.dynamic) != model.n_samples
+                or not np.allclose(training.dynamic.mean().to_numpy(), model.mean, rtol=1e-12, atol=1e-12)
+                or not np.allclose(training.dynamic.std(ddof=0).to_numpy(), model.scale, rtol=1e-12, atol=1e-12)):
+            raise ValueError("当前环境无法复现基准训练样本，请重新正式训练")
+        reference = training.reference.set_index(source["timestamp_column"]).loc[training.dynamic.index, tags]
+        result = {"run_id": run_id, "model_sha256": model_sha, **redundancy_candidates(reference)}
+        action = payload.get("action", "candidates")
+        if action == "candidates":
+            return result
+        if action != "evaluate":
+            raise ValueError("消融 action 无效")
+        group = next((group for group in result["groups"] if group["id"] == payload.get("group_id")), None)
+        if group is None:
+            raise ValueError("请选择当前基准模型的冗余候选组")
+        drops, locked = payload.get("drop_tags"), payload.get("locked_tags", [])
+        if (not isinstance(drops, list) or not drops or len(drops) > MAX_DROP_TAGS
+                or any(not isinstance(tag, str) for tag in drops) or len(set(drops)) != len(drops)):
+            raise ValueError(f"请选择1至{MAX_DROP_TAGS}个不重复的待评估 Tag")
+        if (not isinstance(locked, list) or any(not isinstance(tag, str) or tag not in group["tags"] for tag in locked)
+                or any(tag not in group["tags"] or tag in locked for tag in drops)):
+            raise ValueError("待剔除 Tag 必须属于所选组且未锁定")
+        validation_windows = payload.get("validation_windows", [])
+        if not isinstance(validation_windows, list):
+            raise ValueError("validation_windows必须是列表；无独立验证时使用空列表")
+        settings = snapshot["model_config"]
+        result.update(evaluate_ablation(loaded.frame, source["timestamp_column"], tags, config,
+                                        manifest["training_windows"], tag_configs, snapshot["modeling_eligibility"],
+                                        model, training, drops, settings["variance_threshold"],
+                                        settings["requested_n_components"], validation_windows, label_column))
+        return result
 
 
 def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1202,6 +1269,7 @@ def _modeling_snapshot(
         "candidate_model": {"filename": model_path.name, "sha256": _file_sha256(model_path)},
         "change_reason": change_reason.strip() if isinstance(change_reason, str) else "",
         "data_source": {
+            "encoding": payload.get("encoding", "utf-8-sig"),
             "filename": (
                 Path(source_filename).name
                 if isinstance(source_filename, str) and source_filename.strip()
@@ -3105,6 +3173,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/train":
                 self._send_json(train_payload(payload))
+                return
+            if parsed.path == "/api/redundancy-ablation":
+                self._send_json(redundancy_ablation_payload(payload))
                 return
             if parsed.path == "/api/validate":
                 self._send_json(validate_payload(payload))

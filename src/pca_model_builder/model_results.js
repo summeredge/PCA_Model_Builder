@@ -8,6 +8,197 @@
   const chart = document.getElementById("loadingChart");
   if (!chart || !document.getElementById("componentLoadingsContent") || !document.getElementById("modelStructureComparison") || !document.getElementById("frozenReplay")) return;
 
+  let ablationRevision = 0, ablationBusy = false, ablationInvalid = false;
+  let ablationCandidates = null, ablationEvaluation = null, ablationIdentity = null;
+  let ablationScheme = null;
+  const ablationDrops = new Set(), ablationLocks = new Set();
+  let ablationWindowsKey = JSON.stringify(state.validationWindows);
+  const ablationConfigIds = ["components", "varianceThreshold", "sampleInterval", "resamplingMethod", "filterMethod", "firstOrderAlpha", "smoothingWindow", "gapThreshold", "maxLag", "lagStep", "timestampColumn", "encoding"];
+  const ablationPercent = value => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+  function ablationKey() {
+    return JSON.stringify([state.qualityRevision, [...state.selectedModelTags], state.registry, state.trainingWindows, state.validationWindows,
+      ablationConfigIds.map(id => el(id)?.value), el("labelColumn").value, state.validation?.model_status]);
+  }
+  function ablationEligible() {
+    return !ablationInvalid && state.runId && state.fileId && state.training?.run_id === state.runId &&
+      state.training.model_purpose === "normal_state" && state.training.model_status === "candidate" &&
+      (!state.validation?.model_status || state.validation.model_status === "candidate");
+  }
+  function ablationCurrent(identity) {
+    return identity && identity.revision === ablationRevision && identity.runId === state.runId &&
+      identity.fileId === state.fileId && identity.training === state.training && identity.key === ablationKey() && ablationEligible();
+  }
+  function ablationMessage(message, kind = "info") {
+    setUiMessage(el("ablationStatus"), message, kind);
+  }
+  function updateAblationActions() {
+    el("ablationCandidatesButton").disabled = ablationBusy || !ablationEligible();
+    el("ablationGroup").disabled = ablationBusy || !ablationCandidates;
+    el("ablationEvaluateButton").disabled = ablationBusy || !ablationCandidates || !ablationCurrent(ablationIdentity) || !el("ablationGroup").value || !ablationDrops.size;
+    el("ablationApplyButton").disabled = ablationBusy || !ablationScheme || !ablationCurrent(ablationIdentity);
+    el("ablationTags").querySelectorAll("input").forEach(input => { input.disabled = ablationBusy || !ablationCandidates || ablationLocks.has(input.dataset.ablationDrop); });
+  }
+  window.invalidateRedundancyAblation = function(reason, configurationChanged = false) {
+    ablationRevision += 1;
+    ablationBusy = false;
+    if (configurationChanged) ablationInvalid = true;
+    ablationCandidates = ablationEvaluation = ablationIdentity = ablationScheme = null;
+    ablationDrops.clear(); ablationLocks.clear();
+    ["ablationTags", "ablationEvidence", "ablationDiagnostics", "ablationResults", "ablationWarnings", "ablationPolicy"].forEach(id => el(id).replaceChildren());
+    el("ablationGroup").replaceChildren(new Option("尚未加载", ""));
+    ablationMessage(reason ? `当前评估结果已失效：${reason}。${configurationChanged ? "请重新检查质量并正式训练。" : "请重新加载候选组。"}` : "请先完成正常状态候选模型训练，再加载冗余候选组。");
+    updateAblationActions();
+  };
+  window.refreshRedundancyValidation = function() {
+    const key = JSON.stringify(state.validationWindows);
+    if (key !== ablationWindowsKey) window.invalidateRedundancyAblation("验证窗口已修改");
+    ablationWindowsKey = key;
+  };
+  ablationConfigIds.forEach(id => el(id)?.addEventListener("change", () => window.invalidateRedundancyAblation("训练配置已修改", true)));
+  el("labelColumn").addEventListener("change", () => window.invalidateRedundancyAblation("验证工程标签已修改"));
+  function showTrainingTool(panelId) {
+    [["trainingMainTab", "trainingMainPanel"], ["redundancyAblationTab", "redundancyAblationPanel"]].forEach(([tabId, id]) => {
+      const active = id === panelId;
+      el(id).hidden = !active; el(tabId).classList.toggle("active", active); el(tabId).setAttribute("aria-selected", String(active));
+    });
+    updateAblationActions();
+  }
+  [["trainingMainTab", "trainingMainPanel"], ["redundancyAblationTab", "redundancyAblationPanel"]].forEach(([tabId, panelId]) => {
+    el(tabId).addEventListener("click", () => showTrainingTool(panelId));
+    el(tabId).addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === "Home" ? "trainingMainTab" : event.key === "End" ? "redundancyAblationTab" : tabId === "trainingMainTab" ? "redundancyAblationTab" : "trainingMainTab";
+      el(next).click(); el(next).focus();
+    });
+  });
+  function ablationTable(target, headers, rows) {
+    target.replaceChildren();
+    const table = document.createElement("table"), head = document.createElement("thead"), body = document.createElement("tbody"), titles = document.createElement("tr");
+    headers.forEach(value => { const cell = document.createElement("th"); cell.textContent = value; titles.append(cell); }); head.append(titles);
+    rows.forEach(values => {
+      const row = document.createElement("tr");
+      values.forEach(value => { const cell = document.createElement("td"); if (value instanceof Node) cell.append(value); else cell.textContent = value ?? "—"; row.append(cell); }); body.append(row);
+    });
+    table.append(head, body); target.append(table); target.tabIndex = 0;
+  }
+  function clearAblationSchemes() {
+    ablationRevision += 1; ablationEvaluation = ablationScheme = null;
+    el("ablationResults").replaceChildren(); el("ablationWarnings").replaceChildren();
+    // Candidate evidence survives manual choices, but requests/results belong to that choice revision.
+    if (ablationIdentity) ablationIdentity.revision = ablationRevision;
+    updateAblationActions();
+  }
+  el("ablationGroup").addEventListener("change", () => {
+    clearAblationSchemes(); ablationDrops.clear(); ablationLocks.clear();
+    const group = ablationCandidates?.groups.find(item => String(item.id) === el("ablationGroup").value);
+    if (!group) { el("ablationTags").replaceChildren(); el("ablationEvidence").replaceChildren(); updateAblationActions(); return; }
+    ablationTable(el("ablationTags"), ["Tag", "待逐个剔除", "关键锁定"], group.tags.map(tag => {
+      const drop = document.createElement("input"), lock = document.createElement("input"); drop.type = lock.type = "checkbox";
+      drop.dataset.ablationDrop = tag;
+      drop.setAttribute("aria-label", `待剔除 ${tag}`); lock.setAttribute("aria-label", `锁定 ${tag}`);
+      drop.addEventListener("change", () => {
+        if (drop.checked && ablationDrops.size >= ablationCandidates.max_drop_tags) { drop.checked = false; ablationMessage(`单次最多选择 ${ablationCandidates.max_drop_tags} 个待剔除 Tag。`, "warning"); return; }
+        if (drop.checked) ablationDrops.add(tag); else ablationDrops.delete(tag);
+        clearAblationSchemes(); ablationMessage(ablationDrops.size ? `已选择 ${ablationDrops.size} 个单 Tag 剔除方案。` : "未选择待评估变量。");
+      });
+      lock.addEventListener("change", () => { if (lock.checked) { ablationLocks.add(tag); ablationDrops.delete(tag); drop.checked = false; } else ablationLocks.delete(tag); clearAblationSchemes(); ablationMessage("关键锁定已更新；锁定 Tag 不参与剔除。"); });
+      return [tag, drop, lock];
+    }));
+    ablationTable(el("ablationEvidence"), ["Tag A", "Tag B", "Pearson r", "有效配对样本数", "相关证据"], group.pairs.map(pair => [pair.tag_a, pair.tag_b, Number.isFinite(pair.pearson_r) ? pair.pearson_r.toFixed(4) : "不可计算", pair.valid_pair_count, pair.unavailable_reason || (pair.high_correlation ? "高相关" : "低于阈值")]));
+    ablationMessage("未选择待评估变量。请勾选组内待剔除 Tag。"); updateAblationActions();
+  });
+  async function requestAblation(action) {
+    if (!ablationEligible()) { ablationMessage("仅支持当前正常状态候选模型；配置变更后请重新训练。", "warning"); return; }
+    if (action === "evaluate" && (!ablationCurrent(ablationIdentity) || !ablationDrops.size)) { window.invalidateRedundancyAblation("模型、配置或选择已变化"); return; }
+    const identity = {revision: ++ablationRevision, runId: state.runId, fileId: state.fileId, training: state.training, key: ablationKey()};
+    const sha = action === "evaluate" ? ablationCandidates.model_sha256 : null;
+    ablationBusy = true; ablationScheme = null; el("ablationResults").replaceChildren(); el("ablationWarnings").replaceChildren(); updateAblationActions();
+    ablationMessage(action === "evaluate" ? "正在执行逐 Tag 消融…" : "正在加载冗余候选组…");
+    try {
+      const data = await api("/api/redundancy-ablation", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({run_id: identity.runId, file_id: identity.fileId, action, ...(sha ? {model_sha256: sha} : {}), encoding: commonPayload().encoding, label_column: el("labelColumn").value, group_id: el("ablationGroup").value || null, drop_tags: [...ablationDrops], locked_tags: [...ablationLocks], validation_windows: state.validationWindows})});
+      if (!ablationCurrent(identity)) return;
+      if (data.run_id !== identity.runId || !data.model_sha256 || (sha && data.model_sha256 !== sha)) throw new Error("模型身份不匹配，请重新加载候选组。");
+      ablationIdentity = identity;
+      const policy = data.evidence_policy;
+      el("ablationPolicy").textContent = policy ? `保守门槛：共同正常样本 ≥ ${policy.minimum_normal_rows}；共同异常样本 ≥ ${policy.minimum_abnormal_rows}、异常窗口 ≥ ${policy.minimum_abnormal_windows}；允许性能退化 ${ablationPercent(policy.allowed_degradation)}。覆盖须完整、训练时间戳须一致且验证无失败；结论仍需人工判断。` : "";
+      if (action === "candidates") {
+        ablationCandidates = data; ablationEvaluation = null; ablationDrops.clear(); ablationLocks.clear();
+        el("ablationTags").replaceChildren(); el("ablationEvidence").replaceChildren();
+        el("ablationGroup").replaceChildren(new Option("请选择候选组", ""), ...data.groups.map(group => new Option(`${group.id}：${group.tags.join("、")}`, String(group.id))));
+        const diagnostics = data.diagnostics || {};
+        ablationTable(el("ablationDiagnostics"), ["变量 / 变量对", "有效样本数", "原因"], [
+          ...(diagnostics.tag_profiles || []).filter(item => item.flags?.length).map(item => [item.tag, item.profile?.valid_count, item.flags.join("；")]),
+          ...(diagnostics.unavailable_pairs || []).map(pair => [`${pair.tag_a} / ${pair.tag_b}`, pair.valid_pair_count, pair.unavailable_reason]),
+        ]);
+        ablationMessage(data.groups.length ? `已加载 ${data.groups.length} 个候选组；|Pearson r| ≥ ${diagnostics.correlation_threshold ?? 0.95}，单次最多剔除 ${data.max_drop_tags} 个 Tag（分别训练）。` : "未发现高相关变量组。");
+      } else {
+        ablationEvaluation = data;
+        renderAblationSchemes(data);
+      }
+    } catch (error) {
+      if (ablationCurrent(identity)) { ablationCandidates = ablationEvaluation = ablationIdentity = null; ablationMessage(`冗余消融失败：${error.message}`, "error"); }
+    } finally {
+      if (identity.revision === ablationRevision) {
+        ablationBusy = false;
+        if (!ablationCurrent(identity)) window.invalidateRedundancyAblation("模型或配置已变化");
+        else updateAblationActions();
+      }
+    }
+  }
+  el("ablationCandidatesButton").addEventListener("click", () => requestAblation("candidates"));
+  el("ablationEvaluateButton").addEventListener("click", () => requestAblation("evaluate"));
+  function ablationValidationText(value, abnormal) {
+    if (!value) return abnormal ? "异常检出能力尚未验证" : "未提供正常验证";
+    const metrics = value.metrics || {};
+    const coverage = `有效 ${value.original_rows ?? "—"} / 共同 ${value.common_rows ?? "—"}；覆盖 ${ablationPercent(value.coverage)} / 共同覆盖 ${ablationPercent(value.common_coverage)}`;
+    if (!(value.common_rows > 0)) return `无共同有效验证样本；${coverage}${abnormal ? "；异常检出能力尚未验证" : ""}`;
+    const labels = Object.entries(value.status_by_engineering_label || {}).map(([label, counts]) => `${label}→正常 ${counts.normal ?? 0} / 关注 ${counts.attention ?? 0} / 异常 ${counts.abnormal ?? 0}`).join("；");
+    const labelText = labels ? `；工程标签：${labels}` : "";
+    if (abnormal) {
+      const independent = [["T²", "t2"], ["SPE", "spe"]].map(([label, key]) => `${label}检出窗口 95% / 99% ${metrics[`${key}_detected_window_count_95`] ?? "—"} / ${metrics[`${key}_detected_window_count_99`] ?? "—"}（共 ${metrics.valid_window_count ?? "—"} 个异常窗口）`).join("；");
+      return `${coverage}；检出覆盖率95% ${ablationPercent(metrics.detection_coverage_rate_95)}；异常窗口检出率95% / 99% ${ablationPercent(metrics.detection_rate_95)} / ${ablationPercent(metrics.detection_rate_99)}；${independent}；连续检出事件 ${metrics.continuous_detection_event_count_95 ?? "—"}${labelText}`;
+    }
+    return `${coverage}；${["t2", "spe", "overall"].map((key, i) => `${["T²", "SPE", "综合"][i]}95% / 99% ${ablationPercent(metrics[key]?.exceedance_rate_95)} / ${ablationPercent(metrics[key]?.exceedance_rate_99)}`).join("；")}；连续误报事件 ${metrics.continuous_false_alarm_event_count_95 ?? "—"}；最长误报 ${metrics.longest_continuous_false_alarm_minutes ?? "—"} min${labelText}`;
+  }
+  function renderAblationSchemes(data) {
+    const deltaLabels = {detection_rate_95: ["异常窗口检出率95%", "rate"], detection_rate_99: ["异常窗口检出率99%", "rate"],
+      detection_coverage_rate_95: ["检出覆盖率95%", "rate"], t2_detected_window_count_95: ["T²检出窗口95%", "count"],
+      t2_detected_window_count_99: ["T²检出窗口99%", "count"], spe_detected_window_count_95: ["SPE检出窗口95%", "count"],
+      spe_detected_window_count_99: ["SPE检出窗口99%", "count"]};
+    ablationTable(el("ablationResults"), ["选择", "方案 / 剔除Tag", "结论 / 原因", "状态", "正常验证", "已知异常验证", "检出变化", "Tag数 / 动态维度 / 训练样本 / 共同训练样本", "主元 / 累计解释率", "训练时间戳一致"], data.schemes.map(scheme => {
+      const radio = document.createElement("input"); radio.type = "radio"; radio.name = "ablationScheme"; radio.setAttribute("aria-label", `选择方案 ${scheme.name}`);
+      radio.disabled = scheme.status !== "evaluated" || !scheme.dropped_tag;
+      radio.addEventListener("change", () => { ablationScheme = scheme; updateAblationActions(); });
+      const abnormal = scheme.validation?.known_abnormal;
+      const reasons = [...(scheme.reasons || []), ...(scheme.validation_errors || []).map(error => typeof error === "string" ? error : `${error.window_id}（${error.type}）：${error.error}`)];
+      if (!(abnormal?.common_rows > 0)) reasons.push("异常检出能力尚未验证");
+      return [radio, `${scheme.name} / ${scheme.dropped_tag || "保留全部"}`, `${scheme.conclusion || "证据不足"}；${reasons.join("；")}`,
+        scheme.status === "failed" ? `评估失败：${scheme.error || "未提供失败原因"}` : scheme.validation_errors?.length ? "验证不完整" : "已评估",
+        scheme.status === "failed" ? "—" : ablationValidationText(scheme.validation?.normal_validation, false), scheme.status === "failed" ? "—" : ablationValidationText(abnormal, true),
+        Object.entries(scheme.detection_delta || {}).map(([key, value]) => {
+          const [label, kind] = deltaLabels[key] || [key, "rate"];
+          return `${label}：${Number.isFinite(value) ? kind === "count" ? `${value} 个窗口` : `${(value * 100).toFixed(1)} 个百分点` : "—"}`;
+        }).join("；") || "—",
+        scheme.status === "failed" ? "—" : `${scheme.tag_count} / ${scheme.dynamic_features} / ${scheme.training_rows} / ${scheme.training_common_rows ?? "—"}`,
+        scheme.status === "failed" ? "—" : `${scheme.n_components} / ${ablationPercent(scheme.cumulative_explained_variance)}`,
+        scheme.training_timestamps_match === true ? "一致" : "不一致或未确认：训练样本时间戳不同，变化不能全部归因于变量剔除，存在可比性限制"];
+    }));
+    el("ablationWarnings").textContent = (data.warnings || []).map(item => typeof item === "string" ? item : item.message || JSON.stringify(item)).join("；");
+    const partial = data.schemes.some(scheme => scheme.status === "failed" || scheme.validation_errors?.length);
+    ablationMessage(partial ? "评估完成；部分方案评估失败或验证不完整，请查看具体原因。" : "评估完成；请选择方案后人工确认应用。", partial ? "warning" : "success");
+  }
+  el("ablationApplyButton").addEventListener("click", () => {
+    if (!ablationCurrent(ablationIdentity) || !ablationEvaluation || ablationScheme?.status !== "evaluated") { window.invalidateRedundancyAblation("模型或配置已变化"); return; }
+    const tag = ablationScheme.dropped_tag, tags = selectedTags();
+    if (!tag || !tags.includes(tag) || ablationLocks.has(tag)) return;
+    if (!window.confirm(`将从待训练配置移除 ${tag}，剩余 ${tags.length - 1} 个 Tag。原基准模型和已有验证结果保留。应用后须重新执行建模质量检查并正式训练。是否继续？`)) return;
+    if (!ablationCurrent(ablationIdentity)) { window.invalidateRedundancyAblation("配置已变化"); return; }
+    state.selectedModelTags.delete(tag);
+    invalidateModellingResults(`消融方案已应用：移除 ${tag}`); renderTagList();
+    showTrainingTool("trainingMainPanel"); setStatus(`已移除待训练 Tag ${tag}；请重新执行建模质量检查并正式训练。原模型及验证结果保留。`, "warning");
+  });
+
   document.getElementById("frozenReplayButton").addEventListener("click", async () => {
     const button = document.getElementById("frozenReplayButton");
     const summary = document.getElementById("frozenReplaySummary");
@@ -88,6 +279,9 @@
   const originalRenderTraining = window.renderTraining;
   window.renderTraining = function renderTrainingWithLoadings(data) {
     originalRenderTraining(data);
+    ablationInvalid = false;
+    window.invalidateRedundancyAblation();
+    ablationMessage(ablationEligible() ? "正常状态候选模型已就绪，可加载冗余候选组。" : "仅支持 normal_state / candidate 基准模型，请先训练正常状态候选模型。");
     renderModelQuality(data.model_quality, data.training_window_totals);
     renderTrainingConditionDiagnostic(data.model_quality?.training_condition_diagnostic);
     drawLoadingPlot(data.loading_plot);

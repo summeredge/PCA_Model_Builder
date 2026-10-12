@@ -132,6 +132,7 @@ def test_train_writes_snapshot_with_verified_cluster_and_refinement_provenance(t
     assert snapshot["change_reason"] == "排除每日清洗状态并细化高负荷工况"
     upload_path = web.UPLOADS_DIR / f"{uploaded['file_id']}.csv"
     assert snapshot["data_source"] == {
+        "encoding": "utf-8-sig",
         "filename": "history.csv",
         "file_id": uploaded["file_id"],
         "timestamp_column": "time",

@@ -761,8 +761,8 @@ _WORKBENCH_UI_STYLE = r"""
   #configPanel > #qualityPanel { display:grid; gap:var(--space-2); margin-top:var(--space-4); }
   .candidate-manager, .shared-preprocessing, .training-configuration { border-color:#bfd7ef; }
   .candidate-tool-tabs { display:flex; gap:var(--space-1); flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); padding-bottom:var(--space-2); }
-  .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
-  .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .candidate-tool-tab, .training-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
+  .candidate-tool-tab.active, .training-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
   /* 摘要栏固定单行：min-width:0 让 span 的 min-content 不再撑宽 #candidatePanel 的隐式
      auto 轨道，nowrap + ellipsis 让宽度不足时省略文本，按钮始终可见。 */
   .candidate-config-summary { display:flex; align-items:center; gap:8px; min-width:0; font-size:13px; line-height:1.45; }
@@ -1079,8 +1079,9 @@ document.addEventListener("DOMContentLoaded", () => {
       !document.getElementById("deploymentModelDownload").hidden,
     ];
     const canRelease = !validatedDownload.hidden;
-    document.getElementById("releaseEmpty").hidden = canRelease;
-    document.getElementById("releaseContent").hidden = !canRelease;
+    // The observer below watches hidden; unchanged writes would schedule another refresh.
+    if (document.getElementById("releaseEmpty").hidden !== canRelease) document.getElementById("releaseEmpty").hidden = canRelease;
+    if (document.getElementById("releaseContent").hidden !== !canRelease) document.getElementById("releaseContent").hidden = !canRelease;
     const canReplay = !document.getElementById("frozenModelDownload").hidden;
     const replay = document.getElementById("frozenReplay");
     if (replay.hidden !== !canReplay) replay.hidden = !canReplay;
@@ -1660,7 +1661,31 @@ def _build_model_stage(model_panel: str, model_configuration_group: str) -> str:
     model_panel_content = model_panel_lines[0].split("\n", 1)
     if len(model_panel_content) != 2:
         raise ValueError("无法固定模型训练页面结构")
-    model_panel = f"{model_panel_content[0]}\n{model_configuration_group}\n{model_panel_content[1]}\n      </div>"
+    model_panel = f"""{model_panel_content[0]}
+        <div class="candidate-tool-tabs" role="tablist" aria-label="模型训练工具">
+          <button id="trainingMainTab" type="button" class="training-tool-tab active" role="tab" aria-selected="true" aria-controls="trainingMainPanel">训练配置与结果</button>
+          <button id="redundancyAblationTab" type="button" class="training-tool-tab" role="tab" aria-selected="false" aria-controls="redundancyAblationPanel">冗余消融评估</button>
+        </div>
+        <div id="trainingMainPanel" role="tabpanel" aria-labelledby="trainingMainTab">
+{model_configuration_group}
+{model_panel_content[1]}
+        </div>
+        <div id="redundancyAblationPanel" role="tabpanel" aria-labelledby="redundancyAblationTab" hidden>
+          <h3>冗余消融评估</h3>
+          <p class="help">相关性仅用于生成候选，变量去留由独立验证证据决定。每个方案只剔除一个原始 Tag 及其全部 Lag 特征；训练条件沿用基准模型。</p>
+          <div id="ablationStatus" class="empty" role="status" aria-live="polite">请先完成正常状态候选模型训练，再加载冗余候选组。</div>
+          <div id="ablationPolicy" class="help"></div>
+          <div class="actions"><button id="ablationCandidatesButton" type="button" disabled>加载冗余候选组</button><button id="ablationEvaluateButton" type="button" disabled>执行逐 Tag 消融</button><button id="ablationApplyButton" type="button" class="secondary" disabled>应用为待训练 Tag 配置</button></div>
+          <label>冗余候选组<select id="ablationGroup" disabled><option value="">尚未加载</option></select></label>
+          <p class="help">候选组按高相关边连通，不代表所有成员两两高度相关。勾选待剔除 Tag，或锁定暂不参与剔除的关键 Tag。</p>
+          <div id="ablationTags" class="table-wrap"></div>
+          <div id="ablationEvidence" class="table-wrap"></div>
+          <details><summary>数据质量及不可计算原因</summary><div id="ablationDiagnostics" class="table-wrap"></div></details>
+          <p class="help">验证窗口沿用「模型验证」中的已配置窗口。未提供异常验证时，异常检出能力尚未验证；结构简化或解释率增加不足以支持删除。</p>
+          <div id="ablationResults" class="table-wrap"></div>
+          <div id="ablationWarnings" class="help"></div>
+        </div>
+      </div>"""
     return model_panel
 
 
@@ -2100,6 +2125,18 @@ function renderClusterQuality(container, quality, perspective, clusterCenters={}
         f"{_FORM_ALIGNMENT_STYLE}\n{_APPLE_DESIGN_STYLE}\n{_WORKBENCH_UI_STYLE}\n{_MODEL_RESULTS_STYLE}\n{_FORM_WIDTH_STYLE}\n{_FORM_LAYOUT_STYLE}\n{_SCREENING_LAYOUT_STYLE}\n</head>",
         1,
     )
+    # Keep the base page owned by web.py; attach invalidation at its existing entries.
+    for entry, hook in (
+        ('function invalidateQuality(reason) {', 'globalThis.invalidateRedundancyAblation?.(reason, true);'),
+        ('function renderValidationWindows() {', 'globalThis.refreshRedundancyValidation?.();'),
+        ('function renderValidation(data) {', 'globalThis.invalidateRedundancyAblation?.("验证状态已更新");'),
+        ('async function trainModel(modelPurpose) {', 'globalThis.invalidateRedundancyAblation?.("正在重新训练", true);'),
+    ):
+        if result.count(entry) != 1:
+            raise ValueError(f"无法接入冗余消融失效入口：{entry}")
+        result = result.replace(entry, entry + '\n  ' + hook, 1)
+    result = result.replace('</head>', '<style>#trainingMainPanel:not([hidden]), #redundancyAblationPanel:not([hidden]) { display:grid; gap:var(--space-3); grid-template-columns:minmax(0,1fr); min-width:0; } #trainingMainPanel[hidden], #redundancyAblationPanel[hidden] { display:none; } #redundancyAblationPanel .table-wrap { overflow:auto; max-height:480px; } #redundancyAblationPanel td { overflow-wrap:anywhere; } #redundancyAblationPanel label { max-width:100%; } #redundancyAblationPanel select { max-width:100%; }</style></head>', 1)
+    result = result.replace('</head>', '<style>#ablationResults td { white-space:normal; max-width:340px; vertical-align:top; } #ablationResults td:is(:nth-child(3),:nth-child(5),:nth-child(6),:nth-child(7)) { min-width:220px; } #ablationResults td:is(:first-child,:nth-child(8),:nth-child(9)) { white-space:nowrap; }</style></head>', 1)
     return result.replace(
         "</body>",
         f'<script src="/assets/model-results.js" defer></script>\n{_WORKBENCH_UI_SCRIPT}\n</body>',
