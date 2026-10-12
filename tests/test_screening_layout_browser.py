@@ -57,17 +57,20 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await action('uploadButton','/api/upload');await page.locator('#timestampColumn').selectOption('time');
   await action('inspectButton','/api/inspect');
   await page.locator('[data-panel="candidatePanel"]').click();
-  await page.locator('[data-panel="stateExplorationPanel"]').click();
-  assert(await nav.isVisible());assert.equal(await nav.locator('a').count(),4);
+  assert(await page.locator('#trendPanel').isVisible());
+  assert(!await page.locator('#modelingEligibility').isVisible());
+  await page.locator('#candidateConfigSummary button').click();
+  assert(await page.locator('#candidatePreparationPanel').isVisible());
+  assert(await nav.isVisible());assert.equal(await nav.locator('a').count(),3);
   await page.locator('#addEligibilityKeep').click();
   const keep=page.locator('#eligibilityKeepConditions .eligibility-condition');
-  await keep.locator('select').selectOption('TAG_A');await keep.locator('[data-field="minimum"]').fill('-10');
+  await keep.locator('[data-field="column"]').selectOption('TAG_A');await keep.locator('[data-field="mode"]').selectOption('interval');await keep.locator('[data-field="minimum"]').fill('-10');
   assert.equal(await page.locator('#refreshEligibilitySummary').count(),0);
   await autoSummary(()=>keep.locator('[data-field="maximum"]').fill('10'));
   assert((await page.locator('#eligibilitySummary').textContent()).includes('480'));
   await page.locator('#addEligibilityExcludeGroup').click();
   const exclude=page.locator('#eligibilityExcludeGroups .eligibility-condition');
-  await exclude.locator('select').selectOption('TAG_A');await exclude.locator('[data-field="minimum"]').fill('-10');
+  await exclude.locator('[data-field="column"]').selectOption('TAG_A');await exclude.locator('[data-field="mode"]').selectOption('interval');await exclude.locator('[data-field="minimum"]').fill('-10');
   await autoSummary(()=>exclude.locator('[data-field="maximum"]').fill('10'));
   assert(await page.locator('#eligibilitySummary').evaluate(e=>e.classList.contains('warning')));
   await autoSummary(()=>exclude.getByRole('button',{name:'删除条件',exact:true}).click());
@@ -80,6 +83,18 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await autoSummary(()=>page.locator('#analysisEnd').fill('2026-01-02T12:00'));
   assert((await page.locator('#eligibilitySummary').innerText()).includes('421'));
   await autoSummary(()=>page.locator('#analysisStart').fill(start));await autoSummary(()=>page.locator('#analysisEnd').fill(end));
+  await page.locator('#addEligibilityKeep').click();
+  const comparison=page.locator('#eligibilityKeepConditions .eligibility-condition');
+  await comparison.locator('[data-field="column"]').selectOption('TAG_A');
+  await comparison.locator('[data-field="operator"]').selectOption('>');
+  await comparison.locator('[data-field="value"]').fill('0.73');
+  await page.waitForFunction(()=>document.querySelector('#eligibilitySummary').textContent.startsWith('分析时间范围：'));
+  assert.equal(await comparison.locator('.eligibility-preview').textContent(),'保留 TAG_A > 0.73 的数据');
+  await page.setViewportSize({width:390,height:1000});
+  const eligibilityGeometry=await comparison.evaluate(node=>{const r=node.getBoundingClientRect();return {right:r.right,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};});
+  assert(eligibilityGeometry.right<=391,JSON.stringify(eligibilityGeometry));assert.equal(eligibilityGeometry.overflow,0);
+  await page.setViewportSize({width:1440,height:1000});
+  await autoSummary(()=>comparison.getByRole('button',{name:'删除条件',exact:true}).click());
   await page.route('**/api/modeling-eligibility',route=>route.fulfill({status:500,contentType:'application/json',body:JSON.stringify({error:'摘要测试失败'})}));
   await page.locator('#analysisStart').fill('2026-01-01T01:00');
   await page.waitForFunction(()=>document.querySelector('#eligibilitySummary').classList.contains('warning')&&document.querySelector('#eligibilitySummary').textContent.includes('摘要测试失败'));
@@ -92,6 +107,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await page.locator('#smoothingWindow').fill('10');await page.locator('#filterMethod').selectOption('none');
   await page.locator('#sampleInterval').fill('5');await page.locator('#resamplingMethod').selectOption('none');
   await page.locator('#maxLag').fill('10');await page.locator('#lagStep').fill('5');
+  await page.locator('[data-panel="stateExplorationPanel"]').click();
+  assert((await page.locator('#candidateConfigSummary').innerText()).includes('最大 Lag：10'));
+  assert(!await page.locator('#modelingEligibility').isVisible());
   await page.locator('#explorationClusterCount').fill('2');await page.locator('#explorationMinimumDuration').fill('30');
   await page.locator('#explorationCandidateCount').fill('3');await page.locator('#explorationMaximumPlotPoints').fill('1200');
   await page.locator('#explorationPerformanceTag').selectOption('PERFORMANCE');
@@ -134,6 +152,69 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert(summaryGeometry.gap<=8,JSON.stringify(summaryGeometry));
   assert(summaryGeometry.paragraphMargins.flat().every(value=>value==='0px'),JSON.stringify(summaryGeometry));
   await page.evaluate(async()=>Plotly.relayout(state.preferredRegionPlot,{shapes:[{type:'circle',xref:'x',yref:'y',x0:-.5,x1:.5,y0:-.5,y1:.5,fillcolor:'rgba(23,107,135,.08)',line:{color:'#176b87',width:2}}]}));
+  // 优选区域统计：指标表是四列紧凑表，工况分布表按内容定宽、标签左对齐、数值右对齐。
+  const readRegionSummary=()=>page.locator('#explorationRegionSummary').evaluate(node=>{
+   const rect=e=>e.getBoundingClientRect();
+   const metricTable=node.querySelector('.region-metric-table'),clusterTable=node.querySelector('.region-cluster-table');
+   const metricCells=[...metricTable.querySelectorAll('tr')].map(row=>[...row.children].map(cell=>cell.textContent));
+   const clusterRows=[...clusterTable.querySelectorAll('tbody tr')].map(row=>[...row.children].map(cell=>cell.textContent));
+   const card=node.closest('.exploration-region-card'),heading=card.querySelector('h3');
+   return {metricRows:metricCells.length,metricCells,metricLabels:metricCells.flatMap(row=>[row[0],row[2]]).filter(Boolean),
+    clusterHeaders:[...clusterTable.querySelectorAll('thead th')].map(th=>th.textContent),clusterRows,
+    alignments:[...clusterTable.querySelectorAll('tbody tr:first-child td')].map(cell=>getComputedStyle(cell).textAlign),
+    metricAlignments:[...metricTable.querySelector('tr').children].map(cell=>getComputedStyle(cell).textAlign),
+    rowHeight:rect(clusterTable.querySelector('tbody tr')).height,tableWidth:rect(clusterTable).width,cardWidth:rect(card).width,
+    topGap:rect(metricTable).top-rect(heading).bottom,nodeText:node.innerText,
+    overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};
+  });
+  async function applyRegion(ellipses) {
+   const pending=page.waitForResponse(r=>r.url().endsWith('/preferred-region'));
+   await page.evaluate(async list=>{await updateExplorationPreferredRegion(list);},ellipses);
+   const payload=await (await pending).json();
+  await page.waitForFunction(seq=>state.preferredRegionUpdateSeq>=seq,payload.preferred_region_update_seq);
+   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+   return payload;
+  }
+  const regionClusterIds=new Set((data.cluster_series_full||data.cluster_series).map(row=>String(row.cluster_id))).size;
+  const fullRegionData=await applyRegion([{center_pc1:0,center_pc2:0,radius_pc1:1000000,radius_pc2:1000000}]);
+  const regionSummary=await readRegionSummary();
+  assert(regionSummary.metricRows>=3&&regionSummary.metricCells.every(row=>row.length===4),JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.metricLabels,['优选区域样本','完整有效样本占比','最大 工况组占比','区域稳定性','连续候选数','性能有效样本','性能达标样本','性能达标率','性能中位数'],JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.metricCells[0],['优选区域样本',String(fullRegionData.selected_sample_count),'完整有效样本占比',`${(fullRegionData.selected_sample_ratio*100).toFixed(1)}%`],JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.metricCells[1],['最大 工况组占比',`${(fullRegionData.max_cluster_share*100).toFixed(1)}%`,'区域稳定性',fullRegionData.stability_score.toFixed(4)],JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.metricCells[2],['连续候选数',String(fullRegionData.candidate_count),'性能有效样本',String(fullRegionData.performance_valid_count)],JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.metricCells[3],['性能达标样本',String(fullRegionData.performance_target_count),'性能达标率',`${(fullRegionData.performance_target_ratio*100).toFixed(1)}%`],JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.metricCells[4],['性能中位数',fullRegionData.performance_median.toFixed(3),'',''],JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.metricAlignments,['left','right','left','right'],JSON.stringify(regionSummary));
+  assert.deepEqual(regionSummary.clusterHeaders,['工况组','区域样本数','区域占比']);
+  assert.deepEqual(regionSummary.alignments,['left','right','right'],JSON.stringify(regionSummary));
+  assert.equal(regionSummary.clusterRows.length,regionClusterIds,JSON.stringify(regionSummary));
+  assert(regionSummary.clusterRows.length>=2&&regionSummary.clusterRows.every(row=>row.length===3),JSON.stringify(regionSummary));
+  assert.equal(regionSummary.clusterRows.reduce((sum,row)=>sum+Number(row[1]),0),fullRegionData.selected_sample_count,JSON.stringify(regionSummary));
+  assert(regionSummary.rowHeight>=28&&regionSummary.rowHeight<=30,JSON.stringify(regionSummary));
+  assert(regionSummary.tableWidth<regionSummary.cardWidth-1,JSON.stringify(regionSummary));
+  assert(regionSummary.topGap<=13,JSON.stringify(regionSummary));
+  assert(regionSummary.nodeText.includes('工况分布')&&regionSummary.nodeText.includes('重叠样本只计一次'),JSON.stringify(regionSummary));
+  assert.equal(regionSummary.overflow,0,JSON.stringify(regionSummary));
+  assert.equal(await page.locator('#explorationRegionSummary .metrics').count(),0);
+  // 零样本区域：工况分布保留全部工况组（含 0 样本），占比与缺失值沿用原格式。
+  const emptyRegionData=await applyRegion([{center_pc1:0,center_pc2:0,radius_pc1:1e-9,radius_pc2:1e-9}]);
+  assert.equal(emptyRegionData.selected_sample_count,0,JSON.stringify(emptyRegionData));
+  const emptyRegion=await readRegionSummary();
+  assert.equal(emptyRegion.clusterRows.length,regionClusterIds,JSON.stringify(emptyRegion));
+  assert(emptyRegion.clusterRows.every(row=>row[1]==='0'&&row[2]==='0.0%'),JSON.stringify(emptyRegion));
+  assert.deepEqual(emptyRegion.metricCells[0],['优选区域样本','0','完整有效样本占比','0.0%'],JSON.stringify(emptyRegion));
+  assert.deepEqual(emptyRegion.metricCells[1],['最大 工况组占比','0.0%','区域稳定性','—'],JSON.stringify(emptyRegion));
+  assert.deepEqual(emptyRegion.metricCells[2],['连续候选数','0','性能有效样本','0'],JSON.stringify(emptyRegion));
+  assert.deepEqual(emptyRegion.metricCells[3],['性能达标样本','0','性能达标率','—'],JSON.stringify(emptyRegion));
+  assert.deepEqual(emptyRegion.metricCells[4],['性能中位数','—','',''],JSON.stringify(emptyRegion));
+  assert.equal(emptyRegion.overflow,0,JSON.stringify(emptyRegion));
+  // 未定义椭圆时保留原提示（同一渲染入口，不额外发起区域请求）。
+  await page.evaluate(()=>{state.preferredRegion={ellipses:[]};renderExplorationRegionSummary(state.exploration);});
+  assert.equal(await page.locator('#explorationRegionSummary').innerText(),'尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。');
+  // 用已收到的完整区域响应恢复状态，后续几何用例仍在真实数据上运行。
+  await page.evaluate(payload=>{state.preferredRegion=payload.preferred_region;state.exploration={...state.exploration,preferred_region_candidates:payload.preferred_region_candidates};renderExplorationRegionSummary(state.exploration);},fullRegionData);
+  assert.equal(await page.locator('#explorationRegionSummary .region-cluster-table tbody tr').count(),regionClusterIds);
   await page.locator('#explorationQualityDetails').evaluate(node=>node.closest('details').open=true);
   const technicalText=await page.locator('#explorationQualityDetails').innerText();
   assert(technicalText.includes('样本与绘图详情'));
@@ -150,9 +231,48 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     stages:[...document.querySelectorAll('.workflow-step')].map(e=>[e.dataset.panel,e.className,e.getAttribute('aria-selected'),e.innerText]),
     tools:[...document.querySelectorAll('.candidate-tool-tab')].map(e=>[e.dataset.panel,e.getAttribute('aria-selected')]),
     fields:[...document.querySelectorAll('#candidatePanel input,#candidatePanel select')].map(e=>[e.id,e.value,e.checked])}));
+  const retained = await page.evaluate(()=>JSON.stringify([commonPayload(),state.exploration,state.candidateWindows,state.trainingWindows]));
+  for(const width of [1440,900,390]) {
+   await page.setViewportSize({width,height:1000});
+   await page.locator('#candidateConfigSummary button').click();
+   assert(await page.locator('#modelingEligibility').isVisible());
+   assert(!await nav.locator('a').nth(1).isVisible());
+   const preparation=await page.locator('#candidatePreparationPanel').evaluate(node=>({
+    overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
+    clipped:[...node.querySelectorAll('input,select')].filter(e=>e.getClientRects().length&&e.getBoundingClientRect().right>innerWidth+1).map(e=>e.id),
+    dates:['analysisStart','analysisEnd'].map(id=>document.getElementById(id).getBoundingClientRect().width)
+   }));
+   assert.equal(preparation.overflow,0,JSON.stringify(preparation));
+   assert.deepEqual(preparation.clipped,[],JSON.stringify(preparation));
+   assert(Math.abs(preparation.dates[0]-preparation.dates[1])<=1,JSON.stringify(preparation));
+   for(const tool of ['trendPanel','clusterPanel','performancePanel','stateExplorationPanel']) {
+    await page.locator(`[data-panel="${tool}"]`).click();
+    assert(await page.locator('#'+tool).isVisible());
+    assert(!await page.locator('#modelingEligibility').isVisible());
+    assert.equal(await page.locator('.candidate-tool-tab[aria-selected="true"]').getAttribute('data-panel'),tool);
+    assert(await page.locator('#candidateConfigSummary').isVisible());
+   }
+   assert.equal(await page.evaluate(()=>JSON.stringify([commonPayload(),state.exploration,state.candidateWindows,state.trainingWindows])),retained);
+   const summaryBar=await page.locator('#candidateConfigSummary').evaluate(node=>{
+    const span=node.querySelector('span'),button=node.querySelector('button'),rect=e=>e.getBoundingClientRect();
+    const lineHeight=parseFloat(getComputedStyle(span).lineHeight);
+    return {height:rect(node).height,lines:Math.round(rect(span).height/lineHeight),text:span.textContent,
+     scroll:span.scrollHeight,client:span.clientHeight,buttonVisible:rect(button).width>0&&rect(button).height>0,
+     buttonLabel:button.textContent,buttonRight:rect(button).right,
+     overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};
+   });
+   // 配置摘要固定单行紧凑信息栏：长文本局部省略、按钮始终可见、不产生页面级横向溢出。
+   assert(summaryBar.lines===1,JSON.stringify(summaryBar));
+   assert(summaryBar.height<=48,JSON.stringify(summaryBar));
+   assert(summaryBar.scroll<=summaryBar.client+1,JSON.stringify(summaryBar));
+   assert(summaryBar.buttonVisible&&summaryBar.buttonLabel==='修改配置',JSON.stringify(summaryBar));
+   assert(summaryBar.buttonRight<=width+1,JSON.stringify(summaryBar));
+   assert(summaryBar.text.includes('资格：筛选后 480 点'),JSON.stringify(summaryBar));
+   assert.equal(summaryBar.overflow,0,JSON.stringify(summaryBar));
+  }
   async function checkNavigation() {
    const before=await snapshot(),requestCount=requests.length;
-   for(let index=0;index<4;index++) {
+   for(let index=0;index<3;index++) {
     const link=nav.locator('a').nth(index),id=(await link.getAttribute('href')).slice(1);
     // Native anchors retain keyboard activation. No tool/stage selection accompanies the jump.
     if(index===2) {await link.focus();await link.press('Enter');} else await link.click();
@@ -173,7 +293,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    await position(40);
    assert.equal(await nav.locator('[aria-current="location"]').innerText(),'状态分析');
    for(const top of [60,68,62,70]) {await position(top);assert.equal(await nav.locator('[aria-current="location"]').innerText(),'状态分析');}
-   await position(90);assert.equal(await nav.locator('[aria-current="location"]').innerText(),'筛选准备');
+   await position(90);assert.equal(await nav.locator('[aria-current="location"]').innerText(),'状态分析');
    assert.equal(await snapshot(),before);assert.equal(requests.length,requestCount);
    const geometry=await nav.evaluate(e=>{
     const items=[...e.querySelectorAll('a')].map(a=>a.getBoundingClientRect()),r=e.getBoundingClientRect();
@@ -201,6 +321,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     const dates=['analysisStart','analysisEnd'].map(id=>rect(document.getElementById(id)));
     const evidence=[...document.querySelectorAll('#explorationClusterQuality .screening-evidence-compact')],table=document.querySelector('.screening-center-table');
     const grid=document.querySelector('.exploration-result-grid'),pc=document.querySelector('.exploration-pc-card'),region=document.querySelector('.exploration-region-card'),timelineCard=document.querySelector('.exploration-timeline-card');
+    const regionMetric=document.querySelector('#explorationRegionSummary .region-metric-table'),regionCluster=document.querySelector('#explorationRegionSummary .region-cluster-table');
     const plotContainer=document.querySelector('#explorationPcChart'),plot=state.preferredRegionPlot,plotNode=plotContainer.querySelector('.js-plotly-plot'),overlay=plotContainer.querySelector('.exploration-pc-overlay');
     const modebar=plotContainer.querySelector('.modebar-container'),legend=plotContainer.querySelector('.legend'),modebarRect=modebar?.getBoundingClientRect(),legendRect=legend?.getBoundingClientRect();
     const overlaps=modebarRect&&legendRect&&Math.min(modebarRect.right,legendRect.right)>Math.max(modebarRect.left,legendRect.left)&&Math.min(modebarRect.bottom,legendRect.bottom)>Math.max(modebarRect.top,legendRect.top);
@@ -219,6 +340,12 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
      resultGridWidth:rect(grid).width,pcWidth:rect(pc).width,pcHeight:rect(plotContainer).height,plotNodeWidth:rect(plotNode).width,plotNodeHeight:rect(plotNode).height,
      plotWidth:plot._fullLayout.width,plotHeight:plot._fullLayout.height,plotAreaHeight:plot._fullLayout._size.h,shapeCount:plot._fullLayout.shapes.length,overlayWidth:rect(overlay).width,overlayHeight:rect(overlay).height,
      regionWidth:rect(region).width,regionHeight:rect(region).height,sameRow,heightSpread:Math.abs(rect(pc).height-rect(region).height),
+     regionTableWidth:rect(regionMetric).width,regionClusterTableWidth:rect(regionCluster).width,regionContentWidth:rect(region).width,
+     regionTopGap:rect(regionMetric).top-rect(region.querySelector('h3')).bottom,
+     regionRowHeight:rect(regionCluster.querySelector('tbody tr')).height,
+     regionTableScroll:regionMetric.parentElement.scrollWidth-regionMetric.parentElement.clientWidth,
+     regionWrapperOverflow:getComputedStyle(regionMetric.parentElement).overflowX,
+     regionPageOverflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
      timelineWidth:rect(timeline).width,timelineClientWidth:timeline.clientWidth,timelineCardWidth:rect(timelineCard).width,timelineHeight:rect(timelineSvg).height,timelineViewBoxWidth:viewBox[2],timelineColumnStart:getComputedStyle(timelineCard).gridColumnStart,
      timelineBelow:rect(timelineCard).top>=Math.max(rect(pc).bottom,rect(region).bottom)-1,
      modebarCount:modebar?.querySelectorAll('.modebar-btn').length||0,legendPresent:Boolean(legend),modebarLegendOverlap:overlaps,
@@ -238,6 +365,16 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    assert(Math.abs(report.overlayWidth-report.pcWidth)<=2*Number(zoom)+1&&Math.abs(report.overlayHeight-report.pcHeight)<=2*Number(zoom)+1,JSON.stringify(report));
    assert(report.modebarCount>=3&&report.legendPresent&&!report.modebarLegendOverlap,JSON.stringify(report));
    assert(report.kpiRows>=1&&report.kpiRows<=report.kpiCount,JSON.stringify(report));
+   assert.equal(report.regionPageOverflow,0,JSON.stringify(report));
+   // 两张表都按内容定宽：放得下就不撑满，放不下时由 .table-wrap 在本区域内滚动而不撑开整页。
+   const fitsOrScrolls=width=>width<=report.regionContentWidth+1||(report.regionTableScroll>0&&report.regionWrapperOverflow==='auto');
+   assert(fitsOrScrolls(report.regionTableWidth),JSON.stringify(report));
+   assert(fitsOrScrolls(report.regionClusterTableWidth),JSON.stringify(report));
+   if(Number(zoom)===1) {
+    assert(report.regionClusterTableWidth<report.regionContentWidth,JSON.stringify(report));
+    assert(report.regionRowHeight>=28&&report.regionRowHeight<=30,JSON.stringify(report));
+   }
+   assert(report.regionTopGap<=13*Number(zoom)+1,JSON.stringify(report));
    if(width>=761&&zoom===1) {
     assert(report.sameRow&&report.heightSpread<=1,JSON.stringify(report));
     assert(report.pcHeight>=420&&report.pcHeight<=480,JSON.stringify(report));
@@ -246,7 +383,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    reports.push(report);
    if(width===1440&&zoom===1) {
     await page.screenshot({path:path.join(artifacts,'screening-after.png'),fullPage:true});
-    await page.locator('#modelingEligibility').screenshot({path:path.join(artifacts,'screening-conditions.png')});
+    await page.locator('#candidateConfigSummary').screenshot({path:path.join(artifacts,'screening-config-summary.png')});
     await page.locator('#explorationClusterQuality').screenshot({path:path.join(artifacts,'screening-results.png')});
    }
    if(zoom===1&&[900,390].includes(width)) await page.locator('#explorationContent').screenshot({path:path.join(artifacts,`screening-results-${width}.png`)});
@@ -302,9 +439,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   // Each tool retains its own evidence anchor, even before results are available.
   for(const [tool,evidence] of [['trendPanel','trendEvidence'],['clusterPanel','clusterEvidence'],['performancePanel','performanceEvidence'],['stateExplorationPanel','explorationEvidence']]) {
    await page.locator(`[data-panel="${tool}"]`).click();
-   assert.equal(await nav.locator('a').nth(2).getAttribute('href'),'#'+evidence);
+   assert.equal(await nav.locator('a').nth(1).getAttribute('href'),'#'+evidence);
    const before=await snapshot(),count=requests.length;
-   await nav.locator('a').nth(2).click();
+   await nav.locator('a').nth(1).click();
    await page.waitForFunction(id=>{const r=document.getElementById(id).getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight&&(r.top<=48||Math.abs(scrollY+innerHeight-document.documentElement.scrollHeight)<=2);},evidence);
    assert.equal(await nav.locator('[aria-current="location"]').innerText(),'结果证据');
    assert.equal(await snapshot(),before);assert.equal(requests.length,count);
@@ -381,6 +518,28 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert(await nav.isVisible());assert.equal(await page.locator('.candidate-tool-tab[aria-selected="true"]').getAttribute('data-panel'),'stateExplorationPanel');
   await page.locator('#explorationClusterCount').fill('3');await page.locator('#explorationClusterCount').blur();
   assert(await page.locator('#explorationContent').evaluate(e=>e.hidden));
+  // 趋势浏览范围不同于候选分析范围时，配置摘要仍使用候选分析范围资格结果。
+  // 放在几何用例之后：绘制趋势会让后续视口变更重绘 Plotly，拖慢用例。
+  await page.locator('[data-panel="trendPanel"]').click();
+  await page.locator('#dpTrendVar1').selectOption('TAG_A');
+  await page.locator('#dpTrendStart').fill('2026-01-01T01:00');
+  // 短趋势窗口：只需与候选分析范围不同，避免大范围 Plotly 重绘拖慢用例。
+  await page.locator('#dpTrendEnd').fill('2026-01-01T02:00');
+  const trendPending=page.waitForResponse(r=>r.url().endsWith('/api/trend'));
+  await page.locator('#dpDrawTrend').click();
+  assert((await trendPending).ok());
+  await page.waitForFunction(()=>document.querySelector('#trendEligibilitySummary').textContent.startsWith('当前趋势窗口'));
+  const scopes=await page.evaluate(()=>({trend:document.querySelector('#trendEligibilitySummary').textContent,
+   preparation:document.querySelector('#eligibilitySummary').textContent,
+   bar:document.querySelector('#candidateConfigSummary span').textContent,
+   overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth}));
+  // 趋势窗口（01:00–02:00）的合格样本数不同于候选分析范围（480）；
+  // 两者各自显示，配置摘要栏只跟随候选分析范围。
+  assert(scopes.trend.startsWith('当前趋势窗口（展示保留完整历史）：筛选后 '),JSON.stringify(scopes));
+  assert(!scopes.trend.includes('筛选后 480 点'),JSON.stringify(scopes));
+  assert(scopes.preparation.startsWith('分析时间范围：筛选后 480 点'),JSON.stringify(scopes));
+  assert(scopes.bar.includes('资格：筛选后 480 点'),JSON.stringify(scopes));
+  assert.equal(scopes.overflow,0,JSON.stringify(scopes));
   assert.deepEqual(errors,[]);
   fs.writeFileSync(path.join(artifacts,'screening-geometry.json'),JSON.stringify(reports,null,2));
   fs.writeFileSync(path.join(artifacts,'screening-center-geometry.json'),JSON.stringify(centerReports,null,2));

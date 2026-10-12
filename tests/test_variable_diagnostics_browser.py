@@ -53,8 +53,10 @@ const assert=require('node:assert/strict');
     await action('uploadButton','/api/upload');
     await page.locator('#timestampColumn').selectOption('time');
     await action('inspectButton','/api/inspect');
-    await page.evaluate(()=>{showWorkflowStage('candidatePanel');showCandidateTool('stateExplorationPanel');});
+    // 共享预处理参数位于「筛选准备」TAB：先在该面板改参数，再切到状态探索。
+    await page.evaluate(()=>{showWorkflowStage('candidatePanel');showCandidateTool('candidatePreparationPanel');});
     await page.locator('#maxLag').fill('0');
+    await page.evaluate(()=>showCandidateTool('stateExplorationPanel'));
     await page.locator('#explorationClusterCount').fill('2');
     const data=await action('stateExplorationButton','/api/state-exploration/run');
     await page.waitForFunction(()=>state.exploration?.variable_diagnostics?.summary.tag_count===50);

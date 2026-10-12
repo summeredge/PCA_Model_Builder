@@ -9,7 +9,52 @@ import numpy as np
 import pandas as pd
 
 from .preprocessing import PreprocessingConfig, segment_raw_data, _resegment_remaining
-from .screening import _normalize_condition
+
+
+_COMPARISON_OPERATORS = {">", "≥", "<", "≤", "=", "≠"}
+
+
+def _finite_number(value: object, label: str) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label}必须是数值") from error
+    if not np.isfinite(result):
+        raise ValueError(f"{label}必须是有限数值")
+    return result
+
+
+def _normalize_eligibility_condition(condition: object) -> dict[str, Any]:
+    if not isinstance(condition, Mapping):
+        raise ValueError("每个建模资格条件必须是对象")
+    column = str(condition.get("column", "")).strip()
+    if not column:
+        raise ValueError("建模资格条件需要条件列")
+    if "operator" in condition or "value" in condition:
+        if set(condition) - {"column", "operator", "value"}:
+            raise ValueError("建模资格比较条件不能混用闭区间边界")
+        operator = condition.get("operator")
+        if not isinstance(operator, str) or operator not in _COMPARISON_OPERATORS:
+            raise ValueError(f"建模资格运算符无效：{operator}")
+        value = condition.get("value")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("建模资格比较条件缺少比较值")
+        if isinstance(value, bool):
+            raise ValueError("建模资格比较值必须是有限数值")
+        return {"column": column, "operator": operator, "value": _finite_number(value, "建模资格比较值")}
+
+    def bound(name: str) -> float | None:
+        value = condition.get(name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return _finite_number(value, f"建模资格{name}")
+
+    minimum, maximum = bound("minimum"), bound("maximum")
+    if minimum is None and maximum is None:
+        raise ValueError("建模资格闭区间至少需要一个边界")
+    if minimum is not None and maximum is not None and minimum > maximum:
+        raise ValueError("建模资格上下限反转")
+    return {"column": column, "minimum": minimum, "maximum": maximum}
 
 
 def normalize_modeling_eligibility(value: object = None) -> dict[str, Any]:
@@ -25,8 +70,8 @@ def normalize_modeling_eligibility(value: object = None) -> dict[str, Any]:
         raise ValueError("建模资格每个排除规则组必须包含至少一个条件")
     try:
         return {
-            "keep_conditions": [_normalize_condition(item) for item in keep],
-            "exclude_rule_groups": [[_normalize_condition(item) for item in group] for group in groups],
+            "keep_conditions": [_normalize_eligibility_condition(item) for item in keep],
+            "exclude_rule_groups": [[_normalize_eligibility_condition(item) for item in group] for group in groups],
         }
     except ValueError as error:
         raise ValueError(f"建模资格条件无效：{error}") from error
@@ -69,10 +114,25 @@ def filter_modeling_eligibility(
         matched = pd.Series(True, index=indexed.index)
         for condition in conditions:
             values = numeric[condition["column"]]
-            if condition["minimum"] is not None:
-                matched &= values.ge(condition["minimum"])
-            if condition["maximum"] is not None:
-                matched &= values.le(condition["maximum"])
+            if "operator" in condition:
+                operator, value = condition["operator"], condition["value"]
+                if operator == ">":
+                    matched &= values.gt(value)
+                elif operator == "≥":
+                    matched &= values.ge(value)
+                elif operator == "<":
+                    matched &= values.lt(value)
+                elif operator == "≤":
+                    matched &= values.le(value)
+                elif operator == "=":
+                    matched &= values.eq(value)
+                else:
+                    matched &= values.ne(value)
+            else:
+                if condition["minimum"] is not None:
+                    matched &= values.ge(condition["minimum"])
+                if condition["maximum"] is not None:
+                    matched &= values.le(condition["maximum"])
         return matched
 
     keep = matches(rules["keep_conditions"])

@@ -1503,24 +1503,26 @@ def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
     assert "#stateExplorationPanel .exploration-timeline-card { grid-column:1; }" in css
 
 
-def test_preferred_region_statistics_reuse_shared_compact_metrics():
+def test_preferred_region_statistics_use_compact_metric_and_cluster_tables():
     for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
         assert 'class="table-wrap region-stats"' in html
         assert '.metrics { display:flex; flex-wrap:wrap; align-items:baseline;' in html
-        assert 'min-height:0; padding:0; background:transparent; border:0;' in html
         assert '.region-stats .metric' not in html
-        assert ".region-stats table { font-size:12px; }" in html
-        assert ".region-stats th, .region-stats td { padding:6px 8px; }" in html
-        # 统计区高度由内容决定：不设最小高度、不留固定顶部偏移。
-        assert ".region-stats { max-height:none; padding:10px; }" in html
+        # 统计区高度由内容决定：不设最小高度、不留固定顶部偏移、不再固定 540px 列宽。
+        assert ".region-stats { max-height:none; padding:0; }" in html
+        assert ".region-stats { width:540px" not in html
         region_stats_rule = html.split(".region-stats {", 1)[1].split("}", 1)[0]
         assert "min-height" not in region_stats_rule
         assert "margin-top" not in region_stats_rule
         assert ".region-stats { min-height:0; margin-top:0; }" not in html
+        assert ".region-stats table { width:max-content; max-width:100%; min-width:0; font-size:12.5px; }" in html
+        assert ".region-stats th, .region-stats td { padding:4px 8px; line-height:1.6; }" in html
+        assert ".region-stats .region-cluster-title { margin:10px 0 4px; color:var(--muted); font-size:12px; font-weight:600; }" in html
+        assert "#stateExplorationPanel .exploration-region-card { align-content:start; }" in html
         summary = html.split("function renderExplorationRegionSummary(data)", 1)[1].split(
             "function renderExplorationRegionControls", 1
         )[0]
-        # 字段与计算方式保持不变。
+        # 字段与计算方式保持不变；指标改由四列「指标｜数值｜指标｜数值」表格承载。
         for label in (
             "优选区域样本",
             "完整有效样本占比",
@@ -1534,8 +1536,53 @@ def test_preferred_region_statistics_reuse_shared_compact_metrics():
         ):
             assert label in summary
         assert 'data.performance_config?.direction==="target_range"' in summary
-    # 固定列宽写在工作台样式表中，用于覆盖后加载的 .table-wrap { width:100% }。
-    assert ".region-stats { width:540px; max-width:100%; }" in web_model_results.INDEX_HTML
+        assert '<table class="region-metric-table">' in summary
+        assert '<h4 class="region-cluster-title">工况分布</h4>' in summary
+        assert '<table class="region-cluster-table">' in summary
+        assert 'metricCell=item=>`<td>${escapeHtml(item[0])}</td><td class="numeric">${escapeHtml(item[1])}</td>`' in summary
+        assert 'for(let index=0;index<metrics.length;index+=2)' in summary
+        # 指标数为奇数时补一个空单元格，保证每行都是完整四列。
+        assert 'if(metrics.length%2) metrics.push(["",""]);' in summary
+        assert summary.index("region-metric-table") < summary.index("region-cluster-title") < summary.index("region-cluster-table") < summary.index('class="help"')
+        assert 'class="metrics"' not in summary
+
+    # 工作台样式表里的 .table-wrap table{min-width:100%} 与面板居中规则会命中新表，
+    # 必须用带面板 ID 的紧凑覆盖放在其后，按新语义收回对齐与宽度。
+    workbench = web_model_results.INDEX_HTML
+    assert "#stateExplorationPanel .region-stats table { min-width:0; font-size:12.5px; }" in workbench
+    assert "#stateExplorationPanel .region-stats :is(th,td) { padding:4px 8px; }" in workbench
+    assert (
+        "#stateExplorationPanel .region-stats .region-metric-table td:nth-child(even),\n"
+        "  #stateExplorationPanel .region-stats .region-cluster-table :is(th,td):not(:first-child) "
+        "{ text-align:right; font-variant-numeric:tabular-nums; }"
+    ) in workbench
+    assert (
+        "#stateExplorationPanel .region-stats .region-metric-table td:nth-child(odd),\n"
+        "  #stateExplorationPanel .region-stats .region-cluster-table :is(th,td):first-child "
+        "{ text-align:left; }"
+    ) in workbench
+
+
+def test_preferred_region_metric_table_keeps_field_formats_and_conditional_performance():
+    html = web.INDEX_HTML
+    summary = html.split("function renderExplorationRegionSummary(data)", 1)[1].split(
+        "function renderExplorationRegionControls", 1
+    )[0]
+    # 复用既有格式化函数，保持 null、0、比例与千分位之外的原有显示规则。
+    assert 'region.selected_sample_count??0' in summary
+    assert 'explorationPercent(region.selected_sample_ratio)' in summary
+    assert 'explorationPercent(region.max_cluster_share)' in summary
+    assert 'explorationNumber(region.stability_score,4)' in summary
+    assert '(data.preferred_region_candidates||[]).length' in summary
+    assert 'region.performance_valid_count??"—"' in summary
+    assert 'region.performance_target_count??"—"' in summary
+    assert 'explorationPercent(region.performance_target_ratio)' in summary
+    assert 'explorationNumber(region.performance_median,3)' in summary
+    # 非 target_range 保持原「性能评价 —」语义。
+    assert '[["性能评价","—"]]' in summary
+    # 未定义椭圆时保留原提示。
+    assert '尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。' in summary
+    assert '当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。' in summary
 
 
 def test_exploration_sampling_labels_are_scoped_to_the_timeline():
@@ -2691,7 +2738,7 @@ def test_web_compacts_training_parameters_and_keeps_preview_below_resampling():
     ]
 
     assert 'class="training-parameter-grid"' in html
-    assert shared_start < candidate_tools_start < html.index('id="trendPanel"', shared_start)
+    assert candidate_tools_start < shared_start < html.index('id="trendPanel"', shared_start)
     assert html.index('id="performancePanel"', shared_start) < html.index(
         '<div class="group candidate-manager"', shared_start
     )

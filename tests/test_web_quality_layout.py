@@ -827,7 +827,7 @@ def test_training_parameters_split_common_and_advanced_fields() -> None:
     ):
         assert f'id="{field_id}"' in shared_source, field_id
         assert f'id="{field_id}"' not in model_source, field_id
-    assert shared_start < candidate_tools_start < html.index('id="trendPanel"', shared_start)
+    assert candidate_tools_start < shared_start < html.index('id="trendPanel"', shared_start)
     for field_id in ("varianceThreshold", "components", "modelName"):
         assert f'id="{field_id}"' in model_source, field_id
         assert f'id="{field_id}"' not in shared_source, field_id
@@ -2488,7 +2488,10 @@ def test_workbench_tables_map_all_runtime_statuses_and_align_numeric_cells() -> 
 
     assert ".table-wrap td.numeric" in html
     assert '#stateExplorationPanel .exploration-controls { border:0; }' in html
-    assert "#explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }" in html
+    # 优选区域统计表按新语义收口：标签列左对齐、数值列右对齐，不再用旧的 nth-child 居中规则。
+    assert "#explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }" not in html
+    assert "#stateExplorationPanel .region-stats .region-metric-table td:nth-child(odd)," in html
+    assert "#stateExplorationPanel .region-stats .region-metric-table td:nth-child(even)," in html
     # 状态探索结果表统一居中；.numeric 的右对齐在本面板内被覆盖。
     assert "#stateExplorationPanel table th, #stateExplorationPanel table td { text-align:center; }" in html
     assert html.index("#stateExplorationPanel table th") > html.index(".table-wrap td.numeric")

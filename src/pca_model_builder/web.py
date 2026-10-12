@@ -2656,8 +2656,10 @@ def _indexed_tags(
     missing = [tag for tag in tags if tag not in frame.columns]
     if missing:
         raise ValueError(f"找不到 Tag：{', '.join(missing)}")
+    # 同一列可同时是建模 Tag 与资格条件列，取列按首次出现去重以避免重复列。
+    columns = list(dict.fromkeys([timestamp_column, *tags]))
     return (
-        frame.loc[:, [timestamp_column, *tags]]
+        frame.loc[:, columns]
         .sort_values(timestamp_column)
         .set_index(timestamp_column)
     )
@@ -3355,10 +3357,20 @@ INDEX_HTML = r"""<!doctype html>
      #stateExplorationPanel .exploration-timeline svg { display:block; width:100%; height:112px; }
      #stateExplorationPanel .exploration-timeline .timeline-note { margin:0; padding:9px 10px; color:var(--muted); font-size:12px; line-height:1.45; }
      .chart-note { margin:0; color:var(--muted); font-size:12px; line-height:1.45; }
-     .region-stats { max-height:none; padding:10px; }
-     .region-stats .help { display:block; margin:8px 0; font-size:12px; line-height:1.45; }
-     .region-stats table { font-size:12px; }
-     .region-stats th, .region-stats td { padding:6px 8px; }
+     .region-stats { max-height:none; padding:0; }
+     .region-stats .help { display:block; margin:10px 0 0; font-size:12px; line-height:1.45; }
+     .region-stats .region-metric-table td:first-child, .region-stats .region-metric-table td:nth-child(3) { color:var(--muted); }
+     .region-stats .region-cluster-title { margin:10px 0 4px; color:var(--muted); font-size:12px; font-weight:600; }
+     /* 统计表按内容定宽：不再被通用 table { width:100% } 撑满右侧列。 */
+     /* max-content 保持按内容定宽；max-width 只做上限，窄屏标签换行而不是裁掉数值。 */
+     .region-stats table { width:max-content; max-width:100%; min-width:0; font-size:12.5px; }
+     /* 紧凑行高：12.5px × 1.6 + 上下 4px 内边距 ≈ 29px。 */
+     .region-stats th, .region-stats td { padding:4px 8px; line-height:1.6; }
+     /* 指标表四列 指标｜数值｜指标｜数值：标签左对齐，数值右对齐。 */
+     .region-stats .region-metric-table td:nth-child(odd) { text-align:left; }
+     .region-stats .region-metric-table td:nth-child(even) { text-align:right; font-variant-numeric:tabular-nums; }
+     /* 右侧统计卡片是 Grid 子项，内容从顶部连续排列，不参与行拉伸。 */
+     #stateExplorationPanel .exploration-region-card { align-content:start; }
      .notice { padding:9px 10px; border-left:4px solid var(--warn); background:#fff8e7; color:#765000; font-size:13px; }
      @media (max-width:1050px) { main { grid-template-columns:1fr; } }
      @media (max-width:760px) {
@@ -3710,16 +3722,40 @@ let eligibilityRevision=0, eligibilitySummaryTimer=null;
 function modelingEligibilityPayload() {
   const conditions=node=>[...(node?.querySelectorAll(".eligibility-condition")||[])].map(row=>{
     const column=row.querySelector('[data-field="column"]').value;
-    const bound=field=>{ const value=row.querySelector(`[data-field="${field}"]`).value.trim(); if(value==="") return null; const number=Number(value); if(!Number.isFinite(number)) throw new Error("建模资格边界必须为有限数值。"); return number; };
-    const minimum=bound("minimum"),maximum=bound("maximum");
-    if(!column||minimum===null&&maximum===null) throw new Error("建模资格条件需要列和至少一个上下限。");
+    const number=field=>{ const value=row.querySelector(`[data-field="${field}"]`).value.trim(); if(value==="") return null; const parsed=Number(value); if(!Number.isFinite(parsed)) throw new Error("建模资格数值必须为有限数值。"); return parsed; };
+    if(!column) throw new Error("建模资格条件需要条件列。");
+    if(row.querySelector('[data-field="mode"]').value==="operator") {
+      const operator=row.querySelector('[data-field="operator"]').value, value=number("value");
+      if(![">","≥","<","≤","=","≠"].includes(operator)) throw new Error("建模资格运算符无效。");
+      if(value===null) throw new Error("建模资格比较条件缺少比较值。");
+      return {column,operator,value};
+    }
+    const minimum=number("minimum"),maximum=number("maximum");
+    if(minimum===null&&maximum===null) throw new Error("建模资格闭区间至少需要一个边界。");
     if(minimum!==null&&maximum!==null&&minimum>maximum) throw new Error("建模资格上下限反转。");
     return {column,minimum,maximum};
   });
   return {keep_conditions:conditions(el("eligibilityKeepConditions")),exclude_rule_groups:[...(el("eligibilityExcludeGroups")?.children||[])].map(group=>conditions(group))};
 }
-function renderEligibilitySummary(summary,scope="完整历史") {
-  const node=el("eligibilitySummary"); if(!node) return;
+function renderEligibilityConditionPreview(row) {
+  const column=row.querySelector('[data-field="column"]').value, action=row.parentElement.classList.contains("eligibility-exclude-group")?"排除":"保留", preview=row.querySelector(".eligibility-preview");
+  if(row.querySelector('[data-field="mode"]').value==="operator") {
+    const operator=row.querySelector('[data-field="operator"]').value, value=row.querySelector('[data-field="value"]').value.trim();
+    preview.textContent=column&&value?`${action} ${column} ${operator} ${value} 的数据`:`${action}条件待填写`;
+    return;
+  }
+  const minimum=row.querySelector('[data-field="minimum"]').value.trim(),maximum=row.querySelector('[data-field="maximum"]').value.trim();
+  const expression=minimum&&maximum?`在 [${minimum}, ${maximum}] 闭区间`:minimum?`≥ ${minimum}`:maximum?`≤ ${maximum}`:"";
+  preview.textContent=column&&expression?`${action} ${column} ${expression} 的数据`:`${action}条件待填写`;
+}
+function setEligibilityConditionMode(row) {
+  const interval=row.querySelector('[data-field="mode"]').value==="interval";
+  ["operator","value"].forEach(field=>{ row.querySelector(`[data-field="${field}"]`).closest("label").hidden=interval; });
+  ["minimum","maximum"].forEach(field=>{ row.querySelector(`[data-field="${field}"]`).closest("label").hidden=!interval; });
+  renderEligibilityConditionPreview(row);
+}
+function renderEligibilitySummary(summary,scope="完整历史",target="eligibilitySummary") {
+  const node=el(target); if(!node) return;
   node.textContent=`${scope}：原始样本 ${summary.original_samples}；保留条件通过 ${summary.keep_pass_samples}；排除规则命中 ${summary.exclude_hit_samples}；最终合格 ${summary.eligible_samples}；合格占比 ${(summary.eligible_share*100).toFixed(1)}%；资格筛选后连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;
 }
 async function refreshEligibilitySummary() {
@@ -3745,11 +3781,18 @@ function addEligibilityCondition(container) {
   const columns=state.inspection?.numeric_columns||[]; if(!columns.length) { setStatus("请先检查数据以加载数值列。","warning"); return; }
   const row=document.createElement("div"); row.className="condition-row eligibility-condition";
   const label=document.createElement("label"); label.textContent="条件列"; const select=document.createElement("select"); select.dataset.field="column"; fillSelect(select,columns); label.append(select);
-  const minimum=formField("下限（含，可空）","minimum","number"),maximum=formField("上限（含，可空）","maximum","number");
+  const selectField=(title,field,options)=>{ const label=document.createElement("label"); label.textContent=title; const select=document.createElement("select"); select.dataset.field=field; options.forEach(([value,text])=>{ const option=document.createElement("option"); option.value=value; option.textContent=text; select.append(option); }); select.value=options[0][0]; label.append(select); return label; };
+  const mode=selectField("条件类型","mode",[["operator","比较条件"],["interval","闭区间"]]);
+  const operator=selectField("运算符","operator",[[">",">"],["≥","≥"],["<","<"],["≤","≤"],["=","="],["≠","≠"]]);
+  const value=formField("比较值","value","number"),minimum=formField("下限（含）","minimum","number"),maximum=formField("上限（含）","maximum","number");
+  const preview=document.createElement("span"); preview.className="help eligibility-preview"; preview.setAttribute("aria-live","polite");
   const remove=document.createElement("button"); remove.type="button"; remove.className="secondary"; remove.textContent="删除条件";
   remove.addEventListener("click",()=>{ if(row.parentElement.classList.contains("eligibility-exclude-group")&&row.parentElement.querySelectorAll(".eligibility-condition").length===1) row.parentElement.remove(); else row.remove(); eligibilityChanged(); });
-  [select,minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("change",eligibilityChanged));
-  row.append(label,minimum,maximum,remove); container.append(row); eligibilityChanged();
+  [select,operator.querySelector("select")].forEach(input=>input.addEventListener("change",()=>{ renderEligibilityConditionPreview(row); eligibilityChanged(); }));
+  mode.querySelector("select").addEventListener("change",()=>{ setEligibilityConditionMode(row); eligibilityChanged(); });
+  [value.querySelector("input"),minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("input",()=>renderEligibilityConditionPreview(row)));
+  [value.querySelector("input"),minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("change",eligibilityChanged));
+  row.append(label,mode,operator,value,minimum,maximum,remove,preview); container.append(row); setEligibilityConditionMode(row); eligibilityChanged();
 }
 function addEligibilityExcludeGroup() {
   if(!state.inspection?.numeric_columns?.length) { setStatus("请先检查数据以加载数值列。","warning"); return; }
@@ -4169,10 +4212,13 @@ function renderExplorationRegionSummary(data) {
   const ellipses=region?.ellipses||[];
   if(!ellipses.length) { container.innerHTML='<div class="empty">尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。</div>'; return; }
   const targetRange=data.performance_config?.direction==="target_range";
+  const performance=targetRange?[["性能有效样本",region.performance_valid_count??"—"],["性能达标样本",region.performance_target_count??"—"],["性能达标率",explorationPercent(region.performance_target_ratio)],["性能中位数",explorationNumber(region.performance_median,3)]]:[["性能评价","—"]];
+  const metrics=[["优选区域样本",region.selected_sample_count??0],["完整有效样本占比",explorationPercent(region.selected_sample_ratio)],["最大 工况组占比",explorationPercent(region.max_cluster_share)],["区域稳定性",explorationNumber(region.stability_score,4)],["连续候选数",(data.preferred_region_candidates||[]).length],...performance];
+  if(metrics.length%2) metrics.push(["",""]);
+  const metricCell=item=>`<td>${escapeHtml(item[0])}</td><td class="numeric">${escapeHtml(item[1])}</td>`;
+  const metricRows=[]; for(let index=0;index<metrics.length;index+=2) metricRows.push(`<tr>${metricCell(metrics[index])}${metricCell(metrics[index+1])}</tr>`);
   const clusters=(region.cluster_counts||[]).map(item=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster_id))}</td><td class="numeric">${item.sample_count}</td><td class="numeric">${explorationPercent(item.share)}</td></tr>`).join("");
-  const performance=targetRange?metric("性能有效样本",region.performance_valid_count??"—")+metric("性能达标样本",region.performance_target_count??"—")+metric("性能达标率",explorationPercent(region.performance_target_ratio))+metric("性能中位数",explorationNumber(region.performance_median,3)):metric("性能评价","—");
-  const candidateCount=(data.preferred_region_candidates||[]).length;
-  container.innerHTML=`<div class="metrics">${metric("优选区域样本",region.selected_sample_count??0)}${metric("完整有效样本占比",explorationPercent(region.selected_sample_ratio))}${metric("最大 工况组占比",explorationPercent(region.max_cluster_share))}${metric("区域稳定性",explorationNumber(region.stability_score,4))}${metric("连续候选数",candidateCount)}${performance}</div><div class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。</div><table><thead><tr><th>工况组</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table>`;
+  container.innerHTML=`<table class="region-metric-table"><tbody>${metricRows.join("")}</tbody></table><h4 class="region-cluster-title">工况分布</h4><table class="region-cluster-table"><thead><tr><th>工况组</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table><p class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。</p>`;
 }
 function renderExplorationRegionControls() {
   const hasRun=Boolean(state.exploration?.exploration_run_id), ellipses=state.preferredRegion?.ellipses||[];
@@ -4817,7 +4863,7 @@ el("excludeAllConstants").addEventListener("click",()=>{
   reconcileStateFilterConditions(); invalidateModellingResults(`已标记排除 ${constants.length} 个精确常量Tag`); renderTagList();
 });
 function renderTrend(data) {
-  if(data.modeling_eligibility_summary) renderEligibilitySummary(data.modeling_eligibility_summary,"当前趋势窗口（展示保留完整历史）");
+  if(data.modeling_eligibility_summary) renderEligibilitySummary(data.modeling_eligibility_summary,"当前趋势窗口（展示保留完整历史）","trendEligibilitySummary");
   const container=el("trendChart"); container.replaceChildren(); const zoom=Number(el("trendZoom").value);
   data.tags.forEach((tag,index)=>{ const card=document.createElement("div"); card.className="chart-card"; const title=document.createElement("h3"); title.textContent=`${tag}${state.registry[tag]?.unit?` (${state.registry[tag].unit})`:""}`; card.append(title); card.insertAdjacentHTML("beforeend",trendSvg(data,tag,index,zoom)); container.append(card); });
   const fields=[["sample_count","样本"],["valid_count","有效"],["missing_rate","缺失率"],["unique_count","唯一值"],["minimum","最小"],["maximum","最大"],["mean","均值"],["median","中位数"],["standard_deviation","标准差"],["p01","P1"],["p05","P5"],["p95","P95"],["p99","P99"]];
@@ -4898,7 +4944,7 @@ function renderModelingSnapshot(result) {
   const snapshot=result&&result.snapshot;
   if(!snapshot) { container.className="empty"; container.textContent="该模型运行没有建模快照。"; return; }
   const source=snapshot.data_source||{}, config=snapshot.model_config||{}, eligibility=snapshot.modeling_eligibility||{}, totals=snapshot.training_window_totals||{};
-  const condition=item=>item.column+(item.minimum===null||item.minimum===undefined?"":" ≥ "+modelingSnapshotValue(item.minimum))+(item.maximum===null||item.maximum===undefined?"":" ≤ "+modelingSnapshotValue(item.maximum));
+  const condition=item=>item.column+(item.operator?` ${item.operator} ${modelingSnapshotValue(item.value)}`:(item.minimum===null||item.minimum===undefined?"":" ≥ "+modelingSnapshotValue(item.minimum))+(item.maximum===null||item.maximum===undefined?"":" ≤ "+modelingSnapshotValue(item.maximum)));
   const tags=(snapshot.modeling_tags||[]).map(item=>'<div class="notice">'+escapeHtml(item.tag)+' · '+escapeHtml(displayUiValue(item.role||""))+(item.unit?' ('+escapeHtml(item.unit)+')':"")+(item.description?' · '+escapeHtml(item.description):"")+'</div>').join("")||'<div class="help">没有建模 Tag 记录。</div>';
   const excluded=(snapshot.excluded_tags||[]).map(item=>'<tr><td>'+escapeHtml(item.tag)+'</td><td>'+escapeHtml(item.reason||"")+'</td></tr>').join("");
   const snapshotWindows=snapshot.training_windows||[];

@@ -137,7 +137,7 @@ def test_candidate_tools_share_one_level_and_analysis_range() -> None:
     html = web_model_results.INDEX_HTML
 
     assert [panel for panel, _ in parser.candidate_tools] == [
-        "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"
+        "candidatePreparationPanel", "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"
     ]
     assert all(parent == ("candidatePanel", "candidateAnalysis") for _, parent in parser.candidate_tools)
     tabs_start = html.index('<div class="candidate-tool-tabs"')
@@ -147,7 +147,10 @@ def test_candidate_tools_share_one_level_and_analysis_range() -> None:
         html.index(f'id="{panel}"', tabs_start)
         for panel in ("trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel")
     ]
-    assert shared_start < tabs_start < tool_positions[0]
+    assert tabs_start < shared_start < tool_positions[0]
+    for field in ("modelingEligibility", "analysisStart", "sampleInterval", "maxLag", "lagStep"):
+        assert "candidatePreparationPanel" in parser.ancestors_by_id[field]
+    assert 'id="candidateConfigSummary"' in html
     assert tool_positions[0] < tool_positions[1] < tool_positions[2] < tool_positions[3]
     assert tool_positions[-1] < manager_start
     assert len(parser.ids) == len(set(parser.ids))
@@ -192,8 +195,9 @@ def test_candidate_secondary_navigation_has_only_location_links() -> None:
     html = web_model_results.INDEX_HTML
     nav = html.split('<nav id="candidateSectionNav"', 1)[1].split('</nav>', 1)[0]
     assert 'aria-label="正常状态候选页内导航" hidden' in nav
-    for anchor, text in (("modelingEligibility", "筛选准备"), ("candidateAnalysis", "状态分析"), ("trendEvidence", "结果证据"), ("candidateManagement", "候选管理")):
+    for anchor, text in (("candidateAnalysis", "状态分析"), ("trendEvidence", "结果证据"), ("candidateManagement", "候选管理")):
         assert f'<a href="#{anchor}">{text}</a>' in nav
+    assert "筛选准备" not in nav
     for forbidden in ('role="tab"', 'workflow-step-number', 'workflow-step-status', '已完成', '待开始'):
         assert forbidden not in nav
     for anchor in ("candidateAnalysis", "explorationEvidence", "clusterEvidence", "performanceEvidence", "candidateManagement"):

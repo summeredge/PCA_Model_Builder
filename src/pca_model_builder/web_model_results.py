@@ -196,7 +196,9 @@ _FORM_LAYOUT_STYLE = r"""
 
 _SCREENING_LAYOUT_STYLE = r"""
 <style id="screeningLayoutStyle">
-  #candidatePanel { gap:var(--space-3); }
+  /* 显式单列轨道：摘要栏用 nowrap 保持单行，隐式 auto 轨道会按内容 min-content 定尺
+     并把整页顶宽（与 .candidate-tool-panel.active 同一处理）。 */
+  #candidatePanel { gap:var(--space-3); grid-template-columns:minmax(0,1fr); }
   #candidatePanel :is(#modelingEligibility, .shared-preprocessing),
   #stateExplorationPanel > .group { padding:var(--space-3); gap:var(--space-1); }
   #modelingEligibility p.help { margin:0; }
@@ -212,9 +214,16 @@ _SCREENING_LAYOUT_STYLE = r"""
     padding:var(--space-2) 0 0; margin:0;
   }
   #modelingEligibility .condition-row { gap:var(--space-1); }
+  #modelingEligibility .eligibility-condition {
+    grid-template-columns:minmax(120px,1.25fr) minmax(100px,.9fr) minmax(74px,.6fr) minmax(95px,.8fr) max-content;
+  }
   #modelingEligibility .condition-row > label { flex:1 1 120px; }
   #modelingEligibility .condition-row > label:first-child { flex-basis:200px; }
   #modelingEligibility .condition-row :is(input,select) { width:100%; }
+  #modelingEligibility .eligibility-preview { grid-column:1 / -1; }
+  @media (max-width:760px) {
+    #modelingEligibility .eligibility-condition { grid-template-columns:minmax(0,1fr); }
+  }
   #eligibilitySummary { padding:var(--space-1) 0; font-size:13px; color:var(--text); }
   #eligibilitySummary.warning { padding:var(--space-2); border-left:4px solid var(--warn); background:#fff8e7; color:#765000; }
   #modelingEligibility .candidate-analysis-range { width:100%; }
@@ -754,6 +763,12 @@ _WORKBENCH_UI_STYLE = r"""
   .candidate-tool-tabs { display:flex; gap:var(--space-1); flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); padding-bottom:var(--space-2); }
   .candidate-tool-tab { background:#f5f5f7; border-color:#f0f0f0; color:var(--accent); }
   .candidate-tool-tab.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  /* 摘要栏固定单行：min-width:0 让 span 的 min-content 不再撑宽 #candidatePanel 的隐式
+     auto 轨道，nowrap + ellipsis 让宽度不足时省略文本，按钮始终可见。 */
+  .candidate-config-summary { display:flex; align-items:center; gap:8px; min-width:0; font-size:13px; line-height:1.45; }
+  .candidate-config-summary[hidden] { display:none; }
+  .candidate-config-summary span { flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .candidate-config-summary button { flex:none; }
   .candidate-tool-panel { display:none; gap:var(--space-3); }
   /* 窄屏溢出的修复点：display:grid 的隐式 auto 轨道按内容 min-content 定尺，宽表会把
      轨道连同整页顶宽（实测 390px 下 133px 溢出）。minmax(0,1fr) 给轨道 0 下限，让面板内的
@@ -850,7 +865,6 @@ _WORKBENCH_UI_STYLE = r"""
      居中；这里让同一列的表头跟随该对齐边，避免表头左对齐、内容居中的错位。 */
   .table-wrap th.control { text-align:center; }
   #stateExplorationPanel .exploration-controls { border:0; }
-  #explorationRegionSummary td:nth-child(2), #explorationRegionSummary td:nth-child(3) { text-align:center; }
   /* 标签换行时输入框仍需贴底对齐，否则同一行控件高低不齐。 */
   .exploration-controls > label { display:grid; align-content:start; }
   .panel > .actions, .inner-panel > .actions { margin-top:var(--space-1); }
@@ -859,12 +873,21 @@ _WORKBENCH_UI_STYLE = r"""
   .chart-card { gap:var(--space-2); }
   .chart-grid { align-items:stretch; }
   .table-wrap { width:100%; }
-  /* 优选运行区域统计按固定 540px 列宽排布，不随右侧列拉伸。 */
-  .region-stats { width:540px; max-width:100%; }
   /* 表头与短状态值不逐字换行；窄表由 .table-wrap 横向滚动承接。 */
   .table-wrap th { white-space:nowrap; }
   /* 列宽按内容取值，避免日期被压成多行；宽度不足时由 .table-wrap 横向滚动。 */
   .table-wrap table { width:max-content; min-width:100%; }
+  /* 优选运行区域统计：两张表按内容定宽左对齐，窄屏由 .table-wrap 在本区域内滚动。
+     上面的 min-width:100% 与面板居中规则同样命中新表，因此紧凑覆盖放在其后。 */
+  #stateExplorationPanel .region-stats table { min-width:0; font-size:12.5px; }
+  #stateExplorationPanel .region-stats :is(th,td) { padding:4px 8px; }
+  #stateExplorationPanel .region-stats .region-metric-table td:nth-child(odd),
+  #stateExplorationPanel .region-stats .region-cluster-table :is(th,td):first-child { text-align:left; }
+  #stateExplorationPanel .region-stats .region-metric-table td:nth-child(even),
+  #stateExplorationPanel .region-stats .region-cluster-table :is(th,td):not(:first-child) { text-align:right; font-variant-numeric:tabular-nums; }
+  /* 两张紧凑表按内容定宽、通常不横向滚动，因此不做固定首列，
+     也去掉 .table-wrap td:first-child 自带的分隔阴影。 */
+  #stateExplorationPanel .region-stats :is(th,td):first-child { position:static; box-shadow:none; }
   #modelQualityResults > :is(#currentTagQuality, #qualityIssues).empty,
   .final-training-review > .empty,
   #basicInspectionIssues.empty, #explorationEmpty.empty,
@@ -938,7 +961,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const updateCandidateSpy = () => {
     spyFrame = 0;
     if (candidateNavigation.hidden) return;
-    const positions = sectionLinks.map(link => document.getElementById(link.hash.slice(1)).getBoundingClientRect().top);
+    const positions = sectionLinks.map(link => link.hidden ? Infinity : document.getElementById(link.hash.slice(1)).getBoundingClientRect().top);
     const atBottom = scrollY + innerHeight >= document.documentElement.scrollHeight - 2;
     if (requestedSection !== null) {
       if (positions[requestedSection] > 64 && !atBottom) return;
@@ -967,7 +990,32 @@ document.addEventListener("DOMContentLoaded", () => {
   window.addEventListener("resize", scheduleCandidateSpy);
   new ResizeObserver(scheduleCandidateSpy).observe(candidatePanel);
   highlightCandidateSection(0);
-  const toolPanels = ["trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"].map(id => document.getElementById(id));
+  const toolPanels = ["candidatePreparationPanel", "trendPanel", "stateExplorationPanel", "clusterPanel", "performancePanel"].map(id => document.getElementById(id));
+  const summary = document.getElementById("candidateConfigSummary");
+  const refreshCandidateConfigSummary = () => {
+    const value = id => {
+      const control = document.getElementById(id);
+      return control.selectedOptions?.[0]?.textContent || control.value || control.placeholder || "未设置";
+    };
+    // 只读候选分析范围的资格节点：趋势窗口摘要写入 #trendEligibilitySummary，不参与此栏。
+    const eligibility = document.getElementById("eligibilitySummary");
+    const filterMethod = document.getElementById("filterMethod").value;
+    summary.querySelector("span").textContent = [
+      eligibility.dataset.compact || eligibility.textContent,
+      `分析范围：${value("analysisStart")} 至 ${value("analysisEnd")}`,
+      `采样周期：${value("sampleInterval")} 分钟`,
+      `滤波：${value("filterMethod")}`,
+      ...(filterMethod === "first_order" ? [`α：${value("firstOrderAlpha")}`] : []),
+      ...(filterMethod === "trailing_mean" ? [`窗口：${value("smoothingWindow")} 分钟`] : []),
+      `最大 Lag：${value("maxLag")} 分钟`, `Lag 步长：${value("lagStep")} 分钟`,
+      `重采样：${value("resamplingMethod")}`,
+      `缺口阈值：${value("gapThreshold")}${document.getElementById("gapThreshold").value ? " 分钟" : ""}`
+    ].join(" · ");
+  };
+  summary.querySelector("button").addEventListener("click", () => showCandidateTool("candidatePreparationPanel"));
+  candidatePanel.addEventListener("input", refreshCandidateConfigSummary);
+  candidatePanel.addEventListener("change", refreshCandidateConfigSummary);
+  new MutationObserver(refreshCandidateConfigSummary).observe(document.getElementById("eligibilitySummary"), {childList:true, characterData:true, subtree:true});
   const showCandidateTool = target => {
     toolPanels.forEach(panel => panel.classList.toggle("active", panel.id === target));
     document.querySelectorAll(".candidate-tool-tab").forEach(button => {
@@ -975,7 +1023,13 @@ document.addEventListener("DOMContentLoaded", () => {
       button.classList.toggle("active", selected);
       button.setAttribute("aria-selected", String(selected));
     });
-    sectionLinks[2].setAttribute("href", "#" + evidenceIds[target]);
+    const preparing = target === "candidatePreparationPanel";
+    document.getElementById("candidateConfigSummary").hidden = preparing;
+    sectionLinks[1].hidden = preparing;
+    if (!preparing) sectionLinks[1].setAttribute("href", "#" + evidenceIds[target]);
+    requestedSection = null;
+    highlightCandidateSection(0);
+    refreshCandidateConfigSummary();
     scheduleCandidateSpy();
   };
   globalThis.showCandidateTool = showCandidateTool;
@@ -1321,7 +1375,6 @@ def _workflow_sidebar_html() -> str:
         '        <div class="candidate-workflow-step">',
         buttons[1],
         '          <nav id="candidateSectionNav" class="candidate-section-nav" aria-label="正常状态候选页内导航" hidden>',
-        '            <a href="#modelingEligibility">筛选准备</a>',
         '            <a href="#candidateAnalysis">状态分析</a>',
         '            <a href="#trendEvidence">结果证据</a>',
         '            <a href="#candidateManagement">候选管理</a>',
@@ -1485,9 +1538,17 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
     candidate_panel = "\n".join(
         (
             '      <div id="candidatePanel" class="panel">',
+            '        <div class="candidate-tool-tabs" id="candidateAnalysis" role="tablist">',
+            '          <button type="button" class="candidate-tool-tab" data-panel="candidatePreparationPanel" role="tab" aria-selected="false">筛选准备</button>',
+            '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="clusterPanel" role="tab" aria-selected="false">聚类辅助</button>',
+            '          <button type="button" class="candidate-tool-tab" data-panel="performancePanel" role="tab" aria-selected="false">条件筛选</button>',
+            '        </div>',
+            '        <div id="candidatePreparationPanel" class="candidate-tool-panel">',
             """        <div id="modelingEligibility" class="group">
           <div class="group-title">筛选条件</div>
-          <p class="help">只影响离线探索、候选与训练资格。上下限包含边界；保留条件全部满足（AND），排除组内全部满足（AND），任一排除组命中即剔除（OR），排除优先。条件列不会自动成为 PCA 输入。</p>
+          <p class="help">只影响离线探索、候选与训练资格。比较条件支持 &gt;、≥、&lt;、≤、=、≠；也可切换为包含端点的闭区间。保留条件按 AND；排除组内按 AND、组间按 OR。最终样本须满足全部保留条件且未命中任何排除组。条件列不会自动成为 PCA 输入。</p>
           <div class="screening-rules">
             <div><div class="actions"><h3>保留条件</h3><button id="addEligibilityKeep" type="button" class="secondary">添加保留条件</button></div><div id="eligibilityKeepConditions"></div></div>
             <div><div class="actions"><h3>排除条件</h3><button id="addEligibilityExcludeGroup" type="button" class="secondary">添加排除规则组</button></div><div id="eligibilityExcludeGroups"></div></div>
@@ -1497,12 +1558,8 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
             '          <div class="candidate-analysis-range">' + analysis_range + '</div>',
             '          <div class="help">状态探索、聚类辅助和条件筛选共用此范围；趋势选择可将浏览窗口设为这里的分析范围。修改后请重新运行分析。</div></div>',
             parameter_group,
-            '        <div class="candidate-tool-tabs" id="candidateAnalysis" role="tablist">',
-            '          <button type="button" class="candidate-tool-tab active" data-panel="trendPanel" role="tab" aria-selected="true">趋势选择</button>',
-            '          <button type="button" class="candidate-tool-tab" data-panel="stateExplorationPanel" role="tab" aria-selected="false">状态探索</button>',
-            '          <button type="button" class="candidate-tool-tab" data-panel="clusterPanel" role="tab" aria-selected="false">聚类辅助</button>',
-            '          <button type="button" class="candidate-tool-tab" data-panel="performancePanel" role="tab" aria-selected="false">条件筛选</button>',
             '        </div>',
+            '        <div id="candidateConfigSummary" class="candidate-config-summary"><span></span><button type="button" class="secondary">修改配置</button></div>',
             *candidate_panels,
             *other_candidate_panels,
             _candidate_manager_html(training_data_section),
@@ -1910,7 +1967,8 @@ def apply_model_results_ui(html: str) -> str:
     result = result.replace(
         '  node.textContent=`${scope}：原始样本 ${summary.original_samples}；保留条件通过 ${summary.keep_pass_samples}；排除规则命中 ${summary.exclude_hit_samples}；最终合格 ${summary.eligible_samples}；合格占比 ${(summary.eligible_share*100).toFixed(1)}%；资格筛选后连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;',
         '  node.classList.toggle("warning",!summary.eligible_samples);\n'
-        '  node.textContent=`${scope}：筛选后 ${summary.eligible_samples.toLocaleString()} 点 · 保留条件通过 ${summary.keep_pass_samples.toLocaleString()} · 排除 ${summary.exclude_hit_samples.toLocaleString()} · 合格占比 ${(summary.eligible_share*100).toFixed(1)}% · 连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;',
+        '  node.textContent=`${scope}：筛选后 ${summary.eligible_samples.toLocaleString()} 点 · 保留条件通过 ${summary.keep_pass_samples.toLocaleString()} · 排除 ${summary.exclude_hit_samples.toLocaleString()} · 合格占比 ${(summary.eligible_share*100).toFixed(1)}% · 连续段 ${summary.segment_count}。${summary.eligible_samples?"":"没有合格样本，请调整资格规则。"}`;\n'
+        '  node.dataset.compact=`资格：筛选后 ${summary.eligible_samples.toLocaleString()} 点 · 合格占比 ${(summary.eligible_share*100).toFixed(1)}% · 连续段 ${summary.segment_count}${summary.eligible_samples?"":"；没有合格样本"}`;',
         1,
     )
     summary_refresh = _required_html_match(
@@ -1922,7 +1980,7 @@ function scheduleEligibilitySummary() {
   eligibilitySummaryRevision+=1;
   clearTimeout(eligibilitySummaryTimer);
   const node=el("eligibilitySummary");
-  if(node&&state.fileId&&state.inspection) { node.classList.toggle("warning",false); node.textContent="正在更新…"; }
+  if(node&&state.fileId&&state.inspection) { node.classList.toggle("warning",false); if(node.dataset) node.dataset.compact=""; node.textContent="正在更新…"; }
   eligibilitySummaryTimer=setTimeout(refreshEligibilitySummary,250);
 }
 async function refreshEligibilitySummary() {
@@ -1933,15 +1991,15 @@ async function refreshEligibilitySummary() {
     const data=await api("/api/modeling-eligibility",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(revision===eligibilitySummaryRevision&&rulesRevision===eligibilityRevision) renderEligibilitySummary(data.summary,"分析时间范围");
   } catch(error) {
-    if(revision===eligibilitySummaryRevision&&rulesRevision===eligibilityRevision) { const node=el("eligibilitySummary"); node.classList.toggle("warning",true); node.textContent=error.message; }
+    if(revision===eligibilitySummaryRevision&&rulesRevision===eligibilityRevision) { const node=el("eligibilitySummary"); node.classList.toggle("warning",true); if(node.dataset) node.dataset.compact=""; node.textContent=error.message; }
   }
 }
 ''', 1)
     result = result.replace('  clearTimeout(eligibilitySummaryTimer); eligibilitySummaryTimer=setTimeout(refreshEligibilitySummary,250);', '  scheduleEligibilitySummary();', 1)
     result = result.replace(
-        '[select,minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("change",eligibilityChanged));',
-        '[select,minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("change",eligibilityChanged));\n'
-        '  [minimum,maximum].forEach(label=>label.querySelector("input").addEventListener("input",scheduleEligibilitySummary));',
+        '[value.querySelector("input"),minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("input",()=>renderEligibilityConditionPreview(row)));',
+        '[value.querySelector("input"),minimum.querySelector("input"),maximum.querySelector("input")].forEach(input=>input.addEventListener("input",()=>renderEligibilityConditionPreview(row)));\n'
+        '  [value,minimum,maximum].forEach(label=>label.querySelector("input").addEventListener("input",scheduleEligibilitySummary));',
         1,
     )
     result = result.replace(

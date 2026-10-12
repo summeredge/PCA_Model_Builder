@@ -46,6 +46,48 @@ def test_boolean_rules_inclusive_boundaries_priority_and_summary():
                               "eligible_share": .2, "segment_count": 2}
 
 
+@pytest.mark.parametrize("operator,expected", [
+    (">", [0.7301]), ("≥", [0.73, 0.7301]), ("<", [0.7299]),
+    ("≤", [0.7299, 0.73]), ("=", [0.73]), ("≠", [0.7299, 0.7301]),
+])
+def test_comparison_operators_use_exact_threshold_edges(operator, expected):
+    indexed = pd.DataFrame({"gate": [0.7299, 0.73, 0.7301]},
+                           index=pd.date_range("2026-01-01", periods=3, freq="5min"))
+    rules = {"keep_conditions": [{"column": "gate", "operator": operator, "value": 0.73}]}
+    assert filter_modeling_eligibility(indexed, rules, config()).frame.gate.tolist() == expected
+
+
+def test_comparison_rules_keep_and_exclude_group_boolean_semantics():
+    indexed = pd.DataFrame({"gate": [0.73, 0.7301, 0.73, 0.8, 0.9], "other": [1, 1, 2, 2, 3]},
+                           index=pd.date_range("2026-01-01", periods=5, freq="5min"))
+    rules = {
+        "keep_conditions": [{"column": "gate", "operator": "≥", "value": 0.73},
+                            {"column": "other", "operator": "≠", "value": 3}],
+        "exclude_rule_groups": [
+            [{"column": "gate", "operator": ">", "value": 0.73},
+             {"column": "other", "operator": "=", "value": 1}],
+            [{"column": "other", "operator": "=", "value": 2}],
+        ],
+    }
+    result = filter_modeling_eligibility(indexed, rules, config())
+    assert result.frame.gate.tolist() == [0.73]
+    assert result.summary["keep_pass_samples"] == 4
+    assert result.summary["exclude_hit_samples"] == 3
+
+
+def test_strict_comparison_exclusion_keeps_threshold_and_resegments_lag():
+    index = pd.date_range("2026-01-01", periods=7, freq="5min")
+    indexed = pd.DataFrame({"A": np.arange(7, dtype=float), "gate": [0, 0, 0.74, 0.73, 0.74, 0, 0]}, index=index)
+    rules = {"exclude_rule_groups": [[{"column": "gate", "operator": ">", "value": 0.73}]]}
+    cfg = PreprocessingConfig(sample_interval_minutes=5, max_lag_minutes=5, lag_step_minutes=5,
+                              filter_method="none", gap_threshold_minutes=1000)
+    eligible = filter_modeling_eligibility(indexed, rules, cfg)
+    assert eligible.frame.index.tolist() == [index[0], index[1], index[3], index[5], index[6]]
+    assert eligible.summary["segment_count"] == 3
+    processed = preprocess_window(indexed, ["A"], cfg, modeling_eligibility=rules)
+    assert processed.dynamic.index.tolist() == [index[1], index[6]]
+
+
 @pytest.mark.parametrize("rules", [None, {}, {"keep_conditions": [], "exclude_rule_groups": []}])
 def test_no_rules_preserve_every_sample_and_preprocessing(rules):
     indexed = history().set_index("time")
@@ -61,11 +103,16 @@ def test_no_rules_preserve_every_sample_and_preprocessing(rules):
 
 
 @pytest.mark.parametrize("rules,pattern", [
-    ({"keep_conditions": [condition(minimum="bad")]}, "numeric"),
-    ({"keep_conditions": [condition(minimum=float("inf"))]}, "finite"),
-    ({"keep_conditions": [condition(minimum=float("nan"))]}, "finite"),
-    ({"keep_conditions": [condition(minimum=3, maximum=2)]}, "reversed"),
-    ({"keep_conditions": [condition()]}, "bound"),
+    ({"keep_conditions": [condition(minimum="bad")]}, "必须是数值"),
+    ({"keep_conditions": [condition(minimum=float("inf"))]}, "有限数值"),
+    ({"keep_conditions": [condition(minimum=float("nan"))]}, "有限数值"),
+    ({"keep_conditions": [condition(minimum=3, maximum=2)]}, "上下限反转"),
+    ({"keep_conditions": [condition()]}, "至少需要一个边界"),
+    ({"keep_conditions": [{"column": "gate", "operator": "invalid", "value": 1}]}, "运算符无效"),
+    ({"keep_conditions": [{"column": "gate", "operator": ">"}]}, "缺少比较值"),
+    ({"keep_conditions": [{"column": "gate", "operator": "=", "value": float("inf")}]}, "有限数值"),
+    ({"keep_conditions": [{"column": "gate", "operator": ">", "value": True}]}, "有限数值"),
+    ({"keep_conditions": [{"column": "gate", "operator": ">", "value": 1, "minimum": 0}]}, "不能混用"),
     ({"keep_conditions": {}}, "列表"),
     ({"exclude_rule_groups": [[]]}, "至少一个条件"),
     ({"state_filters": []}, "modeling_eligibility"),
@@ -142,7 +189,10 @@ def uploaded(tmp_path, monkeypatch):
                "normal_start": frame.time.iloc[0].isoformat(), "normal_end": frame.time.iloc[-1].isoformat(),
                "analysis_start": frame.time.iloc[0].isoformat(), "analysis_end": frame.time.iloc[-1].isoformat(),
                "exploration_start": frame.time.iloc[0].isoformat(), "exploration_end": frame.time.iloc[-1].isoformat(),
-               "model_name": "eligible", "modeling_eligibility": {"exclude_rule_groups": [[condition(minimum=40, maximum=59)]]}}
+               "model_name": "eligible", "modeling_eligibility": {"exclude_rule_groups": [[
+                   {"column": "gate", "operator": "≥", "value": 40},
+                   {"column": "gate", "operator": "≤", "value": 59},
+               ]]}}
     yield frame, payload, tmp_path
     web.clear_state_exploration_cache()
 
@@ -191,6 +241,47 @@ def test_web_all_excluded_missing_column_and_trend_keeps_history(uploaded):
     trend = web_dataproject.trend_payload({**empty, "purpose": "trend", "tags": ["A"], "start": payload["normal_start"], "end": payload["normal_end"]})
     assert trend["raw_rows"] == len(frame)
     assert trend["modeling_eligibility_summary"]["eligible_samples"] == 0
+
+
+def test_indexed_tags_deduplicates_requested_columns_and_keeps_missing_error():
+    frame = pd.DataFrame({"time": pd.date_range("2026-01-01", periods=3, freq="5min"),
+                          "A": [1.0, 2.0, 3.0], "B": [4.0, 5.0, 6.0]})
+    indexed = web._indexed_tags(frame, "time", ["B", "A", "B"])
+    assert list(indexed.columns) == ["B", "A"]
+    with pytest.raises(ValueError, match="找不到 Tag：MISSING"):
+        web._indexed_tags(frame, "time", ["A", "MISSING"])
+
+
+@pytest.fixture
+def cross_role_uploaded(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    frame = history()
+    frame["gate"] = np.round(np.arange(len(frame)) * 0.01, 2)
+    saved = web.save_upload("cross-role.csv", frame.to_csv(index=False).encode("utf-8-sig"))
+    payload = {"file_id": saved["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C", "gate"],
+               "sample_interval_minutes": 5, "filter_method": "none", "max_lag_minutes": 0,
+               "normal_start": frame.time.iloc[0].isoformat(), "normal_end": frame.time.iloc[-1].isoformat(),
+               "analysis_start": frame.time.iloc[0].isoformat(), "analysis_end": frame.time.iloc[-1].isoformat(),
+               "model_name": "cross_role", "n_clusters": 2,
+               "modeling_eligibility": {"exclude_rule_groups": [[{"column": "gate", "operator": ">", "value": 0.73}]]}}
+    yield frame, payload, tmp_path
+    web.clear_state_exploration_cache()
+
+
+def test_cross_role_tag_cluster_and_exploratory_keep_threshold_endpoint(cross_role_uploaded):
+    frame, payload, _ = cross_role_uploaded
+    cluster = web.cluster_payload(payload)
+    stamps = [point["timestamp"] for point in cluster["points"]]
+    assert cluster["sample_count"] == 74
+    assert frame.time.iloc[73].isoformat() in stamps
+    assert frame.time.iloc[74].isoformat() not in stamps
+    assert max(stamps) == frame.time.iloc[73].isoformat()
+    trained = web.train_payload({**payload, "model_purpose": "exploratory"})
+    assert trained["training_rows"] == 74
+    exploratory = web.cluster_payload({**payload, "exploratory_run_id": trained["run_id"]})
+    assert exploratory["exploratory_run_id"] == trained["run_id"]
+    assert [point["timestamp"] for point in exploratory["points"]] == stamps
 
 
 def test_state_filter_preprocessing_unchanged_and_runtime_has_no_eligibility():
@@ -257,6 +348,8 @@ def test_ui_rules_above_discovery_unique_ids_and_stale_result_guards():
     assert "if(revision!==eligibilityRevision)" in html
     assert "state.trainingWindows.map(window=>({...window,enabled:false}))" in html
     assert "exclude_rule_groups" in html and "keep_conditions" in html
+    assert "比较条件" in html and "闭区间" in html and "排除组内按 AND、组间按 OR" in html
+    assert '[value,minimum,maximum].forEach(label=>label.querySelector("input").addEventListener("input",scheduleEligibilitySummary));' in html
     assert 'id="refreshEligibilitySummary"' not in html
     assert '"input",scheduleEligibilitySummary' in html
 
@@ -279,10 +372,12 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
         text() { return this.textContent+this.children.map(child=>child.text()).join(" "); }
         addEventListener(name,handler) { this.handlers[name]=handler; }
         querySelectorAll(selector) {
-          const match=node=>selector===".eligibility-condition"?node.classList.contains("eligibility-condition"):selector==="input"?node.tag==="input":selector.includes("data-field")?selector.includes(`"${node.dataset.field}"`):false;
+          const match=node=>selector===".eligibility-condition"?node.classList.contains("eligibility-condition"):selector===".eligibility-preview"?node.classList.contains("eligibility-preview"):selector==="input"?node.tag==="input":selector==="select"?node.tag==="select":selector==="button"?node.tag==="button":selector.includes("data-field")?selector.includes(`"${node.dataset.field}"`):false;
           return this.children.flatMap(child=>[...(match(child)?[child]:[]),...child.querySelectorAll(selector)]);
         }
         querySelector(selector) { return this.querySelectorAll(selector)[0]||null; }
+        closest(selector) { let node=this;while(node){if(selector==="label"&&node.tag==="label")return node;node=node.parentElement;}return null; }
+        setAttribute(name,value) { this[name]=value; }
       }
       const nodes=Object.fromEntries(["eligibilityKeepConditions","eligibilityExcludeGroups","eligibilitySummary","addEligibilityKeep","addEligibilityExcludeGroup","analysisStart","analysisEnd","modelContent","modelEmpty","modelDownload","validateButton","trainingWindows","qualityButton"].map(id=>[id,new Element()]));
       const el=id=>nodes[id]||null, document={createElement:tag=>new Element(tag)};
@@ -303,21 +398,25 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
       __HELPERS__
       __SCRIPT__
       const keep=el("eligibilityKeepConditions"); el("addEligibilityKeep").handlers.click(); el("addEligibilityKeep").handlers.click();
-      keep.children.forEach((row,index)=>{ row.querySelector('[data-field="minimum"]').value=String(index+1);row.querySelector('[data-field="maximum"]').value="10"; });
+      keep.children[0].querySelector('[data-field="column"]').value="gate";keep.children[0].querySelector('[data-field="operator"]').value=">";keep.children[0].querySelector('[data-field="value"]').value="0.73";renderEligibilityConditionPreview(keep.children[0]);
+      keep.children[1].querySelector('[data-field="column"]').value="other";keep.children[1].querySelector('[data-field="mode"]').value="interval";setEligibilityConditionMode(keep.children[1]);keep.children[1].querySelector('[data-field="minimum"]').value="2";keep.children[1].querySelector('[data-field="maximum"]').value="10";renderEligibilityConditionPreview(keep.children[1]);
       el("addEligibilityExcludeGroup").handlers.click(); el("addEligibilityExcludeGroup").handlers.click();
       const groupHeader=el("eligibilityExcludeGroups").children[0].children[0];
       const groupActions=groupHeader.children.map(child=>child.text());
       const groupHeaderClass=groupHeader.className;
-      el("eligibilityExcludeGroups").children.forEach(group=>group.querySelector('[data-field="minimum"]').value="5");
+      const excludeGroups=el("eligibilityExcludeGroups").children;
+      excludeGroups[0].querySelector('[data-field="column"]').value="gate";excludeGroups[0].querySelector('[data-field="operator"]').value=">";excludeGroups[0].querySelector('[data-field="value"]').value="0.73";renderEligibilityConditionPreview(excludeGroups[0].querySelector(".eligibility-condition"));
+      excludeGroups[1].querySelector('[data-field="mode"]').value="interval";setEligibilityConditionMode(excludeGroups[1].querySelector(".eligibility-condition"));excludeGroups[1].querySelector('[data-field="minimum"]').value="5";renderEligibilityConditionPreview(excludeGroups[1].querySelector(".eligibility-condition"));
       const payload=modelingEligibilityPayload();
+      const previews=[keep.children[0].querySelector(".eligibility-preview").textContent,excludeGroups[0].querySelector(".eligibility-preview").textContent];
       el("addEligibilityExcludeGroup").handlers.click();
       const extraGroup=el("eligibilityExcludeGroups").children[2],extraHeader=extraGroup.children[0];
       extraHeader.children[1].handlers.click();
       const extraConditionCount=extraGroup.querySelectorAll(".eligibility-condition").length;
       extraHeader.children[2].handlers.click();
       const groupsAfterExtraDelete=el("eligibilityExcludeGroups").children.length;
-      const first=keep.children[0];first.children[3].handlers.click();
-      const group=el("eligibilityExcludeGroups").children[0];group.querySelector(".eligibility-condition").children[3].handlers.click();
+      const first=keep.children[0];first.querySelector("button").handlers.click();
+      const group=el("eligibilityExcludeGroups").children[0];group.querySelector(".eligibility-condition").querySelector("button").handlers.click();
       state.candidateWindows=[{id:"stale"}];state.trainingWindows=[{id:"manual",source:"manual",enabled:true,source_ref:"manual"}];state.training={};state.runId="stale";
       state.trainingWindowSummary=[{id:"manual",raw_samples:120,effective_samples:118,quality_status:"passed"}];
       renderTrainingWindows();updateQualityButtonAvailability();
@@ -326,12 +425,13 @@ def test_ui_editor_add_delete_payload_summary_and_invalidation():
       renderEligibilitySummary({original_samples:10,keep_pass_samples:8,exclude_hit_samples:3,eligible_samples:5,eligible_share:.5,segment_count:2});
       const invalid=keep.children[0];invalid.querySelector('[data-field="minimum"]').value="20";
       let error="";try { modelingEligibilityPayload(); } catch(caught) { error=caught.message; }
-      console.log(JSON.stringify({before,windowSummary:state.trainingWindowSummary,windowText:el("trainingWindows").text(),qualityDisabled:el("qualityButton").disabled,payload,keep:keep.children.length,groups:el("eligibilityExcludeGroups").children.length,groupActions,groupHeaderClass,extraConditionCount,groupsAfterExtraDelete,invalidations,summary:el("eligibilitySummary").textContent,error,candidates:state.candidateWindows,windows:state.trainingWindows,training:state.training,runId:state.runId,tags:[...state.selectedModelTags],modelHidden:el("modelContent").hidden}));
+      console.log(JSON.stringify({before,windowSummary:state.trainingWindowSummary,windowText:el("trainingWindows").text(),qualityDisabled:el("qualityButton").disabled,payload,previews,keep:keep.children.length,groups:el("eligibilityExcludeGroups").children.length,groupActions,groupHeaderClass,extraConditionCount,groupsAfterExtraDelete,invalidations,summary:el("eligibilitySummary").textContent,error,candidates:state.candidateWindows,windows:state.trainingWindows,training:state.training,runId:state.runId,tags:[...state.selectedModelTags],modelHidden:el("modelContent").hidden}));
     '''.replace("__SCRIPT__", script).replace("__RENDERER__", renderer).replace("__HELPERS__", helpers)
     result = subprocess.run([node, "-"], input=harness, capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
-    assert data["payload"] == {"keep_conditions": [condition(minimum=1, maximum=10), condition(minimum=2, maximum=10)], "exclude_rule_groups": [[condition(minimum=5)], [condition(minimum=5)]]}
+    assert data["payload"] == {"keep_conditions": [{"column": "gate", "operator": ">", "value": 0.73}, condition("other", minimum=2, maximum=10)], "exclude_rule_groups": [[{"column": "gate", "operator": ">", "value": 0.73}], [condition(minimum=5)]]}
+    assert data["previews"] == ["保留 gate > 0.73 的数据", "排除 gate > 0.73 的数据"]
     assert data["keep"] == data["groups"] == 1
     assert data["groupActions"] == ["排除规则组（组内 AND）", "添加组内条件", "删除规则组"]
     assert data["groupHeaderClass"] == "actions"

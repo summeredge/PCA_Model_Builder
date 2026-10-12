@@ -1,0 +1,27 @@
+.F.....                                                                  [100%]
+================================== FAILURES ===================================
+___ test_preferred_region_statistics_use_compact_metric_and_cluster_tables ____
+
+    def test_preferred_region_statistics_use_compact_metric_and_cluster_tables():
+        for html in (web.INDEX_HTML, web_model_results.INDEX_HTML):
+            assert 'class="table-wrap region-stats"' in html
+            assert '.metrics { display:flex; flex-wrap:wrap; align-items:baseline;' in html
+            assert '.region-stats .metric' not in html
+            # ͳ�����߶������ݾ�����������С�߶ȡ������̶�����ƫ�ơ����ٹ̶� 540px �п���
+            assert ".region-stats { max-height:none; padding:0; }" in html
+            assert ".region-stats { width:540px" not in html
+            region_stats_rule = html.split(".region-stats {", 1)[1].split("}", 1)[0]
+            assert "min-height" not in region_stats_rule
+            assert "margin-top" not in region_stats_rule
+            assert ".region-stats { min-height:0; margin-top:0; }" not in html
+            assert ".region-stats table { width:max-content; min-width:0; font-size:12.5px; }" in html
+            assert ".region-stats th, .region-stats td { padding:4px 8px; line-height:1.6; }" in html
+            assert ".region-stats .region-cluster-title { margin:10px 0 4px; color:var(--muted); font-size:12px; font-weight:600; }" in html
+            # ����ڵľ���/min-width ���Ǳ������� ID�������������ջض��롣
+>           assert "#stateExplorationPanel .region-stats table { min-width:0; font-size:12.5px; }" in html
+E           assert '#stateExplorationPanel .region-stats table { min-width:0; font-size:12.5px; }' in '<!doctype html>\n<html lang="zh-CN">\n<head>\n  <meta charset="utf-8">\n  <meta name="viewport" content="width=device...id===target)); }));\nel("resetButton").addEventListener("click",()=>location.reload());\n</script>\n</body>\n</html>\n'
+
+tests\test_web.py:1522: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_web.py::test_preferred_region_statistics_use_compact_metric_and_cluster_tables
+1 failed, 6 passed, 156 deselected in 74.29s (0:01:14)

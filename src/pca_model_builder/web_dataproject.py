@@ -90,6 +90,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       <button id="dpTrendToExclusion" type="button" class="secondary">加入排除窗口</button>
       <button id="dpTrendReset" type="button" class="secondary">趋势复位</button>
     </div>
+    <div id="trendEligibilitySummary" class="dp-inline-help">浏览趋势后显示当前趋势窗口的资格摘要；候选分析范围摘要沿用「筛选准备」。</div>
     <div id="dpTrendChart" class="dp-chart empty">选择 1 到 4 个数据后点击“显示趋势”。</div>
     <div id="dpTrendStats" class="dp-trend-stats"><div class="empty">选择数据并点击“显示趋势”后显示统计摘要。</div></div>
     <section class="dp-scatter-section">
@@ -296,7 +297,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   });
 
   function renderTrendPage(data) {
-    if (data.modeling_eligibility_summary) renderEligibilitySummary(data.modeling_eligibility_summary, "当前趋势窗口（展示保留完整历史）");
+    if (data.modeling_eligibility_summary) renderEligibilitySummary(data.modeling_eligibility_summary, "当前趋势窗口（展示保留完整历史）", "trendEligibilitySummary");
     renderTrendChart(data);
     $("dpTrendStats").innerHTML = data.series.map((item, index) => renderStatCard(item.name, data.statistics[item.name]?.current, data.histograms[item.name], colors[index % colors.length])).join("");
   }
