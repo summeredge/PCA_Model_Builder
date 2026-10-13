@@ -44,6 +44,16 @@ const assert=require('node:assert/strict');
     assert.equal(crypto.createHash('sha256').update(await response.body()).digest('hex'),process.env.DIAGNOSTICS_HTML_HASH);
     assert.equal(await page.locator('meta[name="pca-model-builder-build"]').getAttribute('content'),process.env.DIAGNOSTICS_BUILD_ID);
     await page.evaluate(()=>document.fonts.ready);
+    const dialog=page.locator('#groupProfileDialog'),body=page.locator('#groupProfileDialogBody');
+    async function openProfile(source) {
+      await page.locator(`${source} .group-profile-entry [data-profile-open]`).click();
+      await dialog.waitFor({state:'visible'});
+      assert.equal(await dialog.evaluate(node=>node.open),true);
+      assert(await page.locator('#groupProfileDialogClose').evaluate(node=>node===document.activeElement));
+      assert.equal(await dialog.getAttribute('aria-labelledby'),'groupProfileDialogTitle');
+      assert((await page.locator('#groupProfileDialogTitle').innerText()).trim());
+      assert.equal(await page.locator(`${source} [data-profile]`).count(),0);
+    }
     async function action(id,endpoint) {
       const pending=page.waitForResponse(r=>r.url().endsWith(endpoint));
       await page.locator('#'+id).click();const response=await pending;
@@ -101,18 +111,52 @@ const assert=require('node:assert/strict');
     await page.waitForFunction(()=>state.preferredRegionPlot?.data);
     await page.evaluate(async()=>{await updateExplorationPreferredRegion([{center_pc1:0,center_pc2:0,radius_pc1:1,radius_pc2:1}]);});
     assert.equal(await page.evaluate(()=>state.preferredRegionPlot.layout.shapes.length),1);
+    const plotColors=await page.evaluate(()=>JSON.stringify(state.preferredRegionPlot.data.map(trace=>trace.marker?.color)));
     const snapshot=await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion]));
-    await page.evaluate(()=>{globalThis.profilePlotBefore=state.preferredRegionPlot;Plotly.relayout(state.preferredRegionPlot,{'xaxis.range':[-2,2],'yaxis.range':[-2,2]});});
-    for(const width of [1440,900]) {
+    await page.evaluate(()=>{globalThis.profilePlotBefore=state.preferredRegionPlot;return Plotly.relayout(state.preferredRegionPlot,{'xaxis.range':[-2,2],'yaxis.range':[-2,2]});});
+    for(const width of [1440,900,390]) {
       await page.setViewportSize({width,height:1000});
-      await page.locator('#explorationClusterQuality [data-profile]').first().click();
+      const entry=page.locator('#explorationClusterQuality .group-profile-entry [data-profile-open]');
+      for(let repeat=0;repeat<2;repeat++) {
+        await openProfile('#explorationClusterQuality');
+        await page.keyboard.press('Escape');
+        await dialog.waitFor({state:'hidden'});
+        assert(await entry.evaluate(node=>node===document.activeElement));
+        assert.equal(await body.locator('[data-profile]').count(),0);
+      }
+      await openProfile('#explorationClusterQuality');
+      const geometry=await dialog.evaluate(node=>{
+        const r=node.getBoundingClientRect(),body=document.getElementById('groupProfileDialogBody'),b=body.getBoundingClientRect();
+        const close=document.getElementById('groupProfileDialogClose').getBoundingClientRect();
+        return {width:innerWidth,left:r.left,right:r.right,top:r.top,bottom:r.bottom,height:r.height,
+          bodyWidth:b.width,bodyHeight:b.height,bodyOverflow:body.scrollWidth-body.clientWidth,
+          tableOutside:[...body.querySelectorAll('.table-wrap')].some(table=>{const t=table.getBoundingClientRect();return t.left<b.left-1||t.right>b.right+1;}),
+          tableCount:body.querySelectorAll('.table-wrap').length,
+          closeLeft:close.left,closeRight:close.right,closeTop:close.top,closeBottom:close.bottom,
+          overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};
+      });
+      assert(geometry.left>=0&&geometry.right<=width+1&&geometry.top>=0&&geometry.bottom<=1001&&geometry.height>0,JSON.stringify(geometry));
+      assert(geometry.bodyWidth>0&&geometry.bodyHeight>0&&geometry.bodyOverflow<=1,JSON.stringify(geometry));
+      assert(geometry.tableCount>0&&!geometry.tableOutside,JSON.stringify(geometry));
+      assert(geometry.closeLeft>=geometry.left&&geometry.closeRight<=geometry.right+1&&geometry.closeTop>=geometry.top&&geometry.closeBottom<=geometry.bottom+1,JSON.stringify(geometry));
+      assert.equal(geometry.overflow,0,JSON.stringify(geometry));reports.push({dialog:geometry});
+      if(width===1440) assert.equal(await body.locator('[aria-pressed="true"]').count(),0);
+      await body.locator('.group-profiles [data-profile]').first().click();
       await page.waitForFunction(()=>state.preferredRegionPlot.data.filter(t=>t.type==='scattergl').some(t=>t.marker.opacity===.12));
       assert(await page.evaluate(()=>state.preferredRegionPlot===globalThis.profilePlotBefore));
       assert.deepEqual(await page.evaluate(()=>state.preferredRegionPlot.layout.xaxis.range),[-2,2]);
+      assert.deepEqual(await page.evaluate(()=>state.preferredRegionPlot.layout.yaxis.range),[-2,2]);
+      assert.equal(await page.evaluate(()=>JSON.stringify(state.preferredRegionPlot.data.map(trace=>trace.marker?.color))),plotColors);
       assert.equal(await page.evaluate(()=>state.preferredRegionPlot.layout.shapes.length),1);
       const viewBefore=await page.evaluate(()=>JSON.stringify({x:state.preferredRegionPlot.layout.xaxis.range,y:state.preferredRegionPlot.layout.yaxis.range,dragmode:state.preferredRegionPlot.layout.dragmode,shapes:state.preferredRegionPlot.layout.shapes}));
-      await page.locator('[data-profile-candidates]').click();
-      await page.locator('[data-profile-pc]').click();
+      await body.locator('[data-profile-candidates]').click();
+      await dialog.waitFor({state:'hidden'});
+      await page.waitForFunction(()=>{const r=document.getElementById('explorationClusterCandidates').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight+1;});
+      const selectedGroup=await page.evaluate(()=>state.groupProfileSelection.state_exploration);
+      assert.equal(await page.locator('#explorationClusterCandidates tr[data-profile-focus="true"]').count(),data.cluster_candidates.filter(item=>item.cluster_id===selectedGroup).length);
+      await openProfile('#explorationClusterQuality');
+      await body.locator('[data-profile-pc]').click();
+      await dialog.waitFor({state:'hidden'});
       await page.waitForFunction(()=>{const r=document.getElementById('explorationPcChart').getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1;});
       const pcRect=await page.locator('#explorationPcChart').boundingBox();
       assert(pcRect.y>=0&&pcRect.y+pcRect.height<=1001,JSON.stringify(pcRect));
@@ -121,47 +165,106 @@ const assert=require('node:assert/strict');
       const opacity=await page.evaluate(()=>state.preferredRegionPlot.data.filter(trace=>trace.type==='scattergl').map(trace=>({name:trace.name,value:trace.marker.opacity,selected:trace.name===clusterUiLabel(state.groupProfileSelection.state_exploration)})));
       assert(opacity.every(trace=>trace.value===(trace.selected?.85:.12)),JSON.stringify(opacity));
       assert.equal(await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion])),snapshot);
-      await page.locator('[data-profile-timeline]').click();
-      assert.equal(await page.locator('[data-profile-episode]').count(),data.cluster_quality.group_profiles[0].episode_count);
-      await page.locator('[data-profile-candidates]').click();
+      await openProfile('#explorationClusterQuality');
+      await body.locator('[data-profile-timeline]').click();
+      await dialog.waitFor({state:'hidden'});
+      await page.waitForFunction(()=>{const r=document.getElementById('explorationTimeline').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight+1;});
+      assert.equal(await page.locator('#explorationTimeline [data-profile-episode]').count(),data.cluster_quality.group_profiles[0].episode_count);
+      await openProfile('#explorationClusterQuality');
+      await body.locator('[data-profile-candidates]').click();
+      await dialog.waitFor({state:'hidden'});
       assert.equal(await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion])),snapshot);
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);
-      await page.locator('#explorationClusterQuality [data-profile]').last().focus();
-      await page.locator('#explorationClusterQuality [data-profile]').last().press('Enter');
-      assert.equal(await page.locator('#explorationClusterQuality [data-profile]').last().getAttribute('aria-pressed'),'true');
+      await openProfile('#explorationClusterQuality');
+      await body.locator('.group-profiles [data-profile]').last().focus();
+      await body.locator('.group-profiles [data-profile]').last().press('Enter');
+      assert.equal(await body.locator('.group-profiles [data-profile]').last().getAttribute('aria-pressed'),'true');
+      await page.waitForFunction(()=>state.preferredRegionPlot.data.filter(trace=>trace.type==='scattergl').every(trace=>trace.marker.opacity===((trace.legendgroup===`cluster:${state.groupProfileSelection.state_exploration}`||trace.name===clusterUiLabel(state.groupProfileSelection.state_exploration))?.85:.12)));
+      assert(await page.evaluate(()=>state.preferredRegionPlot===globalThis.profilePlotBefore));
+      assert.equal(await page.evaluate(()=>JSON.stringify({x:state.preferredRegionPlot.layout.xaxis.range,y:state.preferredRegionPlot.layout.yaxis.range,dragmode:state.preferredRegionPlot.layout.dragmode,shapes:state.preferredRegionPlot.layout.shapes})),viewBefore);
+      assert.equal(await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion])),snapshot);
       assert.equal(await page.locator('[data-profile-performance]').count(),0);
-      assert(/[↑↓]/.test(await page.locator('#explorationClusterQuality .group-profiles tbody').first().innerText()));
-      if(process.env.PROFILE_ARTIFACT_DIR) await page.screenshot({path:require('node:path').join(process.env.PROFILE_ARTIFACT_DIR,`group-profile-${width}.png`),fullPage:true});
+      assert(/[↑↓]/.test(await body.locator('.group-profiles tbody').first().innerText()));
+      if(process.env.PROFILE_ARTIFACT_DIR) {
+        await page.screenshot({path:require('node:path').join(process.env.PROFILE_ARTIFACT_DIR,`group-profile-${width}.png`),fullPage:true});
+        await dialog.screenshot({path:require('node:path').join(process.env.PROFILE_ARTIFACT_DIR,`group-profile-dialog-${width}.png`)});
+      }
+      await page.locator('#groupProfileDialogClose').click();
+      await dialog.waitFor({state:'hidden'});
+      assert(await entry.evaluate(node=>node===document.activeElement));
     }
+    await page.setViewportSize({width:1440,height:1000});
+    await openProfile('#explorationClusterQuality');
+    await page.evaluate(()=>renderStateExploration(state.exploration));
+    await dialog.waitFor({state:'hidden'});
+    assert.equal(await body.locator('[data-profile]').count(),0);
+    await openProfile('#explorationClusterQuality');
+    await page.evaluate(()=>showCandidateTool('clusterPanel'));
+    await dialog.waitFor({state:'hidden'});
+    await page.evaluate(()=>showCandidateTool('stateExplorationPanel'));
+    await openProfile('#explorationClusterQuality');
+    await page.evaluate(()=>showWorkflowStage('configPanel'));
+    await dialog.waitFor({state:'hidden'});
+    await page.evaluate(()=>showWorkflowStage('candidatePanel'));
+    await openProfile('#explorationClusterQuality');
+    await page.evaluate(()=>{document.getElementById('explorationMinimumDuration').value='99999';document.getElementById('explorationMinimumDuration').dispatchEvent(new Event('change',{bubbles:true}));});
+    await dialog.waitFor({state:'hidden'});
+    assert(await page.locator('#explorationContent').evaluate(node=>node.hidden));
     await page.locator('#explorationMinimumDuration').fill('99999');
     await page.locator('#explorationClusterCount').fill('10');
     const ten=await action('stateExplorationButton','/api/state-exploration/run');
     assert.equal(ten.cluster_quality.group_profiles.length,10);assert.equal(ten.cluster_candidates.length,0);
     assert.equal(await page.evaluate(()=>state.groupProfileSelection.state_exploration),null);
-    for(const width of [1440,900]) {
+    for(const width of [1440,900,390]) {
       await page.setViewportSize({width,height:1000});
-      assert.equal(await page.locator('#explorationClusterQuality [data-profile]').count(),10);
-      await page.locator('#explorationClusterQuality [data-profile]').first().click();
-      assert((await page.locator('[data-profile-candidates]').textContent()).includes('（0）'));
+      await openProfile('#explorationClusterQuality');
+      assert.equal(await body.locator('.group-profiles [data-profile]').count(),10);
+      await body.locator('.group-profiles [data-profile]').last().focus();
+      const listScroll=await body.locator('.group-profiles > .table-wrap').evaluate(node=>{
+        node.scrollTop=node.scrollHeight;node.scrollLeft=node.scrollWidth;
+        return {top:node.scrollTop,left:node.scrollLeft};
+      });
+      await body.locator('.group-profiles [data-profile]').last().press('Enter');
+      assert.equal(await body.locator('.group-profiles [data-profile]').last().getAttribute('aria-pressed'),'true');
+      assert.deepEqual(await body.locator('.group-profiles > .table-wrap').evaluate(node=>({top:node.scrollTop,left:node.scrollLeft})),listScroll);
+      assert((await body.locator('[data-profile-candidates]').textContent()).includes('（0）'));
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);
+      await page.locator('#groupProfileDialogClose').click();
     }
+    const explorationSelection=await page.evaluate(()=>state.groupProfileSelection.state_exploration);
     await page.evaluate(()=>showCandidateTool('clusterPanel'));
     await page.locator('#clusterCount').fill('10');
     const assistance=await action('clusterButton','/api/cluster');
     assert.equal(assistance.cluster_quality.group_profiles.length,10);
-    for(const width of [1440,900]) {
+    const assistanceSnapshot=await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion]));
+    for(const width of [1440,900,390]) {
       await page.setViewportSize({width,height:1000});
-      await page.locator('#assistanceClusterQuality [data-profile]').first().click();
-      if(process.env.PROFILE_ARTIFACT_DIR) await page.screenshot({path:require('node:path').join(process.env.PROFILE_ARTIFACT_DIR,`group-assistance-${width}.png`),fullPage:true});
-      assert.equal(await page.locator('#assistanceClusterQuality [data-profile-timeline]').count(),0);
-      assert.equal(await page.locator('#assistanceClusterQuality [data-profile-pc]').count(),0);
-      await page.locator('#assistanceClusterQuality').evaluate(node=>node.querySelectorAll('details').forEach(item=>item.open=true));
-      const assistanceText=await page.locator('#assistanceClusterQuality').innerText();
+      await openProfile('#assistanceClusterQuality');
+      await body.locator('.group-profiles [data-profile]').last().click();
+      assert.equal(await page.evaluate(()=>state.groupProfileSelection.state_exploration),explorationSelection);
+      assert.equal(await page.evaluate(()=>state.groupProfileSelection.cluster_assistance),assistance.cluster_quality.group_profiles.at(-1).cluster_id);
+      if(process.env.PROFILE_ARTIFACT_DIR) {
+        await page.screenshot({path:require('node:path').join(process.env.PROFILE_ARTIFACT_DIR,`group-assistance-${width}.png`),fullPage:true});
+        await dialog.screenshot({path:require('node:path').join(process.env.PROFILE_ARTIFACT_DIR,`group-assistance-dialog-${width}.png`)});
+      }
+      assert.equal(await body.locator('[data-profile-timeline]').count(),0);
+      assert.equal(await body.locator('[data-profile-pc]').count(),0);
+      await body.evaluate(node=>node.querySelectorAll('details').forEach(item=>item.open=true));
+      const assistanceText=await body.innerText();
       for(const label of ['时间连续性','平均持续时间','最长连续时间','状态切换次数','主要区分变量']) assert(!assistanceText.includes(label));
       assert(await page.locator('#clusterChart circle[fill-opacity=".12"]').count()>0);
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth-document.documentElement.clientWidth),0);
+      assert.equal(await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion])),assistanceSnapshot);
+      await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
+      assert(await page.locator('#assistanceClusterQuality [data-profile-open]').evaluate(node=>node===document.activeElement));
     }
+    const assistanceSelection=await page.evaluate(()=>state.groupProfileSelection.cluster_assistance);
     await page.evaluate(()=>showCandidateTool('stateExplorationPanel'));
+    await openProfile('#explorationClusterQuality');
+    assert.equal(await body.locator('.group-profiles [aria-pressed="true"]').getAttribute('data-profile'),explorationSelection);
+    await body.locator('.group-profiles [data-profile]').last().click();
+    assert.equal(await page.evaluate(()=>state.groupProfileSelection.cluster_assistance),assistanceSelection);
+    await page.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
     // Navigation itself preserves the evidence; editing uses existing invalidation.
     await page.locator('#diagnosticsTagConfig').click();
     assert(await page.locator('#configPanel').evaluate(e=>e.classList.contains('active')));

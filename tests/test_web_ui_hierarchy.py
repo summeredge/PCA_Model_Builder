@@ -55,6 +55,22 @@ def _workbench() -> _WorkbenchParser:
     return parser
 
 
+def test_group_profiles_use_one_shared_native_dialog_outside_stage_panels() -> None:
+    parser = _workbench()
+    for element_id in ('groupProfileDialog', 'groupProfileDialogTitle',
+                       'groupProfileDialogBody', 'groupProfileDialogClose'):
+        assert parser.ids.count(element_id) == 1
+    assert not parser.ancestors_by_id['groupProfileDialog']
+    assert 'groupProfileDialog' in parser.ancestors_by_id['groupProfileDialogBody']
+    html = web_model_results.INDEX_HTML
+    assert '<dialog id="groupProfileDialog" aria-labelledby="groupProfileDialogTitle">' in html
+    assert 'aria-haspopup="dialog" aria-controls="groupProfileDialog"' in html
+    assert 'dialog.showModal()' in html
+    assert 'globalThis.closeGroupProfileDialog?.();' in web_model_results._WORKBENCH_UI_SCRIPT
+    assert 'grid-template-columns:minmax(0,1fr) minmax(0,1.3fr)' in html
+    assert '@media (max-width:1000px)' in web_model_results._GROUP_PROFILE_DIALOG_STYLE
+
+
 def test_final_web_has_a_static_five_stage_workbench() -> None:
     parser = _workbench()
 

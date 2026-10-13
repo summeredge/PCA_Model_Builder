@@ -1992,6 +1992,7 @@ def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> N
         f"""
         const helperSource = {json.dumps(helper_source)};
         const functionSource = {json.dumps(function_source)};
+        const profileViews = [];
         const elements = new Map([
           ["explorationEmpty", {{hidden:false, textContent:""}}],
           ["explorationContent", {{hidden:false}}],
@@ -2002,6 +2003,7 @@ def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> N
         const el = id => elements.get(id);
         const state = {{
           exploration:{{exploration_run_id:"run-1"}}, explorationRevision:0,
+          groupProfileSelection:{{state_exploration:"cluster_001",cluster_assistance:"cluster_002"}},
           preferredRegion:{{ellipses:[{{}}]}},
           preferredRegionDrawing:true, preferredRegionRequest:3, preferredRegionUpdateSeq:2,
           candidateWindows:[
@@ -2023,6 +2025,9 @@ def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> N
           const baseId=`training-${{candidate.id}}`;
           return state.trainingWindows.filter(window=>window.id===baseId||window.id.startsWith(`${{baseId}}-part-`));
         }}
+        let profileCloses = 0;
+        function closeGroupProfileDialog() {{ profileCloses++; }}
+        function renderGroupProfiles(container,quality,perspective) {{ profileViews.push([quality,perspective]); }}
         function resetExplorationRegion() {{
           state.preferredRegion=null; state.preferredRegionDrawing=false;
           state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0;
@@ -2032,6 +2037,8 @@ def test_invalidate_exploration_clears_results_and_unconfirmed_candidates() -> N
         eval(functionSource);
 
         invalidateExploration("预处理参数已修改");
+        if(profileCloses!==1||JSON.stringify(profileViews)!==JSON.stringify([[null,"state_exploration"]])) throw new Error("profile view not invalidated");
+        if(state.groupProfileSelection.state_exploration!==null||state.groupProfileSelection.cluster_assistance!=="cluster_002") throw new Error("profile source selections are not independent");
         if(state.explorationRevision!==1) throw new Error("exploration revision not bumped");
         if(state.exploration!==null) throw new Error("exploration not cleared");
         if(state.preferredRegion!==null||state.preferredRegionDrawing!==false) throw new Error("region not reset");
@@ -2107,6 +2114,8 @@ def test_state_filter_change_invalidates_quality_without_any_exploration() -> No
         function renderExplorationRegionControls() {{}}
         function resetExplorationRegion() {{}}
         function invalidatePreprocessingPreview() {{}}
+        function closeGroupProfileDialog() {{}}
+        function renderGroupProfiles() {{}}
         function setStatus(message) {{ statuses.push(message); }}
         function candidateTrainingWindows() {{ return []; }}
         eval(invalidateQualitySource);
@@ -2339,6 +2348,8 @@ def test_exploration_invalidation_keeps_confirmed_candidates_and_training_window
         {investigation_source}
         function renderCandidateWindows() {{ candidateRenders.push(state.candidateWindows.length); }}
         function renderExplorationRegionControls() {{}}
+        function closeGroupProfileDialog() {{}}
+        function renderGroupProfiles() {{}}
         function resetExplorationRegion() {{}}
         function invalidatePreprocessingPreview() {{
           state.preprocessingPreview=null; state.preprocessingPreviewTag=null;
@@ -2603,7 +2614,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
          'explorationTargetMax explorationPerformanceMinimumDuration '
          'explorationPerformanceCandidateCount frozenModelVersion'),
         ('main select', 'select', 220,
-             'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope ablationGroup exceedanceMetric exceedanceLoadTag'),
+             'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope ablationGroup exceedanceMetric exceedanceLoadTag explorationPcColorMode'),
         ('main input[type="datetime-local"]', 'datetime', 240,
          'analysisStart analysisEnd candidateStart candidateEnd trendStart trendEnd '
          'validationStart validationEnd frozenReplayStart frozenReplayEnd'),
@@ -2635,7 +2646,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
     assert all(tag != 'input' or attrs.get('type', 'text') in
                ('text', 'number', 'datetime-local', 'file', 'range')
                for tag, attrs in controls.fields.values())
-    assert len(controls.fields) == 79
+    assert len(controls.fields) == 80
     assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
 
 

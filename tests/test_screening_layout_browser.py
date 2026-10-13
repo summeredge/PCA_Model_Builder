@@ -43,6 +43,13 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   const nav=page.locator('#candidateSectionNav');
   assert(!await nav.isVisible());
   assert.equal(await page.locator('meta[name="pca-model-builder-build"]').getAttribute('content'),process.env.SCREENING_BUILD_ID);
+  const profileDialog=page.locator('#groupProfileDialog'),profileBody=page.locator('#groupProfileDialogBody');
+  async function openProfile() {
+   await page.locator('#explorationClusterQuality .group-profile-entry [data-profile-open]').click();
+   await profileDialog.waitFor({state:'visible'});
+   assert.equal(await profileDialog.evaluate(node=>node.open),true);
+   assert.equal(await page.locator('#explorationClusterQuality [data-profile]').count(),0);
+  }
   async function action(id,endpoint) {
    const pending=page.waitForResponse(r=>r.url().endsWith(endpoint));
    await page.locator('#'+id).click();const response=await pending;
@@ -452,20 +459,43 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert.deepEqual(await page.locator('#explorationOverview .metric').evaluateAll(nodes=>nodes.map(node=>[node.querySelector('span').innerText,node.querySelector('strong').innerText])),expectedKpis);
   assert(data.cluster_candidates.length>0);
   const candidate=data.cluster_candidates[0];
-  await page.locator('#explorationClusterQuality [data-profile]').first().click();
-  const profileCandidateButton=page.locator('#explorationClusterQuality [data-profile-candidates]').first();
-  if(await profileCandidateButton.count()) { await profileCandidateButton.click(); assert(await page.locator('#explorationClusterCandidates').evaluate(node=>node.closest('details').open)); }
+  await page.locator('#explorationPcColorMode').selectOption('variable:TAG_A');
+  await page.waitForFunction(()=>state.preferredRegionPlot.data.some(trace=>trace.marker?.coloraxis==='coloraxis'));
+  await page.evaluate(()=>{globalThis.continuousProfilePlot=state.preferredRegionPlot;});
+  await page.evaluate(()=>Plotly.relayout(state.preferredRegionPlot,{'xaxis.range':[-2,2],'yaxis.range':[-3,3]}));
+  const continuousView=()=>page.evaluate(()=>JSON.stringify({mode:document.getElementById('explorationPcColorMode').value,
+   x:state.preferredRegionPlot.layout.xaxis.range,y:state.preferredRegionPlot.layout.yaxis.range,
+   shapes:state.preferredRegionPlot.layout.shapes,dragmode:state.preferredRegionPlot.layout.dragmode,coloraxis:state.preferredRegionPlot.layout.coloraxis,
+   colors:state.preferredRegionPlot.data.map(trace=>trace.marker?.color)}));
+  const continuousBefore=await continuousView();
+  const profileWindows=await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion]));
+  await openProfile();
+  await profileBody.locator('.group-profiles [data-profile]').first().click();
+  await page.waitForFunction(()=>state.preferredRegionPlot.data.filter(trace=>trace.type==='scattergl').every(trace=>trace.marker.opacity===((trace.legendgroup===`cluster:${state.groupProfileSelection.state_exploration}`||trace.name===clusterUiLabel(state.groupProfileSelection.state_exploration))?.85:.12)));
+  assert(await page.evaluate(()=>state.preferredRegionPlot===globalThis.continuousProfilePlot));
+  assert.equal(await continuousView(),continuousBefore);
+  await profileBody.locator('[data-profile-candidates]').click();
+  await profileDialog.waitFor({state:'hidden'});
+  assert(await page.locator('#explorationClusterCandidates').evaluate(node=>node.closest('details').open));
+  assert.equal(await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion])),profileWindows);
+  await openProfile();
   const performanceProfile=data.cluster_quality.group_profiles[0];
   const performanceSummary=data.cluster_summaries.find(item=>item.cluster_id===performanceProfile.cluster_id);
   for(const key of ['performance_valid_count','performance_target_count','performance_target_ratio','performance_median']) assert.equal(performanceProfile[key],performanceSummary[key]);
-  const performanceText=await page.locator('[data-profile-performance]').innerText();
+  const performanceText=await profileBody.locator('[data-profile-performance]').innerText();
   assert(performanceText.includes('性能后验评价')&&performanceText.includes('不参与 PCA 聚类'));
   for(const value of [performanceSummary.performance_valid_count,performanceSummary.performance_target_count,`${(performanceSummary.performance_target_ratio*100).toFixed(1)}%`,String(Number(performanceSummary.performance_median.toPrecision(5)))]) assert(performanceText.includes(String(value)));
-  for(const width of [900,1440]) {
+  for(const width of [1440,900,390]) {
    await page.setViewportSize({width,height:1000});
-   const geometry=await page.locator('[data-profile-performance]').evaluate(node=>{const r=node.getBoundingClientRect();return {width:r.width,right:r.right,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};});
+   const geometry=await profileBody.locator('[data-profile-performance]').evaluate(node=>{const r=node.getBoundingClientRect();return {width:r.width,right:r.right,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};});
    assert(geometry.width>0&&geometry.right<=width+1,JSON.stringify(geometry));assert.equal(geometry.overflow,0);
+   assert(await page.evaluate(()=>state.preferredRegionPlot===globalThis.continuousProfilePlot));
+   assert.equal(await continuousView(),continuousBefore);
   }
+  await page.locator('#groupProfileDialogClose').click();await profileDialog.waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion])),profileWindows);
+  await page.setViewportSize({width:1440,height:1000});
+  await page.locator('#explorationPcColorMode').selectOption('cluster');
   if(!await page.locator('.exploration-candidate-details').first().evaluate(node=>node.open)) await page.locator('.exploration-candidate-details').first().locator('summary').click();
   assert.deepEqual(await page.locator('#explorationClusterCandidates thead th').allTextContents(),['选择','状态','备注','工况组','时间范围','覆盖时长','样本数','中心距离','稳定性','排名']);
   await page.locator('#explorationClusterCandidates .exploration-candidate-select').first().check();
@@ -505,9 +535,11 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   });
   assert.equal(diagnostic.id,candidate.cluster_id);
   assert(await page.locator('#explorationClusterDetails').evaluate(node=>node.open));
-  await page.locator('#explorationClusterQuality [data-profile]').last().click();
+  await openProfile();
+  await profileBody.locator('.group-profiles [data-profile]').last().click();
   assert.equal(await page.evaluate(()=>state.trainingDiagnosticFocus.clusterId),candidate.cluster_id);
   assert.equal(await page.evaluate(()=>JSON.stringify(state.trainingWindows)),diagnostic.windows);
+  await page.keyboard.press('Escape');await profileDialog.waitFor({state:'hidden'});
   await page.locator('.variable-diagnostics > details > summary').click();
   await page.locator('#diagnosticsTagConfig').click();
   assert(await page.locator('#configPanel').evaluate(e=>e.classList.contains('active')));
@@ -516,6 +548,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert.equal(await page.locator('.workflow-step[aria-selected="true"]').getAttribute('data-panel'),'modelPanel');
   await page.locator('[data-panel="candidatePanel"]').click();
   assert(await nav.isVisible());assert.equal(await page.locator('.candidate-tool-tab[aria-selected="true"]').getAttribute('data-panel'),'stateExplorationPanel');
+  await openProfile();
+  await page.evaluate(()=>{document.getElementById('explorationClusterCount').value='3';document.getElementById('explorationClusterCount').dispatchEvent(new Event('change',{bubbles:true}));});
+  await profileDialog.waitFor({state:'hidden'});
   await page.locator('#explorationClusterCount').fill('3');await page.locator('#explorationClusterCount').blur();
   assert(await page.locator('#explorationContent').evaluate(e=>e.hidden));
   // 趋势浏览范围不同于候选分析范围时，配置摘要仍使用候选分析范围资格结果。

@@ -19,6 +19,32 @@ from .model_diagnostics import compare_candidate_runs, model_structure_diagnosti
 
 
 _BASE_WEB = quality_app.app.base_web
+_GROUP_PROFILE_DIALOG = r"""
+<dialog id="groupProfileDialog" aria-labelledby="groupProfileDialogTitle">
+  <header><h2 id="groupProfileDialogTitle">工况组画像</h2><button id="groupProfileDialogClose" type="button" class="secondary" autofocus>关闭</button></header>
+  <div id="groupProfileDialogBody"></div>
+</dialog>
+"""
+_GROUP_PROFILE_DIALOG_STYLE = r"""
+<style id="groupProfileDialogStyle">
+  .group-profile-entry { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:8px 0; min-width:0; }
+  .group-profile-entry span { overflow-wrap:anywhere; }
+  #clusterContent, #assistanceClusterQuality { min-width:0; }
+  #groupProfileDialog { box-sizing:border-box; width:90vw; max-width:1600px; max-height:88vh; padding:16px; border:1px solid #cbd5e1; border-radius:8px; overflow:auto; color:#172334; }
+  #groupProfileDialog::backdrop { background:rgb(15 23 42 / 45%); }
+  #groupProfileDialog > header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; padding:0; background:none; color:inherit; }
+  #groupProfileDialog h2 { margin:0; font-size:18px; }
+  #groupProfileDialog .group-profiles { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); align-items:start; gap:16px; min-width:0; }
+  #groupProfileDialog .group-profiles > *, #groupProfileDialog .group-profile-detail > * { min-width:0; max-width:100%; }
+  #groupProfileDialog .table-wrap { overflow:auto; max-height:280px; }
+  #groupProfileDialog td, #groupProfileDialog th, #groupProfileDialog p { overflow-wrap:anywhere; white-space:normal; }
+  #groupProfileDialog .metrics { display:flex; flex-wrap:wrap; gap:8px 16px; }
+  #groupProfileDialog .metric { border:0; padding:0; box-shadow:none; background:none; }
+  #groupProfileDialog pre { white-space:pre-wrap; overflow-wrap:anywhere; }
+  @media (max-width:1000px) { #groupProfileDialog .group-profiles { grid-template-columns:minmax(0,1fr); } }
+  @media (max-width:480px) { #groupProfileDialog { width:96vw; padding:10px; } }
+</style>
+"""
 _TREND_APP = quality_app.app
 _ASSET_PATH = Path(__file__).with_name("model_results.js")
 _CANDIDATE_PROTECTED_ARTIFACTS = (
@@ -1024,6 +1050,7 @@ document.addEventListener("DOMContentLoaded", () => {
   candidatePanel.addEventListener("change", refreshCandidateConfigSummary);
   new MutationObserver(refreshCandidateConfigSummary).observe(document.getElementById("eligibilitySummary"), {childList:true, characterData:true, subtree:true});
   const showCandidateTool = target => {
+    globalThis.closeGroupProfileDialog?.();
     toolPanels.forEach(panel => panel.classList.toggle("active", panel.id === target));
     document.querySelectorAll(".candidate-tool-tab").forEach(button => {
       const selected = button.dataset.panel === target;
@@ -1048,6 +1075,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const validatedDownload = document.getElementById("validatedModelDownload");
 
   globalThis.showWorkflowStage = target => {
+    globalThis.closeGroupProfileDialog?.();
     globalThis.refreshValidationInvestigationContext?.();
     [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.toggle("active", panel.id === target));
     candidateNavigation.hidden = target !== "candidatePanel";
@@ -2057,6 +2085,8 @@ def apply_model_results_ui(html: str) -> str:
     if "</head>" not in result or "</body>" not in result:
         raise ValueError("Web HTML缺少head或body结束标签")
     result = _stabilize_workbench_html(result)
+    result = result.replace('<body>', '<body>' + _GROUP_PROFILE_DIALOG, 1)
+    result = result.replace('</head>', _GROUP_PROFILE_DIALOG_STYLE + '</head>', 1)
     result = result.replace('<div id="dpTrendChart"', '<h3 id="trendEvidence">结果证据</h3>\n    <div id="dpTrendChart"', 1)
     # Only the final workbench presentation changes; payloads and calculations stay shared.
     result = result.replace(
@@ -2184,7 +2214,6 @@ function renderClusterQuality(container, quality, perspective, clusterCenters={}
     overview = '<div id="explorationOverview" class="metrics"></div>'
     result = result.replace(overview, '', 1).replace('<div id="explorationClusterQuality"></div>', overview + '<div id="explorationClusterQuality"></div>', 1)
     result = result.replace('<details open><summary>工况组区分</summary>', '<details><summary>完整工况组变量对比</summary>', 1)
-    result = result.replace('</head>', '<style>.group-profiles { min-width:0; grid-template-columns:minmax(0,1fr); } #clusterContent, #assistanceClusterQuality { min-width:0; }.group-profiles .table-wrap { max-height:280px; overflow:auto; }.group-profiles td { white-space:normal; overflow-wrap:anywhere; }.group-profiles pre { white-space:pre-wrap; overflow-wrap:anywhere; }</style></head>', 1)
     result = result.replace(
         'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration");',
         'renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration",data.cluster_centers);',

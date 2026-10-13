@@ -991,6 +991,11 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
     )
     loaded = _load_modeling_upload(payload, requested_columns, "找不到 Tag：")
     all_tags = list(loaded.metadata.numeric_candidate_columns)
+    if any(tag not in loaded.frame.columns for tag in all_tags):
+        loaded = _load_modeling_upload(
+            payload, [*requested_columns, *all_tags], "找不到 Tag："
+        )
+    color_columns = all_tags
     registry = normalize_tag_registry(all_tags, payload.get("tag_configs"))
     _require_continuous_roles(tags, registry)
     _require_state_filter_roles(state_columns, registry)
@@ -1014,7 +1019,7 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 _indexed_tags(
                     selected,
                     timestamp_column,
-                    list(dict.fromkeys([*tags, *state_columns, *([performance_tag] if performance_tag else []), *eligibility_columns(payload.get("modeling_eligibility"))])),
+                    list(dict.fromkeys([*tags, *color_columns, *state_columns, *([performance_tag] if performance_tag else []), *eligibility_columns(payload.get("modeling_eligibility"))])),
                 ),
                 tags,
                 config,
@@ -1023,6 +1028,7 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 engineering_ranges=engineering_ranges(tag_configs),
                 resampling_window=(exploration_start, exploration_end),
                 modeling_eligibility=payload.get("modeling_eligibility"),
+                color_columns=color_columns,
             )
         except PreprocessingQualityError as error:
             raise WebStageError(
@@ -1032,7 +1038,7 @@ def state_exploration_payload(payload: dict[str, Any]) -> dict[str, Any]:
     response = {
         key: value
         for key, value in exploration.items()
-        if key not in {"cluster_series", "cluster_series_display", "_performance_values"}
+        if key not in {"cluster_series", "cluster_series_display", "_performance_values", "_color_series"}
     }
     exploration.setdefault(_PREFERRED_REGION_UPDATE_SEQ, 0)
     response[_PREFERRED_REGION_UPDATE_SEQ] = exploration[_PREFERRED_REGION_UPDATE_SEQ]
@@ -1333,7 +1339,21 @@ def _exploration_summary_payload(run_id: str) -> dict[str, Any]:
     return {
         key: value
         for key, value in exploration.items()
-        if key not in {"cluster_series", "cluster_series_display", "_performance_values", "_diagnostic_source"}
+        if key not in {"cluster_series", "cluster_series_display", "_performance_values", "_color_series", "_diagnostic_source"}
+    }
+
+
+def state_exploration_color_values_payload(run_id: str, column: str) -> dict[str, Any]:
+    exploration = _state_exploration_run(run_id)
+    color_series = exploration.get("_color_series")
+    if not isinstance(color_series, pd.DataFrame) or column not in color_series.columns:
+        raise ValueError("找不到可用于状态探索着色的变量")
+    values = pd.to_numeric(color_series[column], errors="coerce").to_numpy(
+        dtype=float, na_value=np.nan
+    )
+    return {
+        "column": column,
+        "values": [float(value) if np.isfinite(value) else None for value in values],
     }
 
 
@@ -2966,6 +2986,19 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/state-exploration/"):
             suffix = parsed.path[len("/api/state-exploration/") :]
+            color_values_match = re.fullmatch(r"([^/]+)/color-values", suffix)
+            if color_values_match is not None:
+                try:
+                    run_id = _validated_id(color_values_match.group(1), "run_id")
+                    column = parse_qs(parsed.query, keep_blank_values=True).get(
+                        "column", [""]
+                    )[0]
+                    self._send_json(state_exploration_color_values_payload(run_id, column))
+                except StateExplorationNotFoundError as error:
+                    self._send_json(error_payload(error), 404)
+                except Exception as error:
+                    self._send_json(error_payload(error), 400)
+                return
             is_series = suffix.endswith("/series")
             raw_run_id = suffix[: -len("/series")].rstrip("/") if is_series else suffix
             try:
@@ -3596,7 +3629,7 @@ INDEX_HTML = r"""<!doctype html>
           <h3>预处理损失摘要</h3>
           <div id="explorationLossSummary" class="table-wrap"></div>
           <div class="exploration-result-grid">
-            <div class="chart-card exploration-pc-card"><div class="chart-card-head"><h3>工况组 PC1 / PC2 与中心</h3><div class="exploration-region-tools"><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
+            <div class="chart-card exploration-pc-card"><div class="chart-card-head"><h3>工况组 PC1 / PC2 与中心</h3><div class="exploration-region-tools"><label>着色方式<select id="explorationPcColorMode"><option value="cluster">工况组（离散着色）</option></select></label><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
             <div class="chart-card exploration-region-card"><h3>优选运行区域质量统计</h3><div id="explorationRegionSummary" class="table-wrap region-stats"><div class="empty">尚未定义优选运行区域。</div></div></div>
             <div class="chart-card exploration-timeline-card"><h3>工况组时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
           </div>
@@ -3709,7 +3742,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, explorationRevision:0, preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, preferredRegionPlot:null, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingCandidateProvenance:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, explorationRevision:0, explorationPlotRevision:0, explorationColorRun:null, explorationColorValues:new Map(), preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, preferredRegionPlot:null, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingCandidateProvenance:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -3758,7 +3791,8 @@ function saveCurrentTagConfig() {
 }
 function invalidateModellingResults(reason) {
   state.groupProfileSelection=null;
-  document.querySelectorAll('.group-profiles').forEach(node=>node.remove());
+  closeGroupProfileDialog();
+  renderGroupProfiles(el('assistanceClusterQuality'),null,'cluster_assistance');
   document.querySelectorAll('#clusterChart circle[data-profile-cluster]').forEach(node=>node.setAttribute('fill-opacity','.72'));
   invalidateExploration(reason); invalidatePreprocessingPreview(); invalidateQuality(reason||"状态探索配置已修改");
 }
@@ -4218,17 +4252,52 @@ function renderVariableDiagnostics(container, diagnostics) {
 }
 function groupProfileNumber(value) { return typeof value==='number'&&Number.isFinite(value)?String(Number(value.toPrecision(5))):'—'; }
 function renderGroupProfiles(container,quality,perspective) {
-  container.querySelector('.group-profiles')?.remove();
-  const profiles=quality?.group_profiles||[], selected=state.groupProfileSelection?.[perspective], temporal=perspective==='state_exploration';
-  const section=document.createElement('div'); section.className='chart-card group-profiles';
-  const major=profile=>(profile.top_variables.length?profile.top_variables:profile.comparison_variables).slice(0,3).map(item=>`${item.tag}${item.deviation>0?' ↑':item.deviation<0?' ↓':''}`).join('、')||'无可计算的非零偏离';
-  section.innerHTML=`<h3>工况组画像</h3><div class="table-wrap" tabindex="0"><table><thead><tr><th>工况组 / 选择</th><th>样本数 / 占比</th><th>主要变量</th>${temporal?'<th>episode 数</th><th>中位 / 最长时长（分钟）</th><th>已生成工况组候选</th>':''}</tr></thead><tbody>${profiles.map(profile=>`<tr><td><button type="button" class="secondary" data-profile="${escapeHtml(profile.cluster_id)}" aria-pressed="${selected===profile.cluster_id}">${escapeHtml(clusterUiLabel(profile.cluster_id))}${selected===profile.cluster_id?'（已选中）':''}</button></td><td>${profile.sample_count} / ${explorationPercent(profile.share)}</td><td style="overflow-wrap:anywhere;max-width:280px">${escapeHtml(major(profile))}</td>${temporal?`<td>${profile.episode_count}</td><td>${groupProfileNumber(profile.median_duration_minutes)} / ${groupProfileNumber(profile.longest_duration_minutes)}</td><td>${profile.candidate_count}</td>`:''}</tr>`).join('')}</tbody></table></div><div class="group-profile-detail"></div>`;
-  container.append(section);
-  const technical=Array.from(container.children).find(node=>node.tagName==='DETAILS'); if(technical) container.insertBefore(section,technical);
+  if(el('groupProfileDialog')?.dataset.perspective===perspective) closeGroupProfileDialog();
+  container.querySelector('.group-profile-entry')?.remove();
+  const profiles=quality?.group_profiles||[], selected=state.groupProfileSelection?.[perspective];
+  const entry=document.createElement('div'); entry.className='group-profile-entry';
+  entry.innerHTML=`<span>工况组画像 · ${profiles.length} 个工况组 · 当前：${escapeHtml(profiles.some(item=>item.cluster_id===selected)?clusterUiLabel(selected):'未选择')}${profiles.length?'':' · 暂无有效画像，请重新运行分析'}</span> <button type="button" class="secondary" data-profile-open aria-haspopup="dialog" aria-controls="groupProfileDialog" ${profiles.length?'':'disabled'}>查看工况组画像</button>`;
+  container.append(entry);
+  const technical=Array.from(container.children).find(node=>node.tagName==='DETAILS'); if(technical) container.insertBefore(entry,technical);
   const judgment=container.querySelector('.screening-judgment');
   if(judgment) {judgment.querySelectorAll('p').forEach(evidence=>{if(!evidence.textContent.startsWith('识别 ')) container.firstElementChild.append(evidence);}); judgment.remove();}
-  section.querySelectorAll('.table-wrap').forEach(node=>{node.style.maxHeight='280px';node.style.overflow='auto';});
-  section.querySelectorAll('[data-profile]').forEach(button=>button.addEventListener('click',()=>{state.groupProfileSelection={...(state.groupProfileSelection||{}),[perspective]:button.dataset.profile};renderGroupProfiles(container,quality,perspective);container.querySelectorAll('[data-profile]').forEach(node=>{if(node.dataset.profile===button.dataset.profile) node.focus({preventScroll:true});});applyGroupProfileFocus(perspective);}));
+  entry.querySelector('[data-profile-open]').addEventListener('click',event=>{
+    const dialog=el('groupProfileDialog');
+    dialog.dataset.perspective=perspective;
+    dialog.profileOpener=event.currentTarget;
+    el('groupProfileDialogTitle').textContent=`工况组画像 · ${perspective==='state_exploration'?'状态探索':'聚类辅助'}`;
+    renderGroupProfileContent(el('groupProfileDialogBody'),quality,perspective);
+    dialog.showModal();
+    el('groupProfileDialogClose').focus({preventScroll:true});
+  });
+}
+function closeGroupProfileDialog() {
+  const dialog=el('groupProfileDialog'); if(!dialog?.dataset.perspective) return;
+  if(dialog.open) dialog.close();
+  delete dialog.dataset.perspective;
+  el('groupProfileDialogBody').replaceChildren();
+  dialog.profileOpener?.focus({preventScroll:true}); dialog.profileOpener=null;
+}
+globalThis.closeGroupProfileDialog=closeGroupProfileDialog;
+el('groupProfileDialogClose')?.addEventListener('click',closeGroupProfileDialog);
+el('groupProfileDialog')?.addEventListener('close',()=>{if(!el('groupProfileDialog').open) closeGroupProfileDialog();});
+function renderGroupProfileContent(container,quality,perspective) {
+  container.querySelector('.group-profiles')?.remove();
+  const profiles=quality?.group_profiles||[], selected=state.groupProfileSelection?.[perspective], temporal=perspective==='state_exploration';
+  const section=document.createElement('div'); section.className='group-profiles';
+  const major=profile=>(profile.top_variables.length?profile.top_variables:profile.comparison_variables).slice(0,3).map(item=>`${item.tag}${item.deviation>0?' ↑':item.deviation<0?' ↓':''}`).join('、')||'无可计算的非零偏离';
+  section.innerHTML=`<div class="table-wrap" tabindex="0"><table><thead><tr><th>工况组 / 选择</th><th>样本数 / 占比</th><th>主要变量</th>${temporal?'<th>episode 数</th><th>中位 / 最长时长（分钟）</th><th>已生成工况组候选</th>':''}</tr></thead><tbody>${profiles.map(profile=>`<tr><td><button type="button" class="secondary" data-profile="${escapeHtml(profile.cluster_id)}" aria-pressed="${selected===profile.cluster_id}">${escapeHtml(clusterUiLabel(profile.cluster_id))}${selected===profile.cluster_id?'（已选中）':''}</button></td><td>${profile.sample_count} / ${explorationPercent(profile.share)}</td><td style="overflow-wrap:anywhere;max-width:280px">${escapeHtml(major(profile))}</td>${temporal?`<td>${profile.episode_count}</td><td>${groupProfileNumber(profile.median_duration_minutes)} / ${groupProfileNumber(profile.longest_duration_minutes)}</td><td>${profile.candidate_count}</td>`:''}</tr>`).join('')}</tbody></table></div><div class="group-profile-detail"></div>`;
+  container.append(section);
+  section.querySelectorAll('[data-profile]').forEach(button=>button.addEventListener('click',()=>{
+    const list=section.querySelector('.table-wrap'), scrollTop=list.scrollTop, scrollLeft=list.scrollLeft;
+    state.groupProfileSelection={...(state.groupProfileSelection||{}),[perspective]:button.dataset.profile};
+    renderGroupProfileContent(container,quality,perspective);
+    const refreshedList=container.querySelector('.table-wrap'); refreshedList.scrollTop=scrollTop; refreshedList.scrollLeft=scrollLeft;
+    const summary=el(perspective==='state_exploration'?'explorationClusterQuality':'assistanceClusterQuality').querySelector('.group-profile-entry > span');
+    summary.textContent=`工况组画像 · ${profiles.length} 个工况组 · 当前：${clusterUiLabel(button.dataset.profile)}`;
+    container.querySelectorAll('[data-profile]').forEach(node=>{if(node.dataset.profile===button.dataset.profile) node.focus({preventScroll:true});});
+    applyGroupProfileFocus(perspective);
+  }));
   const profile=profiles.find(item=>item.cluster_id===selected), detail=section.querySelector('.group-profile-detail');
   if(!profile) { detail.innerHTML='<p class="help">选择一个工况组查看工程量均值、相对总体偏离与组间位置。</p>'; return; }
   const position=item=>item.rank===null?'不可计算':`${item.tied?'并列 ':''}${item.rank===1?'组均值最高':item.rank===item.rank_count?'组均值最低':`第 ${item.rank}/${item.rank_count}`}（${item.rank_count} 组有效均值）`;
@@ -4239,15 +4308,15 @@ function renderGroupProfiles(container,quality,perspective) {
   const transition=(items,key)=>items.length?items.slice(0,3).map(item=>`${clusterUiLabel(item[key])}：${item.count} 次`).join('；'):'未观测到';
   const matrix=`<div class="table-wrap" tabindex="0"><table><thead><tr><th>来源 / 目标</th>${profiles.map(item=>`<th>${escapeHtml(clusterUiLabel(item.cluster_id))}</th>`).join('')}</tr></thead><tbody>${profiles.map(from=>`<tr><th>${escapeHtml(clusterUiLabel(from.cluster_id))}</th>${profiles.map(to=>`<td>${from.cluster_id===to.cluster_id?'—':(quality.transitions||[]).find(item=>item.from===from.cluster_id&&item.to===to.cluster_id)?.count||0}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   detail.innerHTML=`<h4>${escapeHtml(clusterUiLabel(profile.cluster_id))}</h4>${profile.top_variables.length?'':`<p>${profile.comparison_variables.length?'本组均值接近总体，仍可比较全局主要区分 Tag。':'均值画像有限：没有可计算的非零偏离。请查看完整变量对比及时间证据；动态历史模式仅为可能性。'}</p>`}${performance}${table(top.slice(0,3))}${top.length>3?`<details><summary>展开 Top5</summary>${table(top.slice(3,5))}</details>`:''}<p class="help">z =（组均值 − 全部有效样本均值）/ 总体标准差；排名不表示正常范围或分布完全分离。</p>${temporal?`<p>总覆盖 ${profile.total_duration_minutes} 分钟；主要进入：${escapeHtml(transition(profile.incoming,'from'))}；主要离开：${escapeHtml(transition(profile.outgoing,'to'))}</p><button type="button" class="secondary" data-profile-pc>定位PC图</button> <button type="button" class="secondary" data-profile-timeline>定位时间轴</button> <button type="button" data-profile-candidates>查看关联候选（${profile.candidate_count}）</button><p class="help">候选数为本组已生成的 cluster_candidates，受最小时长与每组上限约束；不等于 episode 数。仅定位，不更改人工确认。</p><details><summary>时间详情与完整转换计数（不含自转换）</summary><p>平均覆盖 ${groupProfileNumber(profile.average_duration_minutes)} 分钟</p>${matrix}</details>`:''}<details><summary>完整变量对比（${profile.variables.length}）</summary>${table(profile.variables)}</details>`;
-  detail.querySelector('[data-profile-pc]')?.addEventListener('click',()=>{applyGroupProfileFocus(perspective);el('explorationPcChart').scrollIntoView({block:'center'});});
-  detail.querySelector('[data-profile-timeline]')?.addEventListener('click',()=>{applyGroupProfileFocus(perspective,true);el('explorationTimeline').scrollIntoView({block:'center'});});
-  detail.querySelector('[data-profile-candidates]')?.addEventListener('click',()=>{applyGroupProfileFocus(perspective);const candidates=el('explorationClusterCandidates');candidates.closest('details')?.setAttribute('open','');candidates.scrollIntoView({block:'center'});});
+  detail.querySelector('[data-profile-pc]')?.addEventListener('click',()=>{closeGroupProfileDialog();applyGroupProfileFocus(perspective);el('explorationPcChart').scrollIntoView({block:'center'});});
+  detail.querySelector('[data-profile-timeline]')?.addEventListener('click',()=>{closeGroupProfileDialog();applyGroupProfileFocus(perspective,true);el('explorationTimeline').scrollIntoView({block:'center'});});
+  detail.querySelector('[data-profile-candidates]')?.addEventListener('click',()=>{closeGroupProfileDialog();applyGroupProfileFocus(perspective);const candidates=el('explorationClusterCandidates');candidates.closest('details')?.setAttribute('open','');candidates.scrollIntoView({block:'center'});});
 }
 function applyGroupProfileFocus(perspective,locate=false) {
   if(perspective==='cluster_assistance') { const selected=state.groupProfileSelection?.[perspective];el('clusterChart').querySelectorAll('circle[data-profile-cluster]').forEach(node=>node.setAttribute('fill-opacity',!selected||node.dataset.profileCluster===selected?'.85':'.12'));return; }
   if(perspective!=='state_exploration') return;
   const selected=state.groupProfileSelection?.[perspective], profile=state.exploration?.cluster_quality?.group_profiles?.find(item=>item.cluster_id===selected), plot=state.preferredRegionPlot;
-  if(plot&&globalThis.Plotly) plot.data.forEach((trace,index)=>{if(trace.type==='scattergl') globalThis.Plotly.restyle(plot,{'marker.opacity':!selected||trace.name===clusterUiLabel(selected)?0.85:0.12},[index]);});
+  if(plot&&globalThis.Plotly) plot.data.forEach((trace,index)=>{if(trace.type==='scattergl') globalThis.Plotly.restyle(plot,{'marker.opacity':!selected||trace.legendgroup===`cluster:${selected}`||trace.name===clusterUiLabel(selected)?0.85:0.12},[index]);});
   renderExplorationTimeline(state.exploration?.cluster_series||[],state.exploration?.cluster_candidates||[],state.exploration?.cluster_quality?.group_profiles||[],selected,Number(el("sampleInterval").value));
   const svg=el('explorationTimeline')?.querySelector('svg');
   if(svg&&profile) {
@@ -4259,6 +4328,11 @@ function applyGroupProfileFocus(perspective,locate=false) {
 }
 function renderStateExploration(data) {
   if(state.groupProfileRun!==data.exploration_run_id) {state.groupProfileSelection={...(state.groupProfileSelection||{}),state_exploration:null};state.groupProfileRun=data.exploration_run_id;}
+  if(state.explorationColorRun!==data.exploration_run_id) {
+    state.explorationColorRun=data.exploration_run_id; state.explorationColorValues=new Map();
+    const select=el("explorationPcColorMode"); select.replaceChildren(new Option("工况组（离散着色）","cluster"));
+    (data.color_variables||[]).forEach(column=>select.add(new Option(`${column}（连续着色）`,`variable:${column}`)));
+  }
   el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
   const overview=el("explorationOverview"); if(overview) el("explorationClusterQuality").before(overview);
   renderClusterQuality(el("explorationClusterQuality"),data.cluster_quality,"state_exploration");
@@ -4308,16 +4382,84 @@ function renderExplorationPcChart(data) {
   if(!rows.length){container.innerHTML='<div class="empty">无可展示序列。</div>';return;}
   if(!finiteRows.length){container.innerHTML='<div class="empty">无可展示的有限 PC1/PC2 序列。</div>';return;}
   if(!globalThis.Plotly){container.innerHTML='<div class="empty">Plotly 未加载，无法绘制散点图。</div>';return;}
-  const byCluster=new Map();
-  finiteRows.forEach(row=>{const cluster=String(row.cluster_id); if(!byCluster.has(cluster)) byCluster.set(cluster,{x:[],y:[]}); const bucket=byCluster.get(cluster); bucket.x.push(Number(row.pc1)); bucket.y.push(Number(row.pc2));});
-  const traces=[...byCluster.entries()].map(([cluster,bucket])=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hovertemplate:`${clusterUiLabel(cluster)}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
+  const select=el("explorationPcColorMode"), choice=select?.value||"cluster";
+  const colorColumn=choice.startsWith("variable:")?choice.slice(9):null;
+  let colorValues=null;
+  if(colorColumn) {
+    const cache=state.explorationColorValues||(state.explorationColorValues=new Map());
+    const cached=cache.get(colorColumn);
+    if(Array.isArray(cached)) colorValues=cached;
+    else {
+      if(!cached) {
+        const runId=data.exploration_run_id;
+        const request=api(`/api/state-exploration/${encodeURIComponent(runId)}/color-values?column=${encodeURIComponent(colorColumn)}`).then(result=>{
+          if(result.column!==colorColumn||!Array.isArray(result.values)||result.values.length!==rows.length) throw new Error("工艺变量值与 PC 样本数量不一致，未应用着色。");
+          if(state.explorationColorValues!==cache) return;
+          cache.set(colorColumn,result.values);
+          if(state.exploration?.exploration_run_id===runId&&select.value===choice) renderExplorationPcChart(state.exploration);
+        }).catch(error=>{
+          if(state.explorationColorValues===cache) cache.delete(colorColumn);
+          if(state.exploration?.exploration_run_id===runId&&select.value===choice) el("explorationPcNote").textContent=`${colorColumn} 着色数据读取失败：${error.message}`;
+        });
+        cache.set(colorColumn,request);
+      }
+      el("explorationPcNote").textContent=`正在读取 ${colorColumn} 的完整样本值…`;
+      return;
+    }
+  }
+  let traces,colorAxis=null;
+  if(colorColumn) {
+    const clusters=new Map();
+    let minimum=Infinity,maximum=-Infinity,valueCount=0;
+    rows.forEach((row,index)=>{
+      const pc1=Number(row.pc1),pc2=Number(row.pc2);
+      if(!Number.isFinite(pc1)||!Number.isFinite(pc2)) return;
+      const cluster=String(row.cluster_id);
+      if(!clusters.has(cluster)) clusters.set(cluster,{x:[],y:[],values:[],missingX:[],missingY:[]});
+      const bucket=clusters.get(cluster);
+      const value=colorValues[index];
+      if(typeof value==="number"&&Number.isFinite(value)) { bucket.x.push(pc1); bucket.y.push(pc2); bucket.values.push(value); minimum=Math.min(minimum,value); maximum=Math.max(maximum,value); valueCount++; }
+      else { bucket.missingX.push(pc1); bucket.missingY.push(pc2); }
+    });
+    let colorMinimum,colorMaximum;
+    if(valueCount) {
+      const padding=Math.max(Math.abs(minimum)*.01,Number.EPSILON);
+      colorMinimum=minimum===maximum?minimum-padding:minimum;
+      colorMaximum=minimum===maximum?maximum+padding:maximum;
+      colorAxis={colorscale:scoreTimeColorStops.map((stop,index)=>[index/(scoreTimeColorStops.length-1),`rgb(${stop.join(",")})`]),cmin:colorMinimum,cmax:colorMaximum,colorbar:{title:{text:escapeHtml(colorColumn)},tickformat:".4g"}};
+    }
+    traces=[];
+    for(const [cluster,bucket] of clusters) {
+      const legendgroup=`cluster:${cluster}`;
+      if(bucket.values.length) traces.push({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:"工艺变量值",showlegend:false,legendgroup,marker:{size:5,color:bucket.values,coloraxis:"coloraxis"},hovertemplate:`PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>${escapeHtml(colorColumn)} %{marker.color:.5g}<extra></extra>`});
+      if(bucket.missingX.length) traces.push({type:"scattergl",mode:"markers",x:bucket.missingX,y:bucket.missingY,name:"缺失/非有限值",showlegend:false,legendgroup,marker:{size:5,color:"#9aa7b4",opacity:.85},hovertemplate:"PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>工艺变量值缺失或无效<extra></extra>"});
+      traces.push({type:"scattergl",mode:"markers",x:[],y:[],name:clusterUiLabel(cluster),legendgroup,marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hoverinfo:"skip"});
+    }
+    const note=el("explorationPcNote");
+    const missingCount=[...clusters.values()].reduce((count,bucket)=>count+bucket.missingX.length,0);
+    if(valueCount) note.textContent=`按 ${colorColumn} 连续着色，数值范围 ${minimum.toPrecision(5)} ～ ${maximum.toPrecision(5)}；${missingCount?`${missingCount} 个缺失/非有限值以灰点显示。`:"没有缺失或非有限值。"} PC 坐标和完整样本不变。`;
+    else note.textContent=`${colorColumn} 没有有效数值；全部 ${missingCount} 个样本以灰点显示，未显示数值色条。PC 坐标和完整样本不变。`;
+  } else {
+    const byCluster=new Map();
+    finiteRows.forEach(row=>{const cluster=String(row.cluster_id); if(!byCluster.has(cluster)) byCluster.set(cluster,{x:[],y:[]}); const bucket=byCluster.get(cluster); bucket.x.push(Number(row.pc1)); bucket.y.push(Number(row.pc2));});
+    traces=[...byCluster.entries()].map(([cluster,bucket])=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hovertemplate:`${clusterUiLabel(cluster)}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
+    el("explorationPcNote").textContent="按工况组离散着色。PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。";
+  }
   const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>({cluster,x:Number(center[0]),y:Number(center[1])})).filter(item=>Number.isFinite(item.x)&&Number.isFinite(item.y));
-  if(centers.length) traces.push({type:"scatter",mode:"markers+text",x:centers.map(item=>item.x),y:centers.map(item=>item.y),text:centers.map(item=>clusterUiLabel(item.cluster)),textposition:"top center",textfont:{size:10},showlegend:false,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:centers.map(item=>explorationClusterColor(item.cluster)),line:{width:1,color:"#ffffff"}},"meta":"center"});
-  const layout={autosize:true,hovermode:"closest",dragmode:"pan",margin:{l:46,r:14,t:12,b:88},legend:{orientation:"h",x:.5,y:-.2,xanchor:"center",yanchor:"top"},paper_bgcolor:"#fff",plot_bgcolor:"#fff",font:{size:11,color:"#5f6c7b"},xaxis:{title:"PC1",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},yaxis:{title:"PC2",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},shapes:explorationRegionShapes()};
+  if(centers.length) {
+    if(colorColumn) traces.push(...centers.map(item=>({type:"scatter",mode:"markers+text",x:[item.x],y:[item.y],text:[clusterUiLabel(item.cluster)],textposition:"top center",textfont:{size:10},showlegend:false,legendgroup:`cluster:${item.cluster}`,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:explorationClusterColor(item.cluster),line:{width:1,color:"#ffffff"}},"meta":"center"})));
+    else traces.push({type:"scatter",mode:"markers+text",x:centers.map(item=>item.x),y:centers.map(item=>item.y),text:centers.map(item=>clusterUiLabel(item.cluster)),textposition:"top center",textfont:{size:10},showlegend:false,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:centers.map(item=>explorationClusterColor(item.cluster)),line:{width:1,color:"#ffffff"}},"meta":"center"});
+  }
+  const layout={autosize:true,hovermode:"closest",dragmode:"pan",margin:{l:46,r:colorColumn?96:14,t:12,b:88},legend:{orientation:"h",x:.5,y:-.2,xanchor:"center",yanchor:"top",groupclick:"togglegroup"},paper_bgcolor:"#fff",plot_bgcolor:"#fff",font:{size:11,color:"#5f6c7b"},xaxis:{title:"PC1",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},yaxis:{title:"PC2",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},shapes:explorationRegionShapes()};
+  if(colorAxis) layout.coloraxis=colorAxis;
   const config={displayModeBar:true,modeBarButtons:[["zoom2d","pan2d","resetScale2d"]],displaylogo:false,responsive:true,scrollZoom:false};
   container.innerHTML='<div class="exploration-pc-canvas"></div><svg class="exploration-pc-overlay" role="img" aria-label="优选运行区域椭圆"></svg>';
-  const canvas=container.querySelector(".exploration-pc-canvas"), overlay=container.querySelector(".exploration-pc-overlay");
-  globalThis.Plotly.react(canvas,traces,layout,config).then(plot=>{ state.preferredRegionPlot=plot; bindExplorationRegionOverlay(plot,overlay); });
+  const canvas=container.querySelector(".exploration-pc-canvas"), plotRevision=++state.explorationPlotRevision;
+  state.preferredRegionPlot=null;
+  globalThis.Plotly.react(canvas,traces,layout,config).then(plot=>{
+    if(state.explorationPlotRevision!==plotRevision) return;
+    state.preferredRegionPlot=plot; bindExplorationRegionOverlay(plot,container.querySelector(".exploration-pc-overlay"));
+  });
 }
 function refreshExplorationRegionPlot() {
   // Region edits only change the ellipses, so repaint the shapes on the live
@@ -4507,10 +4649,12 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
   el("explorationPreferredRegionCandidates").innerHTML=preferredHead+(preferredBody||'<tr><td colspan="13">暂无满足最小时长的优选区域连续候选。</td></tr>')+"</tbody></table>";
  }
 
-function resetExplorationRegion() { clearTrainingDiagnosticFocus(); state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; state.preferredRegionPlot=null; renderExplorationRegionControls(); }
+function resetExplorationRegion() { clearTrainingDiagnosticFocus(); state.explorationPlotRevision+=1; state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; state.preferredRegionPlot=null; renderExplorationRegionControls(); }
 function confirmedExplorationSourceRefs() { return new Set(state.trainingWindows.map(window=>String(window.source_ref||"")).filter(Boolean)); }
 function invalidateExploration(reason) {
-  state.groupProfileSelection=null;
+  closeGroupProfileDialog();
+  if(state.groupProfileSelection) state.groupProfileSelection={...state.groupProfileSelection,state_exploration:null};
+  renderGroupProfiles(el('explorationClusterQuality'),null,'state_exploration');
   if(state.trainingDiagnosticFocus) clearTrainingDiagnosticFocus();
   state.explorationRevision+=1;
   if(!state.exploration&&!state.preferredRegion) return 0;
@@ -4552,6 +4696,8 @@ el("uploadButton").addEventListener("click", async () => {
     setStatus("正在读取文件…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const form=new FormData(); form.append("file",file);
     const data=await api("/api/upload",{method:"POST",body:form});
+    closeGroupProfileDialog(); state.groupProfileSelection=null;
+    renderGroupProfiles(el('explorationClusterQuality'),null,'state_exploration'); renderGroupProfiles(el('assistanceClusterQuality'),null,'cluster_assistance');
     eligibilityRevision+=1; clearTimeout(eligibilitySummaryTimer); el("eligibilityKeepConditions")?.replaceChildren(); el("eligibilityExcludeGroups")?.replaceChildren();
     state.explorationRevision+=1; state.fileId=data.file_id; state.fileName=data.filename; state.inspection=null; state.registry={}; state.quality=null; state.training=null; state.runId=null; state.exploratoryRunId=null; state.clustering=null; state.exploration=null; resetExplorationRegion(); state.performance=null; state.trend=null; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; state.preprocessingPreviewWindowId=null; state.excludedTags=[]; state.excludedWindows=[]; state.candidateWindows=[]; state.trainingWindows=[]; state.trainingCandidateProvenance=[]; state.trainingWindowSummary=[]; state.selectedTag=null; state.selectedModelTags.clear(); el("stateFilterConditions").replaceChildren(); el("addStateFilterCondition").disabled=true; el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); invalidateQuality(); renderBasicInspection(null); renderUploadedColumns(data.columns); fillSelect(el("timestampColumn"),data.columns); fillSelect(el("labelColumn"),data.columns,"不使用"); fillSelect(el("explorationPerformanceTag"),[],"不配置"); if(data.encoding) el("encoding").value=data.encoding;
     el("inspectButton").disabled=false; el("clusterButton").disabled=true; el("stateExplorationButton").disabled=true; el("addPerformanceCondition").disabled=true; el("performanceButton").disabled=true; el("qualityButton").disabled=true; el("trendButton").disabled=true; el("preprocessingPreviewButton").disabled=true; el("trainButton").disabled=true; el("validateButton").disabled=true; el("importConfigButton").disabled=true; el("exportConfigButton").disabled=true;
@@ -4570,6 +4716,8 @@ el("inspectButton").addEventListener("click", async () => {
     setStatus("正在检查数据…","info"); await new Promise(resolve=>requestAnimationFrame(resolve));
     const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,tag_configs:previousRegistry}),signal:controller.signal});
     ensureInspectionPageReady();
+    closeGroupProfileDialog(); state.groupProfileSelection=null;
+    renderGroupProfiles(el('explorationClusterQuality'),null,'state_exploration'); renderGroupProfiles(el('assistanceClusterQuality'),null,'cluster_assistance');
     state.explorationRevision+=1; state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; resetExplorationRegion(); state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); refreshEligibilitySummary(); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
     el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); if(el("explorationStart")) el("explorationStart").value=localTime(data.time_start); if(el("explorationEnd")) el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingCandidateProvenance=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=localTime(data.suggested_validation_start); el("validationEnd").value=localTime(data.time_end); state.validationWindows=[]; renderValidationWindows();
@@ -4758,6 +4906,7 @@ el("stateExplorationButton").addEventListener("click", async () => {
 });
 
 el("explorationRegionSelect").addEventListener("click",()=>{ if(!state.exploration) return; state.preferredRegionDrawing=!state.preferredRegionDrawing; renderExplorationRegionControls(); if(!refreshExplorationRegionPlot()||!rebindExplorationRegionOverlay()) renderExplorationPcChart(state.exploration); setStatus(state.preferredRegionDrawing?"椭圆选择已开启：在 PC1/PC2 图中拖动绘制优选运行区域。":"椭圆选择已关闭。","info"); });
+el("explorationPcColorMode").addEventListener("change",()=>{ if(state.exploration) renderExplorationPcChart(state.exploration); });
 el("explorationRegionDelete").addEventListener("click",()=>{ const ellipses=state.preferredRegion?.ellipses||[]; if(ellipses.length) updateExplorationPreferredRegion(ellipses.slice(0,-1)); });
 el("explorationRegionClear").addEventListener("click",()=>{ if((state.preferredRegion?.ellipses||[]).length) updateExplorationPreferredRegion([]); });
 
@@ -5271,7 +5420,8 @@ function scoreTimestamp(row) { const value=row?.timestamp; return value==null||(
 function scoreTimeAvailable(rows) { return rows.some(row=>Number.isFinite(scoreTimestamp(row))); }
 function scorePerfAvailable(rows) { return rows.some(row=>row.performance_target_met!==undefined&&row.performance_target_met!==null); }
 function scorePerfColor(value) { return value===true?"#16845b":value===false?"#cf3f36":"#9aa7b4"; }
-function scoreTimeColor(fraction) { const stops=[[24,98,180],[99,142,216],[176,214,238],[238,190,140],[214,96,77]]; const scaled=Math.max(0,Math.min(1,Number(fraction)||0))*(stops.length-1); const low=Math.floor(scaled),high=Math.min(stops.length-1,low+1),mix=scaled-low; const rgb=stops[low].map((value,index)=>Math.round(value+(stops[high][index]-value)*mix)); return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`; }
+const scoreTimeColorStops=[[24,98,180],[99,142,216],[176,214,238],[238,190,140],[214,96,77]];
+function scoreTimeColor(fraction) { const stops=scoreTimeColorStops; const scaled=Math.max(0,Math.min(1,Number(fraction)||0))*(stops.length-1); const low=Math.floor(scaled),high=Math.min(stops.length-1,low+1),mix=scaled-low; const rgb=stops[low].map((value,index)=>Math.round(value+(stops[high][index]-value)*mix)); return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`; }
 function scoreScatter(container, rows, mode=scoreColorMode()) {
   if (!rows.length || !("pc1" in rows[0]) || !("pc2" in rows[0])) { container.innerHTML='<div class="empty">当前模型不足两个保留主元。</div>'; return; }
   if(mode==="time"&&!scoreTimeAvailable(rows)) mode="default";

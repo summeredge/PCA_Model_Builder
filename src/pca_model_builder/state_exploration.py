@@ -118,8 +118,10 @@ def run_state_exploration(
     engineering_ranges: Mapping[str, tuple[float, float]] | None = None,
     resampling_window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
     modeling_eligibility: object = None,
+    color_columns: Sequence[str] = (),
 ) -> dict[str, object]:
     """Explore historical operating states; never labels a state as normal."""
+    color_columns = list(dict.fromkeys(color_columns))
     normalized_performance = _normalize_performance_config(performance_config)
     if (
         normalized_performance is not None
@@ -128,13 +130,14 @@ def run_state_exploration(
         raise ValueError(
             f"性能 Tag {normalized_performance.performance_tag} 不得同时进入状态探索 PCA"
         )
-    preserve_columns = (
-        [normalized_performance.performance_tag]
-        if normalized_performance is not None
+    preserve_columns = list(color_columns)
+    if (
+        normalized_performance is not None
         and normalized_performance.performance_tag in indexed.columns
         and normalized_performance.performance_tag not in tag_columns
-        else []
-    )
+        and normalized_performance.performance_tag not in preserve_columns
+    ):
+        preserve_columns.append(normalized_performance.performance_tag)
     processed = preprocess_window(
         indexed,
         tag_columns,
@@ -226,6 +229,7 @@ def run_state_exploration(
     # Use the existing engineering-value view and full valid sample index;
     # neither display downsampling nor Lag expansion changes Tag semantics.
     diagnostic_data = processed.resampled.reindex(points.index).loc[:, tag_columns]
+    color_series = processed.resampled.reindex(points.index).loc[:, color_columns]
     cluster_quality = analyze_cluster_quality(
         points.loc[:, list(clustered.pc_columns)], points["cluster_id"],
         points.index, diagnostic_data, tag_columns,
@@ -258,6 +262,8 @@ def run_state_exploration(
             if performance_values is not None
             else None
         ),
+        "_color_series": color_series,
+        "color_variables": list(color_columns),
         "preprocessing_summary": preprocessing_summary,
         "exploratory_model_summary": {
             "model_purpose": "exploratory",

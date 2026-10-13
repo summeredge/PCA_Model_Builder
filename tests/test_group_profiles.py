@@ -109,6 +109,7 @@ def test_profile_renderer_directions_performance_visibility_and_time_scope():
     source = r"""
 const assert=require('node:assert/strict');
 const state={groupProfileSelection:{state_exploration:'a',cluster_assistance:'a'}};
+const el=()=>null;
 const escapeHtml=value=>String(value).replaceAll('<','&lt;');
 const clusterUiLabel=value=>value;
 const explorationPercent=value=>`${(value*100).toFixed(1)}%`;
@@ -120,7 +121,7 @@ function render(perspective,profile) {
  const section={innerHTML:'',querySelectorAll:()=>[],querySelector:()=>detail};
  globalThis.document={createElement:()=>section};
  const container={children:[],querySelector:()=>null,append(node){this.children.push(node);}};
- renderGroupProfiles(container,{group_profiles:[profile],transitions:[]},perspective);
+ renderGroupProfileContent(container,{group_profiles:[profile],transitions:[]},perspective);
  return {list:section.innerHTML,detail:detail.innerHTML};
 }
 """ + renderer + r"""

@@ -1197,7 +1197,7 @@ def test_variable_diagnostics_renderer_handles_large_results_escaping_and_unavai
     diagnostic["cluster_features"][-1].update(standardized_difference=None, unavailable_reason="精确常量", cluster_means={"cluster_001": 1})
     diagnostic["unavailable_pairs"] = [{"tag_a": "<bad>", "tag_b": "<TAG_0>", "pearson_r": None, "valid_pair_count": 2, "unavailable_reason": "有效配对样本不足"}]
     diagnostic["tag_profiles"][-1]["flags"] = ["近似无变化", "低唯一值，疑似离散状态量"]
-    renderer = "function renderVariableDiagnostics" + web_model_results.INDEX_HTML.split("function renderVariableDiagnostics", 1)[1].split("function renderStateExploration", 1)[0]
+    renderer = "function renderVariableDiagnostics" + web_model_results.INDEX_HTML.split("function renderVariableDiagnostics", 1)[1].split("function groupProfileNumber", 1)[0]
     renderer = "function clusterUiLabel" + web.INDEX_HTML.split("function clusterUiLabel", 1)[1].split("\n", 1)[0] + "\n" + renderer
     result = _run_node_javascript(
         "const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');"
@@ -1456,9 +1456,132 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
     assert 'showlegend:false' in renderer
 
 
+def test_embedded_web_script_compiles_after_chart_changes():
+    script = web.INDEX_HTML.split("<script>", 1)[1].split("</script>", 1)[0]
+    parsed = _run_node_javascript(
+        "new Function(" + json.dumps(script) + "); console.log(JSON.stringify({parsed:true}));"
+    )
+    assert parsed["parsed"] is True
+
+
+def test_state_exploration_variable_coloring_keeps_points_groups_centers_and_regions():
+    renderer = _pc_renderer_source()
+    result = _run_node_javascript(
+        """
+        const assert=require("node:assert/strict");
+        const plots=[],canvas={},overlay={style:{},replaceChildren(){}};
+        const nodes={explorationPcChart:{innerHTML:"",querySelector:selector=>selector.includes("canvas")?canvas:overlay},
+          explorationPcColorMode:{value:"cluster"},explorationPcNote:{textContent:""}};
+        const el=id=>nodes[id];
+        const data={exploration_run_id:"run-1",cluster_series_full:[
+          {cluster_id:"cluster_001",pc1:1,pc2:10},{cluster_id:"cluster_001",pc1:2,pc2:20},
+          {cluster_id:"cluster_002",pc1:3,pc2:30},{cluster_id:"cluster_003",pc1:4,pc2:40}],
+          cluster_centers:{cluster_001:[1,10],cluster_002:[3,30],cluster_003:[4,40]}};
+        const previous={...data,exploration_run_id:"run-0",cluster_series_full:[...data.cluster_series_full,{cluster_id:"cluster_004",pc1:5,pc2:50}],cluster_centers:{...data.cluster_centers,cluster_004:[5,50]}};
+        const state={exploration:previous,explorationRevision:0,explorationPlotRevision:0,explorationColorRun:"run-0",explorationColorValues:new Map(),preferredRegion:{ellipses:[{center_pc1:0,center_pc2:0,radius_pc1:1,radius_pc2:2}]},preferredRegionDrawing:false};
+        const scoreTimeColorStops=[[24,98,180],[99,142,216],[176,214,238],[238,190,140],[214,96,77]];
+        const clusterUiLabel=value=>`group-${value.slice(-1)}`;
+        const explorationClusterColor=value=>({cluster_001:"#176b87",cluster_002:"#cf3f36",cluster_003:"#16845b",cluster_004:"#d19a20"})[value];
+        const escapeHtml=value=>String(value).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+        let requests=0;
+        const api=url=>{requests++;assert(url.includes("/run-1/color-values?column=LOAD"));return Promise.resolve({column:"LOAD",values:[10,null,30,40]});};
+        globalThis.Plotly={react:(canvas,traces,layout,config)=>{plots.push({traces,layout});return Promise.resolve({});}};
+        __RENDERER__
+        (async()=>{
+          renderExplorationPcChart(state.exploration);
+          state.exploration=data; state.explorationColorRun="run-1"; state.explorationColorValues=new Map();
+          renderExplorationPcChart(data);
+          nodes.explorationPcColorMode.value="variable:LOAD";
+          renderExplorationPcChart(data); renderExplorationPcChart(data);
+          await new Promise(resolve=>setTimeout(resolve,0));
+          const variable=plots[2],valueTraces=variable.traces.filter(trace=>Array.isArray(trace.marker?.color)),missing=variable.traces.find(trace=>trace.marker?.color==="#9aa7b4");
+          const groups=variable.traces.filter(trace=>trace.type==="scattergl"&&trace.x.length===0).map(trace=>[trace.name,trace.legendgroup]);
+          const centers=variable.traces.filter(trace=>trace.meta==="center");
+          assert.equal(requests,1);
+          assert.equal(plots[0].traces.filter(trace=>trace.meta!=="center").length,4);
+          assert.equal(plots[1].traces.filter(trace=>trace.meta!=="center").length,3);
+          assert.deepEqual(valueTraces.map(trace=>[trace.legendgroup,trace.x,trace.y,trace.marker.color]),[
+            ["cluster:cluster_001",[1],[10],[10]],
+            ["cluster:cluster_002",[3],[30],[30]],
+            ["cluster:cluster_003",[4],[40],[40]],
+          ]);
+          assert.deepEqual(missing.x,[2]); assert.deepEqual(missing.y,[20]); assert.equal(missing.legendgroup,"cluster:cluster_001");
+          assert.equal(valueTraces.reduce((count,trace)=>count+trace.x.length,0)+missing.x.length,data.cluster_series_full.length);
+          assert.deepEqual(valueTraces.map(trace=>trace.marker.coloraxis),["coloraxis","coloraxis","coloraxis"]);
+          assert.equal(variable.layout.coloraxis.cmin,10); assert.equal(variable.layout.coloraxis.cmax,40);
+          assert.equal(variable.layout.coloraxis.colorbar.title.text,"LOAD");
+          assert.deepEqual(groups,[
+            ["group-1","cluster:cluster_001"],
+            ["group-2","cluster:cluster_002"],
+            ["group-3","cluster:cluster_003"],
+          ]);
+          assert.deepEqual(centers.map(trace=>[trace.legendgroup,trace.x,trace.y]),[
+            ["cluster:cluster_001",[1],[10]],
+            ["cluster:cluster_002",[3],[30]],
+            ["cluster:cluster_003",[4],[40]],
+          ]);
+          assert.equal(variable.layout.legend.groupclick,"togglegroup");
+          assert.deepEqual(variable.layout.shapes,plots[1].layout.shapes);
+          assert(nodes.explorationPcNote.textContent.includes("LOAD")&&nodes.explorationPcNote.textContent.includes("10.000")&&nodes.explorationPcNote.textContent.includes("40.000"));
+          console.log(JSON.stringify({requests,pointCount:valueTraces.reduce((count,trace)=>count+trace.x.length,0)+missing.x.length,groups,shapes:variable.layout.shapes}));
+        })().catch(error=>{console.error(error);process.exitCode=1;});
+        """.replace("__RENDERER__", "function renderExplorationPcChart(data)" + renderer)
+    )
+    assert result["requests"] == 1
+    assert result["pointCount"] == 4
+    assert len(result["groups"]) == 3
+    assert result["shapes"] == [{"type": "circle", "xref": "x", "yref": "y", "x0": -1, "x1": 1, "y0": -2, "y1": 2, "fillcolor": "rgba(23,107,135,0.08)", "line": {"color": "#176b87", "width": 2}}]
+
+
+def test_state_exploration_pc_chart_ignores_out_of_order_plotly_react():
+    renderer = _pc_renderer_source()
+    result = _run_node_javascript(
+        """
+        const assert=require("node:assert/strict");
+        const pending=[],overlays=[],bindings=[];
+        let canvas=null,overlay=null;
+        const container={
+          set innerHTML(value){canvas={};overlay={id:overlays.length+1};overlays.push(overlay);},
+          querySelector(selector){return selector.includes("canvas")?canvas:overlay;}
+        };
+        const nodes={explorationPcChart:container,explorationPcColorMode:{value:"cluster"},explorationPcNote:{textContent:""}};
+        const el=id=>nodes[id];
+        const data={exploration_run_id:"run-1",cluster_series_full:[
+          {cluster_id:"cluster_001",pc1:1,pc2:10},{cluster_id:"cluster_002",pc1:2,pc2:20}],cluster_centers:{}};
+        const state={exploration:data,explorationPlotRevision:0,explorationColorValues:new Map([["LOAD",[10,20]]]),preferredRegion:{ellipses:[]},preferredRegionDrawing:false,preferredRegionPlot:null};
+        const scoreTimeColorStops=[[24,98,180],[99,142,216],[176,214,238],[238,190,140],[214,96,77]];
+        const clusterUiLabel=value=>value;
+        const explorationClusterColor=()=>"#176b87";
+        const escapeHtml=value=>String(value);
+        globalThis.Plotly={react:()=>new Promise(resolve=>pending.push({resolve,plot:{id:pending.length+1}}))};
+        __RENDERER__
+        bindExplorationRegionOverlay=(plot,layer)=>bindings.push({plot:plot.id,layer:layer.id});
+        (async()=>{
+          renderExplorationPcChart(data);
+          nodes.explorationPcColorMode.value="variable:LOAD";
+          renderExplorationPcChart(data);
+          assert.equal(pending.length,2);
+          assert.equal(state.preferredRegionPlot,null);
+          overlay={id:"current-overlay"};
+          pending[1].resolve(pending[1].plot);
+          await new Promise(resolve=>setImmediate(resolve));
+          assert.equal(state.preferredRegionPlot.id,2);
+          assert.deepEqual(bindings,[{plot:2,layer:"current-overlay"}]);
+          pending[0].resolve(pending[0].plot);
+          await new Promise(resolve=>setImmediate(resolve));
+          assert.equal(state.preferredRegionPlot.id,2);
+          assert.deepEqual(bindings,[{plot:2,layer:"current-overlay"}]);
+          console.log(JSON.stringify({plot:state.preferredRegionPlot.id,bindings}));
+        })().catch(error=>{console.error(error);process.exitCode=1;});
+        """.replace("__RENDERER__", "function renderExplorationPcChart(data)" + renderer)
+    )
+    assert result == {"plot": 2, "bindings": [{"plot": 2, "layer": "current-overlay"}]}
+
+
 def test_web_exposes_preferred_region_controls_and_full_sample_evaluation():
     html = web.INDEX_HTML
     for element_id in (
+        'id="explorationPcColorMode"',
         'id="explorationRegionSelect"',
         'id="explorationRegionDelete"',
         'id="explorationRegionClear"',
@@ -3731,6 +3854,66 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
 
     with pytest.raises(ValueError, match="性能 Tag.*PCA"):
         web.state_exploration_payload({**payload, "tags": ["A", "B", "PERF"]})
+
+
+def test_state_exploration_color_values_align_to_full_pc_rows_without_rerunning(tmp_path, monkeypatch):
+    from pca_model_builder.data_session import DataSessionCache
+
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "DATA_SESSIONS", DataSessionCache())
+    web.clear_state_exploration_cache()
+    history = _history_frame()
+    history["LOAD"] = np.arange(len(history), dtype=float)
+    history["QUAL"] = np.arange(len(history), dtype=float)
+    history.loc[[3, 29, 77], "LOAD"] = np.nan
+    uploaded = web.save_upload(
+        "exploration-color.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "exploration_start": history.time.iloc[0].isoformat(), "exploration_end": history.time.iloc[-1].isoformat(),
+        "sample_interval_minutes": 5, "filter_method": "none", "resampling_method": "none",
+        "max_lag_minutes": 0, "lag_step_minutes": 5,
+        "exploration_config": {"cluster_count": 3, "random_state": 7, "maximum_plot_points": 9},
+        "modeling_eligibility": {"keep_conditions": [{"column": "QUAL", "operator": ">", "value": 2}], "exclude_rule_groups": []},
+    }
+    original_run = web.run_state_exploration
+    run_count = 0
+
+    def count_runs(*args, **kwargs):
+        nonlocal run_count
+        run_count += 1
+        return original_run(*args, **kwargs)
+
+    monkeypatch.setattr(web, "run_state_exploration", count_runs)
+    result = web.state_exploration_payload(payload)
+    run_id = result["exploration_run_id"]
+    stored = web.STATE_EXPLORATION_RUNS[run_id]
+    values, status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}/color-values?column=LOAD"
+    )
+    repeated, repeated_status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}/color-values?column=LOAD"
+    )
+    invalid, invalid_status = _get_response(
+        web._Handler, f"/api/state-exploration/{run_id}/color-values?column=missing"
+    )
+    expected = stored["_color_series"]["LOAD"].to_numpy(dtype=float, na_value=np.nan)
+    expected_values = [float(value) if np.isfinite(value) else None for value in expected]
+
+    assert result["full_point_count"] == len(history) - 3
+    assert "LOAD" in result["color_variables"]
+    assert len(result["cluster_series_full"]) == result["full_point_count"]
+    assert all(set(row) == {"cluster_id", "pc1", "pc2"} for row in result["cluster_series_full"])
+    assert stored["_color_series"].index.equals(stored["cluster_series"].index)
+    assert stored["_color_series"].index[0] == history.time.iloc[3]
+    assert len(values["values"]) == len(result["cluster_series_full"])
+    assert values == repeated == {"column": "LOAD", "values": expected_values}
+    assert values["values"].count(None) == 3
+    assert status == repeated_status == 200
+    assert invalid_status == 400 and "LOAD" not in invalid.get("values", [])
+    assert "_color_series" not in web._exploration_summary_payload(run_id)
+    assert run_count == 1
 
 
 def test_state_exploration_uses_model_tag_engineering_ranges_only(tmp_path, monkeypatch):
