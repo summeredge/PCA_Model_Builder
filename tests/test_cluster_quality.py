@@ -134,12 +134,14 @@ def test_quality_renderer_shows_perspectives_missing_reasons_and_escapes_tags():
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js unavailable")
-    renderer = "function renderClusterQuality" + web.INDEX_HTML.split("function renderClusterQuality", 1)[1].split("function renderStateExploration", 1)[0]
+    start = web.INDEX_HTML.index("function renderClusterQuality(")
+    renderer = web.INDEX_HTML[start:web.INDEX_HTML.index("\nfunction ", start)]
     renderer = "function clusterUiLabel" + web.INDEX_HTML.split("function clusterUiLabel", 1)[1].split("\n", 1)[0] + "\n" + renderer
     scores = pd.DataFrame({"pc1": [-2, -1, 1, 2], "pc2": 0})
     quality = analyze_cluster_quality(scores, [1, 1, 2, 2], raw_data=pd.DataFrame({"<driver>": [0, 0, 1, 1]}), feature_names=["<driver>"], explained_variance_ratio=[0.8, 0.2])
     source = """
     const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+    const el=()=>null;
     const metric=(name,value)=>`<span>${escapeHtml(name)} ${escapeHtml(value)}</span>`;
     """ + renderer + f"const quality={json.dumps(quality, ensure_ascii=False)};" + """
     const container={innerHTML:''};

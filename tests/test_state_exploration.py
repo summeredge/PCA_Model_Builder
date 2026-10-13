@@ -591,6 +591,11 @@ def test_target_range_status_and_cluster_statistics_use_full_aligned_samples():
         frame["PERF"].to_numpy() <= 3
     )
     assert "performance_target_met" in full.columns
+    from pca_model_builder.web import _exploration_scatter_series
+    scatter = _exploration_scatter_series(full)
+    assert [row["timestamp"] for row in scatter] == [timestamp.isoformat() for timestamp in full.index]
+    assert len(scatter) > len(result["cluster_series_display"])
+    assert [row["performance_target_met"] for row in scatter] == full.performance_target_met.tolist()
     for position, timestamp in enumerate(full.index):
         status = full.loc[timestamp, "performance_target_met"]
         if not finite[position]:
@@ -854,3 +859,30 @@ def test_state_filter_loss_is_counted_once_and_cluster_switches_split_runs():
     assert next(item for item in summaries if item["cluster_id"] == "cluster_001")[
         "segment_count"
     ] == 2
+
+
+@pytest.mark.parametrize("state_filter,smoothing,lag", [(False, 0, 0), (True, 10, 10)])
+def test_exploration_losses_close_with_invalid_rows_and_state_filter(state_filter, smoothing, lag):
+    rng = np.random.default_rng(17)
+    index = pd.date_range("2026-01-01", periods=100, freq="5min")
+    frame = pd.DataFrame(rng.normal(size=(100, 3)), index=index, columns=["A", "B", "C"])
+    frame["D"] = frame.A + frame.B + rng.normal(scale=0.01, size=100)
+    frame.loc[index[20:23], "A"] = np.nan
+    frame["STATE"] = 1.0
+    frame.loc[index[50:54], "STATE"] = 0.0
+    result = run_state_exploration(
+        frame, ["A", "B", "C", "D"],
+        PreprocessingConfig(5, smoothing, lag, 5,
+                            filter_method="trailing_mean" if smoothing else "none",
+                            state_filters=(StateFilter("STATE", minimum=1),) if state_filter else ()),
+        ExplorationConfig(cluster_count=2),
+    )
+    summary = result["preprocessing_summary"]
+    losses = summary["loss_counts"]
+    assert losses["input_invalid_loss"] == 3
+    assert losses["state_filter_loss"] == (4 if state_filter else 0)
+    if smoothing:
+        assert losses["filter_warmup_loss"] > 0
+        assert losses["lag_warmup_loss"] > 0
+    assert summary["loss_count"] == summary["resampled_row_count"] - result["full_point_count"]
+    assert summary["loss_ratio"] == pytest.approx(1 - summary["effective_coverage_ratio"])

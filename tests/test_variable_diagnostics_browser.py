@@ -19,6 +19,7 @@ def test_variable_diagnostics_fifty_tags_in_real_browser(tmp_path, monkeypatch):
     if not (shutil.which("node") and os.environ.get("WEB_GEOMETRY_PLAYWRIGHT") and os.environ.get("WEB_GEOMETRY_BROWSER")):
         pytest.skip("Set WEB_GEOMETRY_PLAYWRIGHT and WEB_GEOMETRY_BROWSER for browser validation")
     monkeypatch.setattr(ui._BASE_WEB, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(ui._BASE_WEB, "RUNS_DIR", tmp_path / "runs")
     rng = np.random.default_rng(42)
     x = rng.normal(size=180)
     tags = ["FIC400001.SV_" + "LONG_TAG_" * 30, "FIC400002.SV", *[f"TAG_{i}" for i in range(2, 50)]]
@@ -170,6 +171,23 @@ const assert=require('node:assert/strict');
       await dialog.waitFor({state:'hidden'});
       await page.waitForFunction(()=>{const r=document.getElementById('explorationTimeline').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight+1;});
       assert.equal(await page.locator('#explorationTimeline [data-profile-episode]').count(),data.cluster_quality.group_profiles[0].episode_count);
+      const timelineAlignment=async()=>{
+       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+       return page.evaluate(()=>{
+        const svg=el('explorationTimeline').querySelector('svg'),episodes=state.exploration.cluster_quality.group_profiles.flatMap(profile=>profile.episodes.map(episode=>({...episode,cluster:profile.cluster_id})));
+        const blocks=[...svg.querySelectorAll('rect')].slice(0,episodes.length),highlights=[...svg.querySelectorAll('[data-profile-episode]')];
+        const selected=episodes.map((episode,index)=>({episode,index})).filter(item=>item.episode.cluster===state.groupProfileSelection.state_exploration);
+        const errors=selected.map((item,index)=>highlights[index]?Math.max(Math.abs(Number(highlights[index].getAttribute('x'))-Number(blocks[item.index].getAttribute('x'))),Math.abs(Number(highlights[index].getAttribute('width'))-Number(blocks[item.index].getAttribute('width')))):Infinity);
+        return {count:highlights.length,expected:selected.length,maxError:Math.max(0,...errors)};
+       });
+      };
+      for(const resizedWidth of [1440,900,390]) {
+       await page.setViewportSize({width:resizedWidth,height:1000});
+       const alignment=await timelineAlignment();
+       assert.equal(alignment.count,alignment.expected,JSON.stringify(alignment));
+       assert(alignment.maxError<=1,JSON.stringify(alignment));
+      }
+      await page.setViewportSize({width,height:1000});
       await openProfile('#explorationClusterQuality');
       await body.locator('[data-profile-candidates]').click();
       await dialog.waitFor({state:'hidden'});

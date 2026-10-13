@@ -2,9 +2,9 @@
 
 面向流程工业工程师的离线 PCA/DPCA 模型构建工具。项目最终目标是构建、验证、冻结并导出可部署 DPCA 模型；数据中台据此负责实时数据缓存、在线预处理、评分、结果存储和展示。本项目不负责在线运行环境，也不是在线监控平台或生产级模型治理平台。
 
-当前实现范围是离线 DPCA 核心验证：CSV 数据经过尾随平滑和统一 Lag 扩展后训练 DPCA，计算 T²、SPE/Q 与原始 Tag 聚合贡献，并在独立历史窗口回放验证。当前代码尚未实现正式冻结、部署评分参考实现和部署一致性测试；这些规划功能不得视为已交付能力。
+当前已实现离线状态探索、DPCA 建模、独立窗口验证与工程师确认，以及工程冻结、部署模型包导出和冻结回放。预处理支持无平滑、一阶因果滤波和尾随均值，沿连续段执行统一 Lag 扩展；评分提供 T²、SPE/Q 与原始 Tag 聚合贡献。部署评分参考实现和黄金向量一致性检查用于验证离线计算一致性，不代表已经在线部署或投用。
 
-PCA 只用于状态偏离监控和贡献分析，不输出根因结论，不包含 PLS、实时计算、控制优化或企业级平台功能。冻结模型包、预处理和评分的未来契约见 [部署契约](docs/deployment_contract.md)、[模型包契约](docs/model_package_contract.md)、[预处理契约](docs/preprocessing_contract.md)和[评分契约](docs/scoring_contract.md)。
+PCA 只用于状态偏离监控和贡献分析，不输出根因结论，不包含 PLS、实时计算、控制优化或企业级平台功能。冻结模型包、预处理和评分的契约见 [部署契约](docs/deployment_contract.md)、[模型包契约](docs/model_package_contract.md)、[预处理契约](docs/preprocessing_contract.md)和[评分契约](docs/scoring_contract.md)。
 
 ## 环境
 
@@ -136,5 +136,6 @@ pca-model-builder review-validation `
 ## 测试
 
 ```powershell
-python -m pytest -q
+$python = "C:\Users\shaoy\Documents\PythonEnvs\process-model-builder\Scripts\python.exe"
+& $python -m pytest -q
 ```

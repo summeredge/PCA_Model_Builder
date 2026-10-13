@@ -480,6 +480,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "q_limits": _limit_payload(model.q_limits),
         "status_counts": _status_counts(scores),
         "scores": _score_payload(scores, performance_target),
+        "color_variables": all_tags,
         "performance_target_available": performance_target is not None,
         "model_quality": model_quality_summary(
             model, scores, training_result.window_summaries,
@@ -489,6 +490,10 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "model_download": f"/download/model?run_id={run_id}",
     }
+    clusters = _training_score_clusters(scores.index, training_result.window_summaries, payload, config)
+    for row in result["scores"]:
+        value = clusters.get(pd.Timestamp(row["timestamp"]))
+        row["cluster_id"] = None if pd.isna(value) else str(value)
     return _with_data_usage(
         result,
         loaded,
@@ -1148,6 +1153,61 @@ def _training_cluster_series(
     return series
 
 
+def _training_score_clusters(index, summaries, payload, config) -> pd.Series:
+    origins = _verified_training_window_origins(summaries, payload, config)
+    runs = {item.get("exploration_run_id") for item in origins.values()}
+    # Cluster IDs are only comparable within the same exploration run.
+    if len(runs) != 1 or None in runs:
+        return pd.Series(index=index, dtype=object)
+    observed = _training_cluster_series(summaries, payload, config)
+    parts = [points["cluster_id"] for key, points in observed.items() if key in origins]
+    if not parts:
+        return pd.Series(index=index, dtype=object)
+    values = pd.concat(parts)
+    values = values.loc[~values.index.duplicated(keep=False)]
+    return values.reindex(index)
+
+
+def training_color_values_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    column = _required_text(payload, "column")
+    snapshot = modeling_snapshot_payload(run_id).get("snapshot")
+    if snapshot is None:
+        raise ValueError("训练来源不可用，请重新训练")
+    model, manifest = load_model_package(RUNS_DIR / run_id / "model.pcamodel")
+    stored = manifest["config"]
+    config = _preprocessing_config(stored)
+    source = snapshot["data_source"]
+    request = {**source, "modeling_eligibility": snapshot["modeling_eligibility"]}
+    tags = stored["tags"]
+    loaded = _load_modeling_upload(request, list(dict.fromkeys([
+        *tags, *(condition.column for condition in config.state_filters), column,
+    ])), "找不到着色 Tag：")
+    if column not in loaded.metadata.numeric_candidate_columns:
+        raise ValueError("着色 Tag 必须为数值列")
+    if not source.get("sha256") or _file_sha256(loaded.metadata.source_path) != source["sha256"]:
+        raise ValueError("训练数据已变化，请重新训练")
+    training = build_training_matrix(
+        loaded.frame, source["timestamp_column"], tags, config, snapshot["training_windows"],
+        engineering_ranges(stored["tag_configs"]), reference_columns=[column],
+        modeling_eligibility=snapshot["modeling_eligibility"],
+        exclude_engineering_range=manifest["model_purpose"] == "normal_state",
+    )
+    if (tuple(training.dynamic.columns) != model.feature_names or len(training.dynamic) != model.n_samples
+            or not np.allclose(training.dynamic.mean().to_numpy(), model.mean, rtol=1e-12, atol=1e-12)
+            or not np.allclose(training.dynamic.std(ddof=0).to_numpy(), model.scale, rtol=1e-12, atol=1e-12)):
+        raise ValueError("无法复现训练样本，请重新训练")
+    timestamps = payload.get("timestamps")
+    if not isinstance(timestamps, list) or not timestamps or len(timestamps) > MAX_CHART_POINTS:
+        raise ValueError("着色样本时间戳无效")
+    index = pd.DatetimeIndex(pd.to_datetime(timestamps, errors="raise"))
+    if not index.is_unique or not index.isin(training.dynamic.index).all():
+        raise ValueError("着色时间戳不属于当前训练样本")
+    values = pd.to_numeric(training.reference.set_index(source["timestamp_column"])[column].reindex(index), errors="coerce")
+    return {"run_id": run_id, "column": column, "timestamps": [stamp.isoformat() for stamp in index],
+            "values": [float(value) if pd.notna(value) and np.isfinite(value) else None for value in values]}
+
+
 def _verified_training_window_origins(
     summaries: list[dict[str, Any]], payload: dict[str, Any], config: PreprocessingConfig,
 ) -> dict[str, dict[str, Any]]:
@@ -1683,11 +1743,14 @@ def _exploration_scatter_series(series: pd.DataFrame) -> list[dict[str, Any]]:
     """Serialise the full state space for the WebGL PC1/PC2 scatter chart."""
     return [
         {
+            "timestamp": row.Index.isoformat(),
             "cluster_id": str(row.cluster_id),
             "pc1": float(row.pc1),
             "pc2": float(row.pc2),
+            **({"performance_target_met": None if pd.isna(row.performance_target_met) else bool(row.performance_target_met)}
+               if hasattr(row, "performance_target_met") else {}),
         }
-        for row in series.itertuples(index=False)
+        for row in series.itertuples()
     ]
 
 
@@ -3207,6 +3270,9 @@ class _Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/train":
                 self._send_json(train_payload(payload))
                 return
+            if parsed.path == "/api/training-color-values":
+                self._send_json(training_color_values_payload(payload))
+                return
             if parsed.path == "/api/redundancy-ablation":
                 self._send_json(redundancy_ablation_payload(payload))
                 return
@@ -3629,7 +3695,7 @@ INDEX_HTML = r"""<!doctype html>
           <h3>预处理损失摘要</h3>
           <div id="explorationLossSummary" class="table-wrap"></div>
           <div class="exploration-result-grid">
-            <div class="chart-card exploration-pc-card"><div class="chart-card-head"><h3>工况组 PC1 / PC2 与中心</h3><div class="exploration-region-tools"><label>着色方式<select id="explorationPcColorMode"><option value="cluster">工况组（离散着色）</option></select></label><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
+            <div class="chart-card exploration-pc-card"><div class="chart-card-head"><h3>工况组 PC1 / PC2 与中心</h3><div class="exploration-region-tools"><label>着色方式<select id="explorationPcColorMode"><option value="cluster">工况组（离散着色）</option></select></label><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整 episodes，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
             <div class="chart-card exploration-region-card"><h3>优选运行区域质量统计</h3><div id="explorationRegionSummary" class="table-wrap region-stats"><div class="empty">尚未定义优选运行区域。</div></div></div>
             <div class="chart-card exploration-timeline-card"><h3>工况组时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
           </div>
@@ -3813,7 +3879,7 @@ function invalidateQuality(reason) {
   state.trainingDiagnosticInvalidated=true;
   if(state.trainingDiagnosticFocus) clearTrainingDiagnosticFocus();
   const checked=Boolean(state.quality)||state.qualityStatus==="failed", checking=state.qualityStatus==="checking"; state.qualityRevision+=1; state.quality=null; state.qualityError=""; state.qualityStatus=reason&&(checked||checking)?"changed":"unchecked";
-  el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true;
+  el("trainButton").disabled=true; el("trainExploratoryButton").disabled=true; el("validateButton").disabled=true;
   if(el("qualitySummary")) el("qualitySummary").innerHTML="";
   if(el("trainingCompositionReview")) { el("trainingCompositionReview").className="empty"; el("trainingCompositionReview").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"执行建模质量检查后显示训练集组成。"; }
   if(el("qualityIssues")) { el("qualityIssues").className="empty"; el("qualityIssues").textContent=state.qualityStatus==="changed"?"配置已变更，请重新执行建模质量检查。":"尚未执行建模质量检查。"; }
@@ -4315,15 +4381,9 @@ function renderGroupProfileContent(container,quality,perspective) {
 function applyGroupProfileFocus(perspective,locate=false) {
   if(perspective==='cluster_assistance') { const selected=state.groupProfileSelection?.[perspective];el('clusterChart').querySelectorAll('circle[data-profile-cluster]').forEach(node=>node.setAttribute('fill-opacity',!selected||node.dataset.profileCluster===selected?'.85':'.12'));return; }
   if(perspective!=='state_exploration') return;
-  const selected=state.groupProfileSelection?.[perspective], profile=state.exploration?.cluster_quality?.group_profiles?.find(item=>item.cluster_id===selected), plot=state.preferredRegionPlot;
+  const selected=state.groupProfileSelection?.[perspective], plot=state.preferredRegionPlot;
   if(plot&&globalThis.Plotly) plot.data.forEach((trace,index)=>{if(trace.type==='scattergl') globalThis.Plotly.restyle(plot,{'marker.opacity':!selected||trace.legendgroup===`cluster:${selected}`||trace.name===clusterUiLabel(selected)?0.85:0.12},[index]);});
   renderExplorationTimeline(state.exploration?.cluster_series||[],state.exploration?.cluster_candidates||[],state.exploration?.cluster_quality?.group_profiles||[],selected,Number(el("sampleInterval").value));
-  const svg=el('explorationTimeline')?.querySelector('svg');
-  if(svg&&profile) {
-    const episodes=state.exploration.cluster_quality.group_profiles.flatMap(item=>item.episodes||[]), interval=Number(el('sampleInterval').value)*60000;
-    const first=Math.min(...episodes.map(item=>Date.parse(item.start))),last=Math.max(...episodes.map(item=>Date.parse(item.end)))+interval;
-    profile.episodes.forEach((episode,index)=>{const rect=document.createElementNS('http://www.w3.org/2000/svg','rect');const x=94+(Date.parse(episode.start)-first)/(last-first)*648,end=94+(Date.parse(episode.end)+interval-first)/(last-first)*648;Object.entries({x,y:10,width:Math.max(2,end-x),height:64,fill:'#f59e0b','fill-opacity':'.18',stroke:locate&&index===0?'#111827':'#b45309','stroke-width':locate&&index===0?3:1,'data-profile-episode':index}).forEach(([key,value])=>rect.setAttribute(key,String(value)));svg.append(rect);});
-  }
   document.querySelectorAll('#explorationClusterCandidates tbody tr').forEach(row=>{const id=row.querySelector('[data-candidate-id]')?.dataset.candidateId,item=state.exploration?.cluster_candidates?.find(candidate=>candidate.candidate_id===id);row.style.outline=item?.cluster_id===selected?'2px solid #b45309':'';row.dataset.profileFocus=String(item?.cluster_id===selected);});
 }
 function renderStateExploration(data) {
@@ -4331,6 +4391,9 @@ function renderStateExploration(data) {
   if(state.explorationColorRun!==data.exploration_run_id) {
     state.explorationColorRun=data.exploration_run_id; state.explorationColorValues=new Map();
     const select=el("explorationPcColorMode"); select.replaceChildren(new Option("工况组（离散着色）","cluster"));
+    const rows=data.cluster_series_full||[];
+    const time=new Option("时间（连续着色）","time"); time.disabled=!scoreTimeAvailable(rows); select.add(time);
+    const performance=new Option("性能状态","performance"); performance.disabled=!scorePerfAvailable(rows); select.add(performance);
     (data.color_variables||[]).forEach(column=>select.add(new Option(`${column}（连续着色）`,`variable:${column}`)));
   }
   el("explorationEmpty").hidden=true; el("explorationContent").hidden=false;
@@ -4365,7 +4428,7 @@ function renderExplorationRegionSummary(data) {
   const metricCell=item=>`<td>${escapeHtml(item[0])}</td><td class="numeric">${escapeHtml(item[1])}</td>`;
   const metricRows=[]; for(let index=0;index<metrics.length;index+=2) metricRows.push(`<tr>${metricCell(metrics[index])}${metricCell(metrics[index+1])}</tr>`);
   const clusters=(region.cluster_counts||[]).map(item=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster_id))}</td><td class="numeric">${item.sample_count}</td><td class="numeric">${explorationPercent(item.share)}</td></tr>`).join("");
-  container.innerHTML=`<table class="region-metric-table"><tbody>${metricRows.join("")}</tbody></table><h4 class="region-cluster-title">工况分布</h4><table class="region-cluster-table"><thead><tr><th>工况组</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table><p class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。</p>`;
+  container.innerHTML=`<table class="region-metric-table"><tbody>${metricRows.join("")}</tbody></table><h4 class="region-cluster-title">工况分布</h4><table class="region-cluster-table"><thead><tr><th>工况组</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table><p class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性反映全部保留主元空间的组内距离/离散程度，不等于时间稳定性或正常状态证明；候选仍需人工决策。</p>`;
 }
 function renderExplorationRegionControls() {
   const hasRun=Boolean(state.exploration?.exploration_run_id), ellipses=state.preferredRegion?.ellipses||[];
@@ -4383,9 +4446,9 @@ function renderExplorationPcChart(data) {
   if(!finiteRows.length){container.innerHTML='<div class="empty">无可展示的有限 PC1/PC2 序列。</div>';return;}
   if(!globalThis.Plotly){container.innerHTML='<div class="empty">Plotly 未加载，无法绘制散点图。</div>';return;}
   const select=el("explorationPcColorMode"), choice=select?.value||"cluster";
-  const colorColumn=choice.startsWith("variable:")?choice.slice(9):null;
-  let colorValues=null;
-  if(colorColumn) {
+  const colorColumn=choice==="time"?"时间":choice.startsWith("variable:")?choice.slice(9):null;
+  let colorValues=choice==="time"?rows.map(scoreTimestamp):null;
+  if(choice.startsWith("variable:")) {
     const cache=state.explorationColorValues||(state.explorationColorValues=new Map());
     const cached=cache.get(colorColumn);
     if(Array.isArray(cached)) colorValues=cached;
@@ -4427,28 +4490,38 @@ function renderExplorationPcChart(data) {
       colorMinimum=minimum===maximum?minimum-padding:minimum;
       colorMaximum=minimum===maximum?maximum+padding:maximum;
       colorAxis={colorscale:scoreTimeColorStops.map((stop,index)=>[index/(scoreTimeColorStops.length-1),`rgb(${stop.join(",")})`]),cmin:colorMinimum,cmax:colorMaximum,colorbar:{title:{text:escapeHtml(colorColumn)},tickformat:".4g"}};
+      if(choice==="time") colorAxis.colorbar={title:{text:"时间"},tickvals:[minimum,maximum],ticktext:[displayTime(new Date(minimum).toISOString()),displayTime(new Date(maximum).toISOString())]};
     }
     traces=[];
     for(const [cluster,bucket] of clusters) {
       const legendgroup=`cluster:${cluster}`;
-      if(bucket.values.length) traces.push({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:"工艺变量值",showlegend:false,legendgroup,marker:{size:5,color:bucket.values,coloraxis:"coloraxis"},hovertemplate:`PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>${escapeHtml(colorColumn)} %{marker.color:.5g}<extra></extra>`});
-      if(bucket.missingX.length) traces.push({type:"scattergl",mode:"markers",x:bucket.missingX,y:bucket.missingY,name:"缺失/非有限值",showlegend:false,legendgroup,marker:{size:5,color:"#9aa7b4",opacity:.85},hovertemplate:"PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>工艺变量值缺失或无效<extra></extra>"});
-      traces.push({type:"scattergl",mode:"markers",x:[],y:[],name:clusterUiLabel(cluster),legendgroup,marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hoverinfo:"skip"});
+      if(bucket.values.length) traces.push({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),showlegend:true,legendgroup,marker:{size:5,color:bucket.values,coloraxis:"coloraxis"},hovertemplate:`PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>${escapeHtml(colorColumn)} %{marker.color:.5g}<extra></extra>`});
+      if(bucket.missingX.length) traces.push({type:"scattergl",mode:"markers",x:bucket.missingX,y:bucket.missingY,name:clusterUiLabel(cluster),showlegend:!bucket.values.length,legendgroup,marker:{size:5,color:"#9aa7b4",opacity:.85},hovertemplate:"PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>工艺变量值缺失或无效<extra></extra>"});
     }
     const note=el("explorationPcNote");
     const missingCount=[...clusters.values()].reduce((count,bucket)=>count+bucket.missingX.length,0);
-    if(valueCount) note.textContent=`按 ${colorColumn} 连续着色，数值范围 ${minimum.toPrecision(5)} ～ ${maximum.toPrecision(5)}；${missingCount?`${missingCount} 个缺失/非有限值以灰点显示。`:"没有缺失或非有限值。"} PC 坐标和完整样本不变。`;
-    else note.textContent=`${colorColumn} 没有有效数值；全部 ${missingCount} 个样本以灰点显示，未显示数值色条。PC 坐标和完整样本不变。`;
+    if(valueCount) note.textContent=`按 ${colorColumn} 连续着色，数值范围 ${minimum.toPrecision(5)} ～ ${maximum.toPrecision(5)}；${missingCount?`${missingCount} 个缺失/非有限值以灰点显示。`:"没有缺失或非有限值。"} PC 坐标和完整样本不变。图例仅影响显示，统计与候选基于全部有效样本；着色为重采样后、滤波前工程值，性能后验评价可能使用滤波后值。`;
+    else note.textContent=`${colorColumn} 没有有效数值；全部 ${missingCount} 个样本以灰点显示，未显示数值色条。PC 坐标和完整样本不变。图例仅影响显示，统计与候选基于全部有效样本；着色为重采样后、滤波前工程值，性能后验评价可能使用滤波后值。`;
+    if(choice==="time"&&valueCount) note.textContent=`时间范围 ${displayTime(new Date(minimum).toISOString(),19)} ～ ${displayTime(new Date(maximum).toISOString(),19)}；由蓝到红表示时间推进，缺失为灰色。`;
+  } else if(choice==="performance"&&scorePerfAvailable(rows)) {
+    const buckets=new Map();
+    finiteRows.forEach(row=>{
+      const label=row.performance_target_met===true?"达标":row.performance_target_met===false?"未达标":"无有效性能数据";
+      const key=`${row.cluster_id}:${label}`;
+      if(!buckets.has(key)) buckets.set(key,{cluster:row.cluster_id,label,value:row.performance_target_met,x:[],y:[]});
+      const bucket=buckets.get(key); bucket.x.push(Number(row.pc1)); bucket.y.push(Number(row.pc2));
+    });
+    traces=[...buckets.values()].map(bucket=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:`${clusterUiLabel(bucket.cluster)} · ${bucket.label}`,legendgroup:`cluster:${bucket.cluster}`,marker:{size:5,color:scorePerfColor(bucket.value),opacity:.75},hovertemplate:`${bucket.label}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
+    el("explorationPcNote").textContent="目标范围后验判定：绿色达标、红色未达标、灰色无有效性能数据；性能不参与 PCA。";
   } else {
     const byCluster=new Map();
     finiteRows.forEach(row=>{const cluster=String(row.cluster_id); if(!byCluster.has(cluster)) byCluster.set(cluster,{x:[],y:[]}); const bucket=byCluster.get(cluster); bucket.x.push(Number(row.pc1)); bucket.y.push(Number(row.pc2));});
-    traces=[...byCluster.entries()].map(([cluster,bucket])=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hovertemplate:`${clusterUiLabel(cluster)}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
-    el("explorationPcNote").textContent="按工况组离散着色。PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。";
+    traces=[...byCluster.entries()].map(([cluster,bucket])=>({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),legendgroup:`cluster:${cluster}`,marker:{size:5,color:explorationClusterColor(cluster),opacity:.75},hovertemplate:`${clusterUiLabel(cluster)}<br>PC1 %{x:.4f}<br>PC2 %{y:.4f}<extra></extra>`}));
+    el("explorationPcNote").textContent="按工况组离散着色。图例仅影响显示，统计与候选基于全部有效样本。PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整 episodes，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。";
   }
   const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>({cluster,x:Number(center[0]),y:Number(center[1])})).filter(item=>Number.isFinite(item.x)&&Number.isFinite(item.y));
   if(centers.length) {
-    if(colorColumn) traces.push(...centers.map(item=>({type:"scatter",mode:"markers+text",x:[item.x],y:[item.y],text:[clusterUiLabel(item.cluster)],textposition:"top center",textfont:{size:10},showlegend:false,legendgroup:`cluster:${item.cluster}`,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:explorationClusterColor(item.cluster),line:{width:1,color:"#ffffff"}},"meta":"center"})));
-    else traces.push({type:"scatter",mode:"markers+text",x:centers.map(item=>item.x),y:centers.map(item=>item.y),text:centers.map(item=>clusterUiLabel(item.cluster)),textposition:"top center",textfont:{size:10},showlegend:false,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:centers.map(item=>explorationClusterColor(item.cluster)),line:{width:1,color:"#ffffff"}},"meta":"center"});
+    traces.push(...centers.map(item=>({type:"scatter",mode:"markers+text",x:[item.x],y:[item.y],text:[clusterUiLabel(item.cluster)],textposition:"top center",textfont:{size:10},showlegend:false,legendgroup:`cluster:${item.cluster}`,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:explorationClusterColor(item.cluster),line:{width:1,color:"#ffffff"}},"meta":"center"})));
   }
   const layout={autosize:true,hovermode:"closest",dragmode:"pan",margin:{l:46,r:colorColumn?96:14,t:12,b:88},legend:{orientation:"h",x:.5,y:-.2,xanchor:"center",yanchor:"top",groupclick:"togglegroup"},paper_bgcolor:"#fff",plot_bgcolor:"#fff",font:{size:11,color:"#5f6c7b"},xaxis:{title:"PC1",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},yaxis:{title:"PC2",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},shapes:explorationRegionShapes()};
   if(colorAxis) layout.coloraxis=colorAxis;
@@ -4617,10 +4690,11 @@ function renderExplorationTimeline(rows,candidates,profiles=[],selected=null,int
   ordered.slice(0,-1).forEach((row,index)=>{const next=ordered[index+1]; const segmentBreak=next.break_before||next.segment_id!==row.segment_id; if(segmentBreak){breaks.push(`<line x1="${x(next.timestamp).toFixed(2)}" x2="${x(next.timestamp).toFixed(2)}" y1="${statusTop-5}" y2="${statusTop+statusHeight+5}" stroke="#64748b" stroke-dasharray="3 2"><title>物理连续段断点</title></line>`);return;} const start=x(row.timestamp),end=x(next.timestamp); if(end>start) blocks.push(`<rect x="${start.toFixed(2)}" y="${statusTop}" width="${(end-start).toFixed(2)}" height="${statusHeight}" fill="${explorationClusterColor(row.cluster_id)}"><title>${escapeHtml(clusterUiLabel(row.cluster_id))}&#10;开始时间：${escapeHtml(displayTime(row.timestamp,19))}&#10;结束时间：${escapeHtml(displayTime(next.timestamp,19))}</title></rect>`);});
   const windows=(candidates||[]).map(candidate=>{const start=Math.max(first,new Date(candidate.start).getTime()),end=Math.min(last,new Date(candidate.end).getTime()); if(!Number.isFinite(start)||!Number.isFinite(end)||end<start) return ""; const windowX=left+(start-first)/(last-first)*(width-left-right),windowWidth=Math.max(1,(end-start)/(last-first)*(width-left-right)); return `<rect x="${windowX.toFixed(2)}" y="${candidateTop}" width="${windowWidth.toFixed(2)}" height="${candidateHeight}" fill="${explorationClusterColor(candidate.cluster_id)}" fill-opacity=".35" stroke="${explorationClusterColor(candidate.cluster_id)}" stroke-width="1.5"><title>${escapeHtml(clusterUiLabel(candidate.cluster_id))}&#10;时间范围：${escapeHtml(windowRangeLabel(candidate,candidates))}</title></rect>`;}).join("");
   if(fullEpisodes.length) { blocks.length=0; fullEpisodes.forEach(episode=>blocks.push(`<rect x="${x(episode.start)}" y="${statusTop}" width="${Math.max(1,x(Date.parse(episode.end)+interval)-x(episode.start))}" height="${statusHeight}" fill="${explorationClusterColor(episode.cluster_id)}" fill-opacity="${!selected||selected===episode.cluster_id?1:.2}"><title>${escapeHtml(clusterUiLabel(episode.cluster_id))} ${escapeHtml(episode.start)} ～ ${escapeHtml(episode.end)}；覆盖 ${episode.duration_minutes} 分钟</title></rect>`)); }
+  const profileHighlights=fullEpisodes.filter(episode=>episode.cluster_id===selected).map((episode,index)=>`<rect data-profile-episode="${index}" x="${x(episode.start)}" y="10" width="${Math.max(2,x(Date.parse(episode.end)+interval)-x(episode.start))}" height="64" fill="#f59e0b" fill-opacity=".18" stroke="#b45309" stroke-width="2"/>`).join("");
   const focus=globalThis.currentTrainingDiagnosticFocus?.();
   const focused=focus?.clusterId?trainingDiagnosticIntervals(ordered,row=>row.cluster_id===focus.clusterId):focus?.intervals||[];
   const highlights=focused.map(interval=>{const start=Math.max(first,Date.parse(interval.start)),end=Math.min(last,Date.parse(interval.end)); if(end<start) return ""; return `<rect data-diagnostic-focus="true" x="${x(start)}" y="10" width="${Math.max(2,x(end)-x(start))}" height="${height-20}" fill="#f59e0b" fill-opacity=".2" stroke="#b45309" stroke-width="2"><title>诊断定位：${escapeHtml(displayTime(interval.start,19))} ～ ${escapeHtml(displayTime(interval.end,19))}</title></rect>`;}).join("");
-  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="工况组 状态时间轴"><text x="8" y="${statusTop+14}" fill="#334155" font-size="11">工况组 状态</text><text x="8" y="${candidateTop+10}" fill="#334155" font-size="11">候选窗口</text>${blocks.join("")}${breaks.join("")}${windows}${highlights}</svg>`;
+  container.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="工况组 状态时间轴"><text x="8" y="${statusTop+14}" fill="#334155" font-size="11">工况组 状态</text><text x="8" y="${candidateTop+10}" fill="#334155" font-size="11">候选窗口</text>${blocks.join("")}${breaks.join("")}${windows}${highlights}${profileHighlights}</svg>`;
 }
 function renderExplorationClusterTable(summaries) {
   const body=el("explorationClusterTable"),details=el("explorationClusterDetails"); body.replaceChildren(); el("explorationClusterSummaryCount").textContent=String(summaries.length);
@@ -4740,6 +4814,7 @@ el("showProblemTags").addEventListener("click",()=>{ state.showProblems=!state.s
 el("saveTagConfig").addEventListener("click",()=>{ try { saveCurrentTagConfig(); } catch(error) { setStatus(error.message,"error"); } });
 document.querySelectorAll(".inner-tab").forEach(button=>button.addEventListener("click",()=>{ document.querySelectorAll(".inner-tab").forEach(node=>node.classList.toggle("active",node===button)); document.querySelectorAll(".inner-panel").forEach(panel=>panel.classList.toggle("active",panel.id===button.dataset.inner)); }));
 ["sampleInterval","resamplingMethod","filterMethod","firstOrderAlpha","smoothingWindow","gapThreshold","maxLag","lagStep"].forEach(id=>el(id).addEventListener("change",()=>{ invalidateModellingResults("预处理参数已修改"); }));
+["varianceThreshold","components"].forEach(id=>el(id).addEventListener("change",()=>invalidateQuality("模型参数已修改")));
 ["timestampColumn","encoding"].forEach(id=>el(id).addEventListener("change",()=>{ invalidateModellingResults("数据解析参数已修改"); }));
 const explorationRangeControls = [
   el("explorationStart") || el("analysisStart"),
@@ -4945,17 +5020,19 @@ async function trainModel(modelPurpose) {
   const tags=selectedTags(); if (tags.length<2) { setStatus("至少选择两个连续 Tag。","warning"); return; }
   invalidateValidationInvestigation();
   const button=el(modelPurpose==="exploratory"?"trainExploratoryButton":"trainButton"); setBusy(button,true,"训练中…"); setStatus("正在构建动态矩阵并训练 DPCA，请勿关闭页面。","info");
-  const revision=eligibilityRevision;
+  const revision=eligibilityRevision, qualityRevision=state.qualityRevision;
+  const request=Symbol(); state.trainingRequest=request; button.trainingRequest=request;
+  const isCurrentRequest=()=>state.trainingRequest===request&&revision===eligibilityRevision&&qualityRevision===state.qualityRevision;
   try {
     const components=el("components").value.trim();
     const excludedTags=state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude"&&record.reason==="constant_in_reference_window"); const payload={...commonPayload(),tags,excluded_tags:excludedTags,snapshot_excluded_tags:state.excludedTags.filter(record=>state.registry[record.tag]?.role==="exclude").map(record=>({tag:record.tag,reason:String(record.reason||"")})),model_purpose:modelPurpose,training_windows:trainingWindowsPayload(),training_candidates:state.candidateWindows,training_candidate_provenance:state.trainingCandidateProvenance,variance_threshold:numberValue("varianceThreshold"),n_components:components?Number(components):null,model_name:el("modelName").value,change_reason:el("changeReason").value.trim(),source_filename:state.fileName||null};
     const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    if(revision!==eligibilityRevision) { setStatus("建模资格规则已修改，已丢弃过期结果。","warning"); return; }
+    if(!isCurrentRequest()) { if(state.trainingRequest===request) setStatus("训练配置已修改，已丢弃过期训练结果，请重新检查质量。","warning"); return; }
     state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validationInvestigationModel={training:data,tags:[...tags],tagConfigs:payload.tag_configs}; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
-  } catch (error) { setStatus(error.message,"error"); }
-  finally { setBusy(button,false,""); if(revision!==eligibilityRevision) button.disabled=true; }
+  } catch (error) { if(isCurrentRequest()) setStatus(error.message,"error"); }
+  finally { if(button.trainingRequest===request) { delete button.trainingRequest; setBusy(button,false,""); const currentReadiness=state.quality?.training_readiness?.[modelPurpose]||{can_train:state.quality?.can_train}; button.disabled=!currentReadiness.can_train; } }
 }
 el("trainExploratoryButton").addEventListener("click",()=>trainModel("exploratory"));
 el("trainButton").addEventListener("click",()=>trainModel("normal_state"));
@@ -5158,7 +5235,11 @@ function renderTraining(data) {
   const warnings=data.training_quality_warnings||[]; el("trainingQualityWarnings").textContent=warnings.length?`注意：${warnings.map(item=>item.message||`${item.feature} 全局变化极小`).join("；")}`:"";
   const variance=el("varianceChart"); variance.replaceChildren();
   data.explained_variance.slice(0,30).forEach((value,index)=>{ const item=document.createElement("span"); item.className=`variance-item ${index<data.n_components?"selected":""}`; item.textContent=`PC${index+1} ${(value*100).toFixed(0)}%`; item.title=`PC${index+1}: ${(value*100).toFixed(2)}%`; variance.append(item); });
-  lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE"); syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download; el("modelDownload").hidden=false;
+  lineChart(el("t2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("speChart"),data.scores,"spe",data.q_limits,"SPE");
+  const colorSelect=el("scoreColorMode"); colorSelect.querySelectorAll('[data-training-color]').forEach(option=>option.remove());
+  const clusterOption=new Option("工况组","cluster"); clusterOption.dataset.trainingColor="true"; clusterOption.disabled=!data.scores.some(row=>row.cluster_id); clusterOption.title=clusterOption.disabled?"没有可验证的同一探索来源工况关联":""; colorSelect.add(clusterOption);
+  (data.color_variables||[]).forEach(column=>{const option=new Option(`${column}（连续着色）`,`variable:${column}`); option.dataset.trainingColor="true"; colorSelect.add(option);});
+  colorSelect.value="default"; syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores); el("modelDownload").href=data.model_download; el("modelDownload").hidden=false;
 }
 
 function modelingSnapshotValue(value) { if(value===null||value===undefined||value==="") return "—"; return typeof value==="object"?JSON.stringify(value):String(value); }
@@ -5202,7 +5283,27 @@ function syncScoreColorModes(rows) {
   if(select.value==="performance"&&performance?.disabled) select.value="default";
 }
 
-el("scoreColorMode").addEventListener("change",()=>{ const rows=state.training?.scores||[]; scoreScatter(el("scoreChart"),rows); });
+el("scoreColorMode").addEventListener("change",async()=>{
+  const revision=state.scoreColorRevision=(state.scoreColorRevision||0)+1;
+  const training=state.training, rows=training?.scores||[], mode=scoreColorMode();
+  if(mode.startsWith("variable:")) {
+    const column=mode.slice(9); el("scoreChartNote").textContent=`正在读取 ${column} 的训练样本工程值…`;
+    try {
+      const result=await api("/api/training-color-values",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({run_id:training.run_id,column,timestamps:rows.map(row=>row.timestamp)})});
+      if(state.scoreColorRevision!==revision||state.training!==training||scoreColorMode()!==mode) return;
+      if(result.run_id!==training.run_id||result.column!==column||result.values?.length!==rows.length||result.timestamps?.length!==rows.length||result.timestamps.some((stamp,index)=>stamp!==rows[index].timestamp)) throw new Error("着色值与训练样本时间戳不一致");
+      rows.forEach((row,index)=>{row.color_column=column;row.color_value=result.values[index];});
+    } catch(error) {
+      if(state.scoreColorRevision===revision&&state.training===training&&scoreColorMode()===mode) {
+        el("scoreColorMode").value="default";
+        scoreScatter(el("scoreChart"),rows,"default");
+        el("scoreChartNote").textContent=`${column} 着色失败：${error.message}；已恢复默认 T²/SPE 综合状态着色。`;
+      }
+      return;
+    }
+  }
+  scoreScatter(el("scoreChart"),rows,mode);
+});
 
 function renderTrainingWindowSummary(windows) {
   const container=el("trainingWindowSummary"); container.replaceChildren();
@@ -5422,13 +5523,28 @@ function scorePerfAvailable(rows) { return rows.some(row=>row.performance_target
 function scorePerfColor(value) { return value===true?"#16845b":value===false?"#cf3f36":"#9aa7b4"; }
 const scoreTimeColorStops=[[24,98,180],[99,142,216],[176,214,238],[238,190,140],[214,96,77]];
 function scoreTimeColor(fraction) { const stops=scoreTimeColorStops; const scaled=Math.max(0,Math.min(1,Number(fraction)||0))*(stops.length-1); const low=Math.floor(scaled),high=Math.min(stops.length-1,low+1),mix=scaled-low; const rgb=stops[low].map((value,index)=>Math.round(value+(stops[high][index]-value)*mix)); return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`; }
+function scoreColorLegend(pad,minimum,maximum,label="时间") {
+  return `<defs><linearGradient id="scoreTimeGradient" x1="0" x2="1" y1="0" y2="0">${scoreTimeColorStops.map((rgb,index)=>`<stop offset="${index/(scoreTimeColorStops.length-1)}" stop-color="rgb(${rgb.join(',')})"/>`).join('')}</linearGradient></defs><rect x="${pad}" y="8" width="220" height="8" rx="4" fill="url(#scoreTimeGradient)"/><text x="${pad}" y="27" fill="#5f6c7b" font-size="10">${escapeHtml(minimum)}</text><text x="${pad+220}" y="27" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(maximum)}</text><text x="${pad+235}" y="16" fill="#5f6c7b" font-size="10">${escapeHtml(label)}</text>`;
+}
 function scoreScatter(container, rows, mode=scoreColorMode()) {
   if (!rows.length || !("pc1" in rows[0]) || !("pc2" in rows[0])) { container.innerHTML='<div class="empty">当前模型不足两个保留主元。</div>'; return; }
   if(mode==="time"&&!scoreTimeAvailable(rows)) mode="default";
   const width=760,height=250,pad=28; const xs=rows.map(row=>Number(row.pc1)),ys=rows.map(row=>Number(row.pc2)); const maxX=Math.max(...xs.map(Math.abs),1e-9),maxY=Math.max(...ys.map(Math.abs),1e-9); const x=value=>width/2+value/maxX*(width/2-pad); const y=value=>height/2-value/maxY*(height/2-pad);
   let legend="",note="",top=0; let shade=(row)=>{ const colors={normal:"#16845b",attention:"#d19a20",abnormal:"#cf3f36"}; return {fill:colors[row.status],tip:null}; };
-  if(mode==="performance"&&scorePerfAvailable(rows)) { shade=row=>({fill:scorePerfColor(row.performance_target_met),tip:`\n性能状态：${row.performance_target_met===true?"达标":row.performance_target_met===false?"未达标":"无有效性能数据"}`}); const met=rows.filter(row=>row.performance_target_met===true).length,unmet=rows.filter(row=>row.performance_target_met===false).length; legend=`<text x="${pad}" y="15" fill="#16845b" font-size="10">● 达标 ${met}</text><text x="${pad+92}" y="15" fill="#cf3f36" font-size="10">● 未达标 ${unmet}</text>`; note="按现有目标范围性能判定着色；性能变量不参与 PCA。"; top=22; }
-  else if(mode==="time") { const datedRows=rows.map(row=>({row,time:scoreTimestamp(row)})).filter(item=>Number.isFinite(item.time)); const times=datedRows.map(item=>item.time); const first=Math.min(...times),last=Math.max(...times),span=last-first||1; const earliest=datedRows.reduce((a,b)=>a.time<=b.time?a:b).row.timestamp,latest=datedRows.reduce((a,b)=>a.time>=b.time?a:b).row.timestamp; shade=row=>{const time=scoreTimestamp(row); const fraction=Number.isFinite(time)?(time-first)/span:null; return {fill:fraction===null?"#9aa7b4":scoreTimeColor(fraction),tip:`\n时间：${escapeHtml(displayTime(row.timestamp,19))}`};}; legend=`<defs><linearGradient id="scoreTimeGradient" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="rgb(24,98,180)"/><stop offset="1" stop-color="rgb(214,96,77)"/></linearGradient></defs><rect x="${pad}" y="8" width="150" height="8" rx="4" fill="url(#scoreTimeGradient)"/><text x="${pad}" y="27" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(earliest))}</text><text x="${pad+150}" y="27" text-anchor="end" fill="#5f6c7b" font-size="10">${escapeHtml(displayTime(latest))}</text>`; note="按样本时间从早到晚连续着色，颜色由蓝到红表示时间推进。"; top=32; }
+  if(mode.startsWith("variable:")) {
+    const column=mode.slice(9), values=rows.filter(row=>row.color_column===column&&typeof row.color_value==="number"&&Number.isFinite(row.color_value)).map(row=>row.color_value);
+    const minimum=Math.min(...values),maximum=Math.max(...values);
+    shade=row=>{const value=row.color_column===column?row.color_value:null,valid=typeof value==="number"&&Number.isFinite(value);return {fill:valid?scoreTimeColor(minimum===maximum ? .5 : (value-minimum)/(maximum-minimum)):"#9aa7b4",tip:`\n${column}：${valid?value:"缺失或非有限"}`};};
+    if(values.length) {legend=scoreColorLegend(pad,minimum.toPrecision(5),maximum.toPrecision(5),column);top=32;note=`${column} 工程值范围 ${minimum.toPrecision(5)} ～ ${maximum.toPrecision(5)}；${rows.length-values.length} 个缺失/非有限值为灰色。`;}
+    else note=`${column} 没有有效数值；全部样本以灰色显示。`;
+  }
+  else if(mode==="cluster") {
+    const clusters=[...new Set(rows.map(row=>row.cluster_id))];
+    shade=row=>({fill:row.cluster_id?explorationClusterColor(row.cluster_id):"#9aa7b4",tip:`\n工况组：${row.cluster_id?clusterUiLabel(row.cluster_id):"未知"}`});
+    legend=clusters.map((cluster,index)=>`<text x="${pad+(index%6)*115}" y="${15+Math.floor(index/6)*16}" fill="${cluster?explorationClusterColor(cluster):'#9aa7b4'}" font-size="10">● ${escapeHtml(cluster?clusterUiLabel(cluster):'未知')}</text>`).join('');top=Math.ceil(clusters.length/6)*16+6;note="沿用同一探索 run 的逐样本工况；无可靠关联的样本为灰色未知。";
+  }
+  else if(mode==="performance"&&scorePerfAvailable(rows)) { shade=row=>({fill:scorePerfColor(row.performance_target_met),tip:`\n性能状态：${row.performance_target_met===true?"达标":row.performance_target_met===false?"未达标":"无有效性能数据"}`}); const met=rows.filter(row=>row.performance_target_met===true).length,unmet=rows.filter(row=>row.performance_target_met===false).length; legend=`<text x="${pad}" y="15" fill="#16845b" font-size="10">● 达标 ${met}</text><text x="${pad+92}" y="15" fill="#cf3f36" font-size="10">● 未达标 ${unmet}</text><text x="${pad+210}" y="15" fill="#9aa7b4" font-size="10">● 无有效性能数据 ${rows.length-met-unmet}</text>`; note="按现有目标范围性能判定着色；性能变量不参与 PCA。"; top=22; }
+  else if(mode==="time") { const datedRows=rows.map(row=>({row,time:scoreTimestamp(row)})).filter(item=>Number.isFinite(item.time)); const times=datedRows.map(item=>item.time); const first=Math.min(...times),last=Math.max(...times),span=last-first||1; const earliest=datedRows.reduce((a,b)=>a.time<=b.time?a:b).row.timestamp,latest=datedRows.reduce((a,b)=>a.time>=b.time?a:b).row.timestamp; shade=row=>{const time=scoreTimestamp(row); const fraction=Number.isFinite(time)?(first===last ? .5 : (time-first)/span):null; return {fill:fraction===null?"#9aa7b4":scoreTimeColor(fraction),tip:`\n时间：${escapeHtml(displayTime(row.timestamp,19))}`};}; legend=scoreColorLegend(pad,displayTime(earliest),displayTime(latest)); note="按样本时间从早到晚连续着色，颜色由蓝到红表示时间推进。"; top=32; }
   else if(mode==="performance") { container.innerHTML='<div class="empty">当前模型没有可用的性能状态字段；请先在状态探索中配置目标范围性能 Tag 后重新训练。</div>'; return; }
   else note="默认按 T²/SPE 综合状态着色（正常/关注/异常）。";
   const circles=rows.map(row=>{ const paint=shade(row); const tip=paint.tip===null?"":`<title>状态：${escapeHtml(displayUiValue(row.status))}${escapeHtml(paint.tip)}</title>`; return `<circle cx="${x(Number(row.pc1))}" cy="${y(Number(row.pc2))}" r="3" fill="${paint.fill}" fill-opacity=".72">${tip}</circle>`; }).join("");

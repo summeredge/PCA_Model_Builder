@@ -1431,7 +1431,7 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
         assert "性能达标分布" not in html
         assert "◎ 外圈：性能达标" not in html
         assert "淡化点：未达标或无有效性能值" not in html
-        assert "PC1/PC2 散点绘制全部完整样本；时间轴仍使用代表性抽样序列。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
+        assert "PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整 episodes，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
         assert "优选区域：" in html
         assert "椭圆选择" in html
         assert "删除上一个" in html
@@ -1444,7 +1444,7 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
     assert "marker:{size:5,color:explorationClusterColor(cluster),opacity:.75}" in renderer
     assert 'class="exploration-pc-point"' not in renderer
     assert "<circle" not in renderer
-    assert "row.performance_target_met" not in renderer
+    assert 'choice==="performance"&&scorePerfAvailable(rows)' in renderer
     assert "performanceMode" not in renderer
     assert "targetHalos" not in renderer
     assert "targetLegend" not in renderer
@@ -1495,7 +1495,9 @@ def test_state_exploration_variable_coloring_keeps_points_groups_centers_and_reg
           renderExplorationPcChart(data); renderExplorationPcChart(data);
           await new Promise(resolve=>setTimeout(resolve,0));
           const variable=plots[2],valueTraces=variable.traces.filter(trace=>Array.isArray(trace.marker?.color)),missing=variable.traces.find(trace=>trace.marker?.color==="#9aa7b4");
-          const groups=variable.traces.filter(trace=>trace.type==="scattergl"&&trace.x.length===0).map(trace=>[trace.name,trace.legendgroup]);
+          const legendTraces=variable.traces.filter(trace=>trace.showlegend===true);
+          assert(legendTraces.every(trace=>trace.x.length>0));
+          const groups=legendTraces.map(trace=>[trace.name,trace.legendgroup]);
           const centers=variable.traces.filter(trace=>trace.meta==="center");
           assert.equal(requests,1);
           assert.equal(plots[0].traces.filter(trace=>trace.meta!=="center").length,4);
@@ -1709,7 +1711,7 @@ def test_preferred_region_metric_table_keeps_field_formats_and_conditional_perfo
     assert '[["性能评价","—"]]' in summary
     # 未定义椭圆时保留原提示。
     assert '尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。' in summary
-    assert '当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性沿用全部保留主元空间计算；候选仍需人工决策。' in summary
+    assert '当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性反映全部保留主元空间的组内距离/离散程度，不等于时间稳定性或正常状态证明；候选仍需人工决策。' in summary
 
 
 def test_exploration_sampling_labels_are_scoped_to_the_timeline():
@@ -3777,7 +3779,7 @@ def test_state_exploration_api_reads_summary_and_bounded_series(tmp_path, monkey
     assert len(result["cluster_series_full"]) == result["full_point_count"]
     assert len(result["cluster_series_full"]) > len(result["cluster_series"])
     assert all(
-        set(row) == {"cluster_id", "pc1", "pc2"} for row in result["cluster_series_full"]
+        set(row) == {"timestamp", "cluster_id", "pc1", "pc2"} for row in result["cluster_series_full"]
     )
     assert {row["cluster_id"] for row in result["cluster_series_full"]} == {
         row["cluster_id"] for row in result["cluster_series"]
@@ -3904,7 +3906,7 @@ def test_state_exploration_color_values_align_to_full_pc_rows_without_rerunning(
     assert result["full_point_count"] == len(history) - 3
     assert "LOAD" in result["color_variables"]
     assert len(result["cluster_series_full"]) == result["full_point_count"]
-    assert all(set(row) == {"cluster_id", "pc1", "pc2"} for row in result["cluster_series_full"])
+    assert all(set(row) == {"timestamp", "cluster_id", "pc1", "pc2"} for row in result["cluster_series_full"])
     assert stored["_color_series"].index.equals(stored["cluster_series"].index)
     assert stored["_color_series"].index[0] == history.time.iloc[3]
     assert len(values["values"]) == len(result["cluster_series_full"])
@@ -6223,8 +6225,193 @@ def test_score_color_mode_toggle_rerenders_the_existing_chart_only():
     assert 'timeOption.disabled=!scoreTimeAvailable(rows||[])' in html
     assert 'select.value==="time"&&timeOption?.disabled' in html
     assert 'el("scoreColorMode").addEventListener("change"' in html
-    assert "scoreScatter(el(\"scoreChart\"),rows); });" in html
+    assert 'scoreScatter(el("scoreChart"),rows,mode);' in html
     assert 'syncScoreColorModes(data.scores); scoreScatter(el("scoreChart"),data.scores);' in html
+
+
+@pytest.mark.parametrize("previous_mode", ["default", "time", "variable:OLD"])
+@pytest.mark.parametrize("failure", ["request", "alignment", "changed_mode", "changed_training"])
+def test_training_color_failure_restores_matching_default_chart_without_overwriting_newer_state(previous_mode, failure):
+    html = web.INDEX_HTML
+    start = html.index('el("scoreColorMode").addEventListener("change",async()=>{')
+    handler = html[start:html.index("\n});", start) + len("\n});")]
+    script = r'''
+      const assert=require('node:assert/strict');
+      const nodes={scoreColorMode:{value:__PREVIOUS__,addEventListener(event,fn){this.change=fn;}},
+        scoreChart:{innerHTML:''},scoreChartNote:{textContent:''}};
+      const el=id=>nodes[id],escapeHtml=value=>String(value),displayTime=value=>String(value),displayUiValue=value=>String(value);
+      const rows=[{timestamp:'2026-01-01T00:00:00',pc1:1,pc2:2,status:'normal',color_column:'OLD',color_value:3},
+        {timestamp:'2026-01-01T00:05:00',pc1:2,pc2:1,status:'abnormal',color_column:'OLD',color_value:4}];
+      const state={training:{run_id:'run-a',scores:rows}};
+      const failure=__FAILURE__;
+      let rejectRequest;
+      const api=()=>failure==='alignment'?Promise.resolve({run_id:'run-a',column:'NEW',values:[5,6],timestamps:['wrong','wrong']}):new Promise((resolve,reject)=>{rejectRequest=reject;});
+      __RENDERER__
+      __HANDLER__
+      (async()=>{
+        scoreScatter(el('scoreChart'),rows,'default');const expected=el('scoreChart').innerHTML;
+        scoreScatter(el('scoreChart'),rows);const before=JSON.stringify(rows);
+        el('scoreColorMode').value='variable:NEW';const pending=el('scoreColorMode').change();
+        if(failure==='changed_mode') el('scoreColorMode').value='time';
+        if(failure==='changed_training') state.training={run_id:'run-b',scores:rows};
+        const stale=failure.startsWith('changed_');
+        if(stale) {el('scoreChart').innerHTML='newer chart';el('scoreChartNote').textContent='newer note';}
+        if(rejectRequest) rejectRequest(new Error('source changed'));
+        await pending;
+        assert.equal(JSON.stringify(rows),before);
+        if(stale) {
+          assert.equal(el('scoreChart').innerHTML,'newer chart');assert.equal(el('scoreChartNote').textContent,'newer note');
+          assert.equal(el('scoreColorMode').value,failure==='changed_mode'?'time':'variable:NEW');
+        } else {
+          assert.equal(el('scoreColorMode').value,'default');assert.equal(el('scoreChart').innerHTML,expected);
+          assert(el('scoreChartNote').textContent.includes('NEW')&&el('scoreChartNote').textContent.includes('已恢复默认'));
+        }
+        console.log(JSON.stringify({passed:true}));
+      })().catch(error=>{console.error(error);process.exitCode=1;});
+    '''
+    script = script.replace("__PREVIOUS__", json.dumps(previous_mode)).replace("__FAILURE__", json.dumps(failure))
+    script = script.replace("__RENDERER__", _score_renderer_source()).replace("__HANDLER__", handler)
+    assert _run_node_javascript(script)["passed"]
+
+
+@pytest.mark.parametrize("middle_mode", ["time", "default", "performance", "cluster", "variable:B"])
+@pytest.mark.parametrize("old_fails", [False, True])
+@pytest.mark.parametrize("latest_fails", [False, True])
+@pytest.mark.parametrize("latest_first", [False, True])
+def test_training_color_failure_reselected_tag_ignores_out_of_order_success_and_failure(middle_mode, old_fails, latest_fails, latest_first):
+    html = web.INDEX_HTML
+    start = html.index('el("scoreColorMode").addEventListener("change",async()=>{')
+    handler = html[start:html.index("\n});", start) + len("\n});")]
+    script = r'''
+      const assert=require('node:assert/strict');
+      const nodes={scoreColorMode:{value:'default',addEventListener(event,fn){this.change=fn;}},
+        scoreChart:{innerHTML:''},scoreChartNote:{textContent:''}};
+      const el=id=>nodes[id],escapeHtml=value=>String(value),displayTime=value=>String(value),displayUiValue=value=>String(value);
+      const explorationClusterColor=()=> '#176b87',clusterUiLabel=value=>String(value);
+      const rows=[{timestamp:'2026-01-01T00:00:00',pc1:1,pc2:2,status:'normal',performance_target_met:true,cluster_id:'cluster_001'},
+        {timestamp:'2026-01-01T00:05:00',pc1:2,pc2:1,status:'abnormal',performance_target_met:false,cluster_id:null}];
+      const state={training:{run_id:'run-a',scores:rows}},requests=[];
+      const original=JSON.stringify(rows);
+      const api=(url,options)=>new Promise((resolve,reject)=>requests.push({resolve,reject,payload:JSON.parse(options.body)}));
+      __RENDERER__
+      __HANDLER__
+      const snapshot=()=>JSON.stringify({mode:el('scoreColorMode').value,chart:el('scoreChart').innerHTML,note:el('scoreChartNote').textContent,rows});
+      const select=mode=>{el('scoreColorMode').value=mode;return el('scoreColorMode').change();};
+      function complete(request,failed,values) {
+        if(failed) request.reject(new Error('failure '+values[0]));
+        else request.resolve({run_id:'run-a',column:request.payload.column,timestamps:request.payload.timestamps,values});
+      }
+      (async()=>{
+        scoreScatter(el('scoreChart'),rows,'default');const defaultChart=el('scoreChart').innerHTML;
+        const first=select('variable:A'),firstRequest=requests[0];
+        const middle=select(__MIDDLE__),middleRequest=requests.length>1?requests[1]:null;
+        const latest=select('variable:A'),latestRequest=requests.at(-1);
+        assert.equal(state.scoreColorRevision,3);
+        async function settleOld() {
+          const before=snapshot();complete(firstRequest,__OLD_FAILS__,[1,2]);await first;assert.equal(snapshot(),before);
+          if(middleRequest) {complete(middleRequest,__OLD_FAILS__,[3,4]);await middle;assert.equal(snapshot(),before);}
+        }
+        async function settleLatest() {
+          complete(latestRequest,__LATEST_FAILS__,[10,20]);await latest;
+          if(__LATEST_FAILS__) {
+            assert.equal(el('scoreColorMode').value,'default');assert.equal(el('scoreChart').innerHTML,defaultChart);
+            assert(el('scoreChartNote').textContent.includes('failure 10')&&el('scoreChartNote').textContent.includes('已恢复默认'));
+            assert.equal(JSON.stringify(rows),original);
+          } else {
+            assert.equal(el('scoreColorMode').value,'variable:A');
+            assert.deepEqual(rows.map(row=>[row.color_column,row.color_value]),[['A',10],['A',20]]);
+            const chart=el('scoreChart').innerHTML,note=el('scoreChartNote').textContent;
+            scoreScatter(el('scoreChart'),rows,'variable:A');assert.equal(el('scoreChart').innerHTML,chart);assert.equal(el('scoreChartNote').textContent,note);
+          }
+        }
+        if(__LATEST_FIRST__) {await settleLatest();await settleOld();} else {await settleOld();await settleLatest();}
+        assert.equal(JSON.stringify(rows.map(({color_column,color_value,...row})=>row)),original);
+        console.log(JSON.stringify({passed:true}));
+      })().catch(error=>{console.error(error);process.exitCode=1;});
+    '''
+    for token, value in [("__MIDDLE__", middle_mode), ("__OLD_FAILS__", old_fails),
+                         ("__LATEST_FAILS__", latest_fails), ("__LATEST_FIRST__", latest_first)]:
+        script = script.replace(token, json.dumps(value))
+    script = script.replace("__RENDERER__", _score_renderer_source()).replace("__HANDLER__", handler)
+    assert _run_node_javascript(script)["passed"]
+
+
+def test_training_tag_colors_follow_sampled_timestamps_windows_lag_and_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(web, "MAX_CHART_POINTS", 11)
+    history = _history_frame()
+    history["PERF"] = np.arange(len(history), dtype=float)
+    history.loc[history.index[::3], "PERF"] = np.nan
+    history["CONST"] = 7.0
+    uploaded = web.save_upload("colors.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    payload = {"file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"],
+               "sample_interval_minutes": 5, "filter_method": "none", "smoothing_window_minutes": 0,
+               "max_lag_minutes": 10, "lag_step_minutes": 5, "model_name": "colors",
+               "training_windows": [{"id": str(i), "source": "manual", "start": history.time.iloc[a].isoformat(),
+                                     "end": history.time.iloc[b].isoformat(), "enabled": True,
+                                     "source_ref": None, "comment": ""}
+                                    for i, (a, b) in enumerate([(0, 65), (90, 150)])]}
+    trained = web.train_payload(payload)
+    before = json.dumps(trained["scores"])
+    assert "PERF" in trained["color_variables"]
+    assert all(row["cluster_id"] is None for row in trained["scores"])
+    timestamps = [row["timestamp"] for row in trained["scores"]]
+    request = {"run_id": trained["run_id"], "column": "PERF", "timestamps": timestamps}
+    result = web.training_color_values_payload(request)
+    assert result["timestamps"] == timestamps
+    expected = history.set_index("time").PERF.reindex(pd.to_datetime(timestamps))
+    assert result["values"] == [None if pd.isna(value) else float(value) for value in expected]
+    assert None in result["values"] and any(value is not None for value in result["values"])
+    assert web.training_color_values_payload({**request, "column": "CONST"})["values"] == [7.0] * len(timestamps)
+    with pytest.raises(ValueError, match="不属于当前训练样本"):
+        web.training_color_values_payload({**request, "timestamps": [history.time.iloc[75].isoformat()]})
+    with pytest.raises(ValueError, match="不属于当前训练样本"):
+        web.training_color_values_payload({**request, "timestamps": [history.time.iloc[0].isoformat()]})
+    assert json.dumps(trained["scores"]) == before
+    exploration = web.state_exploration_payload({**payload, "exploration_start": history.time.iloc[0].isoformat(),
+        "exploration_end": history.time.iloc[-1].isoformat(), "exploration_config": {"cluster_count": 2,
+        "minimum_candidate_duration_minutes": 10, "maximum_plot_points": 8}})
+    candidate = exploration["cluster_candidates"][0]
+    windows = [dict(window) for window in payload["training_windows"]]
+    windows[0].update(source="cluster", source_ref=f"state-exploration-{exploration['exploration_run_id']}-{candidate['candidate_id']}")
+    clustered = web.train_payload({**payload, "training_windows": windows})
+    observed = web.STATE_EXPLORATION_RUNS[exploration["exploration_run_id"]]["cluster_series"]
+    for row in clustered["scores"]:
+        stamp = pd.Timestamp(row["timestamp"])
+        if stamp <= history.time.iloc[65]:
+            assert row["cluster_id"] == observed.loc[stamp, "cluster_id"]
+        else:
+            assert row["cluster_id"] is None
+
+
+@pytest.mark.parametrize("values", [[None] * 12, [5.0] * 12, [None, -2.0, 4.0] * 4])
+def test_training_numeric_colors_keep_geometry_and_handle_constant_and_missing(values):
+    rows = [{**row, "color_column": "PERF", "color_value": value} for row, value in zip(SCORE_ROWS, values)]
+    rendered = _render_score_svg("variable:PERF", rows)
+    assert _score_circle_positions(rendered["svg"]) == _score_circle_positions(_render_score_svg("default", rows)["svg"])
+    assert rendered["svg"].count("<circle") == len(rows)
+    if all(value is None for value in values):
+        assert "没有有效数值" in rendered["note"] and "scoreTimeGradient" not in rendered["svg"]
+    elif len(set(values)) == 1:
+        assert rendered["svg"].count('fill="rgb(176,214,238)"') == len(rows)
+    else:
+        assert rendered["svg"].count('fill="#9aa7b4"') == values.count(None)
+
+
+def test_training_cluster_colors_use_actual_samples_and_disable_ambiguous_runs(monkeypatch):
+    index = pd.date_range("2026-01-01", periods=4, freq="5min")
+    origins = {"a": {"exploration_run_id": "run-a", "cluster_id": "cluster_001"}}
+    monkeypatch.setattr(web, "_verified_training_window_origins", lambda *args: origins)
+    points = pd.DataFrame({"cluster_id": ["cluster_001", "cluster_002", "cluster_001"]}, index=index[:3])
+    monkeypatch.setattr(web, "_training_cluster_series", lambda *args: {"a": points})
+    colors = web._training_score_clusters(index, [], {}, None)
+    assert colors.iloc[:3].tolist() == points.cluster_id.tolist()
+    assert pd.isna(colors.iloc[3])
+    origins["b"] = {"exploration_run_id": "run-b", "cluster_id": "cluster_001"}
+    assert web._training_score_clusters(index, [], {}, None).isna().all()
+    origins.clear()
+    assert web._training_score_clusters(index, [], {}, None).isna().all()
 
 
 def test_train_payload_marks_performance_target_without_changing_scores(

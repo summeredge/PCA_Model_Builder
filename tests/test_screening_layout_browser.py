@@ -19,6 +19,7 @@ def test_screening_layout_and_unchanged_calculation_in_real_browser(tmp_path, mo
     if not (shutil.which("node") and os.environ.get("WEB_GEOMETRY_PLAYWRIGHT") and os.environ.get("WEB_GEOMETRY_BROWSER")):
         pytest.skip("Set WEB_GEOMETRY_PLAYWRIGHT and WEB_GEOMETRY_BROWSER for browser validation")
     monkeypatch.setattr(ui._BASE_WEB, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(ui._BASE_WEB, "RUNS_DIR", tmp_path / "runs")
     rng = np.random.default_rng(42)
     n = 480
     x = np.r_[rng.normal(-3, .2, n // 2), rng.normal(3, .2, n // 2)]
@@ -459,8 +460,47 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert.deepEqual(await page.locator('#explorationOverview .metric').evaluateAll(nodes=>nodes.map(node=>[node.querySelector('span').innerText,node.querySelector('strong').innerText])),expectedKpis);
   assert(data.cluster_candidates.length>0);
   const candidate=data.cluster_candidates[0];
+  const colorInvariant=()=>page.evaluate(()=>JSON.stringify({points:state.exploration.cluster_series_full,candidates:state.exploration.cluster_candidates,region:state.preferredRegion}));
+  const colorBaseline=await colorInvariant();
+  for(const mode of ['time','performance']) {
+   await page.locator('#explorationPcColorMode').selectOption(mode);
+   await page.waitForFunction(mode=>state.preferredRegionPlot&&
+    (mode==='time'?state.preferredRegionPlot.layout.coloraxis?.colorbar.title.text==='时间':state.preferredRegionPlot.data.some(trace=>trace.name.includes('达标'))),mode);
+   const colors=await page.evaluate(()=>state.preferredRegionPlot.data.filter(trace=>trace.type==='scattergl').reduce((n,trace)=>n+trace.x.length,0));
+   assert.equal(colors,data.full_point_count);assert.equal(await colorInvariant(),colorBaseline);
+  }
   await page.locator('#explorationPcColorMode').selectOption('variable:TAG_A');
   await page.waitForFunction(()=>state.preferredRegionPlot.data.some(trace=>trace.marker?.coloraxis==='coloraxis'));
+  const legendGroups=Object.keys(data.cluster_centers);
+  const legendSnapshot=()=>page.evaluate(()=>JSON.stringify([state.exploration.cluster_summaries,state.exploration.cluster_candidates,state.exploration.preferred_region_candidates,state.candidateWindows,state.trainingWindows,state.preferredRegion]));
+  const beforeLegend=await legendSnapshot();
+  const savedColors=await page.evaluate(groups=>{
+   const values=state.explorationColorValues.get('TAG_A');
+   state.explorationColorValues.set('TAG_A',state.exploration.cluster_series_full.map((row,index)=>row.cluster_id===groups[0]&&index%2===0?index:null));
+   renderExplorationPcChart(state.exploration);return values;
+  },legendGroups);
+  await page.waitForFunction(()=>state.preferredRegionPlot?._fullLayout);
+  assert.equal(await page.locator('#explorationPcChart .legendtoggle').count(),legendGroups.length);
+  for(const visible of [false,true]) {
+   for(const cluster of legendGroups) {
+    const label=await page.evaluate(id=>clusterUiLabel(id),cluster);
+    await page.locator('#explorationPcChart .legend .traces').filter({hasText:label}).locator('.legendtoggle').click();
+    await page.waitForFunction(({cluster,visible})=>state.preferredRegionPlot._fullData.filter(trace=>trace.legendgroup===`cluster:${cluster}`).every(trace=>trace.visible===(visible?true:'legendonly')),{cluster,visible});
+   }
+   const visiblePoints=await page.evaluate(()=>state.preferredRegionPlot._fullData.filter(trace=>trace.type==='scattergl'&&trace.visible===true).reduce((count,trace)=>count+trace.x.length,0));
+   assert.equal(visiblePoints,visible?data.full_point_count:0);
+   assert.equal(await legendSnapshot(),beforeLegend);
+  }
+  await page.evaluate(values=>{state.explorationColorValues.set('TAG_A',values);renderExplorationPcChart(state.exploration);},savedColors);
+  await page.waitForFunction(()=>state.preferredRegionPlot?._fullLayout);
+  await page.locator('#explorationPcColorMode').selectOption('cluster');
+  await page.waitForFunction(()=>state.preferredRegionPlot?.data.every(trace=>!trace.marker?.coloraxis));
+  const firstLabel=await page.evaluate(id=>clusterUiLabel(id),legendGroups[0]);
+  await page.locator('#explorationPcChart .legend .traces').filter({hasText:firstLabel}).locator('.legendtoggle').click();
+  await page.waitForFunction(cluster=>state.preferredRegionPlot._fullData.filter(trace=>trace.legendgroup===`cluster:${cluster}`).every(trace=>trace.visible==='legendonly'),legendGroups[0]);
+  assert.equal(await page.evaluate(cluster=>state.preferredRegionPlot._fullData.filter(trace=>trace.meta==='center'&&trace.legendgroup===`cluster:${cluster}`).length,legendGroups[0]),1);
+  await page.locator('#explorationPcColorMode').selectOption('variable:TAG_A');
+  await page.waitForFunction(()=>state.preferredRegionPlot?.data.some(trace=>trace.marker?.coloraxis==='coloraxis'));
   await page.evaluate(()=>{globalThis.continuousProfilePlot=state.preferredRegionPlot;});
   await page.evaluate(()=>Plotly.relayout(state.preferredRegionPlot,{'xaxis.range':[-2,2],'yaxis.range':[-3,3]}));
   const continuousView=()=>page.evaluate(()=>JSON.stringify({mode:document.getElementById('explorationPcColorMode').value,
@@ -507,7 +547,36 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert((await pending).ok());await page.waitForFunction(ref=>state.trainingWindows.some(item=>item.source_ref===ref),sourceRef);
   await page.evaluate(()=>showWorkflowStage('modelPanel'));
   const quality=await action('qualityButton','/api/quality');assert(quality.training_readiness.normal_state.can_train);
+  const trainingExploration=await page.evaluate(()=>[state.exploration,state.preferredRegion]);
+  await page.route('**/api/train',async route=>{
+   const response=await route.fetch();
+   await page.evaluate(()=>{el('maxLag').value='15';el('maxLag').dispatchEvent(new Event('change',{bubbles:true}));});
+   await route.fulfill({response});
+  });
+  await action('trainButton','/api/train');
+  await page.waitForFunction(()=>document.getElementById('trainButton').textContent===document.getElementById('trainButton').dataset.label);
+  assert.deepEqual(await page.evaluate(()=>({training:state.training,runId:state.runId,quality:state.quality,trainDisabled:el('trainButton').disabled,validateDisabled:el('validateButton').disabled})),{training:null,runId:null,quality:null,trainDisabled:true,validateDisabled:true});
+  await page.unroute('**/api/train');
+  await page.evaluate(()=>{el('maxLag').value='10';el('maxLag').dispatchEvent(new Event('change',{bubbles:true}));});
+  await page.evaluate(([exploration,region])=>{state.exploration=exploration;state.preferredRegion=region;renderStateExploration(exploration);},trainingExploration);
+  assert((await action('qualityButton','/api/quality')).training_readiness.normal_state.can_train);
   const training=await action('trainButton','/api/train');assert(training.model_quality.training_condition_diagnostic.available);
+  const trainingInvariant=()=>page.evaluate(()=>JSON.stringify({scores:state.training.scores.map(({color_column,color_value,...row})=>row),windows:state.trainingWindows,limits:[state.training.t2_limits,state.training.q_limits]}));
+  const trainingBaseline=await trainingInvariant();
+  const scorePositions=()=>page.locator('#scoreChart circle').evaluateAll(nodes=>nodes.map(node=>[node.getAttribute('cx'),node.getAttribute('cy')]));
+  const positions=await scorePositions();
+  for(const column of ['TAG_A','PERFORMANCE']) {
+   const response=page.waitForResponse(r=>r.url().endsWith('/api/training-color-values'));
+   await page.locator('#scoreColorMode').selectOption(`variable:${column}`);
+   const values=await (await response).json();assert.equal(values.column,column);
+   assert.deepEqual(values.timestamps,training.scores.map(row=>row.timestamp));
+   await page.waitForFunction(column=>el('scoreChartNote').textContent.startsWith(`${column} 工程值范围`),column);
+   assert.deepEqual(await scorePositions(),positions);assert.equal(await trainingInvariant(),trainingBaseline);
+  }
+  const clusterDisabled=await page.locator('#scoreColorMode option[value="cluster"]').isDisabled();
+  assert.equal(clusterDisabled,!training.scores.some(row=>row.cluster_id));
+  if(!clusterDisabled) {await page.locator('#scoreColorMode').selectOption('cluster');assert.deepEqual(await scorePositions(),positions);}
+  await page.locator('#scoreColorMode').selectOption('default');
   const modelReports=[];
   for(const width of [1440,900,390]) {
    await page.setViewportSize({width,height:1000});

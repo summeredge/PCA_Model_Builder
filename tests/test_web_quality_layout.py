@@ -1351,6 +1351,7 @@ def test_invalidate_quality_executes_actual_status_boundaries() -> None:
         const elements = new Map([
           ["trainButton", {{disabled: false}}],
           ["trainExploratoryButton", {{disabled: false}}],
+          ["validateButton", {{disabled: false}}],
           ["qualitySummary", {{innerHTML: "old"}}],
           ["trainingCompositionReview", {{className: "", textContent: "old"}}],
           ["qualityIssues", {{className: "", textContent: "old"}}],
@@ -1386,6 +1387,7 @@ def test_invalidate_quality_executes_actual_status_boundaries() -> None:
           const before=state.qualityRevision;
           state.validationInvestigationFocus={{runId:"old"}};
           invalidateQuality(scenario.reason);
+          if(!el("validateButton").disabled) throw new Error("stale model must not remain validatable");
           if(state.validationInvestigationFocus!==null) throw new Error("stale Validation focus kept");
           snapshots.push([
             state.qualityStatus,
@@ -2081,6 +2083,7 @@ def test_state_filter_change_invalidates_quality_without_any_exploration() -> No
         const elements = new Map([
           ["trainButton", {{disabled:false}}],
           ["trainExploratoryButton", {{disabled:false}}],
+          ["validateButton", {{disabled:false}}],
           ["qualitySummary", {{innerHTML:""}}],
           ["trainingCompositionReview", {{className:"", textContent:""}}],
           ["qualityIssues", {{className:"", textContent:""}}],
@@ -2129,6 +2132,7 @@ def test_state_filter_change_invalidates_quality_without_any_exploration() -> No
         if(state.qualityRevision!==5) throw new Error("quality revision must advance exactly once");
         if(!el("trainButton").disabled) throw new Error("trainButton must not reuse old readiness");
         if(!el("trainExploratoryButton").disabled) throw new Error("trainExploratoryButton must be disabled");
+        if(!el("validateButton").disabled) throw new Error("stale model must not remain validatable");
         if(state.explorationRevision!==1) throw new Error("stale exploration request must be rejected");
         """
     )
@@ -2308,6 +2312,7 @@ def test_exploration_invalidation_keeps_confirmed_candidates_and_training_window
         const elements = new Map([
           ["trainButton", {{disabled:false}}],
           ["trainExploratoryButton", {{disabled:false}}],
+          ["validateButton", {{disabled:false}}],
           ["qualitySummary", {{innerHTML:""}}],
           ["trainingCompositionReview", {{className:"", textContent:""}}],
           ["qualityIssues", {{className:"", textContent:""}}],
@@ -2372,6 +2377,7 @@ def test_exploration_invalidation_keeps_confirmed_candidates_and_training_window
         if(state.exploration!==null) throw new Error("exploration not cleared");
         if(state.preprocessingPreview!==null) throw new Error("shared preprocessing change must drop preview");
         if(state.qualityStatus!=="changed") throw new Error("quality not invalidated");
+        if(!el("validateButton").disabled) throw new Error("stale model must not remain validatable");
         """
     )
 

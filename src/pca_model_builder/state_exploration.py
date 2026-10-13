@@ -966,18 +966,6 @@ def _preprocessing_summary(processed: PreprocessingResult) -> dict[str, object]:
         - int(processed.summary.state_filter_output_rows),
     )
     empty_bin_count = int(processed.summary.empty_bin_count)
-    if processed.state_filtered is not None:
-        state_filter_loss = max(
-            0,
-            len(processed.resampled) - len(processed.state_filtered)
-            if processed.resampled is not None
-            else state_filter_loss,
-        )
-        empty_bin_count = int(
-            processed.empty_bin_mask.reindex(
-                processed.state_filtered.index, fill_value=False
-            ).sum()
-        )
     loss_counts = {
         "empty_bin_count": empty_bin_count,
         "input_invalid_loss": int(processed.summary.input_invalid_loss),

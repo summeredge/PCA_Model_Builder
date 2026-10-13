@@ -7,6 +7,24 @@ import pytest
 from pca_model_builder import web_model_results
 
 
+@pytest.mark.parametrize("rows,available", [([], False), ([{}], False),
+    ([{"performance_target_met": None}], False),
+    ([{"performance_target_met": False}, {"performance_target_met": None}], True),
+    ([{"performance_target_met": True}], True)])
+def test_both_pc_charts_enable_performance_only_with_usable_posterior_status(rows, available):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for WebUI regression tests")
+    html = web_model_results.INDEX_HTML
+    source = html[html.index("function scorePerfAvailable("):].split("\n", 1)[0]
+    result = subprocess.run([node, "-e", source + f";console.log(JSON.stringify(scorePerfAvailable({json.dumps(rows)})))"],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) is available
+    assert "performance.disabled=!scorePerfAvailable(rows)" in html
+    assert "performance.disabled=!scorePerfAvailable(rows||[])" in html
+
+
 def test_performance_scope_controls_live_in_candidate_stage_once():
     html = web_model_results.INDEX_HTML
     for identifier in ("performanceScope", "performanceParents", "performanceClusters", "performanceScopeSummary"):
@@ -42,6 +60,7 @@ def test_performance_exclusion_invalidates_only_when_model_tags_change(selected,
       function clearTrainingDiagnosticFocus(){state.trainingDiagnosticFocus=null;}
       function resetExplorationRegion(){clearTrainingDiagnosticFocus();state.preferredRegion=null;}
       function renderCandidateWindows(){} function renderTagList(){}
+      function closeGroupProfileDialog(){} function renderGroupProfiles(){}
       function renderModelTrainingDataSummary(){} function renderModelQualityStatus(){}
       function renderCurrentTagQuality(){} function setStatus(){}
       function candidateId(){return "derived-ui";}
