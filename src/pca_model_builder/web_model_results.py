@@ -102,14 +102,14 @@ _FORM_WIDTH_STYLE = r"""
   }
   main .row:has(> label > #timestampColumn) > label { flex:0 1 var(--field-select-width); min-width:0; max-width:100%; }
   main .row:has(> label > #timestampColumn) > label:has(> #timestampColumn) { flex-basis:var(--field-tag-width); }
-  /* 数据源控件按内容角色自然换行：时间列用 Tag 宽度，编码选择保持短控件宽度。 */
+  /* 数据源控件同排按内容角色取宽：文件按内容宽度，时间列用 Tag 宽度，编码选择保持短控件宽度。 */
   @media (min-width:761px) {
     main .group:has(#uploadButton) {
       display:flex;
       flex-wrap:wrap;
       align-items:end;
     }
-    main .group:has(#uploadButton) > label { flex:1 1 100%; min-width:0; }
+    main .group:has(#uploadButton) > label { flex:0 0 auto; min-width:0; max-width:100%; }
     main .group:has(#uploadButton) > :is(.actions, .row) { display:contents; }
     main .group:has(#uploadButton) > :is(.actions, .row) > label > select { width:100%; }
   }
@@ -1875,9 +1875,7 @@ def _stabilize_workbench_html(html: str) -> str:
         remaining_controls, status_marker, "运行日志"
     )
     upload_group = upload_group.rstrip().replace(
-        '<div class="group-title">1. 历史数据</div>',
-        '<div class="group-title">历史数据</div>',
-        1,
+        '        <div class="group-title">1. 历史数据</div>\n', '', 1
     )
     tag_group = (tag_marker + tag_group).replace(
         '<div class="group-title">2. 建模 Tag</div>',

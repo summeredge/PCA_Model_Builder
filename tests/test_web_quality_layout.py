@@ -619,16 +619,18 @@ def test_data_source_controls_wrap_by_semantic_width() -> None:
     assert html.index('id="inspectButton"') < html.index("<label>时间列")
     # 宽度规则由 .actions > button 提供，不依赖按钮自身写死像素宽度。
     assert ".actions > button, .actions > .download { flex:0 0 auto; width:auto; }" in html
-    # 时间列按长 Tag 名分配较宽宽度，编码选择保持短控件宽度；空间不足时 flex-wrap 换行。
+    # 文件控件与按钮同排按内容取宽，时间列按长 Tag 名分配较宽宽度，编码选择保持短控件宽度；空间不足时 flex-wrap 换行。
     style = html.split('<style id="semanticFormWidthStyle">', 1)[1].split('</style>', 1)[0]
     source_group = style.split("main .group:has(#uploadButton) {", 1)[1].split('}', 1)[0]
     assert "display:flex;" in source_group
     assert "flex-wrap:wrap;" in source_group
-    assert "main .group:has(#uploadButton) > label { flex:1 1 100%; min-width:0; }" in style
+    assert "main .group:has(#uploadButton) > label { flex:0 0 auto; min-width:0; max-width:100%; }" in style
     assert "main .group:has(#uploadButton) > :is(.actions, .row) { display:contents; }" in style
     assert "main .group:has(#uploadButton) > :is(.actions, .row) > label > select { width:100%; }" in style
     assert "flex:0 1 var(--field-select-width); min-width:0; max-width:100%;" in style
     assert "flex-basis:var(--field-tag-width);" in style
+    # 组内不再重复“历史数据”分组标题：标题由“数据源与时间轴”承担。
+    assert '<div class="group-title">历史数据</div>' not in html
 
 
 def test_workbench_layout_rules_keep_buttons_intrinsic_and_grids_shrinkable() -> None:
