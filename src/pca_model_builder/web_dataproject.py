@@ -380,9 +380,15 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       };
     });
     // Plot area follows the container so the curve region is as large as possible.
+    // Measure after switching to .dp-chart: the empty state is height:auto, so it
+    // reports the hint text height and the figure would stay at the 420px floor.
+    container.className = "dp-chart";
+    container.textContent = "";
     const height = Math.max(420, Math.floor(container.clientHeight || 520));
     const layout = {
-      margin: {left: 55, right: mode === "independent" && series.length > 1 ? 55 : 40, top: 10, bottom: 60},
+      // plotly only reads the short margin keys; the long names are ignored and
+      // silently fall back to the 80/100 defaults, which waste the plot area.
+      margin: {l: 55, r: mode === "independent" && series.length > 1 ? 55 : 40, t: 10, b: 60},
       height,
       // Horizontal legend under the plot keeps the trend area free of labels.
       showlegend: true,
@@ -435,8 +441,6 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       responsive: true,
       scrollZoom: false,
     };
-    container.className = "dp-chart";
-    container.textContent = "";
     globalThis.Plotly.react(container, traces, layout, config).then((plot) => {
       plot.removeAllListeners("plotly_selected");
       plot.removeAllListeners("plotly_deselect");

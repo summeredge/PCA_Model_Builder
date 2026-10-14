@@ -30,7 +30,7 @@ _GROUP_PROFILE_DIALOG_STYLE = r"""
   .group-profile-entry { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:8px 0; min-width:0; }
   .group-profile-entry span { overflow-wrap:anywhere; }
   #clusterContent, #assistanceClusterQuality { min-width:0; }
-  #groupProfileDialog { box-sizing:border-box; width:90vw; max-width:1600px; max-height:88vh; padding:16px; border:1px solid #cbd5e1; border-radius:8px; overflow:auto; color:#172334; }
+  #groupProfileDialog { box-sizing:border-box; width:90vw; max-width:1600px; max-height:88vh; padding:16px; border:1px solid var(--line-control); border-radius:8px; overflow:auto; color:var(--text); }
   #groupProfileDialog::backdrop { background:rgb(15 23 42 / 45%); }
   #groupProfileDialog > header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; padding:0; background:none; color:inherit; }
   #groupProfileDialog h2 { margin:0; font-size:18px; }
@@ -1473,14 +1473,16 @@ def _model_results_content_html() -> str:
           <button id="trainingExceedanceButton" type="button" class="secondary">超限诊断</button>
           <dialog id="trainingExceedanceDialog" aria-labelledby="exceedanceTitle">
             <style>
-              #trainingExceedanceDialog { box-sizing:border-box; width:90vw; height:90vh; max-width:90vw; max-height:90vh; padding:16px; overflow:auto; border:1px solid #94a3b8; border-radius:8px; }
+              #trainingExceedanceDialog { box-sizing:border-box; width:90vw; height:90vh; max-width:90vw; max-height:90vh; padding:16px; overflow:auto; border:1px solid var(--line-control); border-radius:8px; color:var(--text); }
               #trainingExceedanceDialog::backdrop { background:rgba(15,23,42,.45); }
               #trainingExceedanceDialog .exceedance-header { display:flex; justify-content:space-between; align-items:center; gap:12px; background:none; color:inherit; padding:0; }
               #trainingExceedanceDialog .exceedance-header h3 { margin:0; }
               #trainingExceedanceDialog .exceedance-controls { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:8px 0; }
-              #trainingExceedanceDialog .exceedance-modes button[aria-pressed="true"] { border-color:#2563eb; color:#1d4ed8; }
+              /* 选中态沿用同类模式按钮的既有约定（.candidate-tool-tab.active / .exploration-region-tools .active）：
+                 主色填充 + 白字，比单改 1px 边框色更明确，也不只依赖颜色深浅。 */
+              #trainingExceedanceDialog .exceedance-modes button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
               #trainingExceedanceDialog .exceedance-compare-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-              #trainingExceedanceDialog .exceedance-compare-group { min-width:0; border:1px solid #cbd5e1; border-radius:6px; padding:10px; }
+              #trainingExceedanceDialog .exceedance-compare-group { min-width:0; border:1px solid var(--line); border-radius:6px; padding:10px; }
               #trainingExceedanceDialog .exceedance-compare-group h5 { margin:0 0 8px; }
               #trainingExceedanceDialog .exceedance-compare-group input { width:100%; }
               #trainingExceedanceDialog .exceedance-pair-plot { height:300px; min-width:0; }

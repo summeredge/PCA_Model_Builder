@@ -412,11 +412,20 @@ def test_trend_layout_drops_the_in_plot_note_and_grows_the_curve_area() -> None:
     assert "同一 Y 轴：所有曲线使用同一数值范围" not in trend_source
     assert "独立 Y 轴：各曲线按自身范围缩放" not in trend_source
 
-    assert "margin: {left: 55" in trend_source
-    assert "top: 10" in trend_source
-    assert "bottom: 60" in trend_source
-    # Height follows the container instead of a hard-coded value.
-    assert "height = Math.max(420, Math.floor(container.clientHeight || 520));" in trend_source
+    # plotly only honours the short margin keys; the long names fall back to the
+    # 80/100 defaults and silently give away most of the plot area.
+    assert "margin: {l: 55" in trend_source
+    assert "t: 10" in trend_source
+    assert "b: 60" in trend_source
+    for long_key in ("left: 55", "top: 10", "bottom: 60"):
+        assert long_key not in trend_source
+    # Height follows the container instead of a hard-coded value. The host turns
+    # into .dp-chart first, because the empty state is height:auto and would
+    # report the hint text height instead of the 660px chart height.
+    assert "container.className = \"dp-chart\";" in trend_source
+    assert trend_source.index('container.className = "dp-chart";') < trend_source.index(
+        "height = Math.max(420, Math.floor(container.clientHeight || 520));"
+    )
     assert "height: 320" not in trend_source
 
 
