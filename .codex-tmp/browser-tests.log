@@ -1,0 +1,8 @@
+..                                                                       [100%]
+============================== warnings summary ===============================
+tests/test_training_exceedance_browser.py: 17 warnings
+  C:\Users\shaoy\Documents\Process_Model_Builder\src\pca_model_builder\training.py:155: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+    .fillna(False)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2 passed, 17 warnings in 35.56s

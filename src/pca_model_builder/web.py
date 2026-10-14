@@ -3517,7 +3517,9 @@ INDEX_HTML = r"""<!doctype html>
     .variable-diagnostics td { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }
     .variable-diagnostics summary { cursor:pointer; }
     .chart-card-head { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
-    .chart { height:260px; border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
+    /* 图表按 viewBox 纵横比自适应：固定 260px 时 760×250 的图在双列下会有约 40% 上下留白，
+       绘图区本身仍由宽度决定，字号与坐标不变。Plotly 宿主（#explorationPcChart）有自己的高度规则。 */
+    .chart { height:auto; border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
     /* PC1/PC2 scatter is WebGL rendered; the overlay only hosts the region ellipse drag. */
     .exploration-pc-canvas, .exploration-pc-overlay { position:absolute; inset:0; width:100%; height:100%; }
     #explorationPcChart { position:relative; }
@@ -3527,6 +3529,8 @@ INDEX_HTML = r"""<!doctype html>
     .exploration-pc-overlay { z-index:1; pointer-events:none; }
     #explorationPcChart .empty { position:static; }
     .chart svg { width:100%; height:100%; display:block; }
+    /* 尚未绘制的图表宿主（如趋势页直方图）不保留空的边框盒。 */
+    .chart:empty { border:0; }
     .empty { display:grid; place-items:center; min-height:120px; color:var(--muted); border:1px dashed var(--line); border-radius:7px; padding:18px; text-align:center; }
     /* 主元解释率按文字列表排布：柱子图形占 130px 高只表达 24 个百分比，密度过低。 */
     .variance { display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline; padding:10px 12px; border:1px solid var(--line); border-radius:7px; }

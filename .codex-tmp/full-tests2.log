@@ -1,0 +1,30 @@
+........................................................................ [  7%]
+........................................................................ [ 14%]
+........................................................................ [ 21%]
+........................................................................ [ 29%]
+........................................................................ [ 36%]
+........................................................................ [ 43%]
+........................................................................ [ 50%]
+........................................................................ [ 58%]
+........................................................................ [ 65%]
+........................................................................ [ 72%]
+........................................................................ [ 80%]
+........................................................................ [ 87%]
+........................................................................ [ 94%]
+.....................................................                    [100%]
+============================== warnings summary ===============================
+tests/test_cli.py: 1 warning
+tests/test_eligibility.py: 1 warning
+tests/test_redundancy_ablation.py: 3 warnings
+tests/test_training.py: 7 warnings
+tests/test_training_exceedance.py: 14 warnings
+tests/test_web.py: 22 warnings
+  C:\Users\shaoy\Documents\Process_Model_Builder\src\pca_model_builder\training.py:155: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+    .fillna(False)
+
+tests/test_data_session.py::test_xlsx_timestamp_errors_are_parsing_failures
+  C:\Users\shaoy\Documents\Process_Model_Builder\src\pca_model_builder\data_session.py:427: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+    parsed = pd.to_datetime(frame[timestamp_column], **timestamp_kwargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+989 passed, 1 deselected, 49 warnings in 103.59s (0:01:43)

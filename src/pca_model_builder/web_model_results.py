@@ -465,7 +465,8 @@ _APPLE_DESIGN_STYLE = r"""
     letter-spacing:0;
     line-height:1.5;
   }
-  header { padding:16px clamp(20px,3vw,40px); background:#000000; border-bottom:0; color:#ffffff; }
+  /* main 在 ≥1800px 时按 max-width 居中，页头必须用同一列宽表达式，否则宽屏下标题与内容错位。 */
+  header { padding:16px max(clamp(16px,2.5vw,32px), calc((100% - 1800px) / 2 + clamp(16px,2.5vw,32px))); background:#000000; border-bottom:0; color:#ffffff; }
   h1 { margin:0 0 4px; font-size:var(--type-page); font-weight:600; line-height:1.19; letter-spacing:.231px; }
   /* 同一个 h3 既可能是区块标题（17），也可能是卡片小节标题（14），
      由角色类选择器决定层级，不再让 h3 出现第三种字号。 */
@@ -1251,6 +1252,10 @@ _MODEL_RESULTS_STYLE = r"""
   .training-window-editor input { width:100%; }
   #validationWindowTable tr.editing { background:var(--accent-soft); outline:2px solid var(--accent); outline-offset:-2px; }
   #modelContent > section, .model-overview-grid > section { padding:0; }
+  /* #modelContent 是单列 Grid，图外按钮会默认拉伸到整行；操作按钮按内容取宽、左对齐。 */
+  #modelContent > button { justify-self:start; }
+  /* 该审查区位于训练配置分组内部，分组已提供内边距；再叠加自身内边距会让标题相对同组其它小节缩进一格。 */
+  .training-configuration > .final-training-review { padding:0; }
   #modelTrainingDataQuality > p { margin:4px 0 8px; }
   #modelQualitySummary { display:block; }
   #modelQualitySummary :is(th,td) { padding:6px 8px; }

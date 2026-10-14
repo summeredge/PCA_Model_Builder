@@ -1,0 +1,97 @@
+........................................................................ [  7%]
+........................................................................ [ 14%]
+.................................F
+================================== FAILURES ===================================
+___ test_profile_renderer_directions_performance_visibility_and_time_scope ____
+
+    def test_profile_renderer_directions_performance_visibility_and_time_scope():
+        node = shutil.which('node')
+        if node is None:
+            pytest.skip('Node.js unavailable')
+        html = web_model_results.INDEX_HTML
+        renderer = html[html.index('function groupProfileNumber'):html.index('function applyGroupProfileFocus')]
+        source = r"""
+    const assert=require('node:assert/strict');
+    const state={groupProfileSelection:{state_exploration:'a',cluster_assistance:'a'}};
+    const el=()=>null;
+    const escapeHtml=value=>String(value).replaceAll('<','&lt;');
+    const clusterUiLabel=value=>value;
+    const explorationPercent=value=>`${(value*100).toFixed(1)}%`;
+    const metric=(label,value)=>`${label}��${value}`;
+    const variables=[{tag:'FIC001',mean:1,deviation:1,rank:1,rank_count:2},{tag:'TIC003',mean:2,deviation:-1,rank:2,rank_count:2}];
+    const profile={cluster_id:'a',sample_count:5,share:.5,variables,top_variables:variables,comparison_variables:[],episode_count:2,median_duration_minutes:5,longest_duration_minutes:10,total_duration_minutes:15,average_duration_minutes:7.5,candidate_count:0,incoming:[],outgoing:[],performance_valid_count:5,performance_target_count:3,performance_target_ratio:.6,performance_median:42};
+    function render(perspective,profile) {
+     const detail={innerHTML:'',querySelector:()=>null};
+     const section={innerHTML:'',querySelectorAll:()=>[],querySelector:()=>detail};
+     globalThis.document={createElement:()=>section};
+     const container={children:[],querySelector:()=>null,append(node){this.children.push(node);}};
+     renderGroupProfileContent(container,{group_profiles:[profile],transitions:[]},perspective);
+     return {list:section.innerHTML,detail:detail.innerHTML};
+    }
+    """ + renderer + r"""
+    const result=render('state_exploration',profile);
+    assert(result.list.includes('FIC001 ����TIC003 ��'));
+    assert(result.detail.includes('��������ֵ')&&result.detail.includes('�������ƫ�� z'));
+    assert(result.detail.includes('���ܺ�������'));
+    assert(result.detail.includes('��Ч������5���������3����ʣ�60.0%��λ����42'));
+    assert(result.detail.includes('������ PCA ����')&&result.detail.includes('�������ù����Զ���������/�쳣'));
+    assert(result.detail.includes('�ܸ��� 15 ����')&&result.detail.includes('��Ҫ����')&&result.detail.includes('��λʱ����'));
+    assert(result.detail.includes('���������Ա�')&&result.detail.includes('����ת������'));
+    assert(result.detail.indexOf('��λPCͼ')<result.detail.indexOf('��λʱ����')&&result.detail.indexOf('��λʱ����')<result.detail.indexOf('�鿴������ѡ'));
+    const noPerformance={...profile};for(const key of Object.keys(noPerformance)) if(key.startsWith('performance_')) delete noPerformance[key];
+    assert(!render('state_exploration',noPerformance).detail.includes('���ܺ�������'));
+    assert(!render('state_exploration',{...profile,performance_valid_count:0,performance_target_ratio:null}).detail.includes('���ܺ�������'));
+    const assistance=render('cluster_assistance',profile);
+    assert(!assistance.detail.includes('���ܺ�������'));
+    assert(!assistance.detail.includes('�ܸ���')&&!assistance.detail.includes('��Ҫ����')&&!assistance.detail.includes('��λʱ����'));
+    assert(!assistance.detail.includes('��λPCͼ')&&!assistance.detail.includes('�鿴������ѡ'));
+    """
+        result = subprocess.run([node, '-'], input=source, capture_output=True, text=True, encoding='utf-8', timeout=30)
+>       assert result.returncode == 0, result.stderr
+E       AssertionError: node:internal/assert/utils:77
+E             throw err;
+E             ^
+E         
+E         AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:
+E         
+E           assert(result.list.includes('FIC001 ����TIC003 ��'))
+E         
+E             at [stdin]:83:1
+E             at runScriptInThisContext (node:internal/vm:219:10)
+E             at node:internal/process/execution:451:12
+E             at [stdin]-wrapper:6:24
+E             at runScriptInContext (node:internal/process/execution:449:60)
+E             at evalFunction (node:internal/process/execution:283:30)
+E             at evalTypeScript (node:internal/process/execution:295:3)
+E             at node:internal/main/eval_stdin:51:5
+E             at Socket.<anonymous> (node:internal/process/execution:205:5)
+E             at Socket.emit (node:events:520:35) {
+E           generatedMessage: true,
+E           code: 'ERR_ASSERTION',
+E           actual: false,
+E           expected: true,
+E           operator: '==',
+E           diff: 'simple'
+E         }
+E         
+E         Node.js v24.14.0
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['C:\\Program Files\\nodejs\\node.EXE', '-'], returncode=1, stdout='', stderr="node:internal/ass...: 'ERR_ASSERTION',\n  actual: false,\n  expected: true,\n  operator: '==',\n  diff: 'simple'\n}\n\nNode.js v24.14.0\n").returncode
+
+tests\test_group_profiles.py:146: AssertionError
+============================== warnings summary ===============================
+tests/test_cli.py::test_cli_normal_training_excludes_engineering_range_but_exploratory_keeps_it
+tests/test_eligibility.py::test_validation_frozen_replay_and_deployment_ignore_offline_eligibility
+  C:\Users\shaoy\Documents\Process_Model_Builder\src\pca_model_builder\training.py:155: FutureWarning: Downcasting object dtype arrays on .fillna, .ffill, .bfill is deprecated and will change in a future version. Call result.infer_objects(copy=False) instead. To opt-in to the future behavior, set `pd.set_option('future.no_silent_downcasting', True)`
+    .fillna(False)
+
+tests/test_data_session.py::test_xlsx_timestamp_errors_are_parsing_failures
+  C:\Users\shaoy\Documents\Process_Model_Builder\src\pca_model_builder\data_session.py:427: UserWarning: Could not infer format, so each element will be parsed individually, falling back to `dateutil`. To ensure parsing is consistent and as-expected, please specify a format.
+    parsed = pd.to_datetime(frame[timestamp_column], **timestamp_kwargs)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_group_profiles.py::test_profile_renderer_directions_performance_visibility_and_time_scope
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 177 passed, 3 warnings in 18.71s
