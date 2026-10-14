@@ -541,7 +541,7 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert 'class="batch-config"' in html
     assert 'data-inner="batchPanel"' not in html
     assert "#engineeringPanel .batch-config .actions" in html
-    # 批量配置使用内容驱动的 flex-wrap：文件选择固定为 200px，按钮靠左并按需换行。
+    # 批量配置使用内容驱动的 flex-wrap：文件选择使用剩余空间，按钮靠左并按需换行。
     batch_actions = html.split("#engineeringPanel .batch-config .actions {", 1)[1].split(
         "}", 1
     )[0]
@@ -549,7 +549,7 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert "flex-wrap:wrap;" in batch_actions
     assert "grid-template-columns" not in batch_actions
     assert "#engineeringPanel .batch-config .actions > label.secondary" in html
-    assert "flex:0 0 200px;" in html
+    assert "flex:1 1 320px;" in html
     assert (
         "#engineeringPanel .batch-config .actions > label.secondary { flex:1 1 100%; }"
         not in html
@@ -594,7 +594,7 @@ def test_screening_conditions_own_the_full_width_analysis_range() -> None:
     assert '<div class="sub-title">分析时间范围</div>' in conditions
     assert "#modelingEligibility .candidate-analysis-range { width:100%; }" in html
     assert 'id="eligibilitySummary" class="screening-summary"' in conditions
-    assert "@container (max-width:" not in html
+    assert ".results { gap:var(--space-3); container-type:inline-size; }" in html
     layout = html.split('<style id="compactFormLayoutStyle">', 1)[1].split("</style>", 1)[0]
     assert ".row" in layout and "flex-wrap:wrap;" in layout
 
@@ -700,7 +700,7 @@ def test_final_web_uses_compact_workbench_visual_tokens() -> None:
     assert "grid-template-columns:630px minmax(0,1fr);" not in html
     assert ".controls, .controls .group { min-width:0; }" in html
     assert "max-width:100%;" in html
-    assert ".results { gap:var(--space-3); }" in html
+    assert ".results { gap:var(--space-3); container-type:inline-size; }" in html
     assert ".empty, .variance, .exploration-timeline" in html
     assert "#engineeringPanel #tagRole {" in html
     assert "height:42px;" in html
@@ -899,8 +899,8 @@ def test_training_configuration_precedes_model_results() -> None:
     assert "训练数据组成" in model_source
     assert 'class="model-overview-grid"' in model_source
     assert "grid-template-columns:minmax(0,.9fr) minmax(0,1fr) minmax(0,1.3fr);" in html
-    assert "@media (max-width:1599px)" in html
-    assert ".model-overview-grid { grid-template-columns:1fr; }" in html
+    assert "@container (max-width:1100px)" in html
+    assert ".model-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }" in html
     assert "#modelQualitySummary { display:block; }" in html
     assert "#modelContent > section, .model-overview-grid > section { padding:0; }" in html
     assert ".chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }" in html
@@ -968,10 +968,10 @@ def test_component_loadings_show_first_six_in_responsive_grid() -> None:
     assert "component.top_loadings" in source
     assert "components.slice(0, 6).forEach((component, index) =>" in source
     assert "仅显示前 6 个主元。" in html
-    assert "Top ${topRows.length} 原始变量（同一Tag的全部Lag已聚合）" in source
+    assert "前 ${topRows.length} 个原始变量（同一Tag的全部Lag已聚合）" in source
     assert "查看全部" not in source
     assert "component-loading-full" not in source
-    assert "聚合 loading 强度" in source
+    assert "聚合载荷强度" in source
     assert "cell(formatLoading(Number(row?.aggregated_loading)))" in source
     assert "T²/SPE 异常贡献" in html
     assert html.index('id="componentLoadings"') < html.index('id="modelStructureComparison"')

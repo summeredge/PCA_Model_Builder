@@ -986,8 +986,8 @@ def test_tag_config_save_button_matches_template_download_button_width():
     assert "main #engineeringPanel .detail-fields > .row:has(#engineeringMin) > label" in html
     assert "main #engineeringPanel .detail-fields > .row:has(#normalMin) > label" in html
     assert "main #engineeringPanel .detail-fields > .row:has(#alarmMin) > label" in html
-    assert "grid-template-columns:minmax(414px,.54fr) minmax(0,1.7fr)" in html
-    assert "@media (max-width:1480px)" in html
+    assert "grid-template-columns:minmax(350px,.85fr) minmax(0,1fr)" in html
+    assert "@container (max-width:820px)" in html
     assert "comment:state.registry[tag]?.comment??\"\"" in html
 
 
@@ -1138,7 +1138,7 @@ def test_validation_ui_revokes_stale_approval_and_restores_latest_passed_result(
     result = _run_node_javascript(r'''
       const assert=require("node:assert/strict");
       const nodes={}; function el(id){return nodes[id]??={value:"",hidden:false,href:"#",listeners:{},
-        addEventListener(event,handler){this.listeners[event]=handler;},replaceChildren(){}};}
+        addEventListener(event,handler){this.listeners[event]=handler;},replaceChildren(){},querySelector(){return this.passedOption??={};}};}
       const document={querySelectorAll:()=>[]};
       function renderValidationInvestigation(){}
       __INVALIDATION__
@@ -1147,7 +1147,7 @@ def test_validation_ui_revokes_stale_approval_and_restores_latest_passed_result(
       function metric(){return "";} function renderValidationMetricDetails(){}
       function renderContributionStability(){} function lineChart(){}
       let response; async function api(){return response;}
-      const base={model_purpose:"normal_state",model_status:"candidate",scored_rows:1,status_counts:{normal:1,attention:0,abnormal:0},
+      const base={normal_validation_complete:true,known_abnormal_complete:true,model_purpose:"normal_state",model_status:"candidate",scored_rows:1,status_counts:{normal:1,attention:0,abnormal:0},
         scores:[],contributions:[],validation_downloads:{scores:"scores",report:"report",contributions:"contributions"}};
       const state={runId:"run-1",fileId:"file-1",validationWindows:[{}],validation:base};
       __RENDERER__
@@ -1183,6 +1183,125 @@ def test_validation_ui_revokes_stale_approval_and_restores_latest_passed_result(
       })().catch(error=>{console.error(error);process.exitCode=1;});
     '''.replace("__RENDERER__", renderer).replace("__HANDLERS__", handlers).replace("__INVALIDATION__", invalidation))
     assert result["verified"] is True
+
+
+def test_reset_requires_confirmation_when_current_work_would_be_lost():
+    html = web_model_results.INDEX_HTML
+    handler = html[html.index('el("resetButton").addEventListener'):].split("\n", 1)[0]
+    script = r'''
+      const assert=require('node:assert/strict');let click,reloads=0,confirmations=0,accepted=false;
+      const el=()=>({addEventListener(event,handler){click=handler;}}),location={reload(){reloads++;}};
+      const window={confirm(){confirmations++;return accepted;}},state={fileId:null,runId:null};
+      __HANDLER__
+      click();assert.equal(reloads,1);assert.equal(confirmations,0);
+      state.fileId='file';click();assert.equal(reloads,1);assert.equal(confirmations,1);
+      accepted=true;click();assert.equal(reloads,2);assert.equal(confirmations,2);
+      console.log(JSON.stringify({verified:true}));
+    '''.replace("__HANDLER__", handler)
+    assert _run_node_javascript(script)["verified"]
+
+
+def test_stat_formatting_and_ui_value_translation_preserve_semantics():
+    html = web_model_results.INDEX_HTML
+    start = html.index("const COUNT_STAT_KEYS=")
+    formatter = html[start:html.index("\n", html.index("function formatStat(", start))]
+    labels = html[html.index("function displayUiValue("):html.index("\n", html.index("function displayUiValue("))]
+    script = r'''
+      const assert=require('node:assert/strict'),escapeHtml=value=>String(value).replaceAll('<','&lt;');
+      __FORMATTER__
+      __LABELS__
+      for(const key of COUNT_STAT_KEYS)assert.equal(formatStat(key,123456),"123456");
+      for(const key of ['minimum','maximum','mean','median','standard_deviation','p01','p05','p95','p99']){
+        assert.equal(formatStat(key,12),"12.000");assert.equal(formatStat(key,0.001234567),"0.0012346");
+      }
+      assert.equal(formatStat('missing_rate',.01234),'1.23%');
+      assert.equal(formatStat('sample_count',null),'—');assert.equal(formatStat('mean',undefined),'—');
+      assert.equal(formatStat('sample_count',NaN),'NaN');assert.equal(formatStat('mean',Infinity),'Infinity');
+      assert.equal(formatStat('mean','<invalid>'),'&lt;invalid>');
+      for(const value of ['ready','use','exclude','review','continuous_input','usable','blocking','invalid_timestamp','constant_tag','near_constant_feature']){
+        assert.notEqual(displayUiValue(value),value);
+      }
+      assert.equal(displayUiValue('unknown_future_value'),'unknown_future_value');
+      console.log(JSON.stringify({verified:true}));
+    '''.replace("__FORMATTER__", formatter).replace("__LABELS__", labels)
+    assert _run_node_javascript(script)["verified"]
+
+
+def test_validation_window_edit_and_evidence_gate_behaviour():
+    html = web_model_results.INDEX_HTML
+    windows = html[html.index("function renderValidationWindows()"):html.index('el("validateButton").addEventListener("click", async')]
+    renderer = html[html.index("function renderValidation(data)"):html.index("\nfunction percent(", html.index("function renderValidation(data)"))]
+    script = r'''
+      const assert=require("node:assert/strict"),nodes={},messages=[];
+      class Element {
+        constructor(){this.value="";this.dataset={};this.children=[];this.listeners={};this.option={};}
+        append(...children){this.children.push(...children);} replaceChildren(){this.children=[];}
+        addEventListener(event,handler){this.listeners[event]=handler;} querySelector(){return this.option;}
+      }
+      const el=id=>nodes[id]??=new Element(),document={createElement:()=>new Element()};
+      const localTime=value=>value.slice(0,16),displayTime=value=>value;
+      const setStatus=message=>messages.push(message); let revision=0;
+      function invalidateValidationInvestigation(){revision++;} function candidateId(){return "new";}
+      function renderValidationInvestigation(){} function modelLifecycle(){return {};}
+      function metric(){return "";} function renderValidationMetricDetails(){} function renderContributionStability(){} function lineChart(){}
+      const initial={id:"validation-default-001",type:"normal_validation",start:"2026-01-02T00:00",end:"2026-01-02T23:55",enabled:true,comment:"default"};
+      const state={validationWindows:[initial],inspection:{time_start:"2026-01-01T00:00",time_end:"2026-01-02T23:55"}};
+      __WINDOWS__
+      __RENDERER__
+      renderValidationWindows();
+      el("validationWindowTable").children[0].children[4].children[0].listeners.click();
+      assert.equal(el("validationComment").value,"default");
+      el("validationEnd").value="2026-01-02T11:55";
+      el("addValidationWindow").listeners.click();
+      assert.equal(state.validationWindows.length,1);assert.equal(state.validationWindows[0].id,initial.id);
+      assert.equal(state.validationWindows[0].enabled,true);assert.equal(state.validationWindows[0].end,"2026-01-02T11:55");
+      el("validationStart").value="2026-01-02T12:00";el("validationEnd").value="2026-01-02T23:55";el("validationType").value="known_abnormal";
+      el("addValidationWindow").listeners.click();assert.equal(state.validationWindows.length,2);
+      el("validationWindowTable").children[0].children[4].children[0].listeners.click();
+      el("validationEnd").value="2026-01-02T12:00";el("addValidationWindow").listeners.click();
+      assert.match(messages.at(-1),/validation-new.*12:00.*23:55/);assert.equal(state.validationWindows[0].end,"2026-01-02T11:55");
+      el("validationEnd").value="2026-01-01T23:55";el("addValidationWindow").listeners.click();assert.match(messages.at(-1),/开始时间/);
+      el("validationEnd").value="2026-01-03T00:00";el("addValidationWindow").listeners.click();assert.match(messages.at(-1),/历史数据/);
+      const base={scores:[],contributions:[],status_counts:{normal:1,attention:0,abnormal:0},validation_downloads:{}};
+      for(const [normal,abnormal] of [[false,false],[true,false],[false,true],[true,true]]){
+        el("validationDecision").value="passed";
+        renderValidation({...base,normal_validation_complete:normal,known_abnormal_complete:abnormal});
+        assert.equal(el("validationDecision").option.disabled,!(normal&&abnormal));
+        assert.equal(el("validationDecision").value,normal&&abnormal?"passed":"hold");
+        if(!normal)assert.match(el("validationEvidenceStatus").textContent,/正常样本验证证据/);
+        if(!abnormal)assert.match(el("validationEvidenceStatus").textContent,/已知异常验证证据/);
+      }
+      state.validation={...base,engineer_decision:{decision:"passed"}};el("validatedModelDownload").href="old";
+      el("validationEnd").value="2026-01-02T11:50";el("addValidationWindow").listeners.click();
+      assert.equal(state.validation,null);assert.equal(el("validationDecision").value,"hold");
+      assert.equal(el("recordValidationDecision").disabled,true);assert.equal(el("freezeDeployment").disabled,true);
+      assert.equal(el("validatedModelDownload").href,"#");assert.equal(el("validationContent").hidden,true);
+      console.log(JSON.stringify({verified:true}));
+    '''.replace("__WINDOWS__", windows).replace("__RENDERER__", renderer)
+    assert _run_node_javascript(script)["verified"]
+
+
+def test_freeze_response_cannot_restore_downloads_after_validation_window_change():
+    html = web_model_results.INDEX_HTML
+    handler = html[html.index('el("freezeDeployment").addEventListener'):html.index("function metric(")]
+    script = r'''
+      const assert=require('node:assert/strict'),nodes={};
+      const el=id=>nodes[id]??={value:"",hidden:true,href:"#",addEventListener(event,handler){this.handler=handler;}};
+      const state={runId:"run",validation:{model_status:"validated",engineer_decision:{decision:"passed"}},validationInvestigationRevision:1};
+      function setBusy(button,busy){button.disabled=busy;}function setStatus(){}function renderValidation(){throw Error("stale render");}
+      let resolve;async function api(){return await new Promise(done=>resolve=done);}
+      __HANDLER__
+      (async()=>{
+        const request=el("freezeDeployment").handler();
+        state.validation=null;state.validationInvestigationRevision++;
+        resolve({model_status:"frozen",frozen_model_download:"old-frozen",deployment_model_download:"old-deploy"});
+        await request;
+        assert.equal(state.validation,null);assert.equal(el("freezeDeployment").disabled,true);
+        for(const id of ["frozenModelDownload","deploymentModelDownload"]){assert.equal(el(id).hidden,true);assert.equal(el(id).href,"#");}
+        console.log(JSON.stringify({verified:true}));
+      })().catch(error=>{console.error(error);process.exitCode=1;});
+    '''.replace("__HANDLER__", handler)
+    assert _run_node_javascript(script)["verified"]
 
 
 def test_variable_diagnostics_renderer_handles_large_results_escaping_and_unavailable_values():

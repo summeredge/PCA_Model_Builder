@@ -704,7 +704,10 @@ def _verify_score_metrics(report: Mapping[str, Any], scores: pd.DataFrame, model
         scored_windows.append({"id": window["id"], "type": window["type"], "start": start, "scores": part, "continuous_events": events})
     if (
         report.get("scored_rows") != len(scores)
-        or report.get("status_counts") != dict(Counter(scores["status"]))
+        or not isinstance(report.get("status_counts"), Mapping)
+        or set(report["status_counts"]) - {"normal", "attention", "abnormal"}
+        or {status: report["status_counts"].get(status, 0) for status in ("normal", "attention", "abnormal")}
+        != {status: int(scores["status"].eq(status).sum()) for status in ("normal", "attention", "abnormal")}
         or not _evidence_values_match(report.get("maximum_t2"), float(scores["t2"].max()))
         or not _evidence_values_match(report.get("maximum_spe"), float(scores["spe"].max()))
     ):

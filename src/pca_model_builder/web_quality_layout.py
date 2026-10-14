@@ -146,14 +146,14 @@ _QUALITY_GRID_SCRIPT = r"""
     container.className = "";
     container.innerHTML = `
       <div class="issue-card ${item.status}">
-        <strong>${escapeHtml(item.tag)} · ${escapeHtml(role)} · ${escapeHtml(item.status)}</strong>
+        <strong>${escapeHtml(item.tag)} · ${escapeHtml(displayUiValue(role))} · ${escapeHtml(displayUiValue(item.status))}</strong>
         <div class="quality-profile-grid">
           <div class="quality-profile-section">${qualityProfileTable("全数据统计", item.full)}</div>
           <div class="quality-profile-section">${qualityProfileTable("参考期统计", item.reference)}</div>
         </div>
         <h4>质量问题与建议</h4>
         <ul>${issueHtml}</ul>
-        <span>建议操作：${escapeHtml(item.suggested_action)}</span>
+        <span>建议操作：${escapeHtml(displayUiValue(item.suggested_action))}</span>
       </div>`;
   };
 })();

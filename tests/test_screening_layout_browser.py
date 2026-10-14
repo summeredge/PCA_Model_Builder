@@ -44,6 +44,13 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   const nav=page.locator('#candidateSectionNav');
   assert(!await nav.isVisible());
   assert.equal(await page.locator('meta[name="pca-model-builder-build"]').getAttribute('content'),process.env.SCREENING_BUILD_ID);
+  const resultStyles=await page.evaluate(()=>['explorationContent','clusterContent','performanceContent','modelQualityResults','modelContent','validationContent','releaseContent'].map(id=>{
+   const node=document.getElementById(id),hidden=node.hidden;
+   node.hidden=true;const hiddenDisplay=getComputedStyle(node).display;
+   node.hidden=false;const style=getComputedStyle(node),expanded={display:style.display,gap:style.rowGap,minWidth:style.minWidth};
+   node.hidden=hidden;return {id,hiddenDisplay,...expanded,expectedGap:getComputedStyle(document.documentElement).getPropertyValue('--space-3').trim()};
+  }));
+  for(const style of resultStyles){assert.equal(style.hiddenDisplay,'none',JSON.stringify(style));assert.equal(style.display,'grid',JSON.stringify(style));assert.equal(style.gap,style.expectedGap,JSON.stringify(style));assert.equal(style.minWidth,'0px');}
   const profileDialog=page.locator('#groupProfileDialog'),profileBody=page.locator('#groupProfileDialogBody');
   async function openProfile() {
    await page.locator('#explorationClusterQuality .group-profile-entry [data-profile-open]').click();
@@ -64,6 +71,30 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await page.locator('#fileInput').setInputFiles(process.env.SCREENING_TEST_CSV);
   await action('uploadButton','/api/upload');await page.locator('#timestampColumn').selectOption('time');
   await action('inspectButton','/api/inspect');
+  assert(await page.locator('#uploadButton').evaluate(e=>e.classList.contains('secondary')));
+  assert(!await page.locator('#inspectButton').evaluate(e=>e.classList.contains('secondary')));
+  await page.locator('[data-panel="configPanel"]').click();
+  const qualityText=await page.evaluate(()=>{
+   const quality=state.quality,tag=state.selectedTag;state.selectedTag='TAG_A';
+   state.quality={tags:[{tag:'TAG_A',role:'continuous_input',status:'review',suggested_action:'use',issues:[],full:{sample_count:480},reference:{sample_count:480}}]};
+   renderCurrentTagQuality();const text=document.querySelector('#currentTagQuality').textContent;
+   state.quality=quality;state.selectedTag=tag;renderCurrentTagQuality();return text;
+  });
+  assert(qualityText.includes('连续输入')&&qualityText.includes('需确认')&&qualityText.includes('建议操作：使用'));
+  assert(!/continuous_input|review|use|480\.00/.test(qualityText));
+  const workspaceReports=[];
+  for(const width of [1280,1366,1440,900,390]) {
+   await page.setViewportSize({width,height:1000});
+   const report=await page.evaluate(()=>{
+    const workspace=document.querySelector('.tag-workspace'),file=document.querySelector('#tagConfigFile');
+    return {width:innerWidth,columns:getComputedStyle(workspace).gridTemplateColumns.split(' ').length,
+     overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
+     fileWidth:file.getBoundingClientRect().width,available:document.querySelector('.results').getBoundingClientRect().width};
+   });
+   assert.equal(report.columns,width>=900?2:1,JSON.stringify(report));assert.equal(report.overflow,0,JSON.stringify(report));
+   assert(report.fileWidth>200||width===390,JSON.stringify(report));workspaceReports.push(report);
+  }
+  await page.setViewportSize({width:1440,height:1000});
   await page.locator('[data-panel="candidatePanel"]').click();
   assert(await page.locator('#trendPanel').isVisible());
   assert(!await page.locator('#modelingEligibility').isVisible());
@@ -240,7 +271,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     tools:[...document.querySelectorAll('.candidate-tool-tab')].map(e=>[e.dataset.panel,e.getAttribute('aria-selected')]),
     fields:[...document.querySelectorAll('#candidatePanel input,#candidatePanel select')].map(e=>[e.id,e.value,e.checked])}));
   const retained = await page.evaluate(()=>JSON.stringify([commonPayload(),state.exploration,state.candidateWindows,state.trainingWindows]));
-  for(const width of [1440,900,390]) {
+  for(const width of [1280,1366,1440,900,390]) {
    await page.setViewportSize({width,height:1000});
    await page.locator('#candidateConfigSummary button').click();
    assert(await page.locator('#modelingEligibility').isVisible());
@@ -409,7 +440,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    {variance:[1,1,0,9],columns:['PC1','PC2','PC4'],orientation:'主要沿 PC4'},
    {variance:[1,1,2,3,93],columns:['PC1','PC2','PC3','PC4'],orientation:'主要沿 PC5'},
   ];
-  for(const width of [1440,900,390]) {
+  for(const width of [1280,1366,1440,900,390]) {
    await page.setViewportSize({width,height:1000});
    for(const example of centerCases) {
     const report=await page.evaluate(({example,quality})=>{
@@ -525,7 +556,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   const performanceText=await profileBody.locator('[data-profile-performance]').innerText();
   assert(performanceText.includes('性能后验评价')&&performanceText.includes('不参与 PCA 聚类'));
   for(const value of [performanceSummary.performance_valid_count,performanceSummary.performance_target_count,`${(performanceSummary.performance_target_ratio*100).toFixed(1)}%`,String(Number(performanceSummary.performance_median.toPrecision(5)))]) assert(performanceText.includes(String(value)));
-  for(const width of [1440,900,390]) {
+  for(const width of [1280,1366,1440,900,390]) {
    await page.setViewportSize({width,height:1000});
    const geometry=await profileBody.locator('[data-profile-performance]').evaluate(node=>{const r=node.getBoundingClientRect();return {width:r.width,right:r.right,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};});
    assert(geometry.width>0&&geometry.right<=width+1,JSON.stringify(geometry));assert.equal(geometry.overflow,0);
@@ -578,20 +609,21 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   if(!clusterDisabled) {await page.locator('#scoreColorMode').selectOption('cluster');assert.deepEqual(await scorePositions(),positions);}
   await page.locator('#scoreColorMode').selectOption('default');
   const modelReports=[];
-  for(const width of [1440,900,390]) {
+  for(const width of [1280,1366,1440,900,390]) {
    await page.setViewportSize({width,height:1000});
    await page.evaluate(()=>document.fonts.ready);
    const report=await page.evaluate(()=>{
     const summary=document.querySelector('#modelMetrics'),items=[...summary.querySelectorAll('.metric')],rect=e=>e.getBoundingClientRect(),bounds=rect(summary);
     const table=document.querySelector('#modelQualitySummary table');
     return {width:innerWidth,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
-     metricCount:items.length,summaryHeight:bounds.height,
+     metricCount:items.length,summaryHeight:bounds.height,overviewColumns:getComputedStyle(document.querySelector('.model-overview-grid')).gridTemplateColumns.split(' ').length,
      escaped:items.some(e=>rect(e).left<bounds.left-1||rect(e).right>bounds.right+1),
      headings:[...table.querySelectorAll('thead th')].map(e=>e.textContent),rows:table.querySelectorAll('tbody tr').length,
      nestedPadding:[...document.querySelectorAll('#modelContent > section,.model-overview-grid > section')].map(e=>getComputedStyle(e).padding)};
    });
    assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.escaped,JSON.stringify(report));
    assert.equal(report.metricCount,8);assert.deepEqual(report.headings,['指标','T²统计','SPE/Q统计']);assert.equal(report.rows,8);
+   assert.equal(report.overviewColumns,width>=900?2:1,JSON.stringify(report));
    assert(report.nestedPadding.every(value=>value==='0px'),JSON.stringify(report));
    modelReports.push(report);
    await page.locator('#modelContent').screenshot({path:path.join(artifacts,`model-results-${width}.png`)});
@@ -649,6 +681,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert.equal(scopes.overflow,0,JSON.stringify(scopes));
   assert.deepEqual(errors,[]);
   fs.writeFileSync(path.join(artifacts,'screening-geometry.json'),JSON.stringify(reports,null,2));
+  fs.writeFileSync(path.join(artifacts,'tag-workspace-geometry.json'),JSON.stringify(workspaceReports,null,2));
   fs.writeFileSync(path.join(artifacts,'screening-center-geometry.json'),JSON.stringify(centerReports,null,2));
   console.log(JSON.stringify({status:'PASS',reports,baselineCompared:Boolean(process.env.SCREENING_BASELINE_JSON)}));
  } finally {await browser.close();}

@@ -257,7 +257,7 @@ const fixture=JSON.parse(require("node:fs").readFileSync(process.env.INVESTIGATI
    state.trainingWindows=f.trained.training_window_summary;state.candidateWindows=[{id:"untouched"}];
    fillSelect(el("timestampColumn"),["time"]);fillSelect(el("trendTags"),f.tags);fillSelect(el("labelColumn"),[],"不使用");
    el("sampleInterval").value="5";el("filterMethod").value="none";el("maxLag").value="0";
-   renderTraining(f.trained);renderValidationWindows();renderTagList();renderValidation(f.validated);showWorkflowStage("validationPanel");
+   renderTraining(f.trained);renderValidationWindows();renderTagList();state.validation=f.validated;renderValidation(f.validated);showWorkflowStage("validationPanel");
   },fixture);
   const geometryReports=[];
   for(const width of [1440,900,390]) {

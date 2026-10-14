@@ -32,6 +32,8 @@
     setUiMessage(el("ablationStatus"), message, kind);
   }
   function updateAblationActions() {
+    el("ablationCandidatesButton").classList.toggle("secondary", Boolean(ablationCandidates));
+    el("ablationEvaluateButton").classList.toggle("secondary", !ablationCandidates);
     el("ablationCandidatesButton").disabled = ablationBusy || !ablationEligible();
     el("ablationGroup").disabled = ablationBusy || !ablationCandidates;
     el("ablationEvaluateButton").disabled = ablationBusy || !ablationCandidates || !ablationCurrent(ablationIdentity) || !el("ablationGroup").value || !ablationDrops.size;
@@ -125,7 +127,7 @@
       if (action === "candidates") {
         ablationCandidates = data; ablationEvaluation = null; ablationDrops.clear(); ablationLocks.clear();
         el("ablationTags").replaceChildren(); el("ablationEvidence").replaceChildren();
-        el("ablationGroup").replaceChildren(new Option("请选择候选组", ""), ...data.groups.map(group => new Option(`${group.id}：${group.tags.join("、")}`, String(group.id))));
+        el("ablationGroup").replaceChildren(new Option("请选择候选组", ""), ...data.groups.map((group,index) => new Option(`候选组 ${index+1}：${group.tags.join("、")}`, String(group.id))));
         const diagnostics = data.diagnostics || {};
         ablationTable(el("ablationDiagnostics"), ["变量 / 变量对", "有效样本数", "原因"], [
           ...(diagnostics.tag_profiles || []).filter(item => item.flags?.length).map(item => [item.tag, item.profile?.valid_count, item.flags.join("；")]),
@@ -1233,11 +1235,11 @@
       item.className = "component-loading-item";
       const title = document.createElement("h4");
       const name = component.component || `PC${index + 1}`;
-      title.textContent = `${name} · explained variance ${formatExplainedVariance(component.explained_variance_ratio)}`;
+      title.textContent = `${name} · 解释方差 ${formatExplainedVariance(component.explained_variance_ratio)}`;
       const topRows = sortedLoadings(component.top_loadings).slice(0, 10);
       const topTitle = document.createElement("div");
       topTitle.className = "help";
-      topTitle.textContent = `Top ${topRows.length} 原始变量（同一Tag的全部Lag已聚合）`;
+      topTitle.textContent = `前 ${topRows.length} 个原始变量（同一Tag的全部Lag已聚合）`;
       item.append(title, topTitle, componentLoadingTable(topRows));
       list.append(item);
     });
@@ -1249,7 +1251,7 @@
     container.className = "table-wrap";
     const table = document.createElement("table");
     table.className = "component-loading-table";
-    table.innerHTML = "<thead><tr><th>原始变量</th><th>聚合 loading 强度</th><th>平方载荷占比</th></tr></thead>";
+    table.innerHTML = "<thead><tr><th>原始变量</th><th>聚合载荷强度</th><th>平方载荷占比</th></tr></thead>";
     const body = document.createElement("tbody");
     (Array.isArray(rows) ? rows : []).forEach(row => {
       const tr = document.createElement("tr");

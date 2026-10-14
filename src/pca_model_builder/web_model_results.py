@@ -281,7 +281,7 @@ _SCREENING_LAYOUT_STYLE = r"""
   #stateExplorationPanel .chart-card { padding:var(--space-2) 0; }
   /* 卡片标题统一到第三档 14px（见 .chart-card h3）；本条原有的 17px 覆盖已随标题分层修复移除。 */
   #stateExplorationPanel #explorationEvidence { margin:0; }
-  #stateExplorationPanel #explorationContent { gap:var(--space-2); }
+  #stateExplorationPanel #explorationContent { gap:var(--space-3); }
   #stateExplorationPanel #explorationClusterQuality { display:grid; gap:var(--space-2); min-width:0; }
   #stateExplorationPanel .screening-kpis { gap:var(--space-1); padding-top:0; }
   #stateExplorationPanel .screening-kpis > p { margin:0; line-height:1.45; }
@@ -349,9 +349,9 @@ _FORM_ALIGNMENT_STYLE = r"""
   #engineeringPanel .batch-config .actions > .download {
     min-width:var(--batch-action-width);
   }
-  /* 文件选择控件固定宽度；按钮按内容宽度靠左排布，不够时自然换行。 */
+  /* 文件选择使用剩余宽度，按钮按内容宽度换行。 */
   #engineeringPanel .batch-config .actions > label.secondary {
-    flex:0 0 200px;
+    flex:1 1 320px;
     display:grid;
     gap:4px;
     align-content:start;
@@ -489,7 +489,10 @@ _APPLE_DESIGN_STYLE = r"""
   main > section, .results > *, .panel, .inner-panel, .candidate-tool-panel, .group, .chart-card { min-width:0; }
   .controls, .controls .group { min-width:0; }
   .controls { gap:var(--space-3); }
-  .results { gap:var(--space-3); }
+  .results { gap:var(--space-3); container-type:inline-size; }
+  :is(#explorationContent,#clusterContent,#performanceContent,#modelQualityResults,#modelContent,#validationContent,#releaseContent):not([hidden]) {
+    display:grid; grid-template-columns:minmax(0,1fr); gap:var(--space-3); align-content:start; min-width:0;
+  }
   .row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--space-2); align-items:end; }
   .actions, .tag-toolbar, .detail-fields { gap:var(--space-2); }
   .actions { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-start; }
@@ -559,14 +562,13 @@ _APPLE_DESIGN_STYLE = r"""
   }
   button:not(:disabled):hover, .download:hover { filter:brightness(.96); }
   button:not(:disabled):active, .download:active { filter:brightness(.9); }
-  button.secondary {
+  button.secondary, .download.secondary {
     background:var(--bg);
     border-color:var(--line-control);
     color:var(--accent);
     border-radius:var(--control-radius);
   }
   button.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
-  #inspectButton, #qualityButton, #saveTagConfig { background:var(--accent); border-color:var(--accent); color:#ffffff; }
   .tag-toolbar button { min-height:var(--control-height); padding:0 14px; font-size:14px; }
   #tagOptions {
     max-height:300px;
@@ -776,8 +778,8 @@ _WORKBENCH_UI_STYLE = r"""
   .candidate-section-nav a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   #candidatePanel :is(#modelingEligibility, #candidateAnalysis, #explorationEvidence,
     #trendEvidence, #clusterEvidence, #performanceEvidence, #candidateManagement) { scroll-margin-top:var(--space-4); }
-  .tag-workspace { display:grid; grid-template-columns:minmax(414px,.54fr) minmax(0,1.7fr); gap:var(--space-3); align-items:start; }
-  @media (max-width:1480px) {
+  .tag-workspace { display:grid; grid-template-columns:minmax(350px,.85fr) minmax(0,1fr); gap:var(--space-3); align-items:start; }
+  @container (max-width:820px) {
     .tag-workspace { grid-template-columns:minmax(0,1fr); }
   }
   .tag-workspace > *, .tag-detail { min-width:0; }
@@ -1283,8 +1285,11 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-parameter-table td { white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
   #modelStructureComparison .model-parameter-table td.numeric,
   #modelStructureComparison .model-energy-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-  @media (max-width:1599px) {
-    .model-overview-grid { grid-template-columns:1fr; }
+  @container (max-width:1100px) {
+    .model-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
+  @container (max-width:700px) {
+    .model-overview-grid { grid-template-columns:minmax(0,1fr); }
   }
   @media (max-width:1200px) {
     .model-projection-grid { grid-template-columns:1fr; }
@@ -1511,8 +1516,8 @@ def _model_results_content_html() -> str:
             </section>
           </div>
           <section id="componentLoadings" class="chart-card">
-            <h3>主元贡献分析 / Loadings</h3>
-            <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA components。同一原始变量的全部 Lag 先聚合为一个 loading 强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示 Top 10 原始变量，平方载荷占比以该主元全部变量的平方载荷总和为分母，不对 Top10 重新归一化，不等同于 T²/SPE 异常贡献。</div>
+            <h3>主元载荷分析</h3>
+            <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA 主元。同一原始变量的全部 Lag 先聚合为一个载荷强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示前 10 个原始变量，平方载荷占比以该主元全部变量的平方载荷总和为分母，不对前 10 项重新归一化，不等同于 T²/SPE 异常贡献。</div>
             <div id="componentLoadingsContent"><div class="empty">完成 DPCA 训练后显示各主元组成。</div></div>
           </section>
           <section class="chart-card">
@@ -1621,6 +1626,7 @@ def _build_candidate_stage(parameter_group: str, training_data_section: str, tre
         '        <div class="group">\n          ' + conditions.strip() + '\n        </div>',
         1,
     )
+    cluster_panel = cluster_panel.replace('<h3>结果概览</h3>', '', 1)
     cluster_panel = cluster_panel.replace('<div id="clusterEmpty"', '<h3 id="clusterEvidence">结果证据</h3>\n        <div id="clusterEmpty"', 1)
     performance_panel = performance_panel.replace('<div id="performanceEmpty"', '<h3 id="performanceEvidence">结果证据</h3>\n        <div id="performanceEmpty"', 1)
     candidate_panels = [
@@ -1739,7 +1745,7 @@ def _build_validation_and_release_stages(validation_panel: str) -> tuple[str, st
             <div class="validation-box"><label>回放开始<input id="frozenReplayStart" type="datetime-local"></label><label>回放结束<input id="frozenReplayEnd" type="datetime-local"></label><button id="frozenReplayButton" type="button" disabled>执行冻结模型回放</button></div>
             <div id="frozenReplaySummary" class="help">请先完成工程冻结，再选择历史区间执行回放。</div>
             <div class="chart-grid"><div class="chart-card"><h3>T² / SPE 限值比趋势</h3><div id="frozenReplayTrend" class="chart empty">尚无回放结果。</div></div><div class="chart-card"><h3>状态统计</h3><div id="frozenReplayStatus" class="help">尚无回放结果。</div></div></div>
-            <div class="actions"><a id="frozenReplayScoresDownload" class="download" href="#" hidden>下载完整评分 CSV</a><a id="frozenReplaySummaryDownload" class="download" href="#" hidden>下载回放摘要</a><a id="frozenReplayContributionsDownload" class="download" href="#" hidden>下载贡献记录</a></div>
+            <div class="actions"><a id="frozenReplayScoresDownload" class="download secondary" href="#" hidden>下载完整评分 CSV</a><a id="frozenReplaySummaryDownload" class="download secondary" href="#" hidden>下载回放摘要</a><a id="frozenReplayContributionsDownload" class="download secondary" href="#" hidden>下载贡献记录</a></div>
           </section>
         </div>
       </div>"""
@@ -1773,7 +1779,7 @@ def _build_model_stage(model_panel: str, model_configuration_group: str) -> str:
           <p class="help">相关性仅用于生成候选，变量去留由独立验证证据决定。每个方案只剔除一个原始 Tag 及其全部 Lag 特征；训练条件沿用基准模型。</p>
           <div id="ablationStatus" class="empty" role="status" aria-live="polite">请先完成正常状态候选模型训练，再加载冗余候选组。</div>
           <div id="ablationPolicy" class="help"></div>
-          <div class="actions"><button id="ablationCandidatesButton" type="button" disabled>加载冗余候选组</button><button id="ablationEvaluateButton" type="button" disabled>执行逐 Tag 消融</button><button id="ablationApplyButton" type="button" class="secondary" disabled>应用为待训练 Tag 配置</button></div>
+          <div class="actions"><button id="ablationCandidatesButton" type="button" disabled>加载冗余候选组</button><button id="ablationEvaluateButton" type="button" class="secondary" disabled>执行逐 Tag 消融</button><button id="ablationApplyButton" type="button" class="secondary" disabled>应用为待训练 Tag 配置</button></div>
           <label>冗余候选组<select id="ablationGroup" disabled><option value="">尚未加载</option></select></label>
           <p class="help">候选组按高相关边连通，不代表所有成员两两高度相关。勾选待剔除 Tag，或锁定暂不参与剔除的关键 Tag。</p>
           <div id="ablationTags" class="table-wrap"></div>

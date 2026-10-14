@@ -7,6 +7,7 @@ import inspect
 from pca_model_builder.preprocessing import PreprocessingConfig, StateFilter
 from pca_model_builder.dpca import fit_dpca
 from pca_model_builder.validation import (
+    _verify_score_metrics,
     _read_validation_scores,
     _combined_exceedance_events,
     _contribution_stability,
@@ -20,6 +21,36 @@ from pca_model_builder.validation import (
     record_engineer_decision,
     validate_model_windows,
 )
+
+
+@pytest.mark.parametrize("status,t2", [("normal", 0.0), ("attention", 2.0), ("abnormal", 4.0)])
+def test_score_metrics_normalizes_zero_status_counts_and_rejects_tampering(status, t2):
+    from pca_model_builder.validation import _longest_event_minutes
+    import copy
+
+    model = SimpleNamespace(t2_limits={0.95: 1.0, 0.99: 3.0}, q_limits={0.95: 1.0, 0.99: 3.0})
+    index = pd.date_range("2026-01-01", periods=2, freq="5min")
+    scores = pd.DataFrame({"validation_window_id": "N", "validation_type": "normal_validation", "status": status,
+                           "t2": t2, "spe": 0.0}, index=index)
+    events = _combined_exceedance_events(scores, model, 5)
+    window = {"id": "N", "type": "normal_validation", "start": index[0].isoformat(), "end": index[-1].isoformat(), "enabled": True}
+    summary = {"id": "N", "status": "scored", "scored_rows": 2, "expected_rows": 2, "coverage": 1.0,
+               "status_counts": {status: 2}, "t2_exceedance_95": float(t2 >= 1), "t2_exceedance_99": float(t2 >= 3),
+               "spe_exceedance_95": 0.0, "spe_exceedance_99": 0.0, "event_count": len(events),
+               "longest_event_minutes": _longest_event_minutes(events, 5), "continuous_events": events,
+               "maximum_t2": t2, "maximum_spe": 0.0}
+    report = {"validation_windows": [window], "validation_window_summaries": [summary], "scored_rows": 2,
+              "status_counts": {key: 2 if key == status else 0 for key in ("normal", "attention", "abnormal")},
+              "maximum_t2": t2, "maximum_spe": 0.0,
+              "validation_metrics": _validation_metrics([{**window, "start": index[0], "scores": scores, "continuous_events": events}], model, 5)}
+    _verify_score_metrics(report, scores, model, 5)
+    sparse = copy.deepcopy(report)
+    sparse["status_counts"] = {status: 2}
+    _verify_score_metrics(sparse, scores, model, 5)
+    for counts in ({status: 1}, {**report["status_counts"], "unknown": 0}, None):
+        tampered = {**report, "status_counts": counts}
+        with pytest.raises(ValueError, match="顶层评分摘要"):
+            _verify_score_metrics(tampered, scores, model, 5)
 
 
 def test_validation_scores_reject_status_tampering_and_extra_pc_columns(tmp_path):
