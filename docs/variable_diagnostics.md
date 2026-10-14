@@ -22,6 +22,82 @@
 
 诊断只读，提供“返回 Tag 配置”入口。直接取消 Tag 会通过现有失效机制立即隐藏诊断，因此本版保留证据直到工程师回到现有配置区修改。实际修改仍使用 `selectedModelTags` 和 `invalidateModellingResults()`，提示重新运行状态探索；没有第二套选择状态。
 
+## 椭圆选区变量特征
+
+PC1/PC2 图与优选区域质量统计下方、工况组时间轴上方提供全宽原生折叠详情。全部椭圆并集的去重完整样本视为一个区域，显示建模 Tag 的选区均值、全体有效样本均值及 `z = (选区均值 - 总体均值) / 总体标准差`（`ddof=0`）。按 `|z|` 降序，默认 Top 10，其余 Tag 可展开；不可计算项保留均值、显示 `—` 并通过标题提供原因，排序在有效偏离之后。
+
+选区复用 `evaluate_preferred_region()` 的完整样本布尔掩码；工程量复用已有 `_color_series` 中的建模 Tag，并通过变量诊断 Tag 列表排除性能与其他着色变量。样本索引及重采样后、滤波前口径与变量诊断一致，均值与偏离计算共用工况组画像的 `mean_deviation_profile()`。没有新增缓存、API、预处理路径或前端选择状态。更新、失败回退和清除沿用原选区请求流程；无椭圆、计算中和有椭圆但零样本分别显示对应状态。原有区域指标、时间轴、连续候选与人工训练决策保持原义。
+
+`tests/test_region_features_browser.py` 沿用 `WEB_GEOMETRY_PLAYWRIGHT` / `WEB_GEOMETRY_BROWSER`，通过真实鼠标拖拽验证 1440px、900px 与 390px 页面。`REGION_ARTIFACT_DIR` 可指定截图保存目录。
+
+### 2026-10-14 收尾验收
+
+修正选区调用 `mean_deviation_profile()` 的第四个参数为该 Tag 在当前选区内的有限值数；总体均值和 `ddof=0` 标准差仍由全部有效探索样本计算。单有效值保留工程量均值，偏离返回 `null` / “有效样本不足”；零有效值、常量和非有限值沿用现有不可计算处理。检查发现工况组画像原调用同样传总体数量，本轮按选区任务范围保留该既有行为，没有修改工况组画像。
+
+环境：Windows、项目专用 Python 3.11.9，NumPy 2.4.6、pandas 2.2.3、pytest 9.1.1；Node.js 调用现有 Playwright 1.62.1，`chromium.launch()` 使用本机 Chrome 155.0.8059.40，无新增依赖。项目命令均使用以下解释器：
+
+```powershell
+$python = 'C:/Users/shaoy/Documents/PythonEnvs/process-model-builder/Scripts/python.exe'
+& $python -m pytest tests/test_state_exploration.py tests/test_group_profiles.py tests/test_cluster_quality.py -q --tb=short
+# 66 passed；覆盖完整样本、工程量对齐、选区 0/1/2 个有限值、常量、并集与候选边界。
+& $python -m pytest tests/test_web.py -k 'region or state_exploration' tests/test_web_quality_layout.py -k 'region or exploration' -q --tb=short
+# 实际生效的 -k 为最后一个表达式：31 passed, 284 deselected。
+$env:WEB_GEOMETRY_PLAYWRIGHT = 'C:/Users/shaoy/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'
+$env:WEB_GEOMETRY_BROWSER = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+$env:REGION_ARTIFACT_DIR = 'C:/Users/shaoy/.codex/visualizations/2026/10/14/01a13849-3c6f-7a82-8c9a-3e3dc54994cb/region-features-acceptance'
+& $python -m pytest tests/test_region_features_browser.py tests/test_screening_layout_browser.py -q --tb=short
+# 初次运行：新增用例的测试操作断言失败，既有布局用例通过（1 failed, 1 passed）。
+# 已修正展开详情后读取提示、数字输入失焦触发 change 的测试操作，最终单独重跑新增用例：
+& $python -m pytest tests/test_region_features_browser.py -q --tb=short
+# 1 passed；上述既有布局用例通过结果继续有效，最终共 2 个浏览器用例通过。
+git diff --check
+# 通过。
+```
+
+三档视口均为高度 1000px。保存并实际查看未绘制、有效选区折叠、Top 10 展开、全部 Tag 展开、零样本、清除状态截图，以及包含后续候选区的完整状态探索面板截图。文件位于上述 `REGION_ARTIFACT_DIR`，命名为 `after-{1440|900|390}-{empty|selected-collapsed|selected-expanded|all-tags|zero-samples|cleared|redrawn|context}.png`；几何报告为 `after-geometry.json`。
+
+视觉复核：详情宽度和左边与结果 Grid 一致，展开不改变 PC 图及原统计卡片的位置或尺寸；标题、表格及空状态沿用现有同类组件，长 Tag 在单元格内换行、数值右对齐，表格高度不超过 280px 并支持局部滚动；时间轴、候选折叠区及加入候选入口布局正常。全部截图状态页面横向溢出为 0px。Visual review: PASS；Geometry Validation: PASS。1440px / 900px / 390px 实际选中样本分别为 225 / 226 / 229（相同相对像素拖拽在不同视口对应的椭圆坐标略有差异）。
+
+可靠修改前截图位于同级 `region-features/before-1440-selected-collapsed.png`、`before-390-selected-collapsed.png`，已与本次截图对照：原图、统计和时间轴保持布局；两档样本数分别仍为 225 / 229。900px 没有功能增加前的可靠截图，使用当前其他原生详情和表格作为一致性参考，不声称完成该视口的历史视觉对照。
+
+状态复核采用 GUI review 的实际场景与 Web 几何安全检查：重叠椭圆不重复计数；加载期间清除后旧响应不能恢复旧特征；500 失败回退保留原选区特征、候选及决策；重新运行恢复空选区；修改配置触发集中失效。既有接口回归验证已有人工确认与训练窗口保持，以及区域候选重新计算、乱序更新和旧路由兼容。前端无需新增状态、顺序控制或样式修改。
+
+本轮未发现阻碍选区验收的问题；未执行全量测试、实际用户数据或所有浏览器版本验收。未引入 B 区域状态或接口，当前选区修正不阻碍后续独立 A/B 开发。保留全部既有未提交修改，未 commit、push 或创建 PR。
+
+## A/B 椭圆参照对比（2026-10-14）
+
+同一 PC1/PC2 图支持独立的“优选 A / 参照 B”多椭圆并集；删除与清除只作用当前对象，切换保留两个集合。A 保持蓝色实线与原有 preferred-region、连续候选、人工决策和训练窗口流程；B 使用现有黄色虚线与浅填充，更新优先使用 Plotly relayout shapes，不重建 Scattergl。
+
+`POST /api/state-exploration/{run_id}/region-comparison` 接收 `exploration_run_id`、已确认的 `a_ellipses` 和 `b_ellipses`。在现有探索锁内核对服务端 A 的椭圆真值；不一致返回 `a_matches=false`，不返回过期统计。接口只返回聚合的区域统计和 Tag 差异，不写入选区、候选、决策或训练窗口，不返回工程量矩阵。
+
+区域全量统计包括各自完整并集的去重样本、交集、独有样本、工况构成，以及复用的保留主元稳定性和性能评价。Tag 差异另用互斥 A\\B 与 B\\A 样本：工程均值、A−B 差值和 `Δz=(mean(A独有)-mean(B独有))/std_all`，总体标准差取本次全部有效探索样本，`ddof=0`。建模 Tag 从既有变量诊断列表取列，工程量仍来自 `_color_series`，按完整 `cluster_series.index` 对齐；不比较 Lag 特征或性能 Tag。每侧至少两个有限值；不足、常量、无均值或不可计算标准差保留可算均值，标准化差异返回 `null` 和原因。完全重叠没有独有样本。按 `|Δz|` 降序，默认 Top10，其余折叠展开；差异不表示因果或 T²/SPE。
+
+前端仅增加圈选对象、B 椭圆、比较结果和请求版本。比较响应同时核对请求版本、run_id 和 A 请求版本；A 正在更新时等待确认后再比较。A 的失败回退保持原逻辑，随后用恢复的 A 重新比较；B 请求失败保留当前 B 形状并显示错误，清除旧统计，调整 B 可重试。清除 B、重跑探索和配置失效阻止旧响应恢复结果。没有额外缓存或状态机。
+
+验证使用项目专用 Python、现有 Playwright 和本机 Chrome，未安装依赖：
+
+```powershell
+$python = 'C:/Users/shaoy/Documents/PythonEnvs/process-model-builder/Scripts/python.exe'
+& $python -m pytest tests/test_state_exploration.py tests/test_group_profiles.py tests/test_cluster_quality.py tests/test_region_comparison_web.py tests/test_web.py tests/test_web_quality_layout.py tests/test_web_validation_investigation.py -q --tb=short
+# 首轮 400 passed, 3 failed, 1 skipped；新增控件计数及内部响应字段影响旧页面断言。
+& $python -m pytest tests/test_region_comparison_web.py tests/test_web.py::test_web_quality_tab_shows_selected_tag_and_trend_axis_uses_payload_limits tests/test_web_quality_layout.py::test_model_quality_check_is_in_the_model_training_stage tests/test_web_quality_layout.py::test_final_form_controls_have_five_scoped_width_semantics -q --tb=short
+# 修正后 5 passed；复用其他已通过结果，最终覆盖 403 项。首轮跳过的原验证调查用例随后在配置浏览器环境后运行。
+$env:WEB_GEOMETRY_PLAYWRIGHT = 'C:/Users/shaoy/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'
+$env:WEB_GEOMETRY_BROWSER = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+$env:REGION_ARTIFACT_DIR = 'C:/Users/shaoy/.codex/visualizations/2026/10/14/01a138c1-28d1-7af1-bc29-78a74d241781/ab-regions'
+& $python -m pytest tests/test_region_features_browser.py tests/test_screening_layout_browser.py -q --tb=short
+# 扩展圈选测试修正测试操作后单独重跑，1 passed；原布局用例继续保持已通过结果，共 2 个浏览器用例通过。
+& $python -m pytest tests/test_region_features_browser.py tests/test_web_validation_investigation.py::test_validation_investigation_in_real_browser -q --tb=short
+# 最终 2 passed；原布局用例已通过，共 3 个真实浏览器用例，无剩余跳过项。
+git diff --check
+```
+
+新增 17 项统计测试与 2 项只读接口/异步行为测试，覆盖单/多椭圆、相离/部分/完全重叠、0/1/2 个有限值、常量/非有限、排序、索引对齐、过期响应、失败、清除、A 更新与回退。真实浏览器三档宽度 1440/900/390px 验证 A-only、A/B、实际样本部分重叠、Top10/全部、B 删除/清除和 A 删除隔离、零样本、错误、迟到响应、缩放/平移、重跑与配置失效。A/B 操作期间核对候选、决策和训练窗口不变，并检查未重建原 Scattergl、椭圆路径与坐标投影对齐。
+
+截图位于上述 `REGION_ARTIFACT_DIR`，包括 `after-{1440|900|390}-{ab-top10|ab-all-tags|ab-overlap|ab-deleted|ab-identical|ab-cleared|ab-zoom-pan|ab-context}.png`，以及原 A 空/选中/清除状态；错误截图为 `after-390-ab-error.png`，几何报告为 `after-geometry.json`。已实际查看三档 A/B、长 Tag 全部表格、窄屏整页和错误状态：工具栏在宽屏同行、窄屏自然换行；保留约 2:1 图与统计布局，390px 沿用单列；折叠详情全宽，表格局部滚动且数值右对齐。页面横向溢出均为 0px。Visual review: PASS；Geometry Validation: PASS。
+
+no-stop-gpt Audit 保留四项新增状态，分别用于目标隔离、保存 B、展示当前结果和拒绝乱序响应；没有引入新缓存、候选链或预处理路径。仅改动 `state_exploration.py`、`web.py`、相关测试与本文件；保留所有原工作树修改，未 commit、push 或创建 PR。未执行全量测试或实际生产数据验收；已有 pandas FutureWarning 来自原训练代码。
+
 ## 边界与限制
 
 - 这是有效状态探索样本上的特征，不是原始数据源质量；原始质量仍由基础数据检查提供。

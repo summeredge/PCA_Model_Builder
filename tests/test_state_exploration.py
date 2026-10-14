@@ -13,6 +13,7 @@ from pca_model_builder.state_exploration import (
     _preferred_region_candidates,
     _summaries,
     evaluate_preferred_region,
+    evaluate_region_comparison,
     run_state_exploration,
 )
 
@@ -72,6 +73,7 @@ def test_variable_diagnostics_use_unfiltered_engineering_values_at_full_valid_dp
         frame, tags, config, ExplorationConfig(cluster_count=2, maximum_plot_points=4),
         performance_config=PerformanceConfig("PERF", "higher_is_better"),
         resampling_window=window,
+        color_columns=tags,
     )
     processed = preprocess_window(frame, tags, config, preserve_columns=["PERF"], include_intermediates=True, resampling_window=window)
     points = result["cluster_series"]
@@ -93,12 +95,82 @@ def test_variable_diagnostics_use_unfiltered_engineering_values_at_full_valid_dp
         assert item["profile"]["mean"] == pytest.approx(values.mean())
         assert item["profile"]["valid_count"] == len(points)
     assert diagnostics["cluster_features"] == result["cluster_quality"]["feature_contrasts"]
+    region = evaluate_preferred_region(
+        points, [{"center_pc1": 0, "center_pc2": 0, "radius_pc1": 1e6, "radius_pc2": 1e6}],
+        result["exploratory_model_summary"]["pc_columns"], result["cluster_centers"],
+        engineering_data=result["_color_series"].loc[:, tags],
+    )
+    assert region["selected_sample_count"] == len(expected)
+    for item in region["variables"]:
+        assert item["mean"] == pytest.approx(expected[item["tag"]].mean())
+        assert item["overall_mean"] == pytest.approx(expected[item["tag"]].mean())
+        assert item["deviation"] == pytest.approx(0)
     assert {item["tag"] for item in diagnostics["cluster_features"]} == set(tags)
     for item in diagnostics["cluster_features"]:
         means = expected[item["tag"]].groupby(points.cluster_id).mean()
         assert item["cluster_means"] == pytest.approx(means.to_dict())
         assert item["mean_difference"] == pytest.approx(means.max() - means.min())
         assert item["standardized_difference"] == pytest.approx((means.max() - means.min()) / expected[item["tag"]].std(ddof=0))
+
+
+@pytest.mark.parametrize("selected_values,reason", [
+    ([np.nan, np.inf, -np.inf], "本组无有效均值"),
+    ([10., np.inf, np.nan], "有效样本不足"),
+    ([10., 20., np.inf], None),
+])
+def test_region_variable_deviation_requires_two_finite_selected_values(selected_values, reason):
+    index = pd.date_range("2026-01-01", periods=6, freq="5min")
+    points = pd.DataFrame({"pc1": range(6), "pc2": 0., "cluster_id": "one"}, index=index)
+    engineering = pd.DataFrame({"TAG": [*selected_values, 40., 50., 60.]}, index=index)
+    region = evaluate_preferred_region(
+        points, [{"center_pc1": 1., "center_pc2": 0., "radius_pc1": 1.1, "radius_pc2": 1.}],
+        ("pc1", "pc2"), {"one": [0., 0.]}, engineering_data=engineering,
+    )
+    assert region["selected_sample_count"] == 3
+    variable = region["variables"][0]
+    numeric = engineering.TAG.replace([np.inf, -np.inf], np.nan)
+    assert variable["overall_mean"] == pytest.approx(numeric.mean())
+    assert variable["unavailable_reason"] == reason
+    if numeric.iloc[:3].count():
+        assert variable["mean"] == pytest.approx(numeric.iloc[:3].mean())
+    else:
+        assert variable["mean"] is None
+    if reason is None:
+        assert variable["deviation"] == pytest.approx((numeric.iloc[:3].mean() - numeric.mean()) / numeric.std(ddof=0))
+    else:
+        assert variable["deviation"] is None
+
+
+def test_region_variables_use_full_deduplicated_union_and_population_std():
+    import json
+
+    index = pd.date_range("2026-01-01", periods=6, freq="5min")
+    points = pd.DataFrame({"pc1": range(6), "pc2": 0., "pc3": [0., 0., 0., 0., 0., np.nan],
+                           "cluster_id": "one"}, index=index)
+    engineering = pd.DataFrame({"positive": [10., 20., 30., 40., 100., 9999.],
+                                "negative": [-10., -20., -30., -40., -100., -9999.],
+                                "constant": 7., "missing": [np.inf] * 6}, index=index)
+    ellipses = [{"center_pc1": c, "center_pc2": 0., "radius_pc1": 1.1, "radius_pc2": 1.} for c in [1., 2.]]
+    args = (points, ellipses, ("pc1", "pc2", "pc3"), {"one": [0., 0., 0.]})
+    old = evaluate_preferred_region(*args)
+    region = evaluate_preferred_region(*args, engineering_data=engineering.iloc[::-1])
+    assert {key: value for key, value in region.items() if key != "variables"} == old
+    assert region["selected_sample_count"] == 4
+    by_tag = {item["tag"]: item for item in region["variables"]}
+    for tag in ["positive", "negative"]:
+        values = engineering[tag].iloc[:5]
+        assert by_tag[tag]["mean"] == pytest.approx(values.iloc[:4].mean())
+        assert by_tag[tag]["overall_mean"] == pytest.approx(values.mean())
+        assert by_tag[tag]["deviation"] == pytest.approx((values.iloc[:4].mean() - values.mean()) / values.std(ddof=0))
+    assert [item["tag"] for item in region["variables"]] == ["positive", "negative", "constant", "missing"]
+    assert by_tag["constant"]["mean"] == 7
+    assert by_tag["constant"]["deviation"] is None
+    assert by_tag["missing"]["mean"] is None
+    json.dumps(region, allow_nan=False)
+    for ellipses in [[], [{"center_pc1": 99., "center_pc2": 0., "radius_pc1": 1., "radius_pc2": 1.}]]:
+        empty = evaluate_preferred_region(points, ellipses, args[2], args[3], engineering_data=engineering)
+        assert empty["selected_sample_count"] == 0
+        assert all(item["mean"] is None and item["deviation"] is None for item in empty["variables"])
 
 
 def test_preferred_region_uses_union_of_ellipses_and_full_pc_space():
@@ -886,3 +958,135 @@ def test_exploration_losses_close_with_invalid_rows_and_state_filter(state_filte
         assert losses["lag_warmup_loss"] > 0
     assert summary["loss_count"] == summary["resampled_row_count"] - result["full_point_count"]
     assert summary["loss_ratio"] == pytest.approx(1 - summary["effective_coverage_ratio"])
+
+
+@pytest.fixture
+def comparison_samples():
+    index = pd.date_range("2026-01-01", periods=8, freq="5min")
+    points = pd.DataFrame({
+        "pc1": np.arange(8, dtype=float), "pc2": 0., "pc3": [0.] * 7 + [np.inf],
+        "cluster_id": ["one"] * 4 + ["two"] * 4,
+    }, index=index)
+    engineering = pd.DataFrame({"value": [0., 2., 4., 6., 8., 10., 12., 10000.]}, index=index)
+    return points, engineering, ("pc1", "pc2", "pc3"), {"one": [0., 0., 0.], "two": [5., 0., 0.]}
+
+
+def comparison_ellipse(center, radius):
+    return {"center_pc1": center, "center_pc2": 0., "radius_pc1": radius, "radius_pc2": 1.}
+
+
+@pytest.mark.parametrize("a,b,counts", [
+    ([comparison_ellipse(1, 1)], [comparison_ellipse(5, 1)], (0, 3, 3)),
+    ([comparison_ellipse(2, 2)], [comparison_ellipse(4, 2)], (3, 2, 2)),
+    ([comparison_ellipse(3, 3)], [comparison_ellipse(3, 3)], (7, 0, 0)),
+    ([comparison_ellipse(1, 1), comparison_ellipse(2, 1)],
+     [comparison_ellipse(5, 1), comparison_ellipse(6, 1)], (0, 4, 3)),
+    ([], [comparison_ellipse(3, 3)], (0, 0, 7)),
+])
+def test_region_comparison_unions_overlap_and_full_summaries(comparison_samples, a, b, counts):
+    import copy
+    import json
+    points, engineering, columns, centers = comparison_samples
+    before_points, before_engineering = points.copy(deep=True), engineering.copy(deep=True)
+    before_a, before_b, before_centers = copy.deepcopy(a), copy.deepcopy(b), copy.deepcopy(centers)
+    performance = pd.Series(np.arange(8), index=points.index).iloc[::-1]
+    config = PerformanceConfig("PERF", "target_range", target_min=2, target_max=5)
+    result = evaluate_region_comparison(points, a, b, columns, centers,
+        engineering_data=engineering.iloc[::-1], performance_values=performance, performance_config=config)
+    assert (result["intersection_sample_count"], result["a_only_sample_count"], result["b_only_sample_count"]) == counts
+    for key, ellipses in [("region_a", a), ("region_b", b)]:
+        assert result[key] == evaluate_preferred_region(points, ellipses, columns, centers,
+            performance_values=performance, performance_config=config)
+        assert "variables" not in result[key]
+        assert result[key]["full_valid_sample_count"] == 7
+    variable = result["variables"][0]
+    mask = lambda ellipses: np.array([any(abs(x - e["center_pc1"]) <= e["radius_pc1"] for e in ellipses) and x < 7 for x in range(8)])
+    a_mask, b_mask = mask(a), mask(b)
+    a_values = engineering.loc[a_mask & ~b_mask, "value"]
+    b_values = engineering.loc[b_mask & ~a_mask, "value"]
+    assert variable["a_valid_count"] == len(a_values)
+    assert variable["b_valid_count"] == len(b_values)
+    if len(a_values) and len(b_values):
+        difference = a_values.mean() - b_values.mean()
+        assert variable["mean_difference"] == pytest.approx(difference)
+        assert variable["standardized_difference"] == pytest.approx(difference / engineering.value.iloc[:7].std(ddof=0))
+    else:
+        assert variable["standardized_difference"] is None
+        assert variable["unavailable_reason"]
+    json.dumps(result, allow_nan=False)
+    pd.testing.assert_frame_equal(points, before_points)
+    pd.testing.assert_frame_equal(engineering, before_engineering)
+    assert (a, b, centers) == (before_a, before_b, before_centers)
+
+
+@pytest.mark.parametrize("side", ["a", "b"])
+@pytest.mark.parametrize("values,reason", [
+    ([np.nan, np.inf, -np.inf], "本组无有效均值"),
+    ([2., np.nan, np.inf], "有效样本不足"),
+    ([2., 4., np.inf], None),
+])
+def test_region_comparison_each_side_requires_two_finite_values(comparison_samples, side, values, reason):
+    points, engineering, columns, centers = comparison_samples
+    engineering.loc[points.index[:3] if side == "a" else points.index[4:7], "value"] = values
+    result = evaluate_region_comparison(points, [comparison_ellipse(1, 1)], [comparison_ellipse(5, 1)],
+        columns, centers, engineering_data=engineering)
+    variable = result["variables"][0]
+    finite = np.asarray(values)[np.isfinite(values)]
+    assert variable[side + "_valid_count"] == len(finite)
+    if len(finite):
+        assert variable[side + "_mean"] == pytest.approx(finite.mean())
+        assert variable["mean_difference"] == pytest.approx(variable["a_mean"] - variable["b_mean"])
+    else:
+        assert variable[side + "_mean"] is None
+        assert variable["mean_difference"] is None
+    assert variable["unavailable_reason"] == reason
+    assert (variable["standardized_difference"] is None) == (reason is not None)
+
+
+def test_region_comparison_constants_sorting_and_index_alignment(comparison_samples):
+    import json
+    points, engineering, columns, centers = comparison_samples
+    engineering["negative"] = -engineering.value
+    engineering["zero"] = [0., 1., 2., 5., 0., 1., 2., 10000.]
+    engineering["constant"] = 7.
+    engineering["missing"] = np.nan
+    engineering["non_numeric"] = "bad"
+    engineering.loc[pd.Timestamp("2027-01-01")] = [1e9] * 6
+    result = evaluate_region_comparison(points, [comparison_ellipse(1, 1)], [comparison_ellipse(5, 1)],
+        columns, centers, engineering_data=engineering.iloc[::-1])
+    variables = result["variables"]
+    assert [v["tag"] for v in variables] == ["value", "negative", "zero", "constant", "missing", "non_numeric"]
+    assert variables[0]["standardized_difference"] == -variables[1]["standardized_difference"]
+    assert variables[2]["standardized_difference"] == 0
+    assert variables[3]["a_mean"] == variables[3]["b_mean"] == 7
+    assert variables[3]["mean_difference"] == 0
+    assert variables[3]["standardized_difference"] is None
+    assert variables[3]["unavailable_reason"] == "精确常量"
+    assert variables[4]["unavailable_reason"] == "本组无有效均值"
+    json.dumps(result, allow_nan=False)
+    missing_row = evaluate_region_comparison(points, [comparison_ellipse(1, 1)], [comparison_ellipse(5, 1)],
+        columns, centers, engineering_data=engineering.drop(points.index[0]))["variables"][0]
+    assert missing_row["a_valid_count"] == 2
+    assert missing_row["a_mean"] == 3
+
+
+@pytest.mark.parametrize("bad", [comparison_ellipse(1, 0), comparison_ellipse(np.inf, 1)])
+@pytest.mark.parametrize("side", ["a", "b"])
+def test_region_comparison_reuses_ellipse_validation(comparison_samples, bad, side):
+    points, engineering, columns, centers = comparison_samples
+    with pytest.raises(ValueError):
+        evaluate_region_comparison(points, [bad] if side == "a" else [], [bad] if side == "b" else [],
+            columns, centers, engineering_data=engineering)
+
+
+def test_region_comparison_nonfinite_population_std_keeps_means(comparison_samples):
+    points, engineering, columns, centers = comparison_samples
+    engineering["value"] = [0., 1., 2., 1e308, 3., 4., 5., 0.]
+    with np.errstate(over="ignore", invalid="ignore"):
+        variable = evaluate_region_comparison(points, [comparison_ellipse(1, 1)], [comparison_ellipse(5, 1)],
+            columns, centers, engineering_data=engineering)["variables"][0]
+    assert variable["a_mean"] == 1.
+    assert variable["b_mean"] == 4.
+    assert variable["mean_difference"] == -3.
+    assert variable["standardized_difference"] is None
+    assert variable["unavailable_reason"] == "总体标准差不可计算"

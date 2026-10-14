@@ -1167,14 +1167,21 @@ def test_validation_ui_revokes_stale_approval_and_restores_latest_passed_result(
         el("frozenModelDownload").href="old-frozen";el("deploymentModelDownload").href="old-deployment";
         renderValidation(state.validation);
         response={...base};
+        el("validationDecision").value="failed";
         await el("validateButton").listeners.click();
+        assert.equal(el("validationDecision").value,"hold");
+        assert.equal(el("validationDecision").querySelector('[value="passed"]').disabled,false);
         assert.equal(state.validation.engineer_decision,undefined);
         assert.equal(el("freezeDeployment").disabled,true);
         for(const id of ["validatedModelDownload","frozenModelDownload","deploymentModelDownload"]){
           assert.equal(el(id).hidden,true);assert.equal(el(id).href,"#");
         }
         assert.match(el("validationDecisionStatus").textContent,/待重新确认/);
+        el("validationDecision").value="passed";
+        await el("validateButton").listeners.click();
+        assert.equal(el("validationDecision").value,"hold");
         response={model_status:"validated",engineer_decision:{decision:"passed"},validated_model_download:"validated-new"};
+        el("validationDecision").value="passed";
         await el("recordValidationDecision").listeners.click();
         assert.equal(el("freezeDeployment").disabled,false);
         assert.equal(el("validatedModelDownload").hidden,false);
@@ -1276,6 +1283,25 @@ def test_validation_window_edit_and_evidence_gate_behaviour():
       assert.equal(state.validation,null);assert.equal(el("validationDecision").value,"hold");
       assert.equal(el("recordValidationDecision").disabled,true);assert.equal(el("freezeDeployment").disabled,true);
       assert.equal(el("validatedModelDownload").href,"#");assert.equal(el("validationContent").hidden,true);
+      for(const decision of ["failed","passed"]){
+        el("validationDecision").value=decision;
+        el("validationWindowTable").children[0].children[4].children[0].listeners.click();
+        el("validationEnd").value="2026-01-02T11:45";el("addValidationWindow").listeners.click();
+        assert.equal(el("validationDecision").value,"hold");
+        el("validationDecision").value=decision;
+        el("validationWindowTable").children[1].children[4].children[1].listeners.click();
+        assert.equal(el("validationDecision").value,"hold");
+        el("validationDecision").value=decision;
+        el("validationStart").value="2026-01-02T12:00";el("validationEnd").value="2026-01-02T23:55";
+        el("addValidationWindow").listeners.click();assert.equal(el("validationDecision").value,"hold");
+      }
+      el("validationWindowTable").children[0].children[4].children[0].listeners.click();
+      assert.equal(el("addValidationWindow").dataset.editingId,initial.id);
+      state.validationWindows=[];renderValidationWindows();
+      assert.equal(el("addValidationWindow").dataset.editingId,undefined);
+      assert.equal(el("addValidationWindow").textContent,"加入验证时段");
+      const previousMessages=messages.length;el("addValidationWindow").listeners.click();
+      assert.equal(state.validationWindows.length,1);assert.equal(messages.length,previousMessages);
       console.log(JSON.stringify({verified:true}));
     '''.replace("__WINDOWS__", windows).replace("__RENDERER__", renderer)
     assert _run_node_javascript(script)["verified"]
@@ -1302,6 +1328,30 @@ def test_freeze_response_cannot_restore_downloads_after_validation_window_change
       })().catch(error=>{console.error(error);process.exitCode=1;});
     '''.replace("__HANDLER__", handler)
     assert _run_node_javascript(script)["verified"]
+
+
+def test_region_features_renderer_escapes_tags_and_handles_all_selection_states():
+    html = web_model_results.INDEX_HTML
+    renderer = "function renderExplorationRegionFeatures" + html.split("function renderExplorationRegionFeatures", 1)[1].split("function renderExplorationRegionControls", 1)[0]
+    number = "function groupProfileNumber" + html.split("function groupProfileNumber", 1)[1].split("\n", 1)[0]
+    result = _run_node_javascript(
+        "const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\"','&quot;');"
+        "const container={innerHTML:''},el=()=>container,state={referenceRegionEllipses:[]};" + number + renderer
+        + "const variables=Array.from({length:14},(_,i)=>({tag:`<TAG_${i}>`,mean:i,overall_mean:0,deviation:i===13?null:-i,unavailable_reason:i===13?'精确常量':null}));"
+        + "renderExplorationRegionFeatures({ellipses:[{}],selected_sample_count:240,variables});const valid=container.innerHTML;"
+        + "renderExplorationRegionFeatures({ellipses:[{}]});const loading=container.innerHTML;"
+        + "renderExplorationRegionFeatures({ellipses:[{}],selected_sample_count:0});const empty=container.innerHTML;"
+        + "renderExplorationRegionFeatures({ellipses:[]});console.log(JSON.stringify({valid,loading,empty,cleared:container.innerHTML}));"
+    )
+    assert "<TAG_" not in result["valid"]
+    assert "&lt;TAG_13&gt;" in result["valid"]
+    assert result["valid"].count('<tr><td>') == 14
+    first, rest = result["valid"].split('<details>', 1)
+    assert first.count('<tr><td>') == 10 and rest.count('<tr><td>') == 4
+    assert '其余 4 个 Tag' in rest and 'title="精确常量">—' in rest
+    assert '正在计算' in result["loading"]
+    assert '没有选中样本' in result["empty"]
+    assert '尚未定义优选运行区域' in result["cleared"]
 
 
 def test_variable_diagnostics_renderer_handles_large_results_escaping_and_unavailable_values():
@@ -1551,7 +1601,7 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
         assert "◎ 外圈：性能达标" not in html
         assert "淡化点：未达标或无有效性能值" not in html
         assert "PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整 episodes，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
-        assert "优选区域：" in html
+        assert "优选 A" in html and "参照 B" in html
         assert "椭圆选择" in html
         assert "删除上一个" in html
         assert "清除区域" in html
@@ -1731,7 +1781,7 @@ def test_state_exploration_results_stack_space_plot_timeline_and_region_stats():
             'id="explorationClusterDetails"', 1
         )[0]
         positions = [grid.index(f'id="{element_id}"') for element_id in (
-            "explorationPcChart", "explorationRegionSummary", "explorationTimeline"
+            "explorationPcChart", "explorationRegionSummary", "explorationRegionFeaturesDetails", "explorationTimeline"
         )]
         assert positions == sorted(positions)
         assert grid.count('class="chart-card ') == 3
@@ -1999,6 +2049,8 @@ def test_preferred_region_api_uses_union_and_full_cached_series():
             ),
             "cluster_series": points,
             "cluster_series_display": points.iloc[[0, 4]],
+            "_color_series": pd.DataFrame({"TAG": [10., 20., 30., 40., 50.]}, index=index),
+            "variable_diagnostics": {"tag_profiles": [{"tag": "TAG"}]},
             "cluster_candidates": [],
             "performance_candidates": [],
             "candidate_decisions": [],
@@ -2041,6 +2093,8 @@ def test_preferred_region_api_uses_union_and_full_cached_series():
     assert result["performance_target_count"] == 2
     assert result["performance_target_ratio"] == 2 / 3
     assert result["performance_median"] == 2.0
+    assert result["variables"] == [{"tag": "TAG", "mean": 30., "overall_mean": 30.,
+                                     "deviation": 0., "unavailable_reason": None}]
     assert result["preferred_region"] == {
         key: result[key]
         for key in result["preferred_region"]
@@ -2121,6 +2175,8 @@ def test_preferred_region_candidates_recompute_and_keep_conversion_lifecycle():
             ),
             "cluster_series": points,
             "cluster_series_display": points.iloc[[0, 11]],
+            "_color_series": pd.DataFrame({"TAG": np.arange(len(points), dtype=float)}, index=index),
+            "variable_diagnostics": {"tag_profiles": [{"tag": "TAG"}]},
             "cluster_candidates": [
                 {
                     "candidate_id": cluster_id,
@@ -2305,6 +2361,8 @@ def test_preferred_region_out_of_order_updates_keep_latest_cache_and_decisions()
             },
             "cluster_series": points,
             "cluster_series_display": points.iloc[[0, 11]],
+            "_color_series": pd.DataFrame({"TAG": np.arange(len(points), dtype=float)}, index=index),
+            "variable_diagnostics": {"tag_profiles": [{"tag": "TAG"}]},
             "cluster_candidates": [
                 {
                     "candidate_id": cluster_id,

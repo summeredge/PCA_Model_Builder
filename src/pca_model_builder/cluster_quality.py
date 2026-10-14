@@ -5,6 +5,20 @@ import pandas as pd
 from sklearn.metrics import silhouette_score
 
 
+def mean_deviation_profile(mean, overall, std, valid_count) -> dict[str, object]:
+    """Shared engineering mean / population-standard-deviation comparison."""
+    unavailable = ("本组无有效均值" if not np.isfinite(mean) else
+                   "有效样本不足" if valid_count < 2 else
+                   "总体标准差不可计算" if not np.isfinite(std) else
+                   "精确常量" if std <= 0 else None)
+    deviation = float((mean - overall) / std) if unavailable is None else None
+    if deviation is not None and not np.isfinite(deviation):
+        deviation, unavailable = None, "相对总体偏离不可计算"
+    return {"mean": float(mean) if np.isfinite(mean) else None,
+            "overall_mean": float(overall) if np.isfinite(overall) else None,
+            "deviation": deviation, "unavailable_reason": unavailable}
+
+
 def analyze_cluster_quality(
     scores: pd.DataFrame,
     labels,
@@ -150,19 +164,11 @@ def analyze_cluster_quality(
                     count = int(np.count_nonzero(labels == cluster))
                     profile = {"cluster_id": str(cluster), "sample_count": count, "share": count / len(labels), "variables": []}
                     result["group_profiles"].append(profile)
-                unavailable = ("本组无有效均值" if not np.isfinite(mean) else
-                               "有效样本不足" if numeric.count() < 2 else
-                               "总体标准差不可计算" if not np.isfinite(std) else
-                               "精确常量" if std <= 0 else None)
-                deviation = float((mean - overall) / std) if unavailable is None else None
-                if deviation is not None and not np.isfinite(deviation):
-                    deviation, unavailable = None, "相对总体偏离不可计算"
                 rank = 1 + sum(bool(value > mean) for value in finite_means) if np.isfinite(mean) else None
-                profile["variables"].append({"tag": tag, "mean": float(mean) if np.isfinite(mean) else None,
-                    "overall_mean": float(overall) if np.isfinite(overall) else None,
-                    "deviation": deviation, "rank": rank, "rank_count": len(finite_means),
-                    "tied": sum(bool(value == mean) for value in finite_means) > 1,
-                    "unavailable_reason": unavailable})
+                profile["variables"].append({"tag": tag,
+                    **mean_deviation_profile(mean, overall, std, numeric.count()),
+                    "rank": rank, "rank_count": len(finite_means),
+                    "tied": sum(bool(value == mean) for value in finite_means) > 1})
         result["feature_contrasts"] = sorted(
             result["feature_contrasts"],
             key=lambda item: (item["standardized_difference"] is None, -(item["standardized_difference"] or 0)),

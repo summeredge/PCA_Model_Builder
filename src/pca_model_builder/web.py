@@ -29,6 +29,7 @@ from .state_exploration import (
     _preferred_region_candidates,
     _target_range_status,
     evaluate_preferred_region,
+    evaluate_region_comparison,
     run_state_exploration,
 )
 from .compat import (
@@ -1453,6 +1454,9 @@ def state_exploration_preferred_region_payload(
             exploration["cluster_centers"],
             performance_values=exploration.get("_performance_values"),
             performance_config=exploration.get("performance_config"),
+            engineering_data=exploration["_color_series"].loc[:, [
+                item["tag"] for item in exploration["variable_diagnostics"]["tag_profiles"]
+            ]],
         )
         preprocessing_summary = exploration.get("preprocessing_summary") or {}
         exploration_config = exploration.get("exploration_config") or {}
@@ -1481,6 +1485,31 @@ def state_exploration_preferred_region_payload(
         "candidate_decisions": exploration["candidate_decisions"],
         **evaluation,
     }
+
+
+def state_exploration_region_comparison_payload(
+    run_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    if payload.get("exploration_run_id") != run_id:
+        raise ValueError("exploration_run_id与当前状态探索运行不一致")
+    if not isinstance(payload.get("a_ellipses"), list) or not isinstance(payload.get("b_ellipses"), list):
+        raise ValueError("a_ellipses和b_ellipses必须是列表")
+    with _STATE_EXPLORATION_LOCK:
+        exploration = _state_exploration_run(run_id)
+        a_ellipses = (exploration.get("preferred_region") or {}).get("ellipses", [])
+        if payload["a_ellipses"] != a_ellipses:
+            return {"exploration_run_id": run_id, "a_matches": False}
+        comparison = evaluate_region_comparison(
+            exploration["cluster_series"], a_ellipses, payload["b_ellipses"],
+            exploration["exploratory_model_summary"]["pc_columns"],
+            exploration["cluster_centers"],
+            engineering_data=exploration["_color_series"].loc[:, [
+                item["tag"] for item in exploration["variable_diagnostics"]["tag_profiles"]
+            ]],
+            performance_values=exploration.get("_performance_values"),
+            performance_config=exploration.get("performance_config"),
+        )
+    return {"exploration_run_id": run_id, "a_matches": True, **comparison}
 
 
 def _preferred_region_update_sequence(payload: dict[str, Any]) -> int:
@@ -3212,7 +3241,7 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
             state_action = re.fullmatch(
-                r"/api/state-exploration/([^/]+)/(decisions|training-windows|preferred-region|region)",
+                r"/api/state-exploration/([^/]+)/(decisions|training-windows|preferred-region|region|region-comparison)",
                 parsed.path,
             )
             if state_action is not None:
@@ -3224,6 +3253,8 @@ class _Handler(BaseHTTPRequestHandler):
                         result = state_exploration_decisions_payload(run_id, payload)
                     elif action == "training-windows":
                         result = state_exploration_training_windows_payload(run_id, payload)
+                    elif action == "region-comparison":
+                        result = state_exploration_region_comparison_payload(run_id, payload)
                     else:
                         result = state_exploration_preferred_region_payload(run_id, payload)
                     self._send_json(result)
@@ -3517,10 +3548,18 @@ INDEX_HTML = r"""<!doctype html>
      .exploration-controls { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,170px),1fr)); gap:8px; align-items:end; padding:10px; background:#f8fafc; border:1px solid var(--line-soft); border-radius:8px; }
      .exploration-controls.performance-controls { grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); }
      .exploration-region-tools { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+     #stateExplorationPanel .exploration-region-tools > label { display:flex; align-items:center; min-width:0; }
+     #stateExplorationPanel #explorationPcColorMode { width:160px; }
+     #stateExplorationPanel #explorationRegionTarget { width:auto; }
      .exploration-region-tools .active { background:var(--accent); color:#fff; }
      #stateExplorationPanel .exploration-result-grid { display:grid; grid-template-columns:minmax(0,2fr) minmax(0,1fr); gap:12px; align-items:stretch; }
      #stateExplorationPanel .exploration-result-grid > .chart-card { grid-template-columns:minmax(0,1fr); min-width:0; }
      #stateExplorationPanel .exploration-timeline-card { grid-column:1 / -1; }
+     #stateExplorationPanel .exploration-region-features { grid-column:1 / -1; min-width:0; }
+     .exploration-region-features summary { cursor:pointer; }
+     .exploration-region-features .table-wrap { max-width:100%; max-height:280px; }
+     .exploration-region-features :is(th,td):first-child { max-width:14rem; white-space:normal; overflow-wrap:anywhere; }
+     .exploration-region-features :is(th,td).numeric { text-align:right; font-variant-numeric:tabular-nums; }
      #stateExplorationPanel #explorationPcChart { height:clamp(420px,32vw,480px); min-height:420px; }
      #stateExplorationPanel .exploration-timeline { border:1px solid var(--line); border-radius:7px; overflow:hidden; background:#fff; }
      #stateExplorationPanel .exploration-timeline svg { display:block; width:100%; height:112px; }
@@ -3695,8 +3734,9 @@ INDEX_HTML = r"""<!doctype html>
           <h3>预处理损失摘要</h3>
           <div id="explorationLossSummary" class="table-wrap"></div>
           <div class="exploration-result-grid">
-            <div class="chart-card exploration-pc-card"><div class="chart-card-head"><h3>工况组 PC1 / PC2 与中心</h3><div class="exploration-region-tools"><label>着色方式<select id="explorationPcColorMode"><option value="cluster">工况组（离散着色）</option></select></label><span class="help">优选区域：</span><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整 episodes，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
+            <div class="chart-card exploration-pc-card"><div class="chart-card-head"><h3>工况组 PC1 / PC2 与中心</h3><div class="exploration-region-tools"><label>着色方式<select id="explorationPcColorMode"><option value="cluster">工况组（离散着色）</option></select></label><label>圈选对象<select id="explorationRegionTarget" disabled><option value="A">优选 A</option><option value="B">参照 B</option></select></label><button id="explorationRegionSelect" class="secondary" type="button" disabled>椭圆选择</button><button id="explorationRegionDelete" class="secondary" type="button" disabled>删除上一个</button><button id="explorationRegionClear" class="secondary" type="button" disabled>清除区域</button></div></div><div id="explorationPcChart" class="chart"></div><p id="explorationPcNote" class="chart-note">PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整 episodes，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。</p></div>
             <div class="chart-card exploration-region-card"><h3>优选运行区域质量统计</h3><div id="explorationRegionSummary" class="table-wrap region-stats"><div class="empty">尚未定义优选运行区域。</div></div></div>
+            <details id="explorationRegionFeaturesDetails" class="exploration-region-features"><summary>选区变量特征与 A/B 对比</summary><div id="explorationRegionFeatures"><div class="empty">尚未定义优选运行区域。</div></div></details>
             <div class="chart-card exploration-timeline-card"><h3>工况组时间轴</h3><div id="explorationTimeline" class="exploration-timeline"><div class="empty">暂无显示序列。</div></div></div>
           </div>
           <details id="explorationClusterDetails"><summary>工况明细（<span id="explorationClusterSummaryCount">0</span> 组）</summary>
@@ -3809,7 +3849,7 @@ INDEX_HTML = r"""<!doctype html>
     </section>
   </main>
 <script>
-const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, explorationRevision:0, explorationPlotRevision:0, explorationColorRun:null, explorationColorValues:new Map(), preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, preferredRegionPlot:null, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingCandidateProvenance:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
+const state = { fileId:null, runId:null, exploratoryRunId:null, inspection:null, clustering:null, exploration:null, explorationRevision:0, explorationPlotRevision:0, explorationColorRun:null, explorationColorValues:new Map(), preferredRegion:null, preferredRegionDrawing:false, preferredRegionRequest:0, preferredRegionUpdateSeq:0, preferredRegionPlot:null, explorationRegionTarget:"A", referenceRegionEllipses:[], regionComparison:null, regionComparisonRequest:0, performance:null, training:null, trend:null, preprocessingPreview:null, preprocessingPreviewTag:null, preprocessingPreviewWindowId:null, registry:{}, quality:null, qualityStatus:"unchecked", qualityRevision:0, qualityError:"", selectedTag:null, selectedModelTags:new Set(), importPreview:null, excludedTags:[], excludedWindows:[], showProblems:false, candidateWindows:[], trainingCandidateProvenance:[], trainingWindows:[], trainingWindowSummary:[], validationWindows:[] };
 const el = (id) => document.getElementById(id);
 
 function setStatus(message, type="info") { const node=el("status"); node.textContent=message; node.className=`status ${type}`; }
@@ -4421,6 +4461,7 @@ function renderExplorationRegionSummary(data) {
   const container=el("explorationRegionSummary"); if(!container) return;
   const region=state.preferredRegion||data.preferred_region;
   const ellipses=region?.ellipses||[];
+  renderExplorationRegionFeatures(region);
   if(!ellipses.length) { container.innerHTML='<div class="empty">尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。</div>'; return; }
   const targetRange=data.performance_config?.direction==="target_range";
   const performance=targetRange?[["性能有效样本",region.performance_valid_count??"—"],["性能达标样本",region.performance_target_count??"—"],["性能达标率",explorationPercent(region.performance_target_ratio)],["性能中位数",explorationNumber(region.performance_median,3)]]:[["性能评价","—"]];
@@ -4431,11 +4472,34 @@ function renderExplorationRegionSummary(data) {
   const clusters=(region.cluster_counts||[]).map(item=>`<tr><td>${escapeHtml(clusterUiLabel(item.cluster_id))}</td><td class="numeric">${item.sample_count}</td><td class="numeric">${explorationPercent(item.share)}</td></tr>`).join("");
   container.innerHTML=`<table class="region-metric-table"><tbody>${metricRows.join("")}</tbody></table><h4 class="region-cluster-title">工况分布</h4><table class="region-cluster-table"><thead><tr><th>工况组</th><th>区域样本数</th><th>区域占比</th></tr></thead><tbody>${clusters||'<tr><td colspan="3">没有选中样本。</td></tr>'}</tbody></table><p class="help">当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性反映全部保留主元空间的组内距离/离散程度，不等于时间稳定性或正常状态证明；候选仍需人工决策。</p>`;
 }
+function renderExplorationRegionFeatures(region) {
+  const container=el("explorationRegionFeatures"); if(!container) return;
+  if(state.referenceRegionEllipses?.length) { renderExplorationRegionComparison(container); return; }
+  if(!region?.ellipses?.length) { container.innerHTML='<div class="empty">尚未定义优选运行区域。</div>'; return; }
+  if(region.selected_sample_count===undefined) { container.innerHTML='<div class="empty">正在计算选区变量特征…</div>'; return; }
+  if(!region.selected_sample_count) { container.innerHTML='<div class="empty">没有选中样本。</div>'; return; }
+  const variables=region.variables||[];
+  const table=rows=>`<div class="table-wrap" tabindex="0"><table><thead><tr><th>Tag</th><th class="numeric">选区均值</th><th class="numeric">总体均值</th><th class="numeric">偏离 z</th></tr></thead><tbody>${rows.map(item=>`<tr><td>${escapeHtml(item.tag)}</td><td class="numeric">${groupProfileNumber(item.mean)}</td><td class="numeric">${groupProfileNumber(item.overall_mean)}</td><td class="numeric" title="${escapeHtml(item.unavailable_reason||'')}">${groupProfileNumber(item.deviation)}</td></tr>`).join('')}</tbody></table></div>`;
+  container.innerHTML=`<p class="help">${region.selected_sample_count} 个去重选中样本；工程量为重采样后、滤波前数值。z =（选区均值 − 全体有效样本均值）/ 总体标准差；按 |z| 排序。</p>${table(variables.slice(0,10))}${variables.length>10?`<details><summary>其余 ${variables.length-10} 个 Tag</summary>${table(variables.slice(10))}</details>`:''}`;
+}
+function renderExplorationRegionComparison(container) {
+  const comparison=state.regionComparison;
+  if(!comparison||comparison.pending) { container.innerHTML='<div class="empty">正在计算 A/B 区域对比…</div>'; return; }
+  if(comparison.error) { container.innerHTML=`<div class="empty">${escapeHtml(comparison.error)}</div>`; return; }
+  const a=comparison.region_a,b=comparison.region_b;
+  const values=[["完整区域样本",a.selected_sample_count,b.selected_sample_count],["独有样本",comparison.a_only_sample_count,comparison.b_only_sample_count],["区域稳定性",groupProfileNumber(a.stability_score),groupProfileNumber(b.stability_score)],["性能有效样本",a.performance_valid_count??'—',b.performance_valid_count??'—'],["性能达标率",explorationPercent(a.performance_target_ratio),explorationPercent(b.performance_target_ratio)],["性能中位数",groupProfileNumber(a.performance_median),groupProfileNumber(b.performance_median)]];
+  const groups=(a.cluster_counts||[]).map(item=>{const other=(b.cluster_counts||[]).find(row=>row.cluster_id===item.cluster_id); return `<tr><td>${escapeHtml(clusterUiLabel(item.cluster_id))}</td><td class="numeric">${item.sample_count}（${explorationPercent(item.share)}）</td><td class="numeric">${other?.sample_count??0}（${explorationPercent(other?.share)}）</td></tr>`;}).join('');
+  const table=rows=>`<div class="table-wrap" tabindex="0"><table><thead><tr><th>Tag</th><th class="numeric">A独有均值</th><th class="numeric">B独有均值</th><th class="numeric">差值 A−B</th><th class="numeric">Δz</th></tr></thead><tbody>${rows.map(item=>`<tr><td>${escapeHtml(item.tag)}</td><td class="numeric">${groupProfileNumber(item.a_mean)}</td><td class="numeric">${groupProfileNumber(item.b_mean)}</td><td class="numeric">${groupProfileNumber(item.mean_difference)}</td><td class="numeric" title="${escapeHtml(item.unavailable_reason||'')}">${groupProfileNumber(item.standardized_difference)}</td></tr>`).join('')}</tbody></table></div>`;
+  const variables=comparison.variables||[];
+  container.innerHTML=`<p class="help">区域全量统计：各自多椭圆并集，重叠样本各计一次。A∩B：${comparison.intersection_sample_count} 个样本。B 仅用于参照分析。</p><div class="table-wrap" tabindex="0"><table><thead><tr><th>统计</th><th class="numeric">优选 A</th><th class="numeric">参照 B</th></tr></thead><tbody>${values.map(([name,av,bv])=>`<tr><td>${name}</td><td class="numeric">${av}</td><td class="numeric">${bv}</td></tr>`).join('')}${groups}</tbody></table></div><p class="help">独立差异仅比较 A\\B 与 B\\A 的建模 Tag；工程量为重采样后、滤波前数值。Δz =（A独有均值 − B独有均值）/ 全部有效探索样本总体标准差（ddof=0），按 |Δz| 排序。每侧至少 2 个有限值；完全重叠、常量或样本不足显示 —，详情见数值提示。差异不代表因果或 T²/SPE；区域稳定性不等于时间稳定性或正常状态证明。</p>${table(variables.slice(0,10))}${variables.length>10?`<details><summary>其余 ${variables.length-10} 个 Tag</summary>${table(variables.slice(10))}</details>`:''}`;
+}
 function renderExplorationRegionControls() {
-  const hasRun=Boolean(state.exploration?.exploration_run_id), ellipses=state.preferredRegion?.ellipses||[];
+  const hasRun=Boolean(state.exploration?.exploration_run_id), ellipses=state.explorationRegionTarget==="B"?state.referenceRegionEllipses:state.preferredRegion?.ellipses||[];
+  const target=el("explorationRegionTarget"); if(target) {target.disabled=!hasRun; target.value=state.explorationRegionTarget||"A";}
   const select=el("explorationRegionSelect"), remove=el("explorationRegionDelete"), clear=el("explorationRegionClear"); if(!select||!remove||!clear) return;
   select.disabled=!hasRun; remove.disabled=!hasRun||!ellipses.length; clear.disabled=!hasRun||!ellipses.length;
   select.classList.toggle("active",state.preferredRegionDrawing); select.setAttribute("aria-pressed",String(state.preferredRegionDrawing));
+  [select,remove,clear].forEach(button=>button.title=`作用于${state.explorationRegionTarget==="B"?'参照 B':'优选 A'}`);
 }
 function renderExplorationPcChart(data) {
   // The full state space is WebGL rendered, so no DOM node exists per sample.
@@ -4552,7 +4616,7 @@ function rebindExplorationRegionOverlay() {
 }
 function explorationRegionShapes() {
   const region=state.preferredRegion||state.exploration?.preferred_region||{};
-  return (region.ellipses||[]).filter(ellipse=>Number.isFinite(Number(ellipse.center_pc1))&&Number.isFinite(Number(ellipse.center_pc2))&&Number.isFinite(Number(ellipse.radius_pc1))&&Number.isFinite(Number(ellipse.radius_pc2))).map(ellipse=>({type:"circle",xref:"x",yref:"y",x0:Number(ellipse.center_pc1)-Math.abs(Number(ellipse.radius_pc1)),x1:Number(ellipse.center_pc1)+Math.abs(Number(ellipse.radius_pc1)),y0:Number(ellipse.center_pc2)-Math.abs(Number(ellipse.radius_pc2)),y1:Number(ellipse.center_pc2)+Math.abs(Number(ellipse.radius_pc2)),fillcolor:"rgba(23,107,135,0.08)",line:{color:"#176b87",width:2}}));
+  return [[region.ellipses||[],false],[state.referenceRegionEllipses||[],true]].flatMap(([ellipses,isB])=>ellipses.filter(ellipse=>Number.isFinite(Number(ellipse.center_pc1))&&Number.isFinite(Number(ellipse.center_pc2))&&Number.isFinite(Number(ellipse.radius_pc1))&&Number.isFinite(Number(ellipse.radius_pc2))).map(ellipse=>({type:"circle",xref:"x",yref:"y",x0:Number(ellipse.center_pc1)-Math.abs(Number(ellipse.radius_pc1)),x1:Number(ellipse.center_pc1)+Math.abs(Number(ellipse.radius_pc1)),y0:Number(ellipse.center_pc2)-Math.abs(Number(ellipse.radius_pc2)),y1:Number(ellipse.center_pc2)+Math.abs(Number(ellipse.radius_pc2)),fillcolor:isB?"rgba(209,154,32,0.08)":"rgba(23,107,135,0.08)",line:{color:isB?"#d19a20":"#176b87",width:2,...(isB?{dash:"dash"}:{})}})));
 }
 function bindExplorationRegionOverlay(plot,overlay) {
   if(!state.preferredRegionDrawing){overlay.style.pointerEvents="none"; overlay.replaceChildren(); return;}
@@ -4563,9 +4627,9 @@ function bindExplorationRegionOverlay(plot,overlay) {
   // p2c takes plot-area pixels, so the axis offset (margin plus domain shift) has
   // to be removed first; that offset moves on resize and keeps ellipses aligned.
   const plotPoint=event=>{try { const box=overlay.getBoundingClientRect(); const layout=plot._fullLayout; if(!layout) return null; const xAxis=layout.xaxis,yAxis=layout.yaxis; if(!xAxis||!yAxis) return null; const x=event.clientX-box.left-(xAxis._offset||0),y=event.clientY-box.top-(yAxis._offset||0); const pc1=xAxis.p2c(x),pc2=yAxis.p2c(y); if(!Number.isFinite(pc1)||!Number.isFinite(pc2)) return null; return{x:event.clientX-box.left,y:event.clientY-box.top,pc1,pc2}; } catch(error) { return null; }};
-  const setPreview=(start,end)=>{let preview=overlay.querySelector("ellipse[data-preferred-region-preview]"); if(!preview){preview=document.createElementNS("http://www.w3.org/2000/svg","ellipse");preview.dataset.preferredRegionPreview="true";preview.setAttribute("fill","#176b87");preview.setAttribute("fill-opacity",".08");preview.setAttribute("stroke","#176b87");preview.setAttribute("stroke-width","2");preview.setAttribute("stroke-dasharray","5 3");preview.setAttribute("pointer-events","none");overlay.append(preview);} preview.setAttribute("cx",((start.x+end.x)/2).toFixed(2));preview.setAttribute("cy",((start.y+end.y)/2).toFixed(2));preview.setAttribute("rx",(Math.abs(end.x-start.x)/2).toFixed(2));preview.setAttribute("ry",(Math.abs(end.y-start.y)/2).toFixed(2));};
+  const setPreview=(start,end)=>{let preview=overlay.querySelector("ellipse[data-preferred-region-preview]"); if(!preview){preview=document.createElementNS("http://www.w3.org/2000/svg","ellipse");preview.dataset.preferredRegionPreview="true";preview.setAttribute("fill",state.explorationRegionTarget==="B"?"#d19a20":"#176b87");preview.setAttribute("fill-opacity",".08");preview.setAttribute("stroke",state.explorationRegionTarget==="B"?"#d19a20":"#176b87");preview.setAttribute("stroke-width","2");preview.setAttribute("stroke-dasharray","5 3");preview.setAttribute("pointer-events","none");overlay.append(preview);} preview.setAttribute("cx",((start.x+end.x)/2).toFixed(2));preview.setAttribute("cy",((start.y+end.y)/2).toFixed(2));preview.setAttribute("rx",(Math.abs(end.x-start.x)/2).toFixed(2));preview.setAttribute("ry",(Math.abs(end.y-start.y)/2).toFixed(2));};
   let start=null;
-  const finish=event=>{if(!start)return; const point=plotPoint(event); if(!point){clearPreview(); start=null; return;} clearPreview(); const ellipse={center_pc1:(start.pc1+point.pc1)/2,center_pc2:(start.pc2+point.pc2)/2,radius_pc1:Math.abs(point.pc1-start.pc1)/2,radius_pc2:Math.abs(point.pc2-start.pc2)/2}; start=null; if(ellipse.radius_pc1<=0||ellipse.radius_pc2<=0){setStatus("椭圆需要在 PC1 和 PC2 方向都有正宽度。","warning");return;} updateExplorationPreferredRegion([...(state.preferredRegion?.ellipses||[]),ellipse]);};
+  const finish=event=>{if(!start)return; const point=plotPoint(event); if(!point){clearPreview(); start=null; return;} clearPreview(); const ellipse={center_pc1:(start.pc1+point.pc1)/2,center_pc2:(start.pc2+point.pc2)/2,radius_pc1:Math.abs(point.pc1-start.pc1)/2,radius_pc2:Math.abs(point.pc2-start.pc2)/2}; start=null; if(ellipse.radius_pc1<=0||ellipse.radius_pc2<=0){setStatus("椭圆需要在 PC1 和 PC2 方向都有正宽度。","warning");return;} if(state.explorationRegionTarget==="B") updateExplorationReferenceRegion([...(state.referenceRegionEllipses||[]),ellipse]); else updateExplorationPreferredRegion([...(state.preferredRegion?.ellipses||[]),ellipse]);};
   overlay.addEventListener("mousedown",event=>{if(event.button!==0)return; const point=plotPoint(event); if(!point){start=null; clearPreview(); return;} start=point; event.preventDefault();});
   overlay.addEventListener("mousemove",event=>{if(!start)return; const point=plotPoint(event); if(!point){clearPreview(); start=null; return;} setPreview(start,point);});
   overlay.addEventListener("mouseup",finish);
@@ -4724,7 +4788,7 @@ function renderExplorationCandidateTables(clusterCandidates,performanceCandidate
   el("explorationPreferredRegionCandidates").innerHTML=preferredHead+(preferredBody||'<tr><td colspan="13">暂无满足最小时长的优选区域连续候选。</td></tr>')+"</tbody></table>";
  }
 
-function resetExplorationRegion() { clearTrainingDiagnosticFocus(); state.explorationPlotRevision+=1; state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; state.preferredRegionPlot=null; renderExplorationRegionControls(); }
+function resetExplorationRegion() { clearTrainingDiagnosticFocus(); state.explorationPlotRevision+=1; state.preferredRegion=null; state.preferredRegionDrawing=false; state.preferredRegionRequest+=1; state.preferredRegionUpdateSeq=0; state.preferredRegionPlot=null; state.explorationRegionTarget="A"; state.referenceRegionEllipses=[]; state.regionComparison=null; state.regionComparisonRequest+=1; renderExplorationRegionControls(); }
 function confirmedExplorationSourceRefs() { return new Set(state.trainingWindows.map(window=>String(window.source_ref||"")).filter(Boolean)); }
 function invalidateExploration(reason) {
   closeGroupProfileDialog();
@@ -4743,6 +4807,7 @@ function invalidateExploration(reason) {
 }
 async function updateExplorationPreferredRegion(ellipses) {
   const runId=state.exploration?.exploration_run_id; if(!runId) return;
+  state.regionComparisonRequest+=1; state.regionComparison=null;
   const previous=state.preferredRegion, previousCandidates=state.exploration.preferred_region_candidates||[], previousDecisions=state.exploration.candidate_decisions||[], request=++state.preferredRegionRequest, updateSeq=++state.preferredRegionUpdateSeq;
   const previousPreferredIds=new Set(previousCandidates.map(item=>item.candidate_id));
   state.preferredRegion={ellipses}; state.exploration={...state.exploration,preferred_region_candidates:[],candidate_decisions:previousDecisions.filter(item=>!previousPreferredIds.has(item.candidate_id)&&!String(item.candidate_id).startsWith("preferred-region-candidate-"))}; if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],[]);
@@ -4753,14 +4818,40 @@ async function updateExplorationPreferredRegion(ellipses) {
       state.preferredRegion=data.preferred_region||data;
       state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||[]};
       if(Number.isInteger(Number(data.preferred_region_update_seq))) state.preferredRegionUpdateSeq=Math.max(state.preferredRegionUpdateSeq,Number(data.preferred_region_update_seq));
-      if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus("优选运行区域已同步到服务端最新版本。","warning"); return;
+      if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus("优选运行区域已同步到服务端最新版本。","warning"); await refreshExplorationRegionComparison(); return;
     }
     if(Number.isInteger(Number(data.preferred_region_update_seq))) state.preferredRegionUpdateSeq=Math.max(state.preferredRegionUpdateSeq,Number(data.preferred_region_update_seq));
     state.preferredRegion=data.preferred_region||data; state.exploration={...state.exploration,preferred_region_candidates:data.preferred_region_candidates||[],candidate_decisions:data.candidate_decisions||state.exploration.candidate_decisions||[]}; if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(`优选运行区域已更新：${state.preferredRegion.selected_sample_count} 个完整样本。` ,"success");
+    await refreshExplorationRegionComparison();
   } catch(error) {
     if(request!==state.preferredRegionRequest||state.exploration?.exploration_run_id!==runId) return;
     state.preferredRegion=previous; state.exploration={...state.exploration,preferred_region_candidates:previousCandidates,candidate_decisions:previousDecisions}; if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration); renderExplorationRegionSummary(state.exploration); renderExplorationRegionControls(); renderExplorationCandidateTables(state.exploration.cluster_candidates||[],state.exploration.performance_candidates||[],state.exploration.candidate_decisions||[],state.exploration.preferred_region_candidates||[]); setStatus(error.message,"error");
+    await refreshExplorationRegionComparison();
   }
+}
+async function updateExplorationReferenceRegion(ellipses) {
+  if(!state.exploration?.exploration_run_id) return;
+  state.referenceRegionEllipses=ellipses;
+  if(!refreshExplorationRegionPlot()) renderExplorationPcChart(state.exploration);
+  renderExplorationRegionControls();
+  await refreshExplorationRegionComparison();
+}
+async function refreshExplorationRegionComparison() {
+  const request=++state.regionComparisonRequest,runId=state.exploration?.exploration_run_id,aRequest=state.preferredRegionRequest;
+  state.regionComparison=null;
+  if(!runId) return;
+  if(!state.referenceRegionEllipses.length) { renderExplorationRegionFeatures(state.preferredRegion); return; }
+  state.regionComparison={pending:true}; renderExplorationRegionFeatures(state.preferredRegion);
+  if(state.preferredRegion?.selected_sample_count===undefined&&state.preferredRegion?.ellipses?.length) return;
+  try {
+    const data=await api(`/api/state-exploration/${encodeURIComponent(runId)}/region-comparison`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({exploration_run_id:runId,a_ellipses:state.preferredRegion?.ellipses||[],b_ellipses:state.referenceRegionEllipses})});
+    if(request!==state.regionComparisonRequest||aRequest!==state.preferredRegionRequest||runId!==state.exploration?.exploration_run_id) return;
+    state.regionComparison=data.a_matches===false?{error:"A 区域与服务端不一致，请更新优选 A 后重试比较。"}:data;
+  } catch(error) {
+    if(request!==state.regionComparisonRequest||aRequest!==state.preferredRegionRequest||runId!==state.exploration?.exploration_run_id) return;
+    state.regionComparison={error:`A/B 对比失败：${error.message}。调整或重画 B 可重试。`};
+  }
+  renderExplorationRegionFeatures(state.preferredRegion);
 }
 
 el("uploadButton").addEventListener("click", async () => {
@@ -4982,10 +5073,11 @@ el("stateExplorationButton").addEventListener("click", async () => {
   finally { setBusy(button,false,""); }
 });
 
-el("explorationRegionSelect").addEventListener("click",()=>{ if(!state.exploration) return; state.preferredRegionDrawing=!state.preferredRegionDrawing; renderExplorationRegionControls(); if(!refreshExplorationRegionPlot()||!rebindExplorationRegionOverlay()) renderExplorationPcChart(state.exploration); setStatus(state.preferredRegionDrawing?"椭圆选择已开启：在 PC1/PC2 图中拖动绘制优选运行区域。":"椭圆选择已关闭。","info"); });
+el("explorationRegionSelect").addEventListener("click",()=>{ if(!state.exploration) return; state.preferredRegionDrawing=!state.preferredRegionDrawing; renderExplorationRegionControls(); if(!refreshExplorationRegionPlot()||!rebindExplorationRegionOverlay()) renderExplorationPcChart(state.exploration); setStatus(state.preferredRegionDrawing?"椭圆选择已开启：在 PC1/PC2 图中拖动绘制当前对象的区域。":"椭圆选择已关闭。","info"); });
 el("explorationPcColorMode").addEventListener("change",()=>{ if(state.exploration) renderExplorationPcChart(state.exploration); });
-el("explorationRegionDelete").addEventListener("click",()=>{ const ellipses=state.preferredRegion?.ellipses||[]; if(ellipses.length) updateExplorationPreferredRegion(ellipses.slice(0,-1)); });
-el("explorationRegionClear").addEventListener("click",()=>{ if((state.preferredRegion?.ellipses||[]).length) updateExplorationPreferredRegion([]); });
+el("explorationRegionTarget").addEventListener("change",()=>{state.explorationRegionTarget=el("explorationRegionTarget").value; renderExplorationRegionControls(); rebindExplorationRegionOverlay();});
+el("explorationRegionDelete").addEventListener("click",()=>{ const isB=state.explorationRegionTarget==="B",ellipses=isB?state.referenceRegionEllipses:state.preferredRegion?.ellipses||[]; if(ellipses.length) (isB?updateExplorationReferenceRegion:updateExplorationPreferredRegion)(ellipses.slice(0,-1)); });
+el("explorationRegionClear").addEventListener("click",()=>{ const isB=state.explorationRegionTarget==="B",ellipses=isB?state.referenceRegionEllipses:state.preferredRegion?.ellipses||[]; if(ellipses.length) (isB?updateExplorationReferenceRegion:updateExplorationPreferredRegion)([]); });
 
 function selectedExplorationCandidateRows() {
   return [...document.querySelectorAll(".exploration-candidate-select:checked")];
@@ -5041,12 +5133,13 @@ el("trainButton").addEventListener("click",()=>trainModel("normal_state"));
 
 function renderValidationWindows() {
   invalidateValidationInvestigation();
+  if(!state.validationWindows.length) { delete el("addValidationWindow").dataset.editingId; el("addValidationWindow").textContent="加入验证时段"; }
   state.validation=null;
   el("validationContent").hidden=true; el("validationEmpty").hidden=false;
   el("validationEmpty").textContent="验证窗口已更新，请重新回放独立验证。";
   el("recordValidationDecision").disabled=true; el("freezeDeployment").disabled=true;
   el("validationDecision").querySelector('[value="passed"]').disabled=true;
-  if(el("validationDecision").value==="passed") el("validationDecision").value="hold";
+  el("validationDecision").value="hold";
   el("validationDecisionStatus").textContent="验证窗口已更新，原结论已失效，请重新回放。";
   ["validatedModelDownload","frozenModelDownload","deploymentModelDownload"].forEach(id=>{el(id).hidden=true;el(id).href="#";});
   const body=el("validationWindowTable"); body.replaceChildren();
@@ -5086,6 +5179,7 @@ el("validateButton").addEventListener("click", async () => {
     const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_windows:state.validationWindows,label_column:el("labelColumn").value};
     const data=await api("/api/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(investigationRevision!==state.validationInvestigationRevision||training!==state.training||fileId!==state.fileId||runId!==state.runId) { setStatus("验证上下文已变更，已丢弃过期的页面结果。","warning"); return; }
+    el("validationDecision").value="hold";
     state.validation=data; renderValidation(data); const decisionStatus=el("validationDecisionStatus"); decisionStatus.textContent="验证回放完成，待重新确认；请保存工程师结论。"; decisionStatus.className="status info"; setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
   } catch (error) { setStatus(error.message,"error"); }
   finally { setBusy(button,false,""); }

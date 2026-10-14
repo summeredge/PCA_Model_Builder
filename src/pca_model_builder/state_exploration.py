@@ -8,7 +8,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
-from .cluster_quality import analyze_cluster_quality
+from .cluster_quality import analyze_cluster_quality, mean_deviation_profile
 from .clustering import cluster_model_scores
 from .dpca import fit_dpca
 from .preprocessing import PreprocessingConfig, PreprocessingResult, preprocess_window
@@ -613,6 +613,7 @@ def evaluate_preferred_region(
     *,
     performance_values: pd.Series | None = None,
     performance_config: PerformanceConfig | Mapping[str, Any] | None = None,
+    engineering_data: pd.DataFrame | None = None,
 ) -> dict[str, object]:
     """Evaluate a PC1/PC2 ellipse union against complete exploration samples.
 
@@ -703,7 +704,92 @@ def evaluate_preferred_region(
             }
         )
 
+    if engineering_data is not None:
+        aligned = engineering_data.reindex(points.index)
+        variables = []
+        for tag in aligned.columns:
+            numeric = pd.to_numeric(aligned[tag], errors="coerce").replace([np.inf, -np.inf], np.nan).astype(float)
+            overall = numeric.iloc[np.flatnonzero(finite)]
+            selected_values = numeric.iloc[np.flatnonzero(selected)]
+            variables.append({"tag": tag, **mean_deviation_profile(
+                selected_values.mean(),
+                overall.mean(), overall.std(ddof=0), selected_values.count(),
+            )})
+        statistics["variables"] = sorted(
+            variables, key=lambda item: (item["deviation"] is None, -abs(item["deviation"] or 0)),
+        )
+
     return {"ellipses": normalized_ellipses, **statistics}
+
+
+def evaluate_region_comparison(
+    points: pd.DataFrame,
+    a_ellipses: Sequence[Mapping[str, object]],
+    b_ellipses: Sequence[Mapping[str, object]],
+    pc_columns: Sequence[str],
+    centers: Mapping[str, Sequence[float] | np.ndarray],
+    *,
+    engineering_data: pd.DataFrame,
+    performance_values: pd.Series | None = None,
+    performance_config: PerformanceConfig | Mapping[str, Any] | None = None,
+) -> dict[str, object]:
+    """Compare exclusive A/B engineering means without changing exploration.
+
+    Region summaries retain each full ellipse union, including overlap.
+    Variables use A minus B and B minus A, aligned by index; their signed difference is
+    standardized by all finite-PC samples' population std (ddof=0).
+    Each side needs two finite values for standardized differences. Available
+    means and raw differences survive unavailable comparisons; ties keep column
+    order. Only engineering_data columns are compared.
+    """
+    columns = tuple(str(column) for column in pc_columns)
+    region_a = evaluate_preferred_region(
+        points, a_ellipses, columns, centers,
+        performance_values=performance_values, performance_config=performance_config,
+    )
+    region_b = evaluate_preferred_region(
+        points, b_ellipses, columns, centers,
+        performance_values=performance_values, performance_config=performance_config,
+    )
+    selected_a, finite = _preferred_region_selection_mask(points, region_a["ellipses"], columns)
+    selected_b, _ = _preferred_region_selection_mask(points, region_b["ellipses"], columns)
+    a_only = selected_a & ~selected_b
+    b_only = selected_b & ~selected_a
+    variables = []
+    aligned = engineering_data.reindex(points.index)
+    for tag in aligned.columns:
+        numeric = pd.to_numeric(aligned[tag], errors="coerce").replace([np.inf, -np.inf], np.nan).astype(float)
+        overall = numeric.iloc[np.flatnonzero(finite)]
+        a_values = numeric.iloc[np.flatnonzero(a_only)]
+        b_values = numeric.iloc[np.flatnonzero(b_only)]
+        a_mean, b_mean = a_values.mean(), b_values.mean()
+        a_count, b_count = int(a_values.count()), int(b_values.count())
+        std = overall.std(ddof=0)
+        overall_mean = overall.mean()
+        a_profile = mean_deviation_profile(a_mean, overall_mean, std, a_count)
+        b_profile = mean_deviation_profile(b_mean, overall_mean, std, b_count)
+        reason = a_profile["unavailable_reason"] or b_profile["unavailable_reason"]
+        difference = a_mean - b_mean
+        comparison = mean_deviation_profile(a_mean, b_mean, std, min(a_count, b_count))
+        reason = reason or comparison["unavailable_reason"]
+        variables.append({
+            "tag": tag,
+            "a_mean": a_profile["mean"], "b_mean": b_profile["mean"],
+            "a_valid_count": a_count, "b_valid_count": b_count,
+            "mean_difference": float(difference) if np.isfinite(difference) else None,
+            "standardized_difference": comparison["deviation"] if reason is None else None,
+            "unavailable_reason": reason,
+        })
+    return {
+        "region_a": region_a, "region_b": region_b,
+        "intersection_sample_count": int((selected_a & selected_b).sum()),
+        "a_only_sample_count": int(a_only.sum()),
+        "b_only_sample_count": int(b_only.sum()),
+        "variables": sorted(variables, key=lambda item: (
+            item["standardized_difference"] is None,
+            -abs(item["standardized_difference"] or 0),
+        )),
+    }
 
 
 def _preferred_region_selection_mask(
