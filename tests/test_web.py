@@ -1236,16 +1236,17 @@ def test_stat_formatting_and_ui_value_translation_preserve_semantics():
 
 def test_validation_window_edit_and_evidence_gate_behaviour():
     html = web_model_results.INDEX_HTML
-    windows = html[html.index("function renderValidationWindows()"):html.index('el("validateButton").addEventListener("click", async')]
+    windows = html[html.index("function cancelValidationEdit()"):html.index('el("validateButton").addEventListener("click", async')]
     renderer = html[html.index("function renderValidation(data)"):html.index("\nfunction percent(", html.index("function renderValidation(data)"))]
     script = r'''
       const assert=require("node:assert/strict"),nodes={},messages=[];
       class Element {
-        constructor(){this.value="";this.dataset={};this.children=[];this.listeners={};this.option={};}
+        constructor(){this.value="";this.dataset={};this.children=[];this.listeners={};this.option={};this.classList={add(){},remove(){}};}
+        get rows(){return this.children;} focus(){} setAttribute(){} removeAttribute(){}
         append(...children){this.children.push(...children);} replaceChildren(){this.children=[];}
         addEventListener(event,handler){this.listeners[event]=handler;} querySelector(){return this.option;}
       }
-      const el=id=>nodes[id]??=new Element(),document={createElement:()=>new Element()};
+      const el=id=>nodes[id]??=new Element(),document={createElement:()=>new Element(),querySelectorAll:()=>el('validationWindowTable').children};
       const localTime=value=>value.slice(0,16),displayTime=value=>value;
       const setStatus=message=>messages.push(message); let revision=0;
       function invalidateValidationInvestigation(){revision++;} function candidateId(){return "new";}
@@ -1336,7 +1337,7 @@ def test_region_features_renderer_escapes_tags_and_handles_all_selection_states(
     number = "function groupProfileNumber" + html.split("function groupProfileNumber", 1)[1].split("\n", 1)[0]
     result = _run_node_javascript(
         "const escapeHtml=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\"','&quot;');"
-        "const container={innerHTML:''},el=()=>container,state={referenceRegionEllipses:[]};" + number + renderer
+        "const container={innerHTML:'',querySelector:()=>null},el=()=>container,state={referenceRegionEllipses:[]};" + number + renderer
         + "const variables=Array.from({length:14},(_,i)=>({tag:`<TAG_${i}>`,mean:i,overall_mean:0,deviation:i===13?null:-i,unavailable_reason:i===13?'精确常量':null}));"
         + "renderExplorationRegionFeatures({ellipses:[{}],selected_sample_count:240,variables});const valid=container.innerHTML;"
         + "renderExplorationRegionFeatures({ellipses:[{}]});const loading=container.innerHTML;"
@@ -1600,7 +1601,7 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
         assert "性能达标分布" not in html
         assert "◎ 外圈：性能达标" not in html
         assert "淡化点：未达标或无有效性能值" not in html
-        assert "PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整 episodes，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
+        assert "PC1/PC2 散点绘制全部完整样本；时间轴优先显示完整连续时段，抽样序列仅作回退。性能达标率以完整样本统计为准。性能变量仅用于后验评价，不参与 PCA。" in html
         assert "优选 A" in html and "参照 B" in html
         assert "椭圆选择" in html
         assert "删除上一个" in html

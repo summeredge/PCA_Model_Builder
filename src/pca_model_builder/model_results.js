@@ -256,11 +256,21 @@
     const maximum = Math.max(1, ...ratios) * 1.1;
     const x = position => 45 + position / Math.max(points.length - 1, 1) * 750;
     const y = value => 225 - Math.min(value, maximum) / maximum * 190;
+    addLine(svg,45,225,795,225,"#64748b",1);
+    addLine(svg,45,35,45,225,"#64748b",1);
+    [0,maximum/2,maximum].forEach(value=>varianceLabel(svg,40,y(value)+3,value.toPrecision(3),"end"));
+    varianceLabel(svg,45,254,displayTime(points[0].timestamp,19));
+    varianceLabel(svg,795,254,displayTime(points.at(-1).timestamp,19),"end");
+    varianceLabel(svg,45,16,"限值比（无量纲）");
+    [["T²","#2563eb"],["SPE","#cf3f36"],["控制限 1.0","#d19a20"]].forEach(([label,color],index)=>{
+      const left=400+index*120;addLine(svg,left,12,left+20,12,color,2);varianceLabel(svg,left+25,16,label);
+    });
     addLine(svg, 45, y(1), 795, y(1), "#d19a20", 1);
     [["t2_limit_ratio", "#2563eb"], ["spe_limit_ratio", "#cf3f36"]].forEach(([field, color]) => {
       let segment = [];
       points.forEach((point, position) => {
-        const value = Number(point[field]);
+        const value = point[field];
+        if(point.break_before && segment.length) {replayLine(svg,segment,color);segment=[];}
         if (Number.isFinite(value)) segment.push(`${x(position)},${y(value)}`);
         else if (segment.length) { replayLine(svg, segment, color); segment = []; }
       });
@@ -366,12 +376,12 @@
   async function drawExceedanceOverview(data, session) {
     for (const [index, metric, limits, title] of [[0,"t2",data.t2_limits,"T²"],[1,"spe",data.q_limits,"SPE"]]) {
       const target = exceedancePlots[index];
-      await Plotly.newPlot(target, [{...exceedanceSeries(data.scores,metric,"break_before"),name:title},
+      await Plotly.newPlot(target, [{...exceedanceSeries(data.scores,metric,"break_before"),name:title,line:{color:metric==="t2"?"#2563eb":"#cf3f36"}},
         ...[95,99].map(level => ({x:[data.start,data.end],y:[limits[level],limits[level]],type:"scatter",mode:"lines",
           name:`${level}% 控制限`,line:{dash:level === 95 ? "dash" : "dot"}}))],
-        {title:{text:title},margin:{l:65,r:20,t:35,b:35},dragmode:"select",selectdirection:"h",
-          xaxis:{type:"date",range:[data.start,data.end]},yaxis:{fixedrange:false},legend:{orientation:"h"}},
-        {responsive:true,displaylogo:false,modeBarButtonsToAdd:["select2d","zoom2d","pan2d","resetScale2d"]});
+        {title:{text:title},margin:{l:65,r:20,t:60,b:55},dragmode:"select",selectdirection:"h",
+          xaxis:{type:"date",range:[data.start,data.end]},yaxis:{fixedrange:false},legend:{orientation:"h",y:1.05,yanchor:"bottom"}},
+        {responsive:true,displaylogo:false,modeBarButtons:[["select2d","pan2d","zoom2d","autoScale2d","resetScale2d"]]});
       if (!exceedanceCurrent(session)) return;
       target.on("plotly_selected", event => {
         const selection=target._exceedanceSelection;target._exceedanceSelection=null;
@@ -574,7 +584,7 @@
     return Plotly.newPlot(target,traces,{margin:{l:65,r:20,t:20,b:55},
       xaxis:{type:"date",domain:[0,.48],range:[anomaly.start,anomaly.end],title:{text:"异常区间时间"}},
       xaxis2:{type:"date",domain:[.52,1],anchor:"y",range:[reference.start,reference.end],title:{text:"参考区间时间"}},
-      yaxis:{title:unit||"原始值",...(axis?{range:axis}:{})},shapes,legend:{orientation:"h"}},
+      yaxis:{title:unit||"原始值",...(axis?{range:axis}:{})},shapes,legend:{orientation:"h",y:1.05,yanchor:"bottom"}},
       {responsive:true,displaylogo:false});
   }
   function rawPairStatus(anomaly,reference,tag) {
@@ -1173,7 +1183,8 @@
         marker.setAttribute("r", "4");
         marker.setAttribute("fill", color);
         svg.append(marker);
-        varianceLabel(svg, x(retained), plotTop + 12 + index * 13, `保留 ${retained}`, "middle", "10", color);
+        const retainedLabel=varianceLabel(svg, Math.max(plotLeft+24,Math.min(plotRight-24,x(retained))), plotTop + 12 + index * 15, `保留 ${retained}`, "middle", "10", color);
+        retainedLabel.setAttribute("paint-order","stroke");retainedLabel.setAttribute("stroke","white");retainedLabel.setAttribute("stroke-width","3");
       }
     });
     container.append(heading, summary, svg);
@@ -1325,6 +1336,7 @@
         .map(point => point.tag),
     );
 
+    const loadingLabels=[];
     points.forEach(point => {
       const endX = x(Number(point.pc1) || 0);
       const endY = y(Number(point.pc2) || 0);
@@ -1355,6 +1367,7 @@
         label.setAttribute("font-size", "10");
         label.setAttribute("fill", "#1f2937");
         label.textContent = point.tag;
+        loadingLabels.push({label,rightSide,endX,endY});
         svg.append(label);
       }
     });
@@ -1366,6 +1379,19 @@
     origin.setAttribute("fill", "#111827");
     svg.append(origin);
     chart.append(svg);
+    for(const side of [false,true]) {
+      const labels=loadingLabels.filter(item=>item.rightSide===side).sort((a,b)=>a.endY-b.endY);
+      let previousY=plotTop-15;
+      labels.forEach((item,index)=>{
+        const {label,endX,endY,rightSide}=item;
+        if(label.textContent.length>24) {const title=document.createElementNS(SVG_NS,"title");title.textContent=label.textContent;label.textContent=label.textContent.slice(0,23)+"…";label.append(title);}
+        const length=label.getComputedTextLength(),px=rightSide?Math.min(endX+7,810-length):Math.max(endX-7,10+length);
+        const py=Math.max(previousY+15,Math.min(endY-7,plotBottom-12-(labels.length-index-1)*15));previousY=py;
+        label.setAttribute("x",String(px));label.setAttribute("y",String(py));label.setAttribute("paint-order","stroke");label.setAttribute("stroke","white");label.setAttribute("stroke-width","3");
+        addLine(svg,endX,endY,px,py-3,"#94a3b8",.7);
+        svg.append(label);
+      });
+    }
   }
 
   function addPlotFrame(svg, left, top, size) {

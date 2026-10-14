@@ -181,11 +181,16 @@ const fixture=JSON.parse(fs.readFileSync(process.env.EXCEEDANCE_FIXTURE,'utf8'))
   await page.locator('#exceedanceReset').click();
   await page.waitForFunction(s=>document.querySelector('#exceedanceSpe').layout.xaxis.range[0]===s,fixture.overview.start);
   const geometry=[];
-  for(const width of [1440,900,390]) {
+  for(const width of [1600,1440,1366,1280,1050,900,760,390]) {
     await page.setViewportSize({width,height:1000});
     await page.evaluate(()=>Promise.all(['exceedanceT2','exceedanceSpe','exceedanceRaw','exceedanceCompareRaw','exceedanceCompareLoadRaw'].map(id=>Plotly.Plots.resize(document.getElementById(id)))));
     const g=await page.evaluate(()=>{const d=document.querySelector('#trainingExceedanceDialog'),s=document.querySelector('#exceedanceStart').getBoundingClientRect(),e=document.querySelector('#exceedanceEnd').getBoundingClientRect();return {width:innerWidth,overflow:d.scrollWidth-d.clientWidth,pageOverflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,inputWidths:[s.width,e.width],dialogWidth:d.getBoundingClientRect().width};});
     assert(g.overflow<=1,JSON.stringify(g));assert(g.pageOverflow<=1);assert(Math.abs(g.inputWidths[0]-g.inputWidths[1])<=1);geometry.push(g);
+    const overlap=await page.evaluate(()=>{
+      const d=document.querySelector('#trainingExceedanceDialog'),title=d.querySelector('#exceedanceTitle').getBoundingClientRect(),close=d.querySelector('#exceedanceClose').getBoundingClientRect();
+      return {header:title.right>close.left+1,legend:['exceedanceT2','exceedanceSpe'].some(id=>{const plot=document.getElementById(id),legend=plot.querySelector('.legend')?.getBoundingClientRect();return legend&&[...plot.querySelectorAll('.xtick')].some(t=>legend.bottom>t.getBoundingClientRect().top+1);})};
+    });
+    assert(!overlap.header&&!overlap.legend,JSON.stringify({width,...overlap}));
   }
   await page.setViewportSize({width:1440,height:1000});
   // Empty physical gap and a no-exceedance single-sample interval.

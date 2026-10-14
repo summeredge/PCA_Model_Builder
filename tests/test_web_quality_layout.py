@@ -1744,7 +1744,7 @@ def test_candidate_confirmation_is_separate_from_training_windows() -> None:
     assert "function updateQualityButtonAvailability()" in html
     assert "!state.trainingWindows.some(window=>window.enabled)" in html
     assert "renderTrainingWindows(); renderCandidateWindows(); updateQualityButtonAvailability();" in mutation_source
-    assert '["编辑",()=>editTrainingWindow(window)]' in mutation_source
+    assert '["编辑",()=>editTrainingWindow(window,row)]' in mutation_source
     assert '["删除",()=>updateTrainingWindows({action:"remove",id:window.id},window.enabled)]' in mutation_source
     assert "if(affectsTraining&&previous!==JSON.stringify(state.trainingWindows)) invalidateQuality" in mutation_source
 
@@ -2623,12 +2623,12 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
              'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope ablationGroup exceedanceMetric exceedanceLoadTag explorationPcColorMode'),
         ('main input[type="datetime-local"]', 'datetime', 240,
          'analysisStart analysisEnd candidateStart candidateEnd trendStart trendEnd '
-         'validationStart validationEnd frozenReplayStart frozenReplayEnd'),
+         'frozenReplayStart frozenReplayEnd'),
         ('main select:is(', 'tag', 340,
          'timestampColumn qualityTagSelect explorationPerformanceTag labelColumn '
          'preprocessingPreviewWindow'),
         ('main input:not([type]), main input[type="text"]', 'text', 420,
-             'modelName tagDescription tagUnit candidateComment validationComment '
+             'modelName tagDescription tagUnit candidateComment validationComment validationStart validationEnd '
              'validationDecisionComment frozenModelId frozenBy freezeComment changeReason exceedanceStart exceedanceEnd '
              'exceedanceAnomalyStart exceedanceAnomalyEnd exceedanceReferenceStart exceedanceReferenceEnd'),
         ('main select[multiple]', 'multiple', 420, 'trendTags modelComparisonRuns performanceParents performanceClusters'),

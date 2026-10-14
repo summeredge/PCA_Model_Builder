@@ -37,6 +37,9 @@ _GROUP_PROFILE_DIALOG_STYLE = r"""
   #groupProfileDialog .group-profiles { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); align-items:start; gap:16px; min-width:0; }
   #groupProfileDialog .group-profiles > *, #groupProfileDialog .group-profile-detail > * { min-width:0; max-width:100%; }
   #groupProfileDialog .table-wrap { overflow:auto; max-height:280px; }
+  #groupProfileDialog .group-profiles > .table-wrap table { width:100%; table-layout:auto; }
+  #groupProfileDialog .group-profiles > .table-wrap th { white-space:nowrap; }
+  #groupProfileDialog .profile-variable { display:inline-block; white-space:nowrap; }
   #groupProfileDialog td, #groupProfileDialog th, #groupProfileDialog p { overflow-wrap:anywhere; white-space:normal; }
   #groupProfileDialog .metrics { display:flex; flex-wrap:wrap; gap:8px 16px; }
   #groupProfileDialog .metric { border:0; padding:0; box-shadow:none; background:none; }
@@ -864,12 +867,15 @@ _WORKBENCH_UI_STYLE = r"""
     line-height:1.45;
     white-space:nowrap;
   }
-  .status-label.normal, .status-label.usable,
-  .status-label.accepted, .status-label.used { color:var(--normal); }
+  .status-label.normal, .status-label.usable, .status-label.ready,
+  .status-label.accepted, .status-label.used,
+  .status-label[data-tone="normal"] { color:var(--normal); }
   .status-label.attention, .status-label.review,
-  .status-label.pending { color:#8a5a00; }
+  .status-label.pending, .status-label[data-tone="attention"] { color:#8a5a00; }
   .status-label.abnormal, .status-label.blocking,
-  .status-label.rejected, .status-label.dropped { color:var(--danger); }
+  .status-label.rejected, .status-label.dropped,
+  .status-label[data-tone="abnormal"] { color:var(--danger); }
+  .status-label.disabled, .status-label[data-tone="neutral"] { color:var(--muted); }
   .table-wrap tbody tr:hover { background:#f7fbff; }
   .table-wrap th:first-child, .table-wrap td:first-child { position:sticky; left:0; z-index:1; }
   .table-wrap th:first-child { background:var(--line-soft); }
@@ -949,11 +955,16 @@ _WORKBENCH_UI_STYLE = r"""
     /* 单列布局下侧栏横条是导航，不该靠横向滚动藏步骤：5×190px 的硬下限在 900px
        视口装不下（容器 855px），第 5 步「冻结与部署」被推到滚动区外。
        改用 auto-fit 换行，步骤数与当前位置始终完整可见。 */
-    .workflow-steps { grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+    .workflow-steps { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .workflow-step-next { display:none; }
   }
   @media (max-width:760px) {
     main { padding:var(--space-2); gap:var(--space-2); }
     .workflow-sidebar { position:static; padding:var(--space-3); }
+    .workflow-steps { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .workflow-step { padding:6px; gap:6px; min-height:44px; grid-template-columns:24px minmax(0,1fr) auto; }
+    .workflow-step-number { width:24px; height:24px; }
+    .workflow-step-status { font-size:10px; }
     .candidate-analysis-range { grid-template-columns:minmax(0,1fr); }
     .candidate-tool-tabs { flex-wrap:nowrap; overflow-x:auto; }
     .candidate-tool-tabs > * { flex:0 0 auto; width:auto; }
@@ -1165,7 +1176,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const labels = {
     normal:"正常", usable:"可用", attention:"关注", review:"需确认",
     abnormal:"异常", blocking:"阻止", pending:"待决策", accepted:"已接受",
-    rejected:"已拒绝", used:"已使用", dropped:"已丢弃",
+    rejected:"已拒绝", used:"已使用", dropped:"已丢弃", ready:"可用", disabled:"已禁用",
+  };
+  const tones = {
+    "正常":"normal", "可用":"normal", "已接受":"normal", "已使用":"normal",
+    "关注":"attention", "需确认":"attention", "待决策":"attention",
+    "异常":"abnormal", "阻止":"abnormal", "已拒绝":"abnormal", "已丢弃":"abnormal", "已禁用":"neutral",
   };
   const numericPattern = /^[-+]?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?(?:\s*\/\s*[-+]?\d[\d,]*(?:\.\d+)?(?:e[-+]?\d+)?)?(?:\s*(?:%|分钟|点|样本|条))?$/i;
   // 数值列的表头与内容共用一个 .numeric 语义：整列数据（忽略空单元格）都是数值时，
@@ -1189,12 +1205,17 @@ document.addEventListener("DOMContentLoaded", () => {
   const enhanceTables = () => {
     document.querySelectorAll(".table-wrap td").forEach(cell => {
       const value = cell.textContent.trim();
-      const key = Object.keys(labels).find(statusKey => value === statusKey);
-      if (key && !cell.dataset.uiEnhanced) {
+      const header=cell.closest("table")?.tHead?.rows?.[0]?.cells[cell.cellIndex]?.textContent.trim()||"";
+      const statusColumn=/状态|决策|处理结果|质量/.test(header);
+      const key = statusColumn ? Object.keys(labels).find(statusKey => value === statusKey) : undefined;
+      const localized=statusColumn&&(Object.values(labels).includes(value)||value==="禁用");
+      if ((key || localized) && !cell.querySelector('.status-label') && !cell.children.length) {
         cell.dataset.uiEnhanced = "true";
         const badge = document.createElement("span");
-        badge.className = `status-label ${key}`;
-        badge.textContent = labels[key];
+        badge.className = `status-label${key?` ${key}`:""}`;
+        if(key) badge.dataset.status=key;
+        badge.textContent = key?labels[key]:value==="禁用"?"已禁用":value;
+        badge.dataset.tone = tones[badge.textContent];
         cell.replaceChildren(badge);
         return;
       }
@@ -1223,6 +1244,12 @@ _MODEL_RESULTS_STYLE = r"""
     align-items:start;
   }
   .model-overview-grid > .chart-card { min-width:0; margin:0; }
+  #ablationGroup { width:100%; min-width:0; }
+  #explorationPcChart .textpoint text { paint-order:stroke; stroke:white; stroke-width:3px; stroke-linejoin:round; }
+  .training-window-editor { display:flex; gap:8px; align-items:end; flex-wrap:wrap; }
+  .training-window-editor label { display:grid; gap:4px; flex:1 1 240px; }
+  .training-window-editor input { width:100%; }
+  #validationWindowTable tr.editing { background:var(--accent-soft); outline:2px solid var(--accent); outline-offset:-2px; }
   #modelContent > section, .model-overview-grid > section { padding:0; }
   #modelTrainingDataQuality > p { margin:4px 0 8px; }
   #modelQualitySummary { display:block; }
@@ -1240,9 +1267,11 @@ _MODEL_RESULTS_STYLE = r"""
     display:flex;
     flex-direction:column;
   }
-  .model-projection-grid > .chart-card > .chart { flex:1 1 auto; min-height:420px; }
+  .model-projection-grid > .chart-card > .chart { height:auto; min-height:0; flex:0 0 auto; }
+  #frozenReplayTrend { height:auto; }
+  #frozenReplayTrend svg { display:block; width:100%; height:auto; }
   .model-projection-grid #scoreChart svg,
-  .model-projection-grid #loadingChart svg { width:100%; height:420px; display:block; }
+  .model-projection-grid #loadingChart svg { width:100%; height:auto; display:block; }
   #componentLoadings .component-loading-list {
     display:grid;
     /* 自动列数在 1440px 排到 4 列：卡片 256px、变量名列 54px、名称折 6 行，故固定三档。 */
@@ -1287,15 +1316,14 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-energy-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   @container (max-width:1100px) {
     .model-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .model-overview-grid > :last-child { grid-column:1 / -1; }
   }
   @container (max-width:700px) {
     .model-overview-grid { grid-template-columns:minmax(0,1fr); }
   }
   @media (max-width:1200px) {
     .model-projection-grid { grid-template-columns:1fr; }
-    .model-projection-grid > .chart-card > .chart { min-height:360px; }
-    .model-projection-grid #scoreChart svg,
-    .model-projection-grid #loadingChart svg { height:360px; }
+    .model-projection-grid > .chart-card > .chart { min-height:0; }
     #componentLoadings .component-loading-list { grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
   @media (max-width:760px) {
@@ -1442,6 +1470,8 @@ def _model_results_content_html() -> str:
             <style>
               #trainingExceedanceDialog { box-sizing:border-box; width:90vw; height:90vh; max-width:90vw; max-height:90vh; padding:16px; overflow:auto; border:1px solid #94a3b8; border-radius:8px; }
               #trainingExceedanceDialog::backdrop { background:rgba(15,23,42,.45); }
+              #trainingExceedanceDialog .exceedance-header { display:flex; justify-content:space-between; align-items:center; gap:12px; background:none; color:inherit; padding:0; }
+              #trainingExceedanceDialog .exceedance-header h3 { margin:0; }
               #trainingExceedanceDialog .exceedance-controls { display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin:8px 0; }
               #trainingExceedanceDialog .exceedance-modes button[aria-pressed="true"] { border-color:#2563eb; color:#1d4ed8; }
               #trainingExceedanceDialog .exceedance-compare-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
@@ -1456,7 +1486,7 @@ def _model_results_content_html() -> str:
               #trainingExceedanceDialog h4 { margin:12px 0 6px; }
               @media (max-width:640px) { #trainingExceedanceDialog .exceedance-compare-grid { grid-template-columns:minmax(0,1fr); } }
             </style>
-            <div class="exceedance-controls"><h3 id="exceedanceTitle">T² / SPE 超限诊断</h3><button id="exceedanceClose" type="button" class="secondary">关闭</button></div>
+            <header class="exceedance-header"><h3 id="exceedanceTitle">T² / SPE 超限诊断</h3><button id="exceedanceClose" type="button" class="secondary">关闭</button></header>
             <div id="exceedanceStatus" role="status" aria-live="polite"></div>
             <div class="exceedance-controls exceedance-modes" aria-label="趋势框选模式">
               <span>框选模式</span>
@@ -1732,14 +1762,14 @@ def _build_validation_and_release_stages(validation_panel: str) -> tuple[str, st
         <div id="releaseEmpty" class="empty">模型通过独立验证和工程师确认后，可在此冻结与部署。</div>
         <div id="releaseContent" hidden>
           <h3>① 已验证模型</h3>
-          <div class="notice">冻结与部署导出沿用现有流程；frozen 表示工程冻结，不表示已经部署。</div>
+          <div class="notice">冻结与部署导出沿用现有流程；冻结状态表示工程冻结，不表示已经部署。</div>
           <div class="actions">{validated_download}</div>
           <h3>② 工程冻结</h3>
 {freeze_box}
           <h3>③ 冻结结果</h3>
-          <div class="help">冻结后可下载 frozen 模型包与 deployment 模型包。</div>
+          <div class="help">冻结后可下载冻结模型包与部署模型包。</div>
           <div class="actions">{frozen_download}{deployment_download}</div>
-          <section id="frozenReplay" class="chart-card" hidden>
+          <section id="frozenReplay" hidden>
             <h3>④ 冻结模型历史回放</h3>
             <div class="notice">历史回放仅检查冻结模型在历史数据上的表现，不属于独立验证，也不改变模型状态。</div>
             <div class="validation-box"><label>回放开始<input id="frozenReplayStart" type="datetime-local"></label><label>回放结束<input id="frozenReplayEnd" type="datetime-local"></label><button id="frozenReplayButton" type="button" disabled>执行冻结模型回放</button></div>
@@ -2041,7 +2071,7 @@ def _stabilize_workbench_html(html: str) -> str:
     ).replace(
         '<div class="exploration-controls performance-controls">',
         '<div class="sub-title">性能评价（可选）</div>\n'
-        '          <div class="help">性能 Tag 仅用于状态探索后的 post-hoc 评价，不参与状态探索 PCA。</div>\n'
+        '          <div class="help">性能 Tag 仅用于状态探索后的后验评价，不参与状态探索 PCA。</div>\n'
         '          <div class="exploration-controls performance-controls">',
         1,
     )

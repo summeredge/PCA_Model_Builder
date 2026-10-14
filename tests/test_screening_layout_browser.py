@@ -72,7 +72,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await action('uploadButton','/api/upload');await page.locator('#timestampColumn').selectOption('time');
   await action('inspectButton','/api/inspect');
   assert(await page.locator('#uploadButton').evaluate(e=>e.classList.contains('secondary')));
-  assert(!await page.locator('#inspectButton').evaluate(e=>e.classList.contains('secondary')));
+  assert(await page.locator('#inspectButton').evaluate(e=>e.classList.contains('secondary')));
   await page.locator('[data-panel="configPanel"]').click();
   const qualityText=await page.evaluate(()=>{
    const quality=state.quality,tag=state.selectedTag;state.selectedTag='TAG_A';
@@ -83,7 +83,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert(qualityText.includes('连续输入')&&qualityText.includes('需确认')&&qualityText.includes('建议操作：使用'));
   assert(!/continuous_input|review|use|480\.00/.test(qualityText));
   const workspaceReports=[];
-  for(const width of [1280,1366,1440,900,390]) {
+  for(const width of [1600,1440,1366,1280,1050,900,760,390]) {
    await page.setViewportSize({width,height:1000});
    const report=await page.evaluate(()=>{
     const workspace=document.querySelector('.tag-workspace'),file=document.querySelector('#tagConfigFile');
@@ -271,7 +271,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     tools:[...document.querySelectorAll('.candidate-tool-tab')].map(e=>[e.dataset.panel,e.getAttribute('aria-selected')]),
     fields:[...document.querySelectorAll('#candidatePanel input,#candidatePanel select')].map(e=>[e.id,e.value,e.checked])}));
   const retained = await page.evaluate(()=>JSON.stringify([commonPayload(),state.exploration,state.candidateWindows,state.trainingWindows]));
-  for(const width of [1280,1366,1440,900,390]) {
+  for(const width of [1600,1440,1366,1280,1050,900,760,390]) {
    await page.setViewportSize({width,height:1000});
    await page.locator('#candidateConfigSummary button').click();
    assert(await page.locator('#modelingEligibility').isVisible());
@@ -440,7 +440,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    {variance:[1,1,0,9],columns:['PC1','PC2','PC4'],orientation:'主要沿 PC4'},
    {variance:[1,1,2,3,93],columns:['PC1','PC2','PC3','PC4'],orientation:'主要沿 PC5'},
   ];
-  for(const width of [1280,1366,1440,900,390]) {
+  for(const width of [1600,1440,1366,1280,1050,900,760,390]) {
    await page.setViewportSize({width,height:1000});
    for(const example of centerCases) {
     const report=await page.evaluate(({example,quality})=>{
@@ -556,10 +556,12 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   const performanceText=await profileBody.locator('[data-profile-performance]').innerText();
   assert(performanceText.includes('性能后验评价')&&performanceText.includes('不参与 PCA 聚类'));
   for(const value of [performanceSummary.performance_valid_count,performanceSummary.performance_target_count,`${(performanceSummary.performance_target_ratio*100).toFixed(1)}%`,String(Number(performanceSummary.performance_median.toPrecision(5)))]) assert(performanceText.includes(String(value)));
-  for(const width of [1280,1366,1440,900,390]) {
+  for(const width of [1600,1440,1366,1280,1050,900,760,390]) {
    await page.setViewportSize({width,height:1000});
    const geometry=await profileBody.locator('[data-profile-performance]').evaluate(node=>{const r=node.getBoundingClientRect();return {width:r.width,right:r.right,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth};});
    assert(geometry.width>0&&geometry.right<=width+1,JSON.stringify(geometry));assert.equal(geometry.overflow,0);
+   const dialogGeometry=await profileDialog.evaluate(d=>{const title=d.querySelector('h2').getBoundingClientRect(),close=d.querySelector('#groupProfileDialogClose').getBoundingClientRect();return {overflow:d.scrollWidth-d.clientWidth,overlap:title.right>close.left+1,titleLeft:title.left,closeLeft:close.left};});
+   assert(dialogGeometry.overflow<=1&&!dialogGeometry.overlap&&dialogGeometry.titleLeft<dialogGeometry.closeLeft,JSON.stringify({width,...dialogGeometry}));
    assert(await page.evaluate(()=>state.preferredRegionPlot===globalThis.continuousProfilePlot));
    assert.equal(await continuousView(),continuousBefore);
   }
@@ -609,7 +611,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   if(!clusterDisabled) {await page.locator('#scoreColorMode').selectOption('cluster');assert.deepEqual(await scorePositions(),positions);}
   await page.locator('#scoreColorMode').selectOption('default');
   const modelReports=[];
-  for(const width of [1280,1366,1440,900,390]) {
+  for(const width of [1600,1440,1366,1280,1050,900,760,390]) {
    await page.setViewportSize({width,height:1000});
    await page.evaluate(()=>document.fonts.ready);
    const report=await page.evaluate(()=>{
@@ -617,13 +619,14 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     const table=document.querySelector('#modelQualitySummary table');
     return {width:innerWidth,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
      metricCount:items.length,summaryHeight:bounds.height,overviewColumns:getComputedStyle(document.querySelector('.model-overview-grid')).gridTemplateColumns.split(' ').length,
+     expectedColumns:document.querySelector('.results').clientWidth>1100?3:document.querySelector('.results').clientWidth>700?2:1,
      escaped:items.some(e=>rect(e).left<bounds.left-1||rect(e).right>bounds.right+1),
      headings:[...table.querySelectorAll('thead th')].map(e=>e.textContent),rows:table.querySelectorAll('tbody tr').length,
      nestedPadding:[...document.querySelectorAll('#modelContent > section,.model-overview-grid > section')].map(e=>getComputedStyle(e).padding)};
    });
    assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.escaped,JSON.stringify(report));
    assert.equal(report.metricCount,8);assert.deepEqual(report.headings,['指标','T²统计','SPE/Q统计']);assert.equal(report.rows,8);
-   assert.equal(report.overviewColumns,width>=900?2:1,JSON.stringify(report));
+   assert.equal(report.overviewColumns,report.expectedColumns,JSON.stringify(report));
    assert(report.nestedPadding.every(value=>value==='0px'),JSON.stringify(report));
    modelReports.push(report);
    await page.locator('#modelContent').screenshot({path:path.join(artifacts,`model-results-${width}.png`)});
