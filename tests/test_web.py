@@ -2698,6 +2698,50 @@ def test_final_web_page_exposes_read_only_model_structure_comparison() -> None:
     assert "最佳模型" not in source
 
 
+def test_energy_tables_sort_independently_without_changing_diagnostic_rows():
+    source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
+    renderer = source[source.index("  function energyTable("):source.index("  function energyTablePair(")]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(){this.children=[];this.dataset={};this.attributes={};this.textContent='';this.listeners={};}
+        append(...items){this.children.push(...items);}
+        replaceChildren(...items){this.children=items;}
+        setAttribute(key,value){this.attributes[key]=value;}
+        addEventListener(key,fn){this.listeners[key]=fn;}
+        get firstChild(){return this.children[0];}
+        click(){this.listeners.click();}
+      }
+      const document={createElement:()=>new Element()};
+      function cell(value){const node=new Element();node.textContent=String(value);return node;}
+      __RENDERER__
+      const tags=[{tag:'Z',energy:.10002},{tag:'A',energy:.10001},{tag:'M',energy:.9}];
+      const lags=[{lag_minutes:10,energy:.1},{lag_minutes:2,energy:.9},{lag_minutes:0,energy:.2}];
+      const before=JSON.stringify([tags,lags]);
+      const tag=energyTable('A',tags,'tag').children[1],lag=energyTable('B',lags,'lag_minutes').children[1];
+      const order=table=>table.children[1].children.map(row=>row.children[0].textContent);
+      const header=(table,i)=>table.children[0].children[0].children[i];
+      const click=(table,i)=>header(table,i).firstChild.click();
+      const initial=[order(tag),order(lag)];
+      click(tag,0);const tagAsc=order(tag);click(tag,0);const tagDesc=order(tag);
+      click(lag,0);const lagAsc=order(lag);click(lag,0);const lagDesc=order(lag);
+      click(tag,1);const energyAsc=order(tag);click(tag,1);const energyDesc=order(tag);
+      const lagUnchanged=order(lag);
+      click(lag,1);const lagEnergyAsc=order(lag);click(lag,1);const lagEnergyDesc=order(lag);
+      console.log(JSON.stringify({initial,tagAsc,tagDesc,lagAsc,lagDesc,energyAsc,energyDesc,lagUnchanged,lagEnergyAsc,lagEnergyDesc,
+        unchanged:before===JSON.stringify([tags,lags]),tagStill:order(tag),direction:header(tag,1).attributes['aria-sort'],
+        reset:header(tag,0).attributes['aria-sort'],label:header(tag,1).firstChild.textContent}));
+    """.replace("__RENDERER__", renderer))
+    assert result == {
+        "initial": [["Z", "A", "M"], ["10", "2", "0"]],
+        "tagAsc": ["A", "M", "Z"], "tagDesc": ["Z", "M", "A"],
+        "lagAsc": ["0", "2", "10"], "lagDesc": ["10", "2", "0"],
+        "energyAsc": ["A", "Z", "M"], "energyDesc": ["M", "Z", "A"],
+        "lagUnchanged": ["10", "2", "0"], "lagEnergyAsc": ["10", "0", "2"],
+        "lagEnergyDesc": ["2", "0", "10"], "unchanged": True,
+        "tagStill": ["M", "Z", "A"], "direction": "descending", "reset": "none", "label": "能量占比 ↓",
+    }
+
+
 def test_model_structure_diagnostic_labels_retained_components_and_energy_tables() -> None:
     source = (PROJECT_ROOT / "src" / "pca_model_builder" / "model_results.js").read_text(
         encoding="utf-8"
@@ -2714,8 +2758,8 @@ def test_model_structure_diagnostic_labels_retained_components_and_energy_tables
     assert 'container.className = "model-energy-grid"' in source
     assert "#modelStructureComparison .model-energy-table" in html
     assert "#modelStructureComparison .model-energy-grid" in html
-    assert "grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);" in html
-    assert "width:min(100%,220px);" in html
+    assert "grid-template-columns:repeat(2,minmax(0,1fr));" in html
+    assert "width:min(100%,220px);" not in html
     assert "table-layout:fixed;" in html
     assert "overflow-wrap:anywhere;" in html
     assert "#modelStructureComparison .model-energy-table th:nth-child(2)," in html

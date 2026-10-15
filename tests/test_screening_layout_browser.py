@@ -612,6 +612,26 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await page.evaluate(([exploration,region])=>{state.exploration=exploration;state.preferredRegion=region;renderStateExploration(exploration);},trainingExploration);
   assert((await action('qualityButton','/api/quality')).training_readiness.normal_state.can_train);
   const training=await action('trainButton','/api/train');assert(training.model_quality.training_condition_diagnostic.available);
+  const energyData=await page.evaluate(()=>JSON.stringify(state.training));
+  const tagEnergy=page.locator('#singleModelDiagnostic .tag-energy-table'),lagEnergy=page.locator('#singleModelDiagnostic .lag-energy-table');
+  const energyRows=table=>table.locator('tbody tr').evaluateAll(rows=>rows.map(row=>[...row.cells].map(cell=>cell.textContent)));
+  const originalTagRows=await energyRows(tagEnergy),originalLagRows=await energyRows(lagEnergy);
+  assert(originalTagRows.length>1&&originalLagRows.length>1);
+  await tagEnergy.getByRole('button',{name:'Tag',exact:true}).click();
+  assert.deepEqual((await energyRows(tagEnergy)).map(row=>row[0]),originalTagRows.map(row=>row[0]).sort((a,b)=>a.localeCompare(b)));
+  await tagEnergy.getByRole('button',{name:'Tag ↑',exact:true}).press('Enter');
+  assert.equal(await tagEnergy.locator('th[aria-sort="descending"]').count(),1);
+  assert.deepEqual(await energyRows(lagEnergy),originalLagRows);
+  await lagEnergy.getByRole('button',{name:'Lag（分钟）',exact:true}).click();
+  const sortedLag=originalLagRows.map(row=>Number(row[0])).sort((a,b)=>a-b);
+  assert.deepEqual((await energyRows(lagEnergy)).map(row=>Number(row[0])),sortedLag);
+  await lagEnergy.getByRole('button',{name:'Lag（分钟） ↑',exact:true}).click();
+  assert.deepEqual((await energyRows(lagEnergy)).map(row=>Number(row[0])),sortedLag.reverse());
+  await tagEnergy.getByRole('button',{name:'能量占比',exact:true}).click();
+  await tagEnergy.getByRole('button',{name:'能量占比 ↑',exact:true}).click();
+  const sortedEnergy=(await energyRows(tagEnergy)).map(row=>parseFloat(row[1]));
+  assert.deepEqual(sortedEnergy,[...sortedEnergy].sort((a,b)=>b-a));
+  assert.equal(await page.evaluate(()=>JSON.stringify(state.training)),energyData);
   assert.equal(await page.locator('#varianceChart .variance-item').count(),Math.min(10,training.explained_variance.length));
   assert.equal(await page.locator('#varianceChart .selected').count(),Math.min(10,training.n_components));
   assert.equal(await page.locator('#varianceDetails tbody tr').count(),training.explained_variance.length);
@@ -645,6 +665,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     return {width:innerWidth,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
      metricCount:items.length,summaryHeight:bounds.height,overviewColumns:getComputedStyle(document.querySelector('.model-overview-grid')).gridTemplateColumns.split(' ').length,
      noStretch:items.every(e=>getComputedStyle(e).flexGrow==='0'),
+     energyWidths:[...document.querySelectorAll('#singleModelDiagnostic .model-energy-table')].map(e=>rect(e).width),
+     energyColumns:getComputedStyle(document.querySelector('#singleModelDiagnostic .model-energy-grid')).gridTemplateColumns.split(' ').length,
+     energyTitleSingleLine:[...document.querySelectorAll('#singleModelDiagnostic .model-energy-table h4')].every(e=>rect(e).height<parseFloat(getComputedStyle(e).fontSize)*2),
      labelAboveValue:items.every(e=>rect(e.querySelector('span')).bottom<=rect(e.querySelector('strong')).top),
      rowHeightConsistent:items.every(e=>items.filter(other=>Math.abs(rect(other).top-rect(e).top)<1).every(other=>Math.abs(rect(other).height-rect(e).height)<1)),
      expectedColumns:document.querySelector('.results').clientWidth>700?2:1,
@@ -654,6 +677,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    });
    assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.escaped,JSON.stringify(report));
    assert(report.noStretch,JSON.stringify(report));
+   assert(Math.abs(report.energyWidths[0]-report.energyWidths[1])<1,JSON.stringify(report));
+   assert.equal(report.energyColumns,width>760?2:1,JSON.stringify(report));
+   if(width>=1280)assert(report.energyTitleSingleLine,JSON.stringify(report));
    assert(report.labelAboveValue,JSON.stringify(report));assert(report.rowHeightConsistent,JSON.stringify(report));
    assert.equal(report.metricCount,8);assert.deepEqual(report.headings,['指标','T²统计','SPE/Q统计']);assert.equal(report.rows,8);
    assert.equal(report.overviewColumns,report.expectedColumns,JSON.stringify(report));

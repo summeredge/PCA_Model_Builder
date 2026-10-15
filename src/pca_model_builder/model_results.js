@@ -1095,14 +1095,33 @@
     const heading = document.createElement("h4");
     heading.textContent = title;
     const table = document.createElement("table");
-    table.innerHTML = `<thead><tr><th>${key === "tag" ? "Tag" : "Lag（分钟）"}</th><th>能量占比</th></tr></thead>`;
+    const head = document.createElement("thead"), headers = document.createElement("tr");
     const body = document.createElement("tbody");
-    rows.forEach(row => {
-      const tr = document.createElement("tr");
-      tr.append(cell(row[key]), cell(`${(row.energy * 100).toFixed(2)}%`));
-      body.append(tr);
+    let sortKey = null, ascending = true;
+    const renderRows = values => {
+      body.replaceChildren();
+      values.forEach(row => {
+        const tr = document.createElement("tr");
+        tr.append(cell(row[key]), cell(`${(row.energy * 100).toFixed(2)}%`));
+        body.append(tr);
+      });
+    };
+    [[key, key === "tag" ? "Tag" : "Lag（分钟）"], ["energy", "能量占比"]].forEach(([field, label]) => {
+      const th = document.createElement("th"), button = document.createElement("button");
+      button.type = "button"; button.textContent = label; th.setAttribute("aria-sort", "none");
+      button.addEventListener("click", () => {
+        ascending = sortKey === field ? !ascending : true;
+        sortKey = field;
+        [...headers.children].forEach(header => { header.setAttribute("aria-sort", "none"); header.firstChild.textContent = header.firstChild.dataset.label; });
+        th.setAttribute("aria-sort", ascending ? "ascending" : "descending");
+        button.textContent = `${label} ${ascending ? "↑" : "↓"}`;
+        renderRows([...rows].sort((a, b) => (field === "tag" ? a[field].localeCompare(b[field]) : a[field] - b[field]) * (ascending ? 1 : -1)));
+      });
+      button.dataset.label = label;
+      th.append(button); headers.append(th);
     });
-    table.append(body);
+    head.append(headers); renderRows(rows);
+    table.append(head, body);
     container.append(heading, table);
     return container;
   }

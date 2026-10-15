@@ -1314,7 +1314,7 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-variance-summary { display:flex; flex-wrap:wrap; gap:4px 14px; margin:0 0 10px; }
   #modelStructureComparison .model-energy-grid {
     display:grid;
-    grid-template-columns:minmax(0,1.35fr) minmax(220px,.65fr);
+    grid-template-columns:repeat(2,minmax(0,1fr));
     gap:12px 16px;
     align-items:start;
     max-width:900px;
@@ -1327,7 +1327,8 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-energy-table td:nth-child(2) { width:7.5em; text-align:right; white-space:nowrap; }
   #modelStructureComparison .model-energy-table th,
   #modelStructureComparison .model-energy-table td { padding:6px 8px; }
-  #modelStructureComparison .lag-energy-table { width:min(100%,220px); }
+  #modelStructureComparison .model-energy-table h4 { overflow-wrap:anywhere; }
+  #modelStructureComparison .model-energy-table th button { background:none; border:0; border-radius:0; color:inherit; font:inherit; font-weight:inherit; padding:0; text-align:inherit; }
   #modelStructureComparison .lag-energy-table th:first-child,
   #modelStructureComparison .lag-energy-table td:first-child { text-align:right; white-space:nowrap; }
   #modelStructureComparison #modelComparisonRuns { height:auto; min-height:0; }
