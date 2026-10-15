@@ -42,6 +42,7 @@ function candidateSourceLabel(window){return window.source||"未知来源"}
 function percent(x){return x==null?"—":`${(x*100).toFixed(1)}%`}
 function selectedTags(){return [...state.selectedModelTags]}
 function setStatus(message){messages.push(message)}
+function currentValidationSource(){return {file_id:state.fileId};}
 globalThis.showWorkflowStage=id=>calls.push(id);
 globalThis.showCandidateTool=id=>calls.push(id);
 const n={id:"N03",type:"normal_validation",start:"2026-01-02T01:02:03",end:"2026-01-02T02:03:04",enabled:true};
@@ -140,21 +141,35 @@ const assert=require("node:assert/strict"), nodes={},requests=[];
 function $(id){return nodes[id]??={value:"1000",replaceChildren(){},textContent:""}}
 const trendIds=["dpTrendVar1","dpTrendVar2","dpTrendVar3","dpTrendVar4"];
 let focus, lastTrend=null, hasDraggedTrendSelection=true, rendered=null;
-function commonPayload(){return {file_id:"current"}}
+let trendRequestRevision=0,trendSourceFileId=null;
+function setBusy(){}
+const state={fileId:"training",training:{id:"run"},trainingWindows:[{id:"train"}],selectedModelTags:["training-only"]};
+let commonCalls=0;
+function commonPayload(){commonCalls++;return {file_id:state.fileId,modeling_eligibility:{keep_conditions:[{column:"training-only",operator:">",value:0}]},state_filters:[{column:"training-only"}]}}
 function populateSelectors(){}
+function fillSelect(node,values){node.options=[...values]}
 function currentValidationInvestigationFocus(){return focus}
+function clearValidationInvestigationFocus(){focus=null}
 function renderTrendPage(data){rendered=data}
 function api(url,options){return new Promise((resolve,reject)=>requests.push({url,payload:JSON.parse(options.body),resolve,reject}))}
 const tags=Array.from({length:10},(_,i)=>`tag${i}`);
-const initial={start:"2026-01-01T10:50:03",end:"2026-01-01T11:20:04"};
+const source={file_id:"independent-validation",timestamp_column:"validation_time",encoding:"gb18030",filename:"validation.csv",inspection:{numeric_candidate_columns:tags},label_column:"label"};
+const initial={context:{source},start:"2026-01-01T10:50:03",end:"2026-01-01T11:20:04"};
 function resolveBatches(items){items.forEach(item=>item.resolve({series:item.payload.tags.map(name=>({name,points:[]})),statistics:Object.fromEntries(item.payload.tags.map(tag=>[tag,{current:{sample_count:3}}])),histograms:{},axis_limits:{},ranges:{}}))}
 __HELPERS__
 (async()=>{
+ const before=JSON.stringify(state);
  focus=initial;
  const pending=showValidationInvestigationTrend(tags,initial);
  assert.equal(requests.length,3);
  assert.deepEqual(requests.flatMap(item=>item.payload.tags),tags);
  assert(requests.every(item=>item.url==="/api/trend"&&item.payload.tags.length<=4&&item.payload.start===initial.start&&item.payload.end===initial.end));
+ for(const {payload} of requests){
+   assert.equal(payload.file_id,source.file_id);assert.equal(payload.timestamp_column,source.timestamp_column);assert.equal(payload.encoding,source.encoding);
+   assert.equal(payload.display_mode,"raw");assert.equal(payload.purpose,"trend");
+   for(const key of ["modeling_eligibility","state_filters","training_windows","label_column","inspection"]) assert.equal(key in payload,false,key);
+ }
+ assert.equal(commonCalls,0);assert.deepEqual(nodes.dpTrendVar1.options,tags);
  focus=null;resolveBatches(requests);await pending;
  assert.equal(rendered,null);assert.equal(lastTrend,null);
  focus={...initial};requests.length=0;
@@ -170,8 +185,262 @@ __HELPERS__
  requests.forEach(item=>item.reject(new Error("read failed")));
  await assert.rejects(failed,/read failed/);
  assert.equal(nodes.dpTrendChart.textContent,"read failed");
+ // An older failure must not replace a newer investigation, regardless of completion order.
+ for(const oldFailsFirst of [true,false]){
+   requests.length=0;focus={...initial};
+   const old=showValidationInvestigationTrend(tags,focus);const oldRequests=requests.splice(0);
+   focus={...initial};const newer=showValidationInvestigationTrend(tags,focus);
+   const rejected=assert.doesNotReject(old);
+   if(oldFailsFirst){oldRequests.forEach(item=>item.reject(new Error("old failure")));await rejected;}
+   resolveBatches(requests);await newer;const latest=rendered,chart=nodes.dpTrendChart.textContent;
+   if(!oldFailsFirst){oldRequests.forEach(item=>item.reject(new Error("old failure")));await rejected;}
+   assert.equal(rendered,latest);assert.equal(lastTrend,latest);assert.equal(nodes.dpTrendChart.textContent,chart);
+ }
+ requests.length=0;focus={...initial};
+ const oldSuccess=showValidationInvestigationTrend(tags,focus);const oldRequests=requests.splice(0);
+ focus={...initial};const newSuccess=showValidationInvestigationTrend(tags,focus);
+ resolveBatches(requests);await newSuccess;const latest=rendered;
+ resolveBatches(oldRequests);await oldSuccess;assert.equal(rendered,latest);assert.equal(lastTrend,latest);
+ requests.length=0;
+ await showValidationInvestigationTrend(tags,initial);assert.equal(requests.length,0);
+ focus={...initial,context:{}};
+ assert.throws(()=>showValidationInvestigationTrend(tags,focus),/缺少数据源/);assert.equal(requests.length,0);
+ assert.equal(JSON.stringify(state),before);assert.equal(commonCalls,0);
+ const training=showModelTagsTrend(tags,{start:initial.start,end:initial.end},()=>true);
+ assert.equal(commonCalls,3);assert(requests.every(item=>item.payload.file_id==="training"&&item.payload.modeling_eligibility));
+ resolveBatches(requests);await training;
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''.replace("__HELPERS__", helpers)
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+def test_validation_investigation_trend_redraw_and_reset_keep_source():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required")
+    source = web_dataproject._DATAPROJECT_TREND_SCRIPT
+    helpers = source[source.index("  async function requestTrend("):source.index('  $("dpTrendToAnalysis").addEventListener')]
+    reset = source[source.index('  $("dpTrendReset").addEventListener'):source.index('  $("dpDrawScatter").addEventListener')]
+    script = r'''
+const assert=require("node:assert/strict"),nodes={},requests=[],messages=[];
+function $(id){return nodes[id]??={value:"",textContent:"",innerHTML:"",handlers:{},replaceChildren(){this.innerHTML=""},addEventListener(event,fn){this.handlers[event]=fn},click(){return this.handlers.click()}}}
+const trendIds=["dpTrendVar1","dpTrendVar2","dpTrendVar3","dpTrendVar4"];
+const source={file_id:"validation",timestamp_column:"validation_time",encoding:"gb18030",inspection:{trend_default_start:"2026-02-01T00:00:00",trend_default_end:"2026-02-02T00:00:00"}};
+let focus={context:{source}},lastTrend=null,rendered=null,hasDraggedTrendSelection=true,trendRequestRevision=0,commonCalls=0,trendSourceFileId=null;
+const state={fileId:"training",training:{id:"run"},trainingWindows:[{id:"train"}],inspection:{trend_default_start:"2025-01-01",trend_default_end:"2025-01-02"}};
+function commonPayload(){commonCalls++;return {file_id:state.fileId,modeling_eligibility:{keep_conditions:[{column:"training-only",operator:">",value:1}]}}}
+function currentValidationInvestigationFocus(){return focus}
+let investigationFocusClears=0;
+function clearValidationInvestigationFocus(){investigationFocusClears++;focus=null}
+function invalidateValidationInvestigation(){throw new Error("ordinary trends must preserve validation investigation context")}
+function chosen(ids){return ids.map(id=>$(id).value).filter(Boolean)}
+function syncToLegacy(){}
+function setBusy(button,busy){button.disabled=busy}
+function setStatus(message){messages.push(message)}
+function renderTrendPage(data){rendered=data;$("dpTrendChart").textContent=data.marker}
+function renderTrendChart(){throw new Error("must not redraw a cached training range during investigation")}
+function localTime(value){return value}
+function populateSelectors(){}
+function fillSelect(){}
+function api(url,options){return new Promise((resolve,reject)=>requests.push({payload:JSON.parse(options.body),resolve,reject}))}
+function result(marker){return {marker,series:[],statistics:{},histograms:{},axis_limits:{},ranges:{},rows_count:1,raw_rows:1,max_points:1000}}
+function snapshot(){return JSON.stringify([rendered,lastTrend,$("dpTrendChart").textContent,$("dpTrendStats").innerHTML,messages,$("dpDrawTrend").disabled])}
+__HELPERS__
+__RESET__
+(async()=>{
+ const before=JSON.stringify(state);
+ $("dpTrendVar1").value="validation-tag";$("dpTrendStart").value="2026-02-01T01:00:00";$("dpTrendEnd").value="2026-02-01T02:00:00";$("dpTrendMaxPoints").value="1000";
+ let pending=$("dpDrawTrend").click(),request=requests.shift();
+ assert.equal(request.payload.file_id,source.file_id);assert.equal(request.payload.timestamp_column,source.timestamp_column);assert.equal(request.payload.encoding,source.encoding);
+ assert.equal("modeling_eligibility" in request.payload,false);assert.deepEqual(request.payload.tags,["validation-tag"]);
+ request.resolve(result("initial"));await pending;
+ // Edited controls keep the same source; same-focus requests must not overwrite each other.
+ for(const oldFails of [false,true]) for(const oldFirst of [false,true]){
+   const old=$("dpDrawTrend").click(),oldRequest=requests.shift();
+   $("dpTrendVar1").value="changed-tag";$("dpTrendStart").value="2026-02-01T03:00:00";
+   const newer=$("dpDrawTrend").click(),newRequest=requests.shift();
+   assert.equal(newRequest.payload.file_id,"validation");assert.equal(newRequest.payload.start,$("dpTrendStart").value);assert.deepEqual(newRequest.payload.tags,["changed-tag"]);
+   const finishOld=()=>oldFails?oldRequest.reject(new Error("stale error")):oldRequest.resolve(result("stale"));
+   if(oldFirst){const saved=snapshot();finishOld();await old;assert.equal(snapshot(),saved);assert.equal($("dpDrawTrend").disabled,true)}
+   newRequest.resolve(result("latest"));await newer;const saved=snapshot();
+   if(!oldFirst){finishOld();await old;assert.equal(snapshot(),saved)}
+   assert.equal(rendered.marker,"latest");assert.equal($("dpDrawTrend").disabled,false);
+ }
+ // Changing or clearing the investigation invalidates pending redraws.
+ for(const nextFocus of [{context:{source:{...source,file_id:"other"}}},null]) for(const fails of [false,true]){
+   focus={context:{source}};const old=$("dpDrawTrend").click(),request=requests.shift();
+   focus=nextFocus;const saved=JSON.stringify([rendered,lastTrend,messages,$("dpTrendChart").textContent]);
+   if(fails)request.reject(new Error("stale focus"));else request.resolve(result("stale focus"));await old;
+   assert.equal(JSON.stringify([rendered,lastTrend,messages,$("dpTrendChart").textContent]),saved);
+ }
+ // A manual redraw supersedes an outstanding initial investigation batch, including its error.
+ for(const fails of [false,true]){
+   focus={context:{source},start:"2026-02-01T00:00:00",end:"2026-02-02T00:00:00"};
+   const initial=showValidationInvestigationTrend(["tag"],focus),batch=requests.shift();
+   const redraw=$("dpDrawTrend").click(),request=requests.shift();request.resolve(result("redraw"));await redraw;
+   const saved=snapshot();if(fails)batch.reject(new Error("stale batch"));else batch.resolve(result("stale batch"));await initial;assert.equal(snapshot(),saved);
+ }
+ // Opening another investigation also supersedes a pending manual redraw.
+ const oldRedraw=$("dpDrawTrend").click(),oldRequest=requests.shift();
+ focus={...focus};const initial=showValidationInvestigationTrend(["tag"],focus),batch=requests.shift();
+ batch.resolve(result("new investigation"));await initial;const saved=snapshot();
+ oldRequest.reject(new Error("old redraw"));await oldRedraw;assert.equal(snapshot(),saved);
+ const failed=$("dpDrawTrend").click();requests.shift().reject(new Error("current failure"));await failed;
+ assert.equal($("dpTrendChart").textContent,"current failure");assert.equal(messages.at(-1),"current failure");assert.equal($("dpDrawTrend").disabled,false);
+ focus={context:{source}};$("dpTrendReset").click();request=requests.shift();
+ assert.equal(request.payload.file_id,"validation");assert.equal(request.payload.start,source.inspection.trend_default_start);assert.equal(request.payload.end,source.inspection.trend_default_end);assert.equal(request.payload.max_points,100000);
+ request.resolve(result("reset"));await new Promise(resolve=>setImmediate(resolve));
+ focus={context:{source:{...source,inspection:null}}};const start=$("dpTrendStart").value;
+ $("dpTrendReset").click();assert.equal(requests.length,0);assert.equal($("dpTrendStart").value,start);assert.match(messages.at(-1),/数据检查/);
+ focus={context:{}};await $("dpDrawTrend").click();assert.equal(requests.length,0);assert.match(messages.at(-1),/缺少数据源/);
+ assert.equal(commonCalls,0);assert.equal(JSON.stringify(state),before);
+ focus={context:{source}};
+ const report={run_id:"run",contributions:[{tag:"validation-tag"}]},context={source,report};
+ state.validation=report;state.validationInvestigationContext=context;
+ const diagnostic=showModelTagsTrend(["training-tag"],{start:"2025-01-01",end:"2025-01-02"},()=>true);
+ request=requests.shift();assert.equal(focus,null);assert.equal(investigationFocusClears,1);assert.equal(request.payload.file_id,"training");
+ request.resolve(result("diagnostic"));await diagnostic;
+ assert.equal(state.validation,report);assert.equal(state.validationInvestigationContext,context);assert.equal(context.report,report);
+ focus=null;const training=$("dpDrawTrend").click();request=requests.shift();assert.equal(request.payload.file_id,"training");assert.equal(commonCalls,2);request.resolve(result("training"));await training;
+ assert.equal(state.validation,report);assert.equal(state.validationInvestigationContext,context);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''.replace("__HELPERS__", helpers).replace("__RESET__", reset)
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+def test_external_validation_trend_cannot_write_modeling_windows():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required")
+    source = web_dataproject._DATAPROJECT_TREND_SCRIPT
+    handlers = source[source.index('  $("dpTrendToAnalysis").addEventListener'):source.index('  $("dpTrendReset").addEventListener')]
+    script = r'''
+const assert=require("node:assert/strict"),nodes={},messages=[],writes=[];
+function $(id){return nodes[id]??={value:`old-${id}`,addEventListener(event,fn){this.click=fn}}}
+let focus,lastTrend=null,trendSourceFileId="external";
+const state={fileId:"training",training:{id:"run"},trainingWindows:[{id:"train"}],candidateWindows:[],excludedWindows:[]};
+function currentValidationInvestigationFocus(){return focus}
+function setStatus(message,level){messages.push({message,level})}
+function invalidateModellingResults(){writes.push("invalidate")}
+function addCandidateWindow(...args){state.candidateWindows.push(args)}
+function addExcludedWindow(...args){state.excludedWindows.push(args)}
+__HANDLERS__
+const buttons=["dpTrendToAnalysis","dpTrendToReference","dpTrendToExclusion"];
+$("dpTrendStart").value="validation-start";$("dpTrendEnd").value="validation-end";
+for(const id of ["analysisStart","analysisEnd","explorationStart","explorationEnd"]) $(id);
+focus={context:{source:{file_id:"external"}}};
+const before=JSON.stringify(state),ranges=JSON.stringify(Object.fromEntries(Object.entries(nodes).map(([id,node])=>[id,node.value])));
+buttons.forEach(id=>$(id).click());
+assert.equal(JSON.stringify(state),before);assert.equal(JSON.stringify(Object.fromEntries(Object.entries(nodes).map(([id,node])=>[id,node.value]))),ranges);assert.deepEqual(writes,[]);
+assert.equal(messages.length,3);assert(messages.every(item=>item.level==="warning"&&item.message.includes("独立验证文件")&&item.message.includes("不能写入")));
+// Clearing investigation focus does not turn a displayed external chart into training data.
+lastTrend={source_file_id:"external"};focus=null;buttons.forEach(id=>$(id).click());
+assert.equal(JSON.stringify(state),before);assert.deepEqual(writes,[]);
+assert.equal(JSON.stringify(Object.fromEntries(Object.entries(nodes).map(([id,node])=>[id,node.value]))),ranges);
+assert.equal(messages.length,6);
+lastTrend={source_file_id:"training"};
+trendSourceFileId="training";
+// Ordinary browsing and investigation of the training file retain their existing writes.
+for(const nextFocus of [null,{context:{source:{file_id:"training"}}}]){
+ focus=nextFocus;const candidates=state.candidateWindows.length,excluded=state.excludedWindows.length;
+ buttons.forEach(id=>$(id).click());
+ assert.equal($("analysisStart").value,"validation-start");assert.equal($("explorationEnd").value,"validation-end");
+ assert.equal(state.candidateWindows.length,candidates+1);assert.equal(state.excludedWindows.length,excluded+1);
+}
+assert.deepEqual(state.training,{id:"run"});assert.deepEqual(state.trainingWindows,[{id:"train"}]);
+'''.replace("__HANDLERS__", handlers)
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("cached_training", [False, True], ids=["no-result", "training-result"])
+def test_pending_validation_trend_range_keeps_source_after_focus_clear(cached_training):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required")
+    source = web_dataproject._DATAPROJECT_TREND_SCRIPT
+    helpers = source[source.index("  async function requestTrend("):source.index('  $("dpTrendReset").addEventListener')]
+    script = r'''
+const assert=require("node:assert/strict"),nodes={},requests=[],messages=[];
+function $(id){return nodes[id]??={value:"",textContent:"",handlers:{},replaceChildren(){},addEventListener(event,fn){this.handlers[event]=fn},click(){return this.handlers.click()}}}
+const trendIds=["dpTrendVar1","dpTrendVar2","dpTrendVar3","dpTrendVar4"];
+let focus=null,lastTrend=__CACHED__?{source_file_id:"training"}:null;
+let trendSourceFileId=null,trendRequestRevision=0,hasDraggedTrendSelection=false,rendered=null;
+const state={fileId:"training",training:{run_id:"fixed"},candidateWindows:[],excludedWindows:[],invalidations:0};
+function commonPayload(){return {file_id:state.fileId,timestamp_column:"time"}}
+function currentValidationInvestigationFocus(){return focus}
+function clearValidationInvestigationFocus(){focus=null}
+function populateSelectors(){} function fillSelect(){} function syncToLegacy(){}
+function chosen(ids){return ids.map(id=>$(id).value).filter(Boolean)}
+function setBusy(button,busy){button.disabled=busy}
+function setStatus(message,level){messages.push({message,level})}
+function renderTrendPage(data){rendered=data}
+function invalidateModellingResults(){state.invalidations++}
+function addCandidateWindow(...args){state.candidateWindows.push(args)}
+function addExcludedWindow(...args){state.excludedWindows.push(args)}
+function api(url,options){return new Promise((resolve,reject)=>requests.push({payload:JSON.parse(options.body),resolve,reject}))}
+function result(marker){return {marker,series:[],statistics:{},histograms:{},axis_limits:{},ranges:{}}}
+const buttons=["dpTrendToAnalysis","dpTrendToReference","dpTrendToExclusion"];
+const rangeIds=["analysisStart","analysisEnd","explorationStart","explorationEnd"];
+rangeIds.forEach(id=>$(id).value=`original-${id}`);
+const original=JSON.stringify([state,rangeIds.map(id=>$(id).value)]);
+function assertBlocked(){
+ const count=messages.length;buttons.forEach(id=>$(id).click());
+ assert.equal(JSON.stringify([state,rangeIds.map(id=>$(id).value)]),original);
+ assert.equal(messages.length,count+3);
+ assert(messages.slice(-3).every(item=>item.level==="warning"&&item.message.includes("独立验证文件")));
+ assert.equal(trendSourceFileId,"validation");
+}
+function openValidation(){
+ focus={context:{source:{file_id:"validation",timestamp_column:"vtime"}},start:"2026-02-01",end:"2026-02-02"};
+ const task=showValidationInvestigationTrend(["A"],focus),request=requests.shift();
+ assert.equal(request.payload.file_id,"validation");assert.equal(trendSourceFileId,"validation");
+ return {task,request};
+}
+function openTraining(){
+ const task=showModelTagsTrend(["A"],{start:"2026-01-01",end:"2026-01-02"},()=>true),request=requests.shift();
+ assert.equal(focus,null);assert.equal(request.payload.file_id,"training");assert.equal(trendSourceFileId,"training");
+ return {task,request};
+}
+__HELPERS__
+(async()=>{
+ // Waiting, failed, successful and stale external requests all retain the input range's identity.
+ for(const fails of [false,true]) for(const clearBeforeFinish of [false,true]){
+  lastTrend=__CACHED__?{source_file_id:"training"}:null;
+  const {task,request}=openValidation();assertBlocked();
+  const completion=fails&&!clearBeforeFinish?assert.rejects(task,/read failed/):task;
+  if(clearBeforeFinish)clearValidationInvestigationFocus();
+  assertBlocked();
+  if(fails)request.reject(new Error("read failed"));else request.resolve(result("external"));
+  await completion;clearValidationInvestigationFocus();assertBlocked();
+ }
+ // A redraw starts a new request but never loses external ownership when focus disappears.
+ const initial=openValidation();
+ $("dpTrendVar1").value="A";const redraw=$("dpDrawTrend").click(),redrawRequest=requests.shift();
+ clearValidationInvestigationFocus();assertBlocked();redrawRequest.reject(new Error("redraw failed"));await redraw;assertBlocked();
+ initial.request.resolve(result("old batch"));await initial.task;assertBlocked();
+ // Both directions and completion orders: responses never assign source ownership.
+ for(const validationIsNew of [false,true]) for(const oldFirst of [false,true]) for(const oldFails of [false,true]){
+  const old=validationIsNew?openTraining():openValidation();
+  const newer=validationIsNew?openValidation():openTraining();
+  const expected=validationIsNew?"validation":"training";
+  const finishOld=()=>oldFails?old.request.reject(new Error("old failure")):old.request.resolve(result("old"));
+  if(oldFirst){finishOld();await old.task;assert.equal(trendSourceFileId,expected)}
+  newer.request.resolve(result("new"));await newer.task;
+  if(!oldFirst){finishOld();await old.task}
+  assert.equal(trendSourceFileId,expected);assert.equal(rendered.marker,"new");
+  if(validationIsNew){clearValidationInvestigationFocus();assertBlocked()}
+ }
+ // Explicitly return to training; all three operations work even before its request completes.
+ const training=openTraining();buttons.forEach(id=>$(id).click());
+ assert.equal($("analysisStart").value,"2026-01-01");assert.equal($("explorationEnd").value,"2026-01-02");
+ assert.equal(state.candidateWindows.length,1);assert.equal(state.excludedWindows.length,1);assert.equal(state.invalidations,1);
+ training.request.resolve(result("training"));await training.task;
+ assert.equal(requests.length,0);
+})().catch(error=>{console.error(error);process.exitCode=1});
+'''.replace("__HELPERS__", helpers).replace("__CACHED__", str(cached_training).lower())
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr
 
@@ -190,6 +459,7 @@ function el(id){return nodes[id]??={value:"",replaceChildren(){}}}
 const document={querySelectorAll:()=>[]};
 function setBusy(){}
 function setStatus(message){messages.push(message)}
+function currentValidationSource(){return {file_id:state.fileId,inspection:{}};}
 let renders=0;
 function renderValidation(){renders++}
 function api(){return new Promise(resolve=>pending.push(resolve))}
@@ -207,8 +477,9 @@ async function validateClick(){__HANDLER__}
   Object.assign(state,saved);
  }
  const older=validateClick(),newer=validateClick(),response={latest:true};
- pending.pop()(response);await newer;
- pending.shift()({oldResponse:true});await older;
+ await newer;assert.equal(pending.length,1); // One writer per run until replay completes.
+ invalidateValidationInvestigation();pending.shift()({oldResponse:true});await older;
+ const latest=validateClick();pending.shift()(response);await latest;
  assert.equal(state.validation,response);assert.equal(renders,1);
 })().catch(error=>{console.error(error);process.exitCode=1});
 '''.replace("__INVALIDATION__", invalidation).replace("__HANDLER__", handler)

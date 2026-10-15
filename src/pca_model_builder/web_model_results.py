@@ -92,7 +92,7 @@ _FORM_WIDTH_STYLE = r"""
   main input[type="datetime-local"] { width:min(100%,var(--field-datetime-width)); }
   /* Tag、变量、列和窗口选择有长名称，使用同一宽度语义。 */
   main select:is(#timestampColumn, #qualityTagSelect, #explorationPerformanceTag,
-    #labelColumn, #preprocessingPreviewTagSelect, #preprocessingPreviewWindow,
+    #labelColumn, #validationTimestampColumn, #preprocessingPreviewTagSelect, #preprocessingPreviewWindow,
     #dpTrendVar1, #dpTrendVar2, #dpTrendVar3, #dpTrendVar4) {
     width:min(100%,var(--field-tag-width));
   }

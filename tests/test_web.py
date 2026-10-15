@@ -1166,6 +1166,7 @@ def test_validation_ui_revokes_stale_approval_and_restores_latest_passed_result(
       function renderValidationInvestigation(){}
       __INVALIDATION__
       function setBusy(){} function setStatus(){} function renderValidationWindows(){}
+      function currentValidationSource(){return {file_id:state.fileId,inspection:{}};}
       function modelLifecycle(){return {purpose:"正常状态模型",status:"候选"};}
       function metric(){return "";} function renderValidationMetricDetails(){}
       function renderContributionStability(){} function lineChart(){}
@@ -1277,6 +1278,7 @@ def test_validation_window_edit_and_evidence_gate_behaviour():
       function metric(){return "";} function renderValidationMetricDetails(){} function renderContributionStability(){} function lineChart(){}
       const initial={id:"validation-default-001",type:"normal_validation",start:"2026-01-02T00:00",end:"2026-01-02T23:55",enabled:true,comment:"default"};
       const state={validationWindows:[initial],inspection:{time_start:"2026-01-01T00:00",time_end:"2026-01-02T23:55"}};
+      function currentValidationSource(){return {inspection:state.inspection};}
       __WINDOWS__
       __RENDERER__
       renderValidationWindows();

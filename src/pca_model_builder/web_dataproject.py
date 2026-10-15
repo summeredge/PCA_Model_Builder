@@ -115,6 +115,8 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   const scatterIds = ["dpScatterX1", "dpScatterX2", "dpScatterX3", "dpScatterY1", "dpScatterY2", "dpScatterY3"];
   const colors = ["#176b87", "#c2410c", "#6d28d9", "#15803d"];
   let lastTrend = null;
+  let trendSourceFileId = null;
+  let trendRequestRevision = 0;
   let hasDraggedTrendSelection = false;
   let resizeTimer = null;
 
@@ -171,10 +173,10 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     return ids.map((id) => $(id).value).filter(Boolean);
   }
 
-  async function requestTrend(tags, purpose, range = {}) {
+  async function requestTrend(tags, purpose, range = {}, source = null) {
     const unique = Array.from(new Set(tags));
     const payload = {
-      ...commonPayload(),
+      ...(source ? {file_id:source.file_id, timestamp_column:source.timestamp_column, encoding:source.encoding} : commonPayload()),
       tags: unique,
       start: $("dpTrendStart").value,
       end: $("dpTrendEnd").value,
@@ -183,15 +185,24 @@ _DATAPROJECT_TREND_SCRIPT = r"""
       purpose,
       ...range,
     };
-    return api("/api/trend", {
+    if (purpose === "trend") trendSourceFileId = payload.file_id;
+    const data = await api("/api/trend", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify(payload),
     });
+    return {...data, source_file_id:payload.file_id};
   }
 
   globalThis.showModelTagsTrend = async (tags, focus, isCurrent) => {
-    populateSelectors();
+    if (!isCurrent()) return;
+    const source = focus.context?.source;
+    if (!source && currentValidationInvestigationFocus()) clearValidationInvestigationFocus();
+    const revision = ++trendRequestRevision;
+    const current = () => revision === trendRequestRevision && isCurrent();
+    setBusy($("dpDrawTrend"), false, "");
+    if (source) trendIds.forEach(id => fillSelect($(id), tags, true));
+    else populateSelectors();
     trendIds.forEach((id, index) => { $(id).value = tags[index] || ""; });
     $("dpTrendStart").value = focus.start.slice(0,19);
     $("dpTrendEnd").value = focus.end.slice(0,19);
@@ -200,44 +211,58 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     $("dpTrendChart").textContent = "正在读取当前模型全部输入 Tag 的原始趋势…";
     $("dpTrendStats").replaceChildren();
     const requests = [];
-    for (let position = 0; position < tags.length; position += 4) requests.push(requestTrend(tags.slice(position,position+4), "trend", {start:focus.start,end:focus.end}));
+    for (let position = 0; position < tags.length; position += 4) requests.push(requestTrend(tags.slice(position,position+4), "trend", {start:focus.start,end:focus.end}, source));
     let batches;
     try { batches = await Promise.all(requests); }
     catch (error) {
-      if (isCurrent()) { $("dpTrendChart").className = "dp-chart empty"; $("dpTrendChart").textContent = error.message || String(error); }
+      if (!current()) return;
+      $("dpTrendChart").className = "dp-chart empty";
+      $("dpTrendChart").textContent = error.message || String(error);
       throw error;
     }
-    if (!isCurrent() || !batches.length) return;
+    if (!current() || !batches.length) return;
     const data = {...batches[0], tags:[...tags], series:batches.flatMap(batch=>batch.series)};
     ["statistics", "histograms", "axis_limits", "ranges"].forEach(key => { data[key] = Object.assign({}, ...batches.map(batch=>batch[key])); });
     lastTrend = data;
     renderTrendPage(data);
   };
-  globalThis.showValidationInvestigationTrend = (tags, focus) => globalThis.showModelTagsTrend(tags, focus, () => currentValidationInvestigationFocus() === focus);
+  globalThis.showValidationInvestigationTrend = (tags, focus) => {
+    if (currentValidationInvestigationFocus() !== focus) return;
+    if (!focus.context?.source?.file_id || !focus.context.source.timestamp_column) throw new Error("验证调查缺少数据源，请重新验证。");
+    return globalThis.showModelTagsTrend(tags, focus, () => currentValidationInvestigationFocus() === focus);
+  };
 
   $("dpDrawTrend").addEventListener("click", async () => {
     const tags = chosen(trendIds);
     if (!tags.length) return setStatus("请至少选择一个趋势变量。", "warning");
     if (new Set(tags).size !== tags.length) return setStatus("趋势变量不能重复选择。", "warning");
+    const focus = currentValidationInvestigationFocus();
+    const revision = ++trendRequestRevision;
+    const current = () => revision === trendRequestRevision && currentValidationInvestigationFocus() === focus;
     syncToLegacy(tags);
     const button = $("dpDrawTrend");
     setBusy(button, true, "读取中…");
     try {
-      const data = await requestTrend(tags, "trend");
+      if (focus && (!focus.context?.source?.file_id || !focus.context.source.timestamp_column)) throw new Error("验证调查缺少数据源，请重新验证。");
+      const data = await requestTrend(tags, "trend", {}, focus?.context.source);
+      if (!current()) return;
       lastTrend = data;
       renderTrendPage(data);
       setStatus(`趋势图已生成，原始 ${data.raw_rows} 点，显示 ${data.rows_count} 点，最大点数 ${data.max_points}。数据未被修改或插值。`, "success");
     } catch (error) {
+      if (!current()) return;
       $("dpTrendChart").className = "dp-chart empty";
       $("dpTrendChart").textContent = error.message || String(error);
       $("dpTrendStats").innerHTML = '<div class="empty">没有可展示的统计摘要。</div>';
       setStatus(error.message || String(error), "error");
     } finally {
-      setBusy(button, false, "");
+      if (revision === trendRequestRevision) setBusy(button, false, "");
     }
   });
 
   $("dpTrendToAnalysis").addEventListener("click", () => {
+    const sourceFileId = trendSourceFileId;
+    if (sourceFileId && sourceFileId !== state.fileId) return setStatus("当前趋势来自独立验证文件，不能写入建模范围、候选或排除窗口。请先返回建模文件趋势。", "warning");
     const explorationStart = $("explorationStart") || $("analysisStart");
     const explorationEnd = $("explorationEnd") || $("analysisEnd");
     const explorationRangeChanged =
@@ -254,15 +279,20 @@ _DATAPROJECT_TREND_SCRIPT = r"""
   });
 
   $("dpTrendToReference").addEventListener("click", () => {
+    const sourceFileId = trendSourceFileId;
+    if (sourceFileId && sourceFileId !== state.fileId) return setStatus("当前趋势来自独立验证文件，不能写入建模范围、候选或排除窗口。请先返回建模文件趋势。", "warning");
     addCandidateWindow("trend", $("dpTrendStart").value, $("dpTrendEnd").value, "trend-current", "");
   });
 
   $("dpTrendToExclusion").addEventListener("click", () => {
+    const sourceFileId = trendSourceFileId;
+    if (sourceFileId && sourceFileId !== state.fileId) return setStatus("当前趋势来自独立验证文件，不能写入建模范围、候选或排除窗口。请先返回建模文件趋势。", "warning");
     addExcludedWindow("trend", $("dpTrendStart").value, $("dpTrendEnd").value, "trend-current", "");
   });
 
   $("dpTrendReset").addEventListener("click", () => {
-    const defaults = state.inspection;
+    const focus = currentValidationInvestigationFocus();
+    const defaults = focus ? focus.context.source?.inspection : state.inspection;
     if (!defaults?.trend_default_start || !defaults?.trend_default_end) {
       return setStatus("请先完成当前文件的数据检查。", "warning");
     }
@@ -270,7 +300,7 @@ _DATAPROJECT_TREND_SCRIPT = r"""
     $("dpTrendEnd").value = localTime(defaults.trend_default_end);
     $("dpTrendMaxPoints").value = "100000";
     hasDraggedTrendSelection = false;
-    if (lastTrend) renderTrendChart(lastTrend);
+    if (lastTrend && !focus) renderTrendChart(lastTrend);
     syncToLegacy(chosen(trendIds));
     $("dpDrawTrend").click();
   });

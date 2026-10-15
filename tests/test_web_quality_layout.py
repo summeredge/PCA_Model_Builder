@@ -1694,6 +1694,7 @@ def test_candidate_and_training_view_trend_reloads_the_window_without_mutation()
     _run_web_javascript(
         f"""
         const functionSource = {json.dumps(view_source)};
+        const clearFocusSource = {json.dumps('function clearValidationInvestigationFocus()' + html.split('function clearValidationInvestigationFocus()', 1)[1].split('function currentValidationInvestigationContext', 1)[0])};
         const elements = new Map([
           ["trendStart", {{value: ""}}],
           ["trendEnd", {{value: ""}}],
@@ -1702,18 +1703,23 @@ def test_candidate_and_training_view_trend_reloads_the_window_without_mutation()
           ["dpDrawTrend", {{disabled: false, clicks: 0, click() {{ this.clicks += 1; }}}}],
         ]);
         const el = id => elements.get(id);
-        const state = {{candidateWindows: [], trainingWindows: [], excludedWindows: []}};
+        const report = {{current: true}}, context = {{report}};
+        const state = {{candidateWindows: [], trainingWindows: [], excludedWindows: [], validation: report,
+          validationInvestigationContext: context, validationInvestigationFocus: {{context}}}};
         let panelClicks = 0;
         const frames = [];
         globalThis.requestAnimationFrame = fn => frames.push(fn);
         globalThis.document = {{
           querySelector: () => ({{click: () => {{ panelClicks += 1; }}}}),
+          querySelectorAll: () => [],
         }};
         function localTime(value) {{ return value.slice(0, 16); }}
         function setStatus() {{}}
-        eval(functionSource);
+        eval(clearFocusSource); eval(functionSource);
 
         showCandidateTrend({{start: "2026-01-01T10:00:00", end: "2026-01-01T12:00:00"}});
+        if (state.validationInvestigationFocus !== null) throw new Error("validation source was retained");
+        if (state.validation !== report || state.validationInvestigationContext !== context) throw new Error("valid report was lost");
         if (el("dpTrendStart").value !== "2026-01-01T10:00") throw new Error("start not set");
         if (el("dpTrendEnd").value !== "2026-01-01T12:00") throw new Error("end not set");
         if (panelClicks !== 1) throw new Error("trend panel not opened");
@@ -2631,15 +2637,15 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
          'explorationTargetMax explorationPerformanceMinimumDuration '
          'explorationPerformanceCandidateCount frozenModelVersion'),
         ('main select', 'select', 220,
-             'encoding validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope ablationGroup exceedanceMetric exceedanceLoadTag explorationPcColorMode'),
+                 'encoding validationSource validationType trendPreset trendMode tagRole resamplingMethod filterMethod performanceScope ablationGroup exceedanceMetric exceedanceLoadTag explorationPcColorMode'),
         ('main input[type="datetime-local"]', 'datetime', 240,
          'analysisStart analysisEnd candidateStart candidateEnd trendStart trendEnd '
          'frozenReplayStart frozenReplayEnd'),
         ('main select:is(', 'tag', 340,
-         'timestampColumn qualityTagSelect explorationPerformanceTag labelColumn '
+             'timestampColumn validationTimestampColumn qualityTagSelect explorationPerformanceTag labelColumn '
          'preprocessingPreviewWindow'),
         ('main input:not([type]), main input[type="text"]', 'text', 420,
-             'modelName tagDescription tagUnit candidateComment validationComment validationStart validationEnd '
+                 'modelName tagDescription tagUnit candidateComment validationEncoding validationComment validationStart validationEnd '
              'validationDecisionComment frozenModelId frozenBy freezeComment changeReason exceedanceStart exceedanceEnd '
              'exceedanceAnomalyStart exceedanceAnomalyEnd exceedanceReferenceStart exceedanceReferenceEnd'),
         ('main select[multiple]', 'multiple', 420, 'trendTags modelComparisonRuns performanceParents performanceClusters'),
@@ -2663,7 +2669,7 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
     assert all(tag != 'input' or attrs.get('type', 'text') in
                ('text', 'number', 'datetime-local', 'file', 'range')
                for tag, attrs in controls.fields.values())
-    assert len(controls.fields) == 81
+    assert len(controls.fields) == 85
     assert controls.fields["explorationRegionTarget"] == ("select", {"id": "explorationRegionTarget", "disabled": None})
     assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
 

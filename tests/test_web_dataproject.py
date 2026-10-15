@@ -105,8 +105,8 @@ def test_trend_to_analysis_invalidates_only_when_exploration_range_changes() -> 
               if(values.explorationEnd!==undefined) elements.explorationEnd={{value:values.explorationEnd}};
               const $ = id => elements[id] || null;
               const invalidations = [];
-              new Function("$","setStatus","invalidateModellingResults",handler)(
-                $, () => {{}}, reason => invalidations.push(reason)
+              new Function("$","setStatus","invalidateModellingResults","currentValidationInvestigationFocus","trendSourceFileId",handler)(
+                $, () => {{}}, reason => invalidations.push(reason), () => null, null
               );
               if(elements.analysisStart.value!==values.dpTrendStart||elements.analysisEnd.value!==values.dpTrendEnd)
                 throw new Error("analysis range copy changed");

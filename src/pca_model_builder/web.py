@@ -2059,6 +2059,13 @@ def _validate_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
         "model_status": manifest["model_status"],
         "engineer_decision_required": True,
         "validation_windows": validation_result["validation_windows"],
+        "validation_source": {
+            "file_id": loaded.metadata.dataset_id,
+            "filename": loaded.metadata.source_path.name,
+            "timestamp_column": timestamp_column,
+            "encoding": loaded.metadata.encoding,
+            "sha256": _file_sha256(loaded.metadata.source_path),
+        },
         "validation_window_summaries": validation_result["window_summaries"],
         "normal_validation_complete": validation_result["normal_validation_complete"],
         "known_abnormal_complete": validation_result["known_abnormal_complete"],
@@ -3817,6 +3824,20 @@ INDEX_HTML = r"""<!doctype html>
       </div>
       <div id="validationPanel" class="panel">
         <div class="validation-box">
+          <label>验证数据来源<select id="validationSource"><option value="current">当前建模数据</option><option value="upload">上传独立验证数据</option></select></label>
+        </div>
+        <div id="validationUploadControls" hidden>
+          <div class="validation-box">
+            <label>独立验证文件<input id="validationFileInput" type="file" accept=".csv,.xlsx,.txt"></label>
+            <button id="validationUploadButton" class="secondary" type="button">上传验证文件</button>
+            <label>验证时间列<select id="validationTimestampColumn"></select></label>
+            <label>验证文件编码<input id="validationEncoding" type="text" value="utf-8-sig"></label>
+            <button id="validationInspectButton" class="secondary" type="button" disabled>检查验证文件</button>
+          </div>
+        </div>
+        <p id="validationSourceStatus" class="help" role="status" aria-live="polite">使用当前建模数据。</p>
+        <p class="help">验证窗口不得与任何启用训练窗口重叠，端点相同也算重叠。独立文件起点可能缺少滤波或 Lag 历史，请选择具有完整预热的开始时刻；不会插值、补点或跨时间断点评分。</p>
+        <div class="validation-box">
           <label>验证期开始<input id="validationStart" type="text"></label>
           <label>验证期结束<input id="validationEnd" type="text"></label>
           <label>验证类型<select id="validationType"><option value="normal_validation">正常样本验证</option><option value="known_abnormal">已知异常验证</option></select></label>
@@ -4129,7 +4150,7 @@ function renderExcludedWindows() {
 function exclusionOverlapsTraining(window) { const start=Date.parse(window.start), end=Date.parse(window.end); return state.trainingWindows.some(training=>start<=Date.parse(training.end)&&Date.parse(training.start)<=end); }
 function addExcludedWindow(source,start,end,sourceRef=null,comment="") { if(!start||!end||!Number.isFinite(Date.parse(start))||!Number.isFinite(Date.parse(end))||Date.parse(start)>Date.parse(end)) { setStatus("排除窗口需要有效的开始和结束时间。","warning"); return; } const window={id:`excluded-${candidateId()}`,start,end,source,comment}; state.excludedWindows=mergeExcludedWindows([...state.excludedWindows,window]); renderExcludedWindows(); globalThis.refreshTrendExcludedWindows?.(); globalThis.showWorkflowStage?.("candidatePanel"); const overlaps=exclusionOverlapsTraining(window); setStatus(overlaps?"排除窗口已加入；不会修改已有训练窗口。请删除关联训练窗口后重新确认候选。":"排除窗口已加入；确认候选时将据此切分训练窗口。",overlaps?"warning":"success"); }
 function removeExcludedWindow(windowId) { state.excludedWindows=state.excludedWindows.filter(window=>window.id!==windowId); renderExcludedWindows(); globalThis.refreshTrendExcludedWindows?.(); setStatus("排除窗口已删除；已有训练窗口未被修改，如需重新切分请先删除关联训练窗口后重新确认。","warning"); }
-function showCandidateTrend(window) { el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); requestAnimationFrame(()=>requestAnimationFrame(()=>{ const draw=el("dpDrawTrend"); if(draw&&!draw.disabled) draw.click(); })); }
+function showCandidateTrend(window) { clearValidationInvestigationFocus(); el("trendStart").value=localTime(window.start); el("trendEnd").value=localTime(window.end); if(el("dpTrendStart")) el("dpTrendStart").value=localTime(window.start); if(el("dpTrendEnd")) el("dpTrendEnd").value=localTime(window.end); document.querySelector('[data-panel="trendPanel"]').click(); setStatus("已切换到候选时段趋势；训练候选未改变。","success"); requestAnimationFrame(()=>requestAnimationFrame(()=>{ const draw=el("dpDrawTrend"); if(draw&&!draw.disabled) draw.click(); })); }
 function renderCandidateWindows() {
   globalThis.refreshPerformanceScopeOptions?.();
   const container=el("candidateWindows"); container.replaceChildren();
@@ -4906,7 +4927,7 @@ el("inspectButton").addEventListener("click", async () => {
     renderGroupProfiles(el('explorationClusterQuality'),null,'state_exploration'); renderGroupProfiles(el('assistanceClusterQuality'),null,'cluster_assistance');
     state.explorationRevision+=1; state.inspection=data; state.registry=Object.fromEntries(data.numeric_columns.map(tag=>[tag,{...emptyTagConfig(),...(previousRegistry[tag]||{})}])); state.quality=null; state.selectedTag=null; state.excludedTags=previousExcludedTags; reconcileExcludedTags(); state.exploration=null; resetExplorationRegion(); state.validation=null; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; if(hadInspection) state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>previousSelectedTags.has(tag)&&state.registry[tag].role==="continuous_input")); else state.selectedModelTags=new Set(data.numeric_columns.filter(tag=>state.registry[tag].role==="continuous_input")); invalidateQuality(); renderBasicInspection(data); renderPerformanceConditions(data.numeric_columns); refreshEligibilitySummary(); fillSelect(el("explorationPerformanceTag"),data.numeric_columns,"不配置"); renderTagList();
     fillSelect(el("trendTags"),data.numeric_columns); [...el("trendTags").options].slice(0,Math.min(3,data.numeric_columns.length)).forEach(option=>option.selected=true);
-    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); if(el("explorationStart")) el("explorationStart").value=localTime(data.time_start); if(el("explorationEnd")) el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingCandidateProvenance=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=data.suggested_validation_start; el("validationEnd").value=data.time_end; state.validationWindows=[]; renderValidationWindows();
+    el("analysisStart").value=localTime(data.time_start); el("analysisEnd").value=localTime(data.time_end); if(el("explorationStart")) el("explorationStart").value=localTime(data.time_start); if(el("explorationEnd")) el("explorationEnd").value=localTime(data.time_end); el("candidateStart").value=localTime(data.time_start); el("candidateEnd").value=localTime(data.suggested_normal_end); el("candidateComment").value=""; state.excludedWindows=[]; state.candidateWindows=[{id:"suggested-window-001",start:el("candidateStart").value,end:el("candidateEnd").value,source:"suggested",source_ref:"inspect-default",comment:"系统建议的初始正常候选时段"}]; state.trainingWindows=[]; state.trainingCandidateProvenance=[]; state.trainingWindowSummary=[]; renderCandidateWindows(); renderExcludedWindows(); renderTrainingWindows(); el("validationStart").value=data.suggested_validation_start; el("validationEnd").value=data.time_end; state.validationWindows=[]; renderValidationWindows(); if(el("validationSource").value==="upload") resetValidationSource();
     el("trendStart").value=localTime(data.trend_default_start); el("trendEnd").value=localTime(data.trend_default_end);
     if (data.sample_interval_minutes) el("sampleInterval").value=String(data.sample_interval_minutes);
     el("clusterButton").disabled=false; el("stateExplorationButton").disabled=false; el("addPerformanceCondition").disabled=false; el("performanceButton").disabled=false; el("qualityButton").disabled=true; el("trendButton").disabled=false; el("importConfigButton").disabled=false; el("exportConfigButton").disabled=false; reconcileStateFilterConditions();
@@ -5002,6 +5023,7 @@ el("trendPreset").addEventListener("change",()=>{
 el("preprocessingPreviewWindow").addEventListener("change",()=>{ state.preprocessingPreviewWindowId=el("preprocessingPreviewWindow").value; state.preprocessingPreview=null; state.preprocessingPreviewTag=null; el("preprocessingPreview").className="muted"; el("preprocessingPreview").textContent="尚未预览"; });
 el("addStateFilterCondition").addEventListener("click",()=>addStateFilterCondition());
 el("trendButton").addEventListener("click",async()=>{
+  clearValidationInvestigationFocus();
   const tags=[...el("trendTags").selectedOptions].map(option=>option.value); if(!tags.length||tags.length>8) { setStatus("趋势浏览请选择1至8个Tag。","warning"); return; }
   const button=el("trendButton"); setBusy(button,true,"读取中…");
   try {
@@ -5142,13 +5164,88 @@ async function trainModel(modelPurpose) {
     const performanceConfig=performanceConfigPayload(); if(performanceConfig) payload.performance_config=performanceConfig;
     const data=await api("/api/train",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(!isCurrentRequest()) { if(state.trainingRequest===request) setStatus("训练配置已修改，已丢弃过期训练结果，请重新检查质量。","warning"); return; }
-    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validationInvestigationModel={training:data,tags:[...tags],tagConfigs:payload.tag_configs}; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"; document.querySelector('[data-panel="modelPanel"]').click();
+    state.runId=data.run_id; if(data.model_purpose==="exploratory") state.exploratoryRunId=data.run_id; state.training=data; state.validationInvestigationModel={training:data,tags:[...tags],tagConfigs:payload.tag_configs}; state.validation=null; el("validationContent").hidden=true; el("validationEmpty").hidden=false; el("validatedModelDownload").hidden=true; el("frozenModelDownload").hidden=true; el("deploymentModelDownload").hidden=true; renderTraining(data); el("validateButton").disabled=data.model_purpose==="exploratory"||!currentValidationSource()?.inspection; document.querySelector('[data-panel="modelPanel"]').click();
     setStatus(`训练完成：${data.training_rows} 个动态样本，${data.dynamic_features} 个动态特征。当前为${data.model_purpose==="exploratory"?"探索草稿":"正常状态候选"}。`,"success");
   } catch (error) { if(isCurrentRequest()) setStatus(error.message,"error"); }
   finally { if(button.trainingRequest===request) { delete button.trainingRequest; setBusy(button,false,""); const currentReadiness=state.quality?.training_readiness?.[modelPurpose]||{can_train:state.quality?.can_train}; button.disabled=!currentReadiness.can_train; } }
 }
 el("trainExploratoryButton").addEventListener("click",()=>trainModel("exploratory"));
 el("trainButton").addEventListener("click",()=>trainModel("normal_state"));
+
+function currentValidationSource() {
+  if(el("validationSource").value==="upload") return state.validationUpload?.inspection ? state.validationUpload : null;
+  return {file_id:state.fileId,filename:state.fileName,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,inspection:state.inspection};
+}
+function resetValidationSource() {
+  state.validationWindows=[]; renderValidationWindows();
+  el("validationDecisionComment").value="";
+  const source=currentValidationSource(), inspection=source?.inspection;
+  el("validationStart").value=inspection?(el("validationSource").value==="upload"?inspection.time_start:inspection.suggested_validation_start):"";
+  el("validationEnd").value=inspection?.time_end||"";
+  fillSelect(el("labelColumn"),inspection?.columns||[],"不使用");
+  el("labelColumn").value=source?.label_column||"";
+  el("validateButton").disabled=Boolean(state.validationReplayPending)||!state.runId||state.training?.model_purpose!=="normal_state"||!source?.file_id||!inspection;
+}
+el("validationSource").addEventListener("change",()=>{
+  state.validationSourceRevision=(state.validationSourceRevision||0)+1;
+  el("validationUploadControls").hidden=el("validationSource").value!=="upload";
+  resetValidationSource();
+  const source=currentValidationSource();
+  el("validationSourceStatus").textContent=source?.inspection?`${source.filename||"当前建模文件"}：${displayTime(source.inspection.time_start,19)} ～ ${displayTime(source.inspection.time_end,19)}`:"请选择、上传并检查独立验证文件。";
+});
+function invalidateValidationUpload() {
+  state.validationSourceRevision=(state.validationSourceRevision||0)+1;
+  if(state.validationUpload) state.validationUpload.inspection=null;
+  resetValidationSource();
+  el("validationSourceStatus").textContent="验证文件或读取设置已变化，请上传或重新检查验证文件。";
+}
+el("validationFileInput").addEventListener("change",()=>{
+  state.validationUpload=null; el("validationInspectButton").disabled=true; invalidateValidationUpload();
+});
+el("validationTimestampColumn").addEventListener("change",invalidateValidationUpload);
+el("validationEncoding").addEventListener("input",invalidateValidationUpload);
+el("labelColumn").addEventListener("change",()=>{
+  if(el("validationSource").value==="upload"&&state.validationUpload) state.validationUpload.label_column=el("labelColumn").value;
+  renderValidationWindows();
+});
+el("validationUploadButton").addEventListener("click",async()=>{
+  const file=el("validationFileInput").files[0];
+  if(!file) { setStatus("请选择 CSV、XLSX 或 TXT 验证文件。","warning"); return; }
+  state.validationUpload=null; invalidateValidationUpload();
+  const revision=state.validationSourceRevision, button=el("validationUploadButton");
+  el("validationInspectButton").disabled=true; setBusy(button,true,"上传中…");
+  try {
+    const form=new FormData(); form.append("file",file);
+    const data=await api("/api/upload",{method:"POST",body:form});
+    if(revision!==state.validationSourceRevision) return;
+    state.validationUpload={file_id:data.file_id,filename:data.filename,columns:data.columns,label_column:"",inspection:null};
+    fillSelect(el("validationTimestampColumn"),data.columns);
+    if(data.encoding) el("validationEncoding").value=data.encoding;
+    el("validationInspectButton").disabled=false;
+    el("validationSourceStatus").textContent=`已上传 ${data.filename}，请选择时间列和编码并检查验证文件。`;
+  } catch(error) {
+    if(revision===state.validationSourceRevision) el("validationSourceStatus").textContent=`上传失败：${error.message}。请检查文件格式后重新上传。`;
+  } finally { setBusy(button,false,""); }
+});
+el("validationInspectButton").addEventListener("click",async()=>{
+  if(!state.validationUpload?.file_id) { setStatus("请先上传独立验证文件。","warning"); return; }
+  invalidateValidationUpload();
+  const source=state.validationUpload, revision=state.validationSourceRevision, button=el("validationInspectButton");
+  const timestamp_column=el("validationTimestampColumn").value, encoding=el("validationEncoding").value;
+  setBusy(button,true,"检查中…");
+  try {
+    const data=await api("/api/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file_id:source.file_id,timestamp_column,encoding})});
+    if(revision!==state.validationSourceRevision||source!==state.validationUpload) return;
+    const timeIssues=(data.quality_issues||[]).filter(issue=>["invalid_timestamp","unsorted_timestamp","duplicate_timestamp"].includes(issue.code));
+    if(timeIssues.length) throw new Error("时间戳存在无效值、乱序或重复，请修正文件或选择正确时间列后重新检查");
+    Object.assign(source,{timestamp_column,encoding,inspection:data});
+    resetValidationSource();
+    const issues=(data.quality_issues||[]).map(issue=>`${displayUiValue(issue.code)}（${issue.count}）`).join("；");
+    el("validationSourceStatus").textContent=`${source.filename}：${displayTime(data.time_start,19)} ～ ${displayTime(data.time_end,19)}；${data.rows} 行。${issues||"基础检查未发现问题"}。实际有效样本按包内预处理回放确定。`;
+  } catch(error) {
+    if(revision===state.validationSourceRevision&&source===state.validationUpload) el("validationSourceStatus").textContent=`检查失败：${error.message}。请修正时间列、编码或文件后重新检查。`;
+  } finally { setBusy(button,false,""); button.disabled=!state.validationUpload?.file_id; }
+});
 
 function cancelValidationEdit() {
   delete el("addValidationWindow").dataset.editingId;
@@ -5196,7 +5293,9 @@ el("addValidationWindow").addEventListener("click",()=>{
   const button=el("addValidationWindow"), editingId=button.dataset.editingId, original=state.validationWindows.find(window=>window.id===editingId), type=el("validationType").value;
   if(editingId&&!original) { delete button.dataset.editingId; button.textContent="加入验证时段"; setStatus("编辑的窗口已失效，请重新选择。","warning"); return; }
   if(!Number.isFinite(Date.parse(start))||!Number.isFinite(Date.parse(end))||Date.parse(start)>Date.parse(end)||!["normal_validation","known_abnormal"].includes(type)) { setStatus("验证类型或时间范围无效，开始时间不得晚于结束时间。","warning"); return; }
-  if(state.inspection&&(Date.parse(start)<Date.parse(state.inspection.time_start)||Date.parse(end)>Date.parse(state.inspection.time_end))) { setStatus("验证窗口必须位于历史数据时间范围内。","warning"); return; }
+  const inspection=currentValidationSource()?.inspection;
+  if(!inspection) { setStatus("请先检查当前验证数据来源。","warning"); return; }
+  if(Date.parse(start)<Date.parse(inspection.time_start)||Date.parse(end)>Date.parse(inspection.time_end)) { setStatus("验证窗口必须位于历史数据时间范围内。","warning"); return; }
   const conflict=state.validationWindows.find(window=>window.id!==editingId&&window.enabled!==false&&Math.max(Date.parse(start),Date.parse(window.start))<=Math.min(Date.parse(end),Date.parse(window.end)));
   if((original?.enabled!==false)&&conflict) {
     setStatus(`与${conflict.type==="normal_validation"?"正常":"异常"}验证窗口 ${conflict.id} 冲突：${displayTime(conflict.start)} ～ ${displayTime(conflict.end)}。请编辑该窗口调整范围后再添加。`,"warning");
@@ -5211,18 +5310,24 @@ el("addValidationWindow").addEventListener("click",()=>{
 });
 
 el("validateButton").addEventListener("click", async () => {
+  if(state.validationReplayPending) return;
+  const source=currentValidationSource();
+  if(!source?.file_id||!source.inspection) { setStatus("请先上传并检查验证文件，或选择当前建模数据。","warning"); return; }
   invalidateValidationInvestigation();
+  state.validationReplayPending=true;
   const button=el("validateButton"); setBusy(button,true,"回放中…"); setStatus("正在使用训练参数回放独立验证窗口。","info");
+  let investigationRevision;
   try {
     if(!state.validationWindows.length) { state.validationWindows.push({id:"validation-default-001",type:"normal_validation",start:el("validationStart").value,end:el("validationEnd").value,enabled:true,comment:""}); renderValidationWindows(); }
-    const investigationRevision=state.validationInvestigationRevision, training=state.training, fileId=state.fileId, runId=state.runId;
-    const payload={run_id:state.runId,file_id:state.fileId,timestamp_column:el("timestampColumn").value,encoding:el("encoding").value,validation_windows:state.validationWindows,label_column:el("labelColumn").value};
+    investigationRevision=state.validationInvestigationRevision;
+    const training=state.training, fileId=state.fileId, runId=state.runId;
+    const payload={run_id:state.runId,file_id:source.file_id,timestamp_column:source.timestamp_column,encoding:source.encoding,validation_windows:state.validationWindows,label_column:source.label_column??el("labelColumn").value};
     const data=await api("/api/validate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(investigationRevision!==state.validationInvestigationRevision||training!==state.training||fileId!==state.fileId||runId!==state.runId) { setStatus("验证上下文已变更，已丢弃过期的页面结果。","warning"); return; }
     el("validationDecision").value="hold";
     state.validation=data; renderValidation(data); const decisionStatus=el("validationDecisionStatus"); decisionStatus.textContent="验证回放完成，待重新确认；请保存工程师结论。"; decisionStatus.className="status info"; setStatus("独立窗口回放完成。请结合已知事件由工程师确认模型是否通过。","success");
-  } catch (error) { setStatus(error.message,"error"); }
-  finally { setBusy(button,false,""); }
+  } catch (error) { if(investigationRevision===state.validationInvestigationRevision) setStatus(error.message,"error"); }
+  finally { state.validationReplayPending=false; setBusy(button,false,""); button.disabled=!currentValidationSource()?.inspection||!state.runId||state.training?.model_purpose!=="normal_state"; }
 });
 
 el("recordValidationDecision").addEventListener("click",async()=>{
@@ -5489,14 +5594,17 @@ function validationInvestigationWindowsKey(windows) {
 }
 function invalidateValidationInvestigation() {
   state.validationInvestigationRevision=(state.validationInvestigationRevision||0)+1;
-  state.validationInvestigationFocus=null;
+  clearValidationInvestigationFocus();
   state.validationInvestigationContext=null;
-  document.querySelectorAll('[data-validation-investigation-context]').forEach(node=>node.remove());
   el("validationInvestigationWindows")?.replaceChildren();
+}
+function clearValidationInvestigationFocus() {
+  state.validationInvestigationFocus=null;
+  document.querySelectorAll('[data-validation-investigation-context]').forEach(node=>node.remove());
 }
 function currentValidationInvestigationContext(context=state.validationInvestigationContext) {
   if(!context||context!==state.validationInvestigationContext) return null;
-  if(context.runId!==state.runId||context.fileId!==state.fileId||context.training!==state.training||context.report!==state.validation||context.windowsKey!==validationInvestigationWindowsKey(state.validationWindows)) {
+  if(context.runId!==state.runId||context.fileId!==currentValidationSource()?.file_id||context.trainingFileId!==state.fileId||context.training!==state.training||context.report!==state.validation||context.windowsKey!==validationInvestigationWindowsKey(state.validationWindows)) {
     invalidateValidationInvestigation(); return null;
   }
   return context;
@@ -5520,7 +5628,8 @@ function renderValidationInvestigation(data) {
   const container=el("validationInvestigationWindows");
   if(!container||data.run_id!==state.runId||validationInvestigationWindowsKey(data.validation_windows)!==validationInvestigationWindowsKey(state.validationWindows)) return;
   const model=state.validationInvestigationModel;
-  const context={report:data,runId:data.run_id,fileId:state.fileId,training:state.training,windowsKey:validationInvestigationWindowsKey(state.validationWindows),tags:model?.training===state.training?model.tags:selectedTags(),tagConfigs:model?.training===state.training?model.tagConfigs:state.registry};
+  const source=currentValidationSource();
+  const context={report:data,runId:data.run_id,fileId:source?.file_id,trainingFileId:state.fileId,source,training:state.training,windowsKey:validationInvestigationWindowsKey(state.validationWindows),tags:model?.training===state.training?model.tags:selectedTags(),tagConfigs:model?.training===state.training?model.tagConfigs:state.registry};
   state.validationInvestigationContext=context;
   (data.validation_windows||[]).filter(window=>window.enabled!==false).forEach(window=>{
     const summary=(data.validation_window_summaries||[]).find(item=>item.id===window.id);
@@ -5593,12 +5702,12 @@ function showValidationInvestigationContext(focus,target,kind) {
   }
   target.parentNode.insertBefore(banner,target); banner.scrollIntoView({block:"start"});
 }
-async function focusValidationInvestigation(context,windowId,kind) {
+async function focusValidationInvestigation(context,windowId,kind,range=null) {
   if(!currentValidationInvestigationContext(context)) { setStatus("Validation 调查上下文已失效，请查看当前验证结果。","warning"); return; }
   const window=context.report.validation_windows.find(item=>item.id===windowId&&item.enabled!==false);
   if(!window||!["normal_validation","known_abnormal"].includes(window.type)||!Number.isFinite(Date.parse(window.start))||!Number.isFinite(Date.parse(window.end))||Date.parse(window.start)>Date.parse(window.end)) return;
   const summary=context.report.validation_window_summaries?.find(item=>item.id===windowId);
-  const focus={context,runId:context.runId,validationWindowId:window.id,validationWindowType:window.type,start:window.start,end:window.end,issue:validationInvestigationIssue(window,summary),relatedTags:validationInvestigationRelatedTags(context,window.id)};
+  const focus={context,runId:context.runId,validationWindowId:window.id,validationWindowType:window.type,start:range?.event_start||window.start,end:range?.event_end||window.end,issue:validationInvestigationIssue(window,summary),relatedTags:validationInvestigationRelatedTags(context,window.id)};
   state.validationInvestigationFocus=focus;
   if(kind==="training") {
     if(globalThis.showWorkflowStage) globalThis.showWorkflowStage("modelPanel"); else document.querySelector('[data-panel="modelPanel"]')?.click();
@@ -5607,7 +5716,7 @@ async function focusValidationInvestigation(context,windowId,kind) {
     if(globalThis.showWorkflowStage) globalThis.showWorkflowStage("configPanel"); else document.querySelector('[data-panel="configPanel"]')?.click();
     showValidationInvestigationContext(focus,el("tagOptions"),kind);
   } else if(kind==="trend") {
-    el("trendStart").value=window.start.slice(0,19); el("trendEnd").value=window.end.slice(0,19); el("trendPreset").value="custom";
+    el("trendStart").value=focus.start.slice(0,19); el("trendEnd").value=focus.end.slice(0,19); el("trendPreset").value="custom";
     [...el("trendTags").options].forEach(option=>option.selected=context.tags.includes(option.value));
     if(globalThis.showWorkflowStage) { globalThis.showWorkflowStage("candidatePanel"); globalThis.showCandidateTool?.("trendPanel"); }
     else document.querySelector('[data-panel="trendPanel"]')?.click();
@@ -5639,7 +5748,7 @@ function renderValidation(data) {
   lineChart(el("validationT2Chart"),data.scores,"t2",data.t2_limits,"T²"); lineChart(el("validationSpeChart"),data.scores,"spe",data.q_limits,"SPE");
   el("contributionHint").textContent=data.contributions.length ? "按每个连续越过95%控制限的事件保存峰值贡献；事件不会跨物理时间缺口合并。" : "T² 和 SPE 均未达到 95% 控制限，不输出异常贡献。";
   const body=el("contributionTable"); body.innerHTML="";
-  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${displayTime(group.event_start)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td title="点击在趋势页查看">${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; tr.children[2].style.cursor="pointer"; tr.children[2].addEventListener("click",()=>{ [...el("trendTags").options].forEach(option=>option.selected=option.value===item.tag); el("trendStart").value=localTime(group.event_start); el("trendEnd").value=localTime(group.event_end); document.querySelector('[data-panel="trendPanel"]').click(); }); body.append(tr); }));
+  data.contributions.forEach(group=>group.tags.forEach(item=>{ const tr=document.createElement("tr"); const lag=item.lag_start_minutes===item.lag_end_minutes?`${item.lag_start_minutes} 分钟前`:`${item.lag_start_minutes}～${item.lag_end_minutes} 分钟前`; const event=`${displayTime(group.event_start)} ～ ${group.event_end.slice(11,16)}；峰值 ${group.peak_timestamp.slice(11,16)}`; tr.innerHTML=`<td>${escapeHtml(event)}</td><td>${escapeHtml(group.statistic.toUpperCase())}</td><td title="点击在趋势页查看">${escapeHtml(item.tag)}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.unit)}</td><td class="numeric">${item.contribution_pct.toFixed(1)}%</td><td>${escapeHtml(lag)}</td>`; tr.children[2].style.cursor="pointer"; tr.children[2].addEventListener("click",()=>{ const context=state.validationInvestigationContext; if(context) focusValidationInvestigation(context,group.validation_window_id,"trend",group); }); body.append(tr); }));
   el("scoresDownload").href=data.validation_downloads.scores; el("reportDownload").href=data.validation_downloads.report; el("contributionsDownload").href=data.validation_downloads.contributions;
 }
 
