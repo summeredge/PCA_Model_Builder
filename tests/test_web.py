@@ -164,7 +164,28 @@ def test_model_quality_ui_renders_and_clears_stale_results():
     html = web_model_results.INDEX_HTML
     for element_id in result["filled"]:
         assert html.count(f'id="{element_id}"') == 1
-    assert html.index('id="modelEngineeringJudgment"') < html.index('id="modelMetrics"') < html.index('id="modelQualitySummary"') < html.index('id="componentLoadings"') < html.index('id="modelTrainingDataQuality"') < html.index('id="t2Chart"') < html.index('id="scoreChart"')
+    assert html.index('id="modelMetrics"') < html.index('id="modelEngineeringJudgment"') < html.index('id="modelQualitySummary"') < html.index('id="varianceChart"') < html.index('id="varianceDetails"') < html.index('id="componentLoadings"') < html.index('id="modelTrainingDataQuality"') < html.index('id="t2Chart"') < html.index('id="scoreChart"')
+
+
+@pytest.mark.parametrize("count,retained", [(3, 2), (12, 4)])
+def test_training_variance_top10_and_complete_precision(count, retained):
+    source = web.INDEX_HTML
+    renderer = source[source.index('  const variance=el("varianceChart");'):source.index('  lineChart(el("t2Chart"),data.scores')]
+    result = _run_node_javascript(r"""
+      class Element { constructor(){this.children=[];this.innerHTML='';this.style={};} replaceChildren(){this.children=[];} append(item){this.children.push(item);} }
+      const nodes={varianceChart:new Element(),varianceDetails:new Element()},el=id=>nodes[id];
+      const document={createElement:()=>new Element()};
+      const data={explained_variance:Array.from({length:__COUNT__},(_,i)=>0.123456/(i+1)),n_components:__RETAINED__};
+      __RENDERER__
+      console.log(JSON.stringify({items:nodes.varianceChart.children,details:nodes.varianceDetails.innerHTML}));
+    """.replace("__COUNT__", str(count)).replace("__RETAINED__", str(retained)).replace("__RENDERER__", renderer))
+    assert len(result["items"]) == min(count, 10)
+    assert sum("selected" in item["className"] for item in result["items"]) == retained
+    assert "12.3%" in result["items"][0]["innerHTML"]
+    assert "12.35%" in result["items"][0]["title"]
+    assert result["details"].count("<tr>") == count + 1
+    cumulative = sum(0.123456 / (i + 1) for i in range(count))
+    assert f"{cumulative * 100:.2f}%" in result["details"]
 
 
 def _run_node_javascript(source: str) -> dict:
@@ -982,7 +1003,9 @@ def test_tag_config_save_button_matches_template_download_button_width():
     )
     assert len(controls) == 10
     assert "id=\"tagComment\"" not in tag_editor
-    assert "grid-template-columns:repeat(5,minmax(0,1fr));" not in html
+    # 解释率窄屏图允许五列；原有编辑区域仍禁止固定五列。
+    five_column_selectors = re.findall(r"([^{}]+)\{[^{}]*grid-template-columns:repeat\(5,minmax\(0,1fr\)\);", html)
+    assert all(selector.strip() == "#varianceChart" for selector in five_column_selectors)
     assert "main #engineeringPanel .detail-fields > .row:has(#engineeringMin) > label" in html
     assert "main #engineeringPanel .detail-fields > .row:has(#normalMin) > label" in html
     assert "main #engineeringPanel .detail-fields > .row:has(#alarmMin) > label" in html

@@ -762,7 +762,9 @@
       sources.append(item);
     });
     training.append(sources, paragraph(`工况组仅表示已确认训练窗口的来源，不能等同于实际状态数量；手工、趋势和性能窗口不能自动推断工况组。工况组来源缺失样本：${data.unattributed_samples}。`));
-    quality.engineering_messages.forEach(message => judgment.append(paragraph(message)));
+    const messages = document.createElement("ul");
+    quality.engineering_messages.forEach(message => { const item = document.createElement("li"); item.textContent = message; messages.append(item); });
+    judgment.append(messages);
     const rules = document.createElement("details");
     const title = document.createElement("summary");
     title.textContent = "查看工程提示与趋势判断规则";

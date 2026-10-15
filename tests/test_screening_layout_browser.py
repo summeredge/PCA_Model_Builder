@@ -551,6 +551,24 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   assert.equal(await page.evaluate(()=>JSON.stringify([state.candidateWindows,state.trainingWindows,state.preferredRegion])),profileWindows);
   await openProfile();
   const performanceProfile=data.cluster_quality.group_profiles[0];
+  const profileUi=await page.evaluate(()=>{
+   const body=document.getElementById('groupProfileDialogBody'),quality=state.exploration.cluster_quality;
+   const original=quality.group_profiles.find(p=>p.cluster_id===state.groupProfileSelection.state_exploration);
+   const variables=Array.from({length:5},(_,i)=>({...original.variables[0],tag:`LONG_PROCESS_VARIABLE_TAG_${i}`}));
+   renderGroupProfileContent(body,{...quality,group_profiles:quality.group_profiles.map(p=>p===original?{...p,top_variables:variables}:p)},'state_exploration');
+   const detail=body.querySelector('.group-profile-detail'),rows=[...detail.querySelectorAll(':scope > .table-wrap tbody tr')];
+   const selected=body.querySelector('[data-profile][aria-pressed="true"]'),other=body.querySelector('[data-profile][aria-pressed="false"]');
+   return {tags:rows.map(r=>r.cells[0].textContent),visible:rows.every(r=>r.getClientRects().length>0),
+    details:[...detail.querySelectorAll('details')].map(d=>({title:d.querySelector('summary').textContent,open:d.open})),
+    selectedText:selected.textContent,selectedColor:getComputedStyle(selected).backgroundColor,otherColor:getComputedStyle(other).backgroundColor,
+    listHeight:parseFloat(getComputedStyle(body.querySelector('.group-profiles > .table-wrap')).maxHeight)};
+  });
+  assert.deepEqual(profileUi.tags,Array.from({length:5},(_,i)=>`LONG_PROCESS_VARIABLE_TAG_${i}`));
+  assert(profileUi.visible&&profileUi.listHeight>280);
+  assert(!profileUi.selectedText.includes('已选中'));assert.notEqual(profileUi.selectedColor,profileUi.otherColor);
+  for(const d of profileUi.details) assert.equal(d.open,!d.title.startsWith('完整变量对比'));
+  await profileDialog.screenshot({path:path.join(artifacts,'group-profile-dialog.png')});
+  await page.evaluate(()=>renderGroupProfileContent(document.getElementById('groupProfileDialogBody'),state.exploration.cluster_quality,'state_exploration'));
   const performanceSummary=data.cluster_summaries.find(item=>item.cluster_id===performanceProfile.cluster_id);
   for(const key of ['performance_valid_count','performance_target_count','performance_target_ratio','performance_median']) assert.equal(performanceProfile[key],performanceSummary[key]);
   const performanceText=await profileBody.locator('[data-profile-performance]').innerText();
@@ -594,6 +612,13 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
   await page.evaluate(([exploration,region])=>{state.exploration=exploration;state.preferredRegion=region;renderStateExploration(exploration);},trainingExploration);
   assert((await action('qualityButton','/api/quality')).training_readiness.normal_state.can_train);
   const training=await action('trainButton','/api/train');assert(training.model_quality.training_condition_diagnostic.available);
+  assert.equal(await page.locator('#varianceChart .variance-item').count(),Math.min(10,training.explained_variance.length));
+  assert.equal(await page.locator('#varianceChart .selected').count(),Math.min(10,training.n_components));
+  assert.equal(await page.locator('#varianceDetails tbody tr').count(),training.explained_variance.length);
+  assert.equal(await page.locator('#varianceDetails').evaluate(e=>e.closest('details').open),false);
+  await page.locator('#varianceDetails').evaluate(e=>e.closest('details').open=true);
+  assert.equal(await page.locator('#varianceDetails tbody tr:last-child td:last-child').textContent(),`${(training.explained_variance.reduce((a,b)=>a+b,0)*100).toFixed(2)}%`);
+  await page.locator('#varianceDetails').evaluate(e=>e.closest('details').open=false);
   const trainingInvariant=()=>page.evaluate(()=>JSON.stringify({scores:state.training.scores.map(({color_column,color_value,...row})=>row),windows:state.trainingWindows,limits:[state.training.t2_limits,state.training.q_limits]}));
   const trainingBaseline=await trainingInvariant();
   const scorePositions=()=>page.locator('#scoreChart circle').evaluateAll(nodes=>nodes.map(node=>[node.getAttribute('cx'),node.getAttribute('cy')]));
@@ -619,12 +644,17 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
     const table=document.querySelector('#modelQualitySummary table');
     return {width:innerWidth,overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
      metricCount:items.length,summaryHeight:bounds.height,overviewColumns:getComputedStyle(document.querySelector('.model-overview-grid')).gridTemplateColumns.split(' ').length,
-     expectedColumns:document.querySelector('.results').clientWidth>1100?3:document.querySelector('.results').clientWidth>700?2:1,
+     noStretch:items.every(e=>getComputedStyle(e).flexGrow==='0'),
+     labelAboveValue:items.every(e=>rect(e.querySelector('span')).bottom<=rect(e.querySelector('strong')).top),
+     rowHeightConsistent:items.every(e=>items.filter(other=>Math.abs(rect(other).top-rect(e).top)<1).every(other=>Math.abs(rect(other).height-rect(e).height)<1)),
+     expectedColumns:document.querySelector('.results').clientWidth>700?2:1,
      escaped:items.some(e=>rect(e).left<bounds.left-1||rect(e).right>bounds.right+1),
      headings:[...table.querySelectorAll('thead th')].map(e=>e.textContent),rows:table.querySelectorAll('tbody tr').length,
      nestedPadding:[...document.querySelectorAll('#modelContent > section,.model-overview-grid > section')].map(e=>getComputedStyle(e).padding)};
    });
    assert.equal(report.overflow,0,JSON.stringify(report));assert(!report.escaped,JSON.stringify(report));
+   assert(report.noStretch,JSON.stringify(report));
+   assert(report.labelAboveValue,JSON.stringify(report));assert(report.rowHeightConsistent,JSON.stringify(report));
    assert.equal(report.metricCount,8);assert.deepEqual(report.headings,['指标','T²统计','SPE/Q统计']);assert.equal(report.rows,8);
    assert.equal(report.overviewColumns,report.expectedColumns,JSON.stringify(report));
    assert(report.nestedPadding.every(value=>value==='0px'),JSON.stringify(report));

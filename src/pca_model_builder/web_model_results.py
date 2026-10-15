@@ -37,10 +37,17 @@ _GROUP_PROFILE_DIALOG_STYLE = r"""
   #groupProfileDialog .group-profiles { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); align-items:start; gap:16px; min-width:0; }
   #groupProfileDialog .group-profiles > *, #groupProfileDialog .group-profile-detail > * { min-width:0; max-width:100%; }
   #groupProfileDialog .table-wrap { overflow:auto; max-height:280px; }
+  #groupProfileDialog .group-profiles > .table-wrap { max-height:60vh; }
   #groupProfileDialog .group-profiles > .table-wrap table { width:100%; table-layout:auto; }
   #groupProfileDialog .group-profiles > .table-wrap th { white-space:nowrap; }
-  #groupProfileDialog .profile-variable { display:inline-block; white-space:nowrap; }
+  #groupProfileDialog .profile-variable { display:inline-block; max-width:100%; overflow-wrap:anywhere; }
   #groupProfileDialog td, #groupProfileDialog th, #groupProfileDialog p { overflow-wrap:anywhere; white-space:normal; }
+  #groupProfileDialog td, #groupProfileDialog th { padding:6px; vertical-align:top; }
+  #groupProfileDialog .group-profiles > .table-wrap :is(th,td):is(:nth-child(4),:nth-child(6)) { width:1%; white-space:nowrap; }
+  #groupProfileDialog .group-profiles > .table-wrap td:nth-child(2), #groupProfileDialog .group-profiles > .table-wrap td:nth-child(5), #groupProfileDialog .group-profile-detail td:nth-child(2), #groupProfileDialog .group-profile-detail td:nth-child(3) { white-space:nowrap; font-variant-numeric:tabular-nums; }
+  #groupProfileDialog [data-profile] { padding:4px 6px; white-space:nowrap; }
+  #groupProfileDialog [data-profile][aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #groupProfileDialog .group-profile-detail > .table-wrap { max-height:none; }
   #groupProfileDialog .metrics { display:flex; flex-wrap:wrap; gap:8px 16px; }
   #groupProfileDialog .metric { border:0; padding:0; box-shadow:none; background:none; }
   #groupProfileDialog pre { white-space:pre-wrap; overflow-wrap:anywhere; }
@@ -1240,7 +1247,7 @@ _MODEL_RESULTS_STYLE = r"""
   .model-training-source-reference { overflow-wrap:anywhere; }
   .model-overview-grid {
     display:grid;
-    grid-template-columns:minmax(0,.9fr) minmax(0,1fr) minmax(0,1.3fr);
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
     gap:14px;
     align-items:start;
   }
@@ -1259,6 +1266,19 @@ _MODEL_RESULTS_STYLE = r"""
   #modelTrainingDataQuality > p { margin:4px 0 8px; }
   #modelQualitySummary { display:block; }
   #modelQualitySummary :is(th,td) { padding:6px 8px; }
+  #modelQualitySummary td { text-align:right; font-variant-numeric:tabular-nums; }
+  #modelMetrics { align-items:stretch; gap:8px; }
+  #modelMetrics > .metric { flex:0 0 auto; flex-direction:column; flex-wrap:nowrap; align-items:flex-start; justify-content:center; gap:4px; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--panel); }
+  .model-analysis-column { min-width:0; display:grid; gap:14px; }
+  .model-analysis-column > section { min-width:0; padding:0; }
+  #modelEngineeringJudgment ul { padding-left:20px; margin:8px 0; }
+  #modelEngineeringJudgment li { margin:6px 0; overflow-wrap:anywhere; }
+  #varianceChart { display:grid; grid-template-columns:repeat(10,minmax(0,1fr)); align-items:end; gap:8px; padding:12px; }
+  #varianceChart .variance-item { display:flex; flex-direction:column; justify-content:end; gap:4px; text-align:center; font-variant-numeric:tabular-nums; font-size:12px; }
+  #varianceChart .variance-bar { display:block; height:var(--bar-height); background:var(--line); border-radius:3px 3px 0 0; }
+  #varianceChart .selected .variance-bar { background:var(--green); }
+  #varianceDetails td { text-align:right; font-variant-numeric:tabular-nums; }
+  @media (max-width:760px) { #varianceChart { grid-template-columns:repeat(5,minmax(0,1fr)); } }
   .model-projection-grid {
     display:grid;
     grid-template-columns:minmax(0,1fr) minmax(0,1fr);
@@ -1321,7 +1341,6 @@ _MODEL_RESULTS_STYLE = r"""
   #modelStructureComparison .model-energy-table td.numeric { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   @container (max-width:1100px) {
     .model-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .model-overview-grid > :last-child { grid-column:1 / -1; }
   }
   @container (max-width:700px) {
     .model-overview-grid { grid-template-columns:minmax(0,1fr); }
@@ -1534,6 +1553,7 @@ def _model_results_content_html() -> str:
             <section id="exceedanceRawSection" hidden><h4 id="exceedanceRawTitle">原始趋势</h4><div id="exceedanceRawStatus" role="status"></div><div id="exceedanceRaw" class="exceedance-plot"></div></section>
             <section id="exceedanceCompareRawSection" hidden><h4 id="exceedanceCompareRawTitle">异常与参考原始趋势</h4><div id="exceedanceCompareRawStatus" role="status"></div><div id="exceedanceCompareRaw" class="exceedance-pair-plot"></div><div id="exceedanceCompareLoadTitle"></div><div id="exceedanceCompareLoadStatus" role="status"></div><div id="exceedanceCompareLoadRaw" class="exceedance-pair-plot"></div></section>
           </dialog>
+          <section class="chart-card"><h3>模型摘要</h3><div id="modelMetrics" class="metrics"></div></section>
           <div class="model-overview-grid">
             <section class="chart-card model-quality-conclusion" aria-labelledby="modelQualityTitle">
               <h3 id="modelQualityTitle">模型质量判断</h3>
@@ -1541,17 +1561,18 @@ def _model_results_content_html() -> str:
               <div id="modelEngineeringJudgment" class="model-quality-copy" aria-live="polite"></div>
               <div id="modelQualityNotice" class="help model-quality-copy"></div>
             </section>
+            <div class="model-analysis-column">
             <section class="chart-card model-structure-summary">
-              <h3>模型结构</h3>
-              <div id="modelMetrics" class="metrics"></div>
+              <h3>模型结构简述</h3>
               <div id="modelProjectionSummary" class="metric"></div>
-              <h4>主元解释率</h4><div id="varianceChart" class="variance"></div>
             </section>
             <section class="chart-card">
               <h3>统计质量</h3>
               <div id="modelQualitySummary" class="chart-grid" aria-live="polite"></div>
             </section>
+            </div>
           </div>
+          <section class="chart-card"><h3>主元解释率</h3><p class="help">前 10 个主元；绿色为已保留主元，灰色为未保留主元。完整明细列出保留状态。</p><div id="varianceChart" class="variance"></div><details><summary>完整主元明细（含累计解释率）</summary><div id="varianceDetails" class="table-wrap" tabindex="0"></div></details></section>
           <section id="componentLoadings" class="chart-card">
             <h3>主元载荷分析</h3>
             <div class="help">仅显示前 6 个主元。载荷来自实际训练模型的 PCA 主元。同一原始变量的全部 Lag 先聚合为一个载荷强度 L_agg = √(Σ loading²)，聚合后不再有正负方向。按聚合强度从大到小显示前 10 个原始变量，平方载荷占比以该主元全部变量的平方载荷总和为分母，不对前 10 项重新归一化，不等同于 T²/SPE 异常贡献。</div>

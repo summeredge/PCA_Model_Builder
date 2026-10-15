@@ -126,13 +126,25 @@ function render(perspective,profile) {
 }
 """ + renderer + r"""
 const result=render('state_exploration',profile);
-assert(result.list.includes('FIC001 ↑、TIC003 ↓'));
+assert(result.list.replace(/<[^>]*>/g,'').includes('FIC001 ↑、TIC003 ↓'));
+assert(result.list.includes('aria-pressed="true">a</button>'));
+assert(!result.list.includes('（已选中）'));
 assert(result.detail.includes('工程量均值')&&result.detail.includes('相对总体偏离 z'));
 assert(result.detail.includes('性能后验评价'));
 assert(result.detail.includes('有效样本：5达标样本：3达标率：60.0%中位数：42'));
 assert(result.detail.includes('不参与 PCA 聚类')&&result.detail.includes('不代表该工况自动属于正常/异常'));
 assert(result.detail.includes('总覆盖 15 分钟')&&result.detail.includes('主要进入')&&result.detail.includes('定位时间轴'));
 assert(result.detail.includes('完整变量对比')&&result.detail.includes('完整转换计数'));
+assert(result.detail.includes('<details open><summary>时间详情与完整转换计数'));
+assert(result.detail.includes('<details><summary>完整变量对比'));
+for(const count of [0,2,5,7]) {
+ const items=Array.from({length:count},(_,i)=>({...variables[0],tag:`TOP_${i}`}));
+ const rendered=render('state_exploration',{...profile,variables:items,top_variables:items}).detail;
+ const visible=rendered.split('<details')[0];
+ assert.equal((visible.match(/<tr><td/g)||[]).length,Math.min(count,5));
+ assert(!rendered.includes('展开 Top5'));
+ for(let i=0;i<Math.min(count,5);i++) assert(visible.includes(`TOP_${i}`));
+}
 assert(result.detail.indexOf('定位PC图')<result.detail.indexOf('定位时间轴')&&result.detail.indexOf('定位时间轴')<result.detail.indexOf('查看关联候选'));
 const noPerformance={...profile};for(const key of Object.keys(noPerformance)) if(key.startsWith('performance_')) delete noPerformance[key];
 assert(!render('state_exploration',noPerformance).detail.includes('性能后验评价'));

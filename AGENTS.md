@@ -46,6 +46,12 @@
 - 模型兼容性；
 - Windows运行环境。
 
+页面 HTML 分三层生成，先确认目标片段来自哪一层再动手：
+- `web.py` 的 `INDEX_HTML`：基础模板与控制元素；
+- `web_quality_layout.py`：外层包装；
+- `web_model_results.py`：`apply_model_results_ui` / `_stabilize_workbench_html` 按唯一锚点
+  字符串改写结构与样式，锚点数量不符会直接抛 `ValueError`。
+
 禁止：
 
 - 使用pickle保存模型；
