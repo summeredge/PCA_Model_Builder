@@ -511,17 +511,30 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    renderExplorationPcChart(state.exploration);return values;
   },legendGroups);
   await page.waitForFunction(()=>state.preferredRegionPlot?._fullLayout);
-  assert.equal(await page.locator('#explorationPcChart .legendtoggle').count(),legendGroups.length);
-  for(const visible of [false,true]) {
-   for(const cluster of legendGroups) {
-    const label=await page.evaluate(id=>clusterUiLabel(id),cluster);
-    await page.locator('#explorationPcChart .legend .traces').filter({hasText:label}).locator('.legendtoggle').click();
-    await page.waitForFunction(({cluster,visible})=>state.preferredRegionPlot._fullData.filter(trace=>trace.legendgroup===`cluster:${cluster}`).every(trace=>trace.visible===(visible?true:'legendonly')),{cluster,visible});
+  assert.equal(await page.locator('#explorationPcChart .legendtoggle').count(),0);
+  assert.equal(await page.locator('#explorationPcChart .scatterlayer .textpoint').count(),0);
+  assert.equal(await legendSnapshot(),beforeLegend);
+  for(const mode of ['time','variable:TAG_A']) {
+   for(const width of [1440,760,390]) {
+    await page.setViewportSize({width,height:1000});
+    await page.locator('#explorationPcColorMode').selectOption(mode);
+    await page.waitForFunction(()=>state.preferredRegionPlot?._fullLayout.coloraxis?.colorbar.orientation==='h');
+    const geometry=await page.evaluate(()=>{
+     const plot=state.preferredRegionPlot,bar=plot.querySelector('.colorbar'),axis=plot.querySelector('.xtitle');
+     const b=bar.getBoundingClientRect(),a=axis.getBoundingClientRect(),p=plot.getBoundingClientRect();
+     return {bar:{x:b.x,y:b.y,right:b.right,bottom:b.bottom,width:b.width,height:b.height},axisBottom:a.bottom,plotBottom:p.bottom,
+      overflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
+      points:plot.data.filter(t=>t.type==='scattergl').reduce((n,t)=>n+t.x.length,0),
+      legends:plot.querySelectorAll('.legendtoggle').length,text:plot.querySelectorAll('.scatterlayer .textpoint').length};
+    });
+    assert.equal(geometry.overflow,0,JSON.stringify(geometry));
+    assert.equal(geometry.points,data.full_point_count);assert.equal(geometry.legends,0);assert.equal(geometry.text,0);
+    assert(geometry.bar.width>geometry.bar.height,JSON.stringify(geometry));
+    assert(geometry.bar.y>=geometry.axisBottom,JSON.stringify(geometry));
+    assert(geometry.bar.bottom<=geometry.plotBottom+1,JSON.stringify(geometry));
    }
-   const visiblePoints=await page.evaluate(()=>state.preferredRegionPlot._fullData.filter(trace=>trace.type==='scattergl'&&trace.visible===true).reduce((count,trace)=>count+trace.x.length,0));
-   assert.equal(visiblePoints,visible?data.full_point_count:0);
-   assert.equal(await legendSnapshot(),beforeLegend);
   }
+  await page.setViewportSize({width:1440,height:1000});
   await page.evaluate(values=>{state.explorationColorValues.set('TAG_A',values);renderExplorationPcChart(state.exploration);},savedColors);
   await page.waitForFunction(()=>state.preferredRegionPlot?._fullLayout);
   await page.locator('#explorationPcColorMode').selectOption('cluster');

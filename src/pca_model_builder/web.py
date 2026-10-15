@@ -4596,11 +4596,12 @@ function renderExplorationPcChart(data) {
       colorAxis={colorscale:scoreTimeColorStops.map((stop,index)=>[index/(scoreTimeColorStops.length-1),`rgb(${stop.join(",")})`]),cmin:colorMinimum,cmax:colorMaximum,colorbar:{title:{text:escapeHtml(colorColumn)},tickformat:".4g"}};
       if(choice==="time") colorAxis.colorbar={title:{text:"时间"},tickvals:[minimum,maximum],ticktext:[displayTime(new Date(minimum).toISOString()),displayTime(new Date(maximum).toISOString())]};
     }
+    if(colorAxis) Object.assign(colorAxis.colorbar,{orientation:"h",x:.5,xanchor:"center",y:-.3,yanchor:"top",len:.9,thickness:12,title:{...colorAxis.colorbar.title,side:"top"}});
     traces=[];
     for(const [cluster,bucket] of clusters) {
       const legendgroup=`cluster:${cluster}`;
-      if(bucket.values.length) traces.push({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),showlegend:true,legendgroup,marker:{size:5,color:bucket.values,coloraxis:"coloraxis"},hovertemplate:`PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>${escapeHtml(colorColumn)} %{marker.color:.5g}<extra></extra>`});
-      if(bucket.missingX.length) traces.push({type:"scattergl",mode:"markers",x:bucket.missingX,y:bucket.missingY,name:clusterUiLabel(cluster),showlegend:!bucket.values.length,legendgroup,marker:{size:5,color:"#9aa7b4",opacity:.85},hovertemplate:"PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>工艺变量值缺失或无效<extra></extra>"});
+      if(bucket.values.length) traces.push({type:"scattergl",mode:"markers",x:bucket.x,y:bucket.y,name:clusterUiLabel(cluster),showlegend:false,legendgroup,marker:{size:5,color:bucket.values,coloraxis:"coloraxis"},hovertemplate:`PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>${escapeHtml(colorColumn)} %{marker.color:.5g}<extra></extra>`});
+      if(bucket.missingX.length) traces.push({type:"scattergl",mode:"markers",x:bucket.missingX,y:bucket.missingY,name:clusterUiLabel(cluster),showlegend:false,legendgroup,marker:{size:5,color:"#9aa7b4",opacity:.85},hovertemplate:"PC1 %{x:.4f}<br>PC2 %{y:.4f}<br>工艺变量值缺失或无效<extra></extra>"});
     }
     const note=el("explorationPcNote");
     const missingCount=[...clusters.values()].reduce((count,bucket)=>count+bucket.missingX.length,0);
@@ -4625,9 +4626,9 @@ function renderExplorationPcChart(data) {
   }
   const centers=Object.entries(data.cluster_centers||{}).map(([cluster,center])=>({cluster,x:Number(center[0]),y:Number(center[1])})).filter(item=>Number.isFinite(item.x)&&Number.isFinite(item.y));
   if(centers.length) {
-    traces.push(...centers.map(item=>({type:"scatter",mode:"markers+text",x:[item.x],y:[item.y],text:[clusterUiLabel(item.cluster)],textposition:"top center",textfont:{size:10},showlegend:false,legendgroup:`cluster:${item.cluster}`,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:explorationClusterColor(item.cluster),line:{width:1,color:"#ffffff"}},"meta":"center"})));
+    traces.push(...centers.map(item=>({type:"scatter",mode:colorColumn?"markers":"markers+text",x:[item.x],y:[item.y],text:[clusterUiLabel(item.cluster)],textposition:"top center",textfont:{size:10},showlegend:false,legendgroup:`cluster:${item.cluster}`,hoverinfo:"skip",marker:{symbol:"cross",size:11,color:explorationClusterColor(item.cluster),line:{width:1,color:"#ffffff"}},"meta":"center"})));
   }
-  const layout={autosize:true,hovermode:"closest",dragmode:"pan",margin:{l:46,r:colorColumn?96:14,t:12,b:88},legend:{orientation:"h",x:.5,y:-.2,xanchor:"center",yanchor:"top",groupclick:"togglegroup"},paper_bgcolor:"#fff",plot_bgcolor:"#fff",font:{size:11,color:"#5f6c7b"},xaxis:{title:"PC1",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},yaxis:{title:"PC2",gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},shapes:explorationRegionShapes()};
+  const layout={autosize:true,hovermode:"closest",dragmode:"pan",margin:{l:46,r:14,t:12,b:colorAxis?128:88},legend:{orientation:"h",x:.5,y:-.2,xanchor:"center",yanchor:"top",groupclick:"togglegroup"},paper_bgcolor:"#fff",plot_bgcolor:"#fff",font:{size:11,color:"#5f6c7b"},xaxis:{title:{text:"PC1"},gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},yaxis:{title:{text:"PC2"},gridcolor:"#edf1f5",zerolinecolor:"#d7dee8"},shapes:explorationRegionShapes()};
   if(colorAxis) layout.coloraxis=colorAxis;
   const config={displayModeBar:true,modeBarButtons:[["zoom2d","pan2d","resetScale2d"]],displaylogo:false,responsive:true,scrollZoom:false};
   container.innerHTML='<div class="exploration-pc-canvas"></div><svg class="exploration-pc-overlay" role="img" aria-label="优选运行区域椭圆"></svg>';

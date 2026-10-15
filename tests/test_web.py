@@ -1646,7 +1646,7 @@ def test_state_exploration_pc_chart_is_fixed_cluster_structure():
     assert "exploration-pc-target-halo" not in renderer
     # Cluster centers keep their own trace and stay out of region selection.
     assert "const centers=Object.entries(data.cluster_centers||{})" in renderer
-    assert 'type:"scatter",mode:"markers+text"' in renderer
+    assert 'type:"scatter",mode:colorColumn?"markers":"markers+text"' in renderer
     assert 'symbol:"cross"' in renderer
     assert 'showlegend:false' in renderer
 
@@ -1678,6 +1678,7 @@ def test_state_exploration_variable_coloring_keeps_points_groups_centers_and_reg
         const clusterUiLabel=value=>`group-${value.slice(-1)}`;
         const explorationClusterColor=value=>({cluster_001:"#176b87",cluster_002:"#cf3f36",cluster_003:"#16845b",cluster_004:"#d19a20"})[value];
         const escapeHtml=value=>String(value).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+        const scoreTimestamp=row=>Date.parse(row.timestamp),displayTime=value=>value;
         let requests=0;
         const api=url=>{requests++;assert(url.includes("/run-1/color-values?column=LOAD"));return Promise.resolve({column:"LOAD",values:[10,null,30,40]});};
         globalThis.Plotly={react:(canvas,traces,layout,config)=>{plots.push({traces,layout});return Promise.resolve({});}};
@@ -1691,8 +1692,8 @@ def test_state_exploration_variable_coloring_keeps_points_groups_centers_and_reg
           await new Promise(resolve=>setTimeout(resolve,0));
           const variable=plots[2],valueTraces=variable.traces.filter(trace=>Array.isArray(trace.marker?.color)),missing=variable.traces.find(trace=>trace.marker?.color==="#9aa7b4");
           const legendTraces=variable.traces.filter(trace=>trace.showlegend===true);
-          assert(legendTraces.every(trace=>trace.x.length>0));
-          const groups=legendTraces.map(trace=>[trace.name,trace.legendgroup]);
+          assert.equal(legendTraces.length,0);
+          const groups=valueTraces.map(trace=>[trace.name,trace.legendgroup]);
           const centers=variable.traces.filter(trace=>trace.meta==="center");
           assert.equal(requests,1);
           assert.equal(plots[0].traces.filter(trace=>trace.meta!=="center").length,4);
@@ -1717,9 +1718,32 @@ def test_state_exploration_variable_coloring_keeps_points_groups_centers_and_reg
             ["cluster:cluster_002",[3],[30]],
             ["cluster:cluster_003",[4],[40]],
           ]);
+          assert(centers.every(trace=>trace.mode==="markers"));
+          assert.equal(variable.layout.coloraxis.colorbar.orientation,"h");
+          assert.equal(variable.layout.margin.r,14);
+          assert.equal(variable.layout.margin.b,128);
+          assert(nodes.explorationPcNote.textContent.includes("LOAD")&&nodes.explorationPcNote.textContent.includes("10.000")&&nodes.explorationPcNote.textContent.includes("40.000"));
+          state.explorationColorValues.set("LOAD",[null,null,null,null]);
+          renderExplorationPcChart(data);
+          const empty=plots.at(-1);
+          assert.equal(empty.layout.coloraxis,undefined);
+          assert(empty.traces.every(trace=>trace.showlegend===false));
+          assert.equal(empty.traces.filter(trace=>trace.type==="scattergl").reduce((n,t)=>n+t.x.length,0),4);
+          nodes.explorationPcColorMode.value="time";
+          data.cluster_series_full.forEach((row,i)=>row.timestamp=`2026-01-01T0${i}:00:00Z`);
+          renderExplorationPcChart(data);
+          const time=plots.at(-1).layout.coloraxis;
+          assert.equal(time.colorbar.orientation,"h");
+          assert.equal(time.colorbar.title.text,"\u65f6\u95f4");
+          assert.deepEqual(time.colorbar.tickvals,[Date.parse(data.cluster_series_full[0].timestamp),Date.parse(data.cluster_series_full[3].timestamp)]);
+          nodes.explorationPcColorMode.value="cluster";
+          renderExplorationPcChart(data);
+          const discrete=plots.at(-1);
+          assert.equal(discrete.layout.coloraxis,undefined);
+          assert(discrete.traces.filter(t=>t.meta==="center").every(t=>t.mode==="markers+text"));
+          assert(discrete.traces.filter(t=>t.type==="scattergl").every(t=>t.showlegend!==false));
           assert.equal(variable.layout.legend.groupclick,"togglegroup");
           assert.deepEqual(variable.layout.shapes,plots[1].layout.shapes);
-          assert(nodes.explorationPcNote.textContent.includes("LOAD")&&nodes.explorationPcNote.textContent.includes("10.000")&&nodes.explorationPcNote.textContent.includes("40.000"));
           console.log(JSON.stringify({requests,pointCount:valueTraces.reduce((count,trace)=>count+trace.x.length,0)+missing.x.length,groups,shapes:variable.layout.shapes}));
         })().catch(error=>{console.error(error);process.exitCode=1;});
         """.replace("__RENDERER__", "function renderExplorationPcChart(data)" + renderer)
