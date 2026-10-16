@@ -704,6 +704,31 @@ def evaluate_preferred_region(
             }
         )
 
+    if normalized_performance is not None and normalized_performance.direction in (
+        "higher_is_better", "lower_is_better"
+    ):
+        aligned_performance = (
+            pd.to_numeric(performance_values.reindex(points.index), errors="coerce")
+            .to_numpy(dtype=float)
+            if performance_values is not None else np.full(len(points), np.nan)
+        )
+        performance_finite = np.isfinite(aligned_performance)
+        selected_values = aligned_performance[selected & performance_finite]
+        overall_values = aligned_performance[finite & performance_finite]
+        median = float(np.median(selected_values)) if selected_values.size else None
+        overall_median = float(np.median(overall_values)) if overall_values.size else None
+        improvement = None
+        if median is not None and overall_median is not None:
+            improvement = median - overall_median
+            if normalized_performance.direction == "lower_is_better":
+                improvement = -improvement
+        statistics.update({
+            "performance_valid_count": int(selected_values.size),
+            "performance_median": median,
+            "performance_overall_median": overall_median,
+            "performance_improvement": improvement,
+        })
+
     if engineering_data is not None:
         aligned = engineering_data.reindex(points.index)
         variables = []
@@ -751,6 +776,16 @@ def evaluate_region_comparison(
         points, b_ellipses, columns, centers,
         performance_values=performance_values, performance_config=performance_config,
     )
+    performance_comparison = {}
+    config = _normalize_performance_config(performance_config)
+    if config is not None and config.direction in ("higher_is_better", "lower_is_better"):
+        a_median, b_median = region_a["performance_median"], region_b["performance_median"]
+        improvement = None
+        if a_median is not None and b_median is not None:
+            improvement = a_median - b_median
+            if config.direction == "lower_is_better":
+                improvement = -improvement
+        performance_comparison["performance_improvement"] = improvement
     selected_a, finite = _preferred_region_selection_mask(points, region_a["ellipses"], columns)
     selected_b, _ = _preferred_region_selection_mask(points, region_b["ellipses"], columns)
     a_only = selected_a & ~selected_b
@@ -782,6 +817,7 @@ def evaluate_region_comparison(
         })
     return {
         "region_a": region_a, "region_b": region_b,
+        **performance_comparison,
         "intersection_sample_count": int((selected_a & selected_b).sum()),
         "a_only_sample_count": int(a_only.sum()),
         "b_only_sample_count": int(b_only.sum()),

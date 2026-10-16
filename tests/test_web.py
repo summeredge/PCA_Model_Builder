@@ -1926,11 +1926,64 @@ def test_preferred_region_metric_table_keeps_field_formats_and_conditional_perfo
     assert 'region.performance_target_count??"—"' in summary
     assert 'explorationPercent(region.performance_target_ratio)' in summary
     assert 'explorationNumber(region.performance_median,3)' in summary
-    # 非 target_range 保持原「性能评价 —」语义。
-    assert '[["性能评价","—"]]' in summary
+    # 无性能配置时明确提示。
+    assert '[["性能评价","未配置性能 Tag"]]' in summary
     # 未定义椭圆时保留原提示。
     assert '尚未定义优选运行区域；点击“椭圆选择”后在 PC1/PC2 图中拖动绘制。' in summary
     assert '当前区域由 ${ellipses.length} 个普通椭圆并集定义；重叠样本只计一次。稳定性反映全部保留主元空间的组内距离/离散程度，不等于时间稳定性或正常状态证明；候选仍需人工决策。' in summary
+
+
+def test_preferred_region_performance_rendering_switches_and_comparison():
+    html = web.INDEX_HTML
+    summary = "function renderExplorationRegionSummary(data)" + html.split(
+        "function renderExplorationRegionSummary(data)", 1
+    )[1].split("function renderExplorationRegionFeatures", 1)[0]
+    comparison = "function renderExplorationRegionComparison(container)" + html.split(
+        "function renderExplorationRegionComparison(container)", 1
+    )[1].split("function renderExplorationRegionControls", 1)[0]
+    helpers = "\n".join(re.search(r"function " + name + r"\([^\n]+", html)[0]
+                        for name in ["explorationNumber", "explorationPercent", "escapeHtml"])
+    result = _run_node_javascript(helpers + summary + comparison + r'''
+      const assert=require('node:assert/strict');
+      const container={innerHTML:''}, state={};
+      const el=()=>container, clusterUiLabel=x=>x;
+      const groupProfileNumber=x=>explorationNumber(x,3);
+      function renderExplorationRegionFeatures() {}
+      const region={ellipses:[{}],selected_sample_count:3,performance_valid_count:2,
+        performance_median:8,performance_overall_median:6,performance_improvement:2,
+        performance_target_count:1,performance_target_ratio:.5};
+      state.preferredRegion=region;
+      for(const direction of ['higher_is_better','lower_is_better','target_range',null,'higher_is_better']) {
+        const data={performance_config:direction?{direction}:null}; state.exploration=data;
+        renderExplorationRegionSummary(data);
+        if(direction==='target_range') {
+          assert(container.innerHTML.includes('性能达标率')); assert(container.innerHTML.includes('50.0%'));
+          assert(!container.innerHTML.includes('方向化性能改善'));
+        } else if(direction) {
+          assert(container.innerHTML.includes('探索总体中位数')); assert(container.innerHTML.includes('6.000'));
+          assert(container.innerHTML.includes('2.000')); assert(!container.innerHTML.includes('性能达标率'));
+        } else assert(container.innerHTML.includes('未配置性能 Tag'));
+        state.regionComparison={region_a:region,region_b:{...region,performance_median:5},performance_improvement:3};
+        renderExplorationRegionComparison(container);
+        assert(container.innerHTML.includes('重叠样本可能双方计入'));
+        if(direction && direction!=='target_range') {
+          assert(container.innerHTML.includes('A 相对 B 性能改善')); assert(container.innerHTML.includes('3.000'));
+          assert(!container.innerHTML.includes('性能达标率'));
+        }
+      }
+      for(const value of [0,-2,null]) {
+        region.performance_improvement=value; renderExplorationRegionSummary(state.exploration);
+        assert(container.innerHTML.includes(value===null?'不可用（数据不足）':value.toFixed(3)));
+        state.regionComparison.performance_improvement=value; renderExplorationRegionComparison(container);
+        assert(container.innerHTML.includes(value===null?'不可用（数据不足）':value.toFixed(3)));
+      }
+      region.performance_valid_count='<img onerror=bad>';
+      renderExplorationRegionSummary(state.exploration);
+      assert(!container.innerHTML.includes('<img'));
+      renderExplorationRegionComparison(container); assert(!container.innerHTML.includes('<img'));
+      console.log(JSON.stringify({ok:true}));
+    ''')
+    assert result == {"ok": True}
 
 
 def test_exploration_sampling_labels_are_scoped_to_the_timeline():

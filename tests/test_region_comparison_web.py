@@ -10,7 +10,8 @@ from pca_model_builder import web
 from test_web import _run_node_javascript
 
 
-def test_region_comparison_payload_is_read_only_and_uses_confirmed_a(monkeypatch):
+@pytest.mark.parametrize("direction", [None, "higher_is_better", "lower_is_better"])
+def test_region_comparison_payload_is_read_only_and_uses_confirmed_a(monkeypatch, direction):
     run_id = "e" * 32
     index = pd.date_range("2026-01-01", periods=8, freq="5min")
     points = pd.DataFrame({"pc1": np.arange(8.), "pc2": 0.,
@@ -24,6 +25,12 @@ def test_region_comparison_payload_is_read_only_and_uses_confirmed_a(monkeypatch
               "preferred_region_update_seq": 3,
               "preferred_region_candidates": [{"candidate_id": "keep"}],
               "candidate_decisions": [{"candidate_id": "keep", "decision": "accepted"}]}
+    if direction:
+        cached.update({
+            "performance_config": {"performance_tag": "PERF", "direction": direction},
+            "_performance_values": pd.Series(np.arange(8.), index=index).iloc[::-1],
+            "cluster_series_display": points.iloc[[0, 7]],
+        })
     monkeypatch.setitem(web.STATE_EXPLORATION_RUNS, run_id, cached)
     before = copy.deepcopy(cached)
     payload = {"exploration_run_id": run_id, "a_ellipses": [ellipse(1.)], "b_ellipses": [ellipse(6.)]}
@@ -32,6 +39,13 @@ def test_region_comparison_payload_is_read_only_and_uses_confirmed_a(monkeypatch
     assert result["region_a"]["selected_sample_count"] == result["region_b"]["selected_sample_count"] == 3
     assert result["intersection_sample_count"] == 0
     assert result["a_only_sample_count"] == result["b_only_sample_count"] == 3
+    if direction:
+        assert result["region_a"]["performance_valid_count"] == result["region_b"]["performance_valid_count"] == 3
+        assert result["region_a"]["performance_median"] == 1.
+        assert result["region_b"]["performance_median"] == 6.
+        assert result["region_a"]["performance_overall_median"] == 3.5
+        assert result["region_a"]["performance_improvement"] == (-2.5 if direction == "higher_is_better" else 2.5)
+        assert result["performance_improvement"] == (-5. if direction == "higher_is_better" else 5.)
     assert result["variables"][0]["a_mean"] == 10.
     assert result["variables"][0]["b_mean"] == 60.
     assert [v["tag"] for v in result["variables"]] == ["TAG"]
@@ -40,6 +54,8 @@ def test_region_comparison_payload_is_read_only_and_uses_confirmed_a(monkeypatch
     for key, value in before.items():
         if isinstance(value, pd.DataFrame):
             pd.testing.assert_frame_equal(cached[key], value)
+        elif isinstance(value, pd.Series):
+            pd.testing.assert_series_equal(cached[key], value)
         else:
             assert cached[key] == value
     stale = web.state_exploration_region_comparison_payload(run_id, {**payload, "a_ellipses": []})

@@ -975,6 +975,64 @@ def comparison_ellipse(center, radius):
     return {"center_pc1": center, "center_pc2": 0., "radius_pc1": radius, "radius_pc2": 1.}
 
 
+@pytest.mark.parametrize("direction,sign", [("higher_is_better", 1), ("lower_is_better", -1)])
+@pytest.mark.parametrize("center,expected", [(1, -2), (3, 0), (5, 2)])
+def test_preferred_region_monotonic_full_population(comparison_samples, direction, sign, center, expected):
+    points, _, columns, centers = comparison_samples
+    values = pd.Series(range(8), index=points.index).iloc[::-1]
+    ellipse = comparison_ellipse(center, 1)
+    result = evaluate_preferred_region(points, [ellipse, ellipse], columns, centers,
+        performance_values=values, performance_config=PerformanceConfig("PERF", direction))
+    assert result["performance_valid_count"] == 3
+    assert result["performance_median"] == center
+    assert result["performance_overall_median"] == 3
+    assert result["performance_improvement"] == sign * expected
+    assert "performance_target_ratio" not in result
+
+
+@pytest.mark.parametrize("direction,sign", [("higher_is_better", 1), ("lower_is_better", -1)])
+@pytest.mark.parametrize("a,b,expected", [(2, 4, -2), (4, 2, 2), (3, 3, 0)])
+def test_region_comparison_monotonic_overlap(comparison_samples, direction, sign, a, b, expected):
+    points, engineering, columns, centers = comparison_samples
+    result = evaluate_region_comparison(points, [comparison_ellipse(a, 2)] * 2,
+        [comparison_ellipse(b, 2)], columns, centers, engineering_data=engineering,
+        performance_values=pd.Series(range(8), index=points.index),
+        performance_config=PerformanceConfig("PERF", direction))
+    assert result["region_a"]["performance_valid_count"] == 5
+    assert result["region_b"]["performance_valid_count"] == 5
+    assert result["region_a"]["performance_median"] == a
+    assert result["region_b"]["performance_median"] == b
+    assert result["performance_improvement"] == sign * expected
+
+
+@pytest.mark.parametrize("direction", ["higher_is_better", "lower_is_better"])
+@pytest.mark.parametrize("values,ellipses,count,median,overall", [
+    (["1", "bad", np.inf, -np.inf, 5, np.nan, 7, 9999], [comparison_ellipse(1, 1)], 1, 1, 5),
+    ([np.nan] * 8, [comparison_ellipse(1, 1)], 0, None, None),
+    (None, [comparison_ellipse(1, 1)], 0, None, None),
+    (list(range(8)), [], 0, None, 3),
+    ([np.inf] * 3 + [3, 4, 5, 6, 7], [comparison_ellipse(1, 1)], 0, None, 4.5),
+])
+def test_region_monotonic_missing_values(comparison_samples, direction, values, ellipses, count, median, overall):
+    points, engineering, columns, centers = comparison_samples
+    performance = pd.Series(values, index=points.index).iloc[::-1] if values is not None else None
+    result = evaluate_region_comparison(points, ellipses, [comparison_ellipse(5, 1)],
+        columns, centers, engineering_data=engineering, performance_values=performance,
+        performance_config=PerformanceConfig("PERF", direction))
+    a = result["region_a"]
+    assert a["performance_valid_count"] == count
+    assert a["performance_median"] == median
+    assert a["performance_overall_median"] == overall
+    if median is None:
+        assert a["performance_improvement"] is None
+    if median is None:
+        assert result["performance_improvement"] is None
+    else:
+        assert result["performance_improvement"] == (-5 if direction == "higher_is_better" else 5)
+    import json
+    json.dumps(result, allow_nan=False)
+
+
 @pytest.mark.parametrize("a,b,counts", [
     ([comparison_ellipse(1, 1)], [comparison_ellipse(5, 1)], (0, 3, 3)),
     ([comparison_ellipse(2, 2)], [comparison_ellipse(4, 2)], (3, 2, 2)),
