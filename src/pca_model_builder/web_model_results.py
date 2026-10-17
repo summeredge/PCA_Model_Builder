@@ -365,9 +365,10 @@ _FORM_ALIGNMENT_STYLE = r"""
   #engineeringPanel .batch-config .actions > .download {
     min-width:var(--batch-action-width);
   }
-  /* 文件选择使用剩余宽度，按钮按内容宽度换行。 */
+  /* 文件选择固定宽度，按钮按内容宽度换行。 */
   #engineeringPanel .batch-config .actions > label.secondary {
-    flex:1 1 320px;
+    flex:0 0 300px;
+    max-width:100%;
     display:grid;
     gap:4px;
     align-content:start;

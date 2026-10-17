@@ -558,7 +558,7 @@ def test_batch_cluster_and_tag_forms_use_consistent_alignment() -> None:
     assert "flex-wrap:wrap;" in batch_actions
     assert "grid-template-columns" not in batch_actions
     assert "#engineeringPanel .batch-config .actions > label.secondary" in html
-    assert "flex:1 1 320px;" in html
+    assert "flex:0 0 300px;" in html
     assert (
         "#engineeringPanel .batch-config .actions > label.secondary { flex:1 1 100%; }"
         not in html
