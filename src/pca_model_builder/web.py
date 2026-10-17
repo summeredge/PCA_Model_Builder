@@ -12,6 +12,7 @@ import os
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import threading
 from typing import Any, Mapping, Sequence
@@ -138,6 +139,9 @@ STATE_EXPLORATION_RUNS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _STATE_EXPLORATION_LOCK = threading.RLock()
 _LIFECYCLE_LOCKS: dict[str, threading.Lock] = {}
 _LIFECYCLE_LOCKS_LOCK = threading.Lock()
+_UPLOAD_LOCKS: dict[str, threading.Lock] = {}
+_UPLOAD_LOCKS_LOCK = threading.Lock()
+_UPLOAD_ACTIVE: dict[str, int] = {}
 _REPLAY_LOCKS: dict[str, threading.Lock] = {}
 _REPLAY_LOCKS_LOCK = threading.Lock()
 
@@ -146,6 +150,10 @@ class WebStageError(ValueError):
     def __init__(self, stage: str, error: Exception) -> None:
         super().__init__(str(error))
         self.stage = stage
+
+
+class UploadBusyError(ValueError):
+    """An upload is already held by training, validation, or cleanup."""
 
 
 class StateExplorationNotFoundError(ValueError):
@@ -227,9 +235,27 @@ def save_upload(filename: str, content: bytes) -> dict[str, Any]:
         path.unlink(missing_ok=True)
         DATA_SESSIONS.remove_dataset(file_id)
         raise ValueError(f"{_upload_file_type(normalized_suffix)} 不包含列")
+    original_filename = Path(filename).name
+    metadata_path = UPLOADS_DIR / f"{file_id}.metadata.json"
+    try:
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "filename": original_filename,
+                    "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        path.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+        DATA_SESSIONS.remove_dataset(file_id)
+        raise
     return {
         "file_id": file_id,
-        "filename": Path(filename).name,
+        "filename": original_filename,
         "columns": columns,
         "file_type": normalized_suffix[1:],
         **({"encoding": encoding} if normalized_suffix == ".csv" else {}),
@@ -326,6 +352,30 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    file_id = _validated_id(_required_text(payload, "file_id"), "file_id")
+    with _upload_lock(file_id, "训练文件"):
+        try:
+            return _train_payload_locked(payload)
+        except Exception:
+            # The snapshot is the history association; without it no run may exist.
+            _discard_unrecorded_training_run(payload)
+            raise
+        finally:
+            payload.pop("_created_run_id", None)
+
+
+def _discard_unrecorded_training_run(payload: dict[str, Any]) -> None:
+    run_id = payload.get("_created_run_id")
+    if not isinstance(run_id, str) or not _ID_PATTERN.fullmatch(run_id):
+        return
+    run_dir = RUNS_DIR / run_id
+    if (run_dir / "modeling_snapshot.json").exists():
+        return
+    if run_dir.is_dir():
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def _train_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
     timestamp_column = _required_text(payload, "timestamp_column")
     tags = _required_tags(payload)
     excluded = payload.get("excluded_tags")
@@ -401,6 +451,7 @@ def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     run_id = uuid.uuid4().hex
+    payload["_created_run_id"] = run_id
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     model_name = _required_text(payload, "model_name")
@@ -1978,8 +2029,12 @@ def performance_screen_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def validate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_id = _validated_id(_required_text(payload, "run_id"), "run_id")
+    file_id = payload.get("file_id")
     with _lifecycle_lock(run_id):
-        return _validate_payload_locked(payload)
+        if file_id is None:
+            return _validate_payload_locked(payload)
+        with _upload_lock(_validated_id(str(file_id), "file_id"), "验证文件"):
+            return _validate_payload_locked(payload)
 
 
 def _validate_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2168,6 +2223,40 @@ def _lifecycle_lock(run_id: str):
         yield
     finally:
         lock.release()
+
+
+@contextmanager
+def _upload_lock(file_id: str, label: str = "文件", *, active: bool = True):
+    """Serialize run creation and validation with history cleanup for one upload.
+
+    Callers that already hold a run lock must keep that order; cleanup takes run
+    locks first and upload locks second as well, so the two paths cannot cycle.
+    """
+    with _UPLOAD_LOCKS_LOCK:
+        lock = _UPLOAD_LOCKS.setdefault(file_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise UploadBusyError(f"当前{label}正在执行训练或验证，不能并发操作")
+    try:
+        if active:
+            with _UPLOAD_LOCKS_LOCK:
+                _UPLOAD_ACTIVE[file_id] = _UPLOAD_ACTIVE.get(file_id, 0) + 1
+        try:
+            yield
+        finally:
+            if active:
+                with _UPLOAD_LOCKS_LOCK:
+                    remaining = _UPLOAD_ACTIVE.get(file_id, 1) - 1
+                    if remaining > 0:
+                        _UPLOAD_ACTIVE[file_id] = remaining
+                    else:
+                        _UPLOAD_ACTIVE.pop(file_id, None)
+    finally:
+        lock.release()
+
+
+def _upload_in_use(file_id: str) -> bool:
+    with _UPLOAD_LOCKS_LOCK:
+        return _UPLOAD_ACTIVE.get(file_id, 0) > 0
 
 
 def remove_data_session(file_id: str) -> None:
@@ -5208,6 +5297,20 @@ function invalidateValidationUpload() {
   resetValidationSource();
   el("validationSourceStatus").textContent="验证文件或读取设置已变化，请上传或重新检查验证文件。";
 }
+globalThis.markValidationUploadDeleted=()=>{
+  state.validationUpload=null;
+  state.validation=null;
+  state.validationWindows=[];
+  el("validationContent").hidden=true;
+  el("validationEmpty").hidden=false;
+  el("validationSource").value="upload";
+  el("validationUploadControls").hidden=false;
+  el("validationFileInput").value="";
+  el("validationInspectButton").disabled=true;
+  fillSelect(el("validationTimestampColumn"),[]);
+  invalidateValidationUpload();
+  el("validationSourceStatus").textContent="独立验证文件已被历史清理删除，请重新上传并检查验证文件。";
+};
 el("validationFileInput").addEventListener("change",()=>{
   state.validationUpload=null; el("validationInspectButton").disabled=true; invalidateValidationUpload();
 });

@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from datetime import datetime, timezone
 import hashlib
 from http.server import ThreadingHTTPServer
+import json
+import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import threading
 from typing import Any, Sequence
 from urllib.parse import urlparse
 import webbrowser
 
 from . import web_quality_layout as quality_app
+from .web import UploadBusyError, _upload_lock, _upload_in_use
 from . import training_exceedance
 from .loading_plot import loading_plot_payload
 from .model_diagnostics import compare_candidate_runs, model_structure_diagnostic
@@ -62,6 +67,7 @@ _CANDIDATE_PROTECTED_ARTIFACTS = (
     "frozen_model.pcamodel",
     "deployment_model.pcadeploy",
 )
+_HISTORY_UPLOAD = re.compile(r"^([0-9a-f]{32})\.(csv|xlsx|txt)$", re.IGNORECASE)
 _SCATTER_SECTION = re.compile(
     r'\n    <section class="dp-scatter-section">.*?\n    </section>', re.DOTALL
 )
@@ -745,6 +751,8 @@ _WORKBENCH_UI_STYLE = r"""
   }
   .workflow-sidebar-title { margin:0; font-size:var(--type-section); font-weight:600; }
   .workflow-steps { display:grid; gap:var(--space-1); }
+  .workflow-history-tab { width:100%; text-align:left; }
+  .workflow-history-tab[aria-pressed="true"] { border-color:var(--accent); background:#edf5ff; }
   .workflow-step {
     display:grid;
     grid-template-columns:30px minmax(0,1fr) auto;
@@ -778,6 +786,12 @@ _WORKBENCH_UI_STYLE = r"""
   .workflow-step.active .workflow-step-status { color:var(--accent); font-weight:600; }
   .workflow-step.complete .workflow-step-status { color:var(--green); }
   .candidate-workflow-step { min-width:0; align-self:start; }
+  .history-cleanup-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .history-cleanup-heading h2 { margin:0; }
+  .history-cleanup-name { overflow-wrap:anywhere; }
+  .history-cleanup-reasons { color:var(--danger); white-space:normal; }
+  .history-cleanup-confirm { display:flex; align-items:center; gap:8px; }
+  #historyCleanupPanel[hidden] { display:none; }
   .workflow-steps:has(#candidateSectionNav:not([hidden])) > .workflow-step { align-self:start; }
   .candidate-section-nav { display:grid; gap:4px; padding:4px 0 8px 42px; }
   .candidate-section-nav[hidden] { display:none; }
@@ -997,6 +1011,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const trainingTable = document.getElementById("trainingWindows");
   const releasePanel = document.getElementById("releasePanel");
   const workflowSteps = document.getElementById("workflowSteps");
+  const historyCleanupPanel = document.getElementById("historyCleanupPanel");
+  const historyCleanupTab = document.getElementById("historyCleanupTab");
   const candidateNavigation = document.getElementById("candidateSectionNav");
   const sectionLinks = [...candidateNavigation.querySelectorAll("a")];
   const evidenceIds = {trendPanel:"trendEvidence", stateExplorationPanel:"explorationEvidence", clusterPanel:"clusterEvidence", performancePanel:"performanceEvidence"};
@@ -1098,6 +1114,8 @@ document.addEventListener("DOMContentLoaded", () => {
   globalThis.showWorkflowStage = target => {
     globalThis.closeGroupProfileDialog?.();
     globalThis.refreshValidationInvestigationContext?.();
+    historyCleanupPanel.hidden = true;
+    historyCleanupTab.setAttribute("aria-pressed", "false");
     [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.toggle("active", panel.id === target));
     candidateNavigation.hidden = target !== "candidatePanel";
     scheduleCandidateSpy();
@@ -1123,6 +1141,18 @@ document.addEventListener("DOMContentLoaded", () => {
       if (logRect.bottom < 0 || logRect.top > innerHeight) log.scrollIntoView({ block: "start" });
     }
   };
+  globalThis.showHistoryCleanup = () => {
+    globalThis.closeGroupProfileDialog?.();
+    [dataPanel, candidatePanel, modelPanel, validationPanel, releasePanel].forEach(panel => panel.classList.remove("active"));
+    candidateNavigation.hidden = true;
+    historyCleanupPanel.hidden = false;
+    historyCleanupTab.setAttribute("aria-pressed", "true");
+    scheduleCandidateSpy();
+  };
+  historyCleanupTab.addEventListener("click", () => {
+    globalThis.showHistoryCleanup();
+    globalThis.refreshHistoryCleanup?.();
+  });
   workflowSteps.querySelectorAll(".workflow-step").forEach(button => button.addEventListener("click", () => globalThis.showWorkflowStage(button.dataset.panel)));
   globalThis.showWorkflowStage("configPanel");
 
@@ -1484,7 +1514,31 @@ def _workflow_sidebar_html() -> str:
       <div id="workflowSteps" class="workflow-steps" role="tablist">
 {buttons}
       </div>
+      <button id="historyCleanupTab" type="button" class="secondary workflow-history-tab" aria-controls="historyCleanupPanel" aria-pressed="false">历史数据清理</button>
     </section>"""
+
+
+def _history_cleanup_panel_html() -> str:
+    return """      <section id="historyCleanupPanel" class="group" aria-labelledby="historyCleanupTitle" hidden>
+        <div class="history-cleanup-heading"><h2 id="historyCleanupTitle">历史数据清理</h2><button id="historyCleanupRefresh" type="button" class="secondary">刷新</button></div>
+        <div id="historyCleanupStorage" class="metrics"></div>
+        <div id="historyCleanupStatus" class="status info" role="status" aria-live="polite"></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>选择</th><th>上传文件</th><th>时间</th><th>大小</th><th>关联运行</th><th>保护状态</th></tr></thead>
+          <tbody id="historyCleanupRows"><tr><td colspan="6">正在读取历史记录…</td></tr></tbody>
+        </table></div>
+        <div class="actions"><button id="historyCleanupPreviewButton" type="button" class="secondary" disabled>预览所选文件</button></div>
+        <section class="group" aria-labelledby="historyCleanupPreviewTitle">
+          <h3 id="historyCleanupPreviewTitle">清理预览</h3>
+          <div id="historyCleanupPreview" class="status info" role="status" aria-live="polite">选择文件后查看关联运行、保护原因和预计释放容量。</div>
+          <label class="history-cleanup-confirm"><input id="historyCleanupConfirm" type="checkbox" disabled>我已核对预览并确认清理可删除对象</label>
+          <button id="historyCleanupExecuteButton" type="button" disabled>执行清理</button>
+        </section>
+        <div>
+          <h3>执行结果</h3>
+          <div id="historyCleanupResult" class="status info" role="status" aria-live="polite">尚未执行清理。</div>
+        </div>
+      </section>"""
 
 
 def _model_results_content_html() -> str:
@@ -1864,6 +1918,7 @@ def _assemble_workbench(status_area: str, config_panel: str, candidate_panel: st
             model_panel,
             validation_panel,
             release_panel,
+            _history_cleanup_panel_html(),
             "    </section>",
             "  </main>",
         )
@@ -2373,6 +2428,118 @@ def candidate_models_payload() -> dict[str, Any]:
     return {"candidates": candidates}
 
 
+def _is_reparse_point(info: os.stat_result) -> bool:
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _path_safety_issue(path: Path) -> str | None:
+    absolute = Path(os.path.abspath(path))
+    for item in (absolute, *absolute.parents):
+        try:
+            info = item.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            return f"无法检查路径 {item.name}：{error}"
+        if _is_reparse_point(info):
+            return f"路径包含符号链接或 Windows 重解析点：{item.name}"
+    return None
+
+
+def _measure_path(path: Path) -> tuple[int, list[str]]:
+    total = 0
+    issues: list[str] = []
+
+    def visit(item: Path) -> None:
+        nonlocal total
+        try:
+            info = item.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            issues.append(f"无法读取 {item.name}：{error}")
+            return
+        if _is_reparse_point(info):
+            total += info.st_size
+            issues.append(f"包含符号链接或 Windows 重解析点：{item.name}")
+        elif stat.S_ISREG(info.st_mode):
+            total += info.st_size
+        elif stat.S_ISDIR(info.st_mode):
+            try:
+                children = list(os.scandir(item))
+            except OSError as error:
+                issues.append(f"无法读取目录 {item.name}：{error}")
+                return
+            for child in children:
+                visit(Path(child.path))
+        else:
+            issues.append(f"包含无法安全清理的特殊文件：{item.name}")
+
+    visit(path)
+    return total, issues
+
+
+def _checked_run_for_deletion(
+    run_id: str, *, allow_exploratory_draft: bool = False
+) -> Path:
+    runs_dir = Path(os.path.abspath(_BASE_WEB.RUNS_DIR))
+    run_dir = Path(os.path.abspath(runs_dir / run_id))
+    if (
+        _path_safety_issue(runs_dir)
+        or run_dir.parent != runs_dir
+        or _path_safety_issue(run_dir)
+    ):
+        raise ValueError(f"候选模型运行记录路径无效：{run_id}")
+    if not run_dir.is_dir():
+        raise ValueError(f"候选模型运行记录不存在：{run_id}")
+    model_path = run_dir / "model.pcamodel"
+    if _path_safety_issue(model_path) or not model_path.is_file():
+        raise ValueError(f"候选模型包路径无效：{run_id}")
+    try:
+        _, manifest = _BASE_WEB.load_model_package(model_path)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"候选模型包损坏：{run_id}") from error
+    is_candidate = (
+        manifest["model_purpose"] == "normal_state"
+        and manifest["model_status"] == "candidate"
+    )
+    is_exploratory_draft = (
+        allow_exploratory_draft
+        and manifest["model_purpose"] == "exploratory"
+        and manifest["model_status"] == "draft"
+    )
+    if not (is_candidate or is_exploratory_draft):
+        raise ValueError(f"仅允许删除normal_state/candidate模型：{run_id}")
+    protected_artifact = _candidate_deletion_block_reason(run_dir)
+    if protected_artifact:
+        raise ValueError(
+            f"模型存在正式下游工件 {protected_artifact}，不能删除：{run_id}"
+        )
+    _, issues = _measure_path(run_dir)
+    if issues:
+        raise ValueError(f"运行目录无法安全清理：{run_id}（{issues[0]}）")
+    return run_dir
+
+
+@contextmanager
+def _locked_runs_for_deletion(
+    run_ids: Sequence[str], *, allow_exploratory_draft: bool = False
+):
+    with ExitStack() as locks:
+        for run_id in sorted(run_ids):
+            locks.enter_context(_BASE_WEB._lifecycle_lock(run_id))
+        checked = [
+            (run_id, _checked_run_for_deletion(
+                run_id, allow_exploratory_draft=allow_exploratory_draft
+            ))
+            for run_id in run_ids
+        ]
+        yield checked
+
+
 def delete_candidate_models_payload(payload: dict[str, Any]) -> dict[str, Any]:
     run_ids = payload.get("run_ids")
     if not isinstance(run_ids, list) or not run_ids:
@@ -2385,36 +2552,594 @@ def delete_candidate_models_payload(payload: dict[str, Any]) -> dict[str, Any]:
     validated_ids = [
         _BASE_WEB._validated_id(run_id, "run_id") for run_id in run_ids
     ]
-    checked: list[tuple[str, Path]] = []
-    with ExitStack() as locks:
-        for run_id in sorted(validated_ids):
-            locks.enter_context(_BASE_WEB._lifecycle_lock(run_id))
-        runs_dir = _BASE_WEB.RUNS_DIR.resolve()
-        for run_id in validated_ids:
-            run_dir = _BASE_WEB.RUNS_DIR / run_id
-            if run_dir.resolve().parent != runs_dir:
-                raise ValueError(f"候选模型运行记录路径无效：{run_id}")
-            model_path = run_dir / "model.pcamodel"
-            if not model_path.is_file():
-                raise ValueError(f"候选模型运行记录不存在：{run_id}")
-            if model_path.resolve().parent != run_dir.resolve():
-                raise ValueError(f"候选模型包路径无效：{run_id}")
-            try:
-                _, manifest = _BASE_WEB.load_model_package(model_path)
-            except ValueError as error:
-                raise ValueError(f"候选模型包损坏：{run_id}") from error
-            if (
-                manifest["model_purpose"] != "normal_state"
-                or manifest["model_status"] != "candidate"
-            ):
-                raise ValueError(f"仅允许删除normal_state/candidate模型：{run_id}")
-            if _candidate_deletion_block_reason(run_dir):
-                raise ValueError(f"模型存在正式下游工件，不能删除：{run_id}")
-            checked.append((run_id, run_dir))
-
+    with _locked_runs_for_deletion(validated_ids) as checked:
         for _, run_dir in checked:
             shutil.rmtree(run_dir)
     return {"deleted_run_ids": validated_ids}
+
+
+def _history_inventory() -> dict[str, Any]:
+    uploads_dir = Path(_BASE_WEB.UPLOADS_DIR)
+    runs_dir = Path(_BASE_WEB.RUNS_DIR)
+    upload_bytes, upload_measure_issues = _measure_path(uploads_dir)
+    run_bytes, run_measure_issues = _measure_path(runs_dir)
+    upload_scan_issues: list[str] = []
+    association_issues: list[str] = []
+    by_file: dict[str, list[Path]] = {}
+    associations: dict[str, list[dict[str, Any]]] = {}
+
+    uploads_issue = _path_safety_issue(uploads_dir)
+    if uploads_issue:
+        upload_scan_issues.append(uploads_issue)
+    elif uploads_dir.is_dir():
+        try:
+            upload_paths = sorted(uploads_dir.iterdir())
+        except OSError as error:
+            upload_scan_issues.append(f"无法读取上传目录：{error}")
+        else:
+            for path in upload_paths:
+                match = _HISTORY_UPLOAD.fullmatch(path.name)
+                if not match:
+                    continue
+                file_id = match.group(1).lower()
+                by_file.setdefault(file_id, []).append(path)
+
+    run_count = 0
+    runs_issue = _path_safety_issue(runs_dir)
+    if runs_issue:
+        association_issues.append(runs_issue)
+    elif runs_dir.is_dir():
+        try:
+            run_paths = sorted(runs_dir.iterdir())
+        except OSError as error:
+            association_issues.append(f"无法读取运行目录：{error}")
+        else:
+            for run_dir in run_paths:
+                try:
+                    info = run_dir.lstat()
+                except OSError as error:
+                    association_issues.append(f"无法检查运行目录 {run_dir.name}：{error}")
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    run_count += 1
+                if _is_reparse_point(info):
+                    association_issues.append(
+                        f"运行目录包含无法检查的重解析点：{run_dir.name}"
+                    )
+                    continue
+                if not stat.S_ISDIR(info.st_mode):
+                    continue
+                run_id = run_dir.name
+                if not _BASE_WEB._ID_PATTERN.fullmatch(run_id):
+                    association_issues.append(f"运行目录标识无法识别：{run_id}")
+                    continue
+                snapshot_path = run_dir / "modeling_snapshot.json"
+                if _path_safety_issue(snapshot_path) or not snapshot_path.is_file():
+                    association_issues.append(f"运行 {run_id} 缺少可读取的建模快照")
+                    continue
+                try:
+                    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    association_issues.append(f"运行 {run_id} 的建模快照无法读取")
+                    continue
+                if not isinstance(snapshot, dict):
+                    association_issues.append(f"运行 {run_id} 的建模快照格式无效")
+                    continue
+                data_source = snapshot.get("data_source")
+                file_id = data_source.get("file_id") if isinstance(data_source, dict) else None
+                if (
+                    snapshot.get("run_id") != run_id
+                    or not isinstance(file_id, str)
+                    or not _BASE_WEB._ID_PATTERN.fullmatch(file_id)
+                ):
+                    association_issues.append(f"运行 {run_id} 的源文件归属无法确认")
+                    continue
+                associations.setdefault(file_id, []).append(
+                    {"run_id": run_id, "path": run_dir, "source": True}
+                )
+                report_path = run_dir / "validation_report.json"
+                if _path_safety_issue(report_path) or not report_path.is_file():
+                    continue
+                try:
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    association_issues.append(
+                        f"运行 {run_id} 的验证报告无法读取"
+                    )
+                    continue
+                if not isinstance(report, dict):
+                    association_issues.append(
+                        f"运行 {run_id} 的验证报告格式无效"
+                    )
+                    continue
+                validation_source = report.get("validation_source")
+                if validation_source is None:
+                    associations.setdefault(file_id, []).append(
+                        {"run_id": run_id, "path": run_dir, "source": False}
+                    )
+                    continue
+                if not isinstance(validation_source, dict):
+                    association_issues.append(
+                        f"运行 {run_id} 的验证来源无法确认"
+                    )
+                    continue
+                validation_file_id = validation_source.get("file_id")
+                if (
+                    not isinstance(validation_file_id, str)
+                    or not _BASE_WEB._ID_PATTERN.fullmatch(validation_file_id)
+                ):
+                    association_issues.append(
+                        f"运行 {run_id} 的验证来源无法确认"
+                    )
+                    continue
+                if validation_file_id == file_id:
+                    continue
+                associations.setdefault(validation_file_id, []).append(
+                    {"run_id": run_id, "path": run_dir, "source": False}
+                )
+
+    files: dict[str, dict[str, Any]] = {}
+    for file_id, paths in by_file.items():
+        paths.sort(key=lambda item: item.name)
+        reasons: list[str] = []
+        sizes = 0
+        uploaded_at = ""
+        filename = file_id
+        for path in paths:
+            issue = _path_safety_issue(path)
+            if issue:
+                reasons.append(issue)
+            try:
+                info = path.lstat()
+            except OSError as error:
+                reasons.append(f"无法读取上传文件：{error}")
+                continue
+            if not stat.S_ISREG(info.st_mode) or _is_reparse_point(info):
+                reasons.append("上传路径不是普通文件")
+            else:
+                sizes += info.st_size
+                uploaded_at = datetime.fromtimestamp(
+                    info.st_mtime, timezone.utc
+                ).isoformat()
+        if len(paths) != 1:
+            reasons.append("同一 UUID 存在多个上传文件")
+        metadata_path = uploads_dir / f"{file_id}.metadata.json"
+        metadata_issue = _path_safety_issue(metadata_path)
+        if metadata_issue:
+            reasons.append(metadata_issue)
+        else:
+            try:
+                metadata_info = metadata_path.lstat()
+            except FileNotFoundError:
+                metadata_info = None
+            except OSError as error:
+                reasons.append(f"无法读取上传元数据：{error}")
+                metadata_info = None
+            if metadata_info is not None:
+                if _is_reparse_point(metadata_info) or not stat.S_ISREG(metadata_info.st_mode):
+                    reasons.append("上传元数据不是普通文件")
+                else:
+                    try:
+                        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        if isinstance(metadata, dict):
+                            raw_name = metadata.get("filename")
+                            raw_time = metadata.get("uploaded_at")
+                            if isinstance(raw_name, str) and Path(raw_name).name:
+                                filename = Path(raw_name).name
+                            if isinstance(raw_time, str) and raw_time.strip():
+                                uploaded_at = raw_time
+                    except (OSError, ValueError):
+                        pass
+        files[file_id] = {
+            "file_id": file_id,
+            "filename": filename,
+            "uploaded_at": uploaded_at,
+            "size_bytes": sizes,
+            "paths": paths,
+            "metadata_path": metadata_path,
+            "issues": reasons,
+            "runs": associations.get(file_id, []),
+        }
+
+    return {
+        "files": files,
+        "association_issues": association_issues,
+        "upload_scan_issues": upload_scan_issues,
+        "upload_count": sum(len(item["paths"]) for item in files.values()),
+        "run_count": run_count,
+        "upload_bytes": upload_bytes,
+        "run_bytes": run_bytes,
+        "storage_issues": upload_measure_issues + run_measure_issues,
+    }
+
+
+def _history_file_reasons(
+    item: dict[str, Any], inventory: dict[str, Any]
+) -> list[str]:
+    reasons = list(item["issues"])
+    if _upload_in_use(item["file_id"]):
+        reasons.append("文件正在训练或验证操作中")
+    if any(not run.get("source", True) for run in item["runs"]):
+        run_ids = [
+            run["run_id"] for run in item["runs"] if not run.get("source", True)
+        ]
+        reasons.append(
+            "该文件被运行验证报告引用，受模型验证证据保护："
+            + "、".join(run_ids)
+        )
+        for run in item["runs"]:
+            if run.get("source", True):
+                continue
+            reasons.append(
+                f"运行 {run['run_id']}：独立验证来源文件，保留该运行及其验证证据"
+            )
+    reasons.extend(
+        f"无法确认运行关联：{issue}"
+        for issue in inventory["association_issues"]
+    )
+    for run in item["runs"]:
+        if not run.get("source", True):
+            try:
+                with _BASE_WEB._lifecycle_lock(run["run_id"]):
+                    pass
+            except ValueError as error:
+                if "正在执行生命周期操作" in str(error):
+                    reasons.append(f"运行 {run['run_id']}：{error}")
+            continue
+        try:
+            with _BASE_WEB._lifecycle_lock(run["run_id"]):
+                _checked_run_for_deletion(
+                    run["run_id"], allow_exploratory_draft=True
+                )
+        except Exception as error:
+            reasons.append(f"运行 {run['run_id']}：{error}")
+    return list(dict.fromkeys(reasons))
+
+
+def _history_public_file(
+    item: dict[str, Any], inventory: dict[str, Any]
+) -> dict[str, Any]:
+    reasons = _history_file_reasons(item, inventory)
+    protected_by_validation = any(
+        not run.get("source", True) for run in item["runs"]
+    )
+    runs = []
+    for run in item["runs"]:
+        size, _ = _measure_path(run["path"])
+        run_reasons = [
+            reason for reason in reasons if reason.startswith(f"运行 {run['run_id']}：")
+        ]
+        runs.append({
+            "run_id": run["run_id"],
+            "source": run.get("source", True),
+            "size_bytes": size,
+            "deletable": not protected_by_validation
+            and run.get("source", True)
+            and not run_reasons,
+            "protection_reasons": run_reasons,
+        })
+    return {
+        "file_id": item["file_id"],
+        "filename": item["filename"],
+        "uploaded_at": item["uploaded_at"],
+        "size_bytes": item["size_bytes"],
+        "run_count": len(runs),
+        "runs": runs,
+        "deletable": not reasons,
+        "protection_reasons": reasons,
+    }
+
+
+def history_cleanup_payload() -> dict[str, Any]:
+    inventory = _history_inventory()
+    return {
+        "storage": {
+            "upload_count": inventory["upload_count"],
+            "run_count": inventory["run_count"],
+            "total_bytes": inventory["upload_bytes"] + inventory["run_bytes"],
+            "complete": not inventory["storage_issues"],
+            "issues": inventory["storage_issues"],
+        },
+        "files": [
+            _history_public_file(item, inventory)
+            for item in inventory["files"].values()
+        ],
+        "scan_issues": inventory["upload_scan_issues"],
+    }
+
+
+def _history_file_ids(payload: dict[str, Any]) -> list[str]:
+    file_ids = payload.get("file_ids")
+    if not isinstance(file_ids, list) or not file_ids:
+        raise ValueError("file_ids必须包含至少一个历史上传文件")
+    if any(not isinstance(file_id, str) for file_id in file_ids):
+        raise ValueError("file_id无效")
+    if len(file_ids) != len(set(file_ids)):
+        raise ValueError("file_ids不能重复")
+    return [_BASE_WEB._validated_id(file_id, "file_id") for file_id in file_ids]
+
+
+def history_cleanup_preview_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    inventory = _history_inventory()
+    preview = []
+    for file_id in _history_file_ids(payload):
+        item = inventory["files"].get(file_id)
+        if item is None:
+            preview.append({
+                "file_id": file_id,
+                "filename": file_id,
+                "deletable": False,
+                "estimated_bytes": 0,
+                "protection_reasons": ["上传文件不存在或无法识别"],
+                "runs": [],
+            })
+            continue
+        if any(not run.get("source", True) for run in item["runs"]):
+            preview.append({
+                **_history_public_file(item, inventory),
+                "deletable": False,
+                "estimated_bytes": 0,
+            })
+            continue
+        public = _history_public_file(item, inventory)
+        reasons = list(public["protection_reasons"])
+        paths = [*item["paths"], item["metadata_path"]]
+        paths.extend(run["path"] for run in item["runs"])
+        sizes = []
+        for path in paths:
+            size, issues = _measure_path(path)
+            sizes.append(size)
+            reasons.extend(issues)
+        reasons = list(dict.fromkeys(reasons))
+        preview.append({
+            **public,
+            "deletable": not reasons,
+            "estimated_bytes": sum(sizes) if not reasons else 0,
+            "protection_reasons": reasons,
+        })
+    return {
+        "files": preview,
+        "estimated_bytes": sum(item["estimated_bytes"] for item in preview),
+    }
+
+
+def history_cleanup_execute_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("confirm") is not True:
+        raise ValueError("必须在清理页面明确确认后才能执行")
+    file_ids = _history_file_ids(payload)
+    return _history_cleanup_execute_locked(file_ids)
+
+
+def _history_busy_outcome(file_ids: Sequence[str], busy: str) -> dict[str, Any]:
+    error = "文件正在训练或验证操作中，不能清理"
+    return _history_cleanup_error_outcome(file_ids, error, only=busy)
+
+
+def _history_cleanup_error_outcome(
+    file_ids: Sequence[str], error: str, *, only: str | None = None
+) -> dict[str, Any]:
+    return {
+        "files": [
+            {
+                "file_id": file_id,
+                "filename": file_id,
+                "deleted_file": False,
+                "deleted_run_ids": [],
+                "bytes_freed": 0,
+                "errors": [error] if only in (None, file_id) else [],
+            }
+            for file_id in file_ids
+        ],
+        "deleted_file_ids": [],
+        "deleted_run_ids": [],
+        "bytes_freed": 0,
+        "storage": history_cleanup_payload()["storage"],
+    }
+
+
+@contextmanager
+def _history_file_locks(file_ids: Sequence[str]):
+    """Take upload locks only; run locks are already held by the caller."""
+    with ExitStack() as locks:
+        for file_id in sorted(file_ids):
+            locks.enter_context(
+                _upload_lock(file_id, "历史清理文件", active=False)
+            )
+        yield
+
+
+@contextmanager
+def _history_run_lock(run_id: str):
+    """Lifecycle lock for cleanup, with a readable conflict result.
+
+    Validation's normal lock error is a 400 for a single run submit; cleanup is
+    a batch preview flow, so it reports that run as skipped instead.
+    """
+    try:
+        with _BASE_WEB._lifecycle_lock(run_id):
+            yield
+    except ValueError as error:
+        if "正在执行生命周期操作" in str(error):
+            raise ValueError(f"运行 {run_id} 正在执行生命周期操作，暂不能清理") from error
+        raise
+
+
+def _history_cleanup_execute_locked(file_ids: Sequence[str]) -> dict[str, Any]:
+    try:
+        with ExitStack() as locks:
+            # Run locks always precede upload locks (validation uses the same
+            # order). Scan under each run lock; once all are held, a fresh scan
+            # decides which runs may be deleted.
+            locked_runs: set[str] = set()
+            for file_id in sorted(file_ids):
+                for run in _history_inventory()["files"].get(file_id, {}).get("runs", []):
+                    if run["run_id"] in locked_runs or not run.get("source", True):
+                        continue
+                    locks.enter_context(_history_run_lock(run["run_id"]))
+                    locked_runs.add(run["run_id"])
+            initial = _history_inventory()
+            protected_runs = {
+                run["run_id"]
+                for file_id in file_ids
+                for run in initial["files"].get(file_id, {}).get("runs", [])
+                if not run.get("source", True)
+            }
+            current_run_ids = {
+                run["run_id"]
+                for file_id in file_ids
+                for run in initial["files"].get(file_id, {}).get("runs", [])
+                if run.get("source", True) and run["run_id"] not in protected_runs
+            }
+            if current_run_ids - locked_runs:
+                raise ValueError("预览后运行关联已变化，请重新预览")
+            busy = next(
+                (file_id for file_id in file_ids if _upload_in_use(file_id)),
+                None,
+            )
+            if busy is not None:
+                return _history_busy_outcome(file_ids, busy)
+            with _history_file_locks(file_ids):
+                return _history_cleanup_storage_locked(file_ids, initial)
+    except UploadBusyError:
+        return _history_busy_outcome(file_ids, file_ids[0])
+    except ValueError as error:
+        return _history_cleanup_error_outcome(file_ids, str(error))
+
+
+def _history_cleanup_storage_locked(
+    file_ids: Sequence[str],
+    initial: dict[str, Any],
+) -> dict[str, Any]:
+    outcomes = []
+    deleted_file_ids: list[str] = []
+    deleted_run_ids: list[str] = []
+
+    for file_id in file_ids:
+        item = initial["files"].get(file_id)
+        if item is None:
+            outcomes.append({
+                "file_id": file_id,
+                "filename": file_id,
+                "deleted_file": False,
+                "deleted_run_ids": [],
+                "bytes_freed": 0,
+                "errors": ["上传文件不存在或无法识别"],
+            })
+            continue
+        run_ids = [
+            run["run_id"] for run in item["runs"]
+            if run.get("source", True)
+        ]
+        validation_run_ids = [
+            run["run_id"] for run in item["runs"]
+            if not run.get("source", True)
+        ]
+        removed_runs: list[str] = []
+        errors: list[str] = []
+        deleted_file = False
+        bytes_freed = 0
+        try:
+            if validation_run_ids:
+                raise ValueError(
+                    "该文件被运行验证报告引用，受模型验证证据保护："
+                    + "、".join(validation_run_ids)
+                )
+            current_inventory = _history_inventory()
+            current = current_inventory["files"].get(file_id)
+            if current is None:
+                raise ValueError("上传文件已不存在或无法识别")
+            if current_inventory["association_issues"]:
+                raise ValueError(
+                    f"无法确认运行关联：{current_inventory['association_issues'][0]}"
+                )
+            if current["issues"]:
+                raise ValueError(current["issues"][0])
+            if any(not run.get("source", True) for run in current["runs"]):
+                current_validation_ids = [
+                    run["run_id"] for run in current["runs"]
+                    if not run.get("source", True)
+                ]
+                raise ValueError(
+                    "该文件被运行验证报告引用，受模型验证证据保护："
+                    + "、".join(current_validation_ids)
+                )
+            current_run_ids = sorted(
+                run["run_id"] for run in current["runs"]
+                if run.get("source", True)
+            )
+            if current_run_ids != sorted(run_ids):
+                raise ValueError("预览后文件或运行关联已变化，请重新预览")
+            checked = [
+                (
+                    run_id,
+                    _checked_run_for_deletion(
+                        run_id, allow_exploratory_draft=True
+                    ),
+                )
+                for run_id in run_ids
+            ]
+            paths = [*current["paths"], current["metadata_path"]]
+            paths.extend(run_dir for _, run_dir in checked)
+            before_sizes = []
+            for path in paths:
+                if issue := _path_safety_issue(path):
+                    raise ValueError(issue)
+                size, issues = _measure_path(path)
+                if issues:
+                    raise ValueError(issues[0])
+                before_sizes.append(size)
+            before_bytes = sum(before_sizes)
+
+            for run_id, run_dir in checked:
+                try:
+                    shutil.rmtree(run_dir)
+                except OSError as error:
+                    if run_dir.exists():
+                        errors.append(f"运行 {run_id} 删除失败：{error}")
+                    else:
+                        removed_runs.append(run_id)
+                else:
+                    removed_runs.append(run_id)
+
+            if not errors:
+                source_path = current["paths"][0]
+                try:
+                    source_path.unlink(missing_ok=True)
+                    deleted_file = not source_path.exists()
+                    if deleted_file:
+                        deleted_file_ids.append(file_id)
+                        _BASE_WEB.remove_data_session(file_id)
+                except OSError as error:
+                    errors.append(f"上传文件删除失败：{error}")
+                if deleted_file:
+                    try:
+                        current["metadata_path"].unlink(missing_ok=True)
+                    except OSError as error:
+                        errors.append(f"上传元数据删除失败：{error}")
+
+            after_bytes = sum(_measure_path(path)[0] for path in paths)
+            bytes_freed = max(0, before_bytes - after_bytes)
+            deleted_run_ids.extend(removed_runs)
+        except Exception as error:
+            errors.append(str(error))
+
+        outcomes.append({
+            "file_id": file_id,
+            "filename": item["filename"],
+            "deleted_file": deleted_file,
+            "deleted_run_ids": removed_runs,
+            "bytes_freed": bytes_freed,
+            "errors": errors,
+        })
+
+    refreshed = history_cleanup_payload()
+    return {
+        "files": outcomes,
+        "deleted_file_ids": deleted_file_ids,
+        "deleted_run_ids": deleted_run_ids,
+        "bytes_freed": sum(item["bytes_freed"] for item in outcomes),
+        "storage": refreshed["storage"],
+    }
 
 
 def _candidate_deletion_block_reason(run_dir: Path) -> str | None:
@@ -2465,6 +3190,12 @@ INDEX_HTML = INDEX_HTML.replace(
 class ModelResultsHandler(_BASE_WEB._Handler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/history-cleanup":
+            try:
+                self._send_json(history_cleanup_payload())
+            except Exception as error:
+                self._send_json(_BASE_WEB.error_payload(error), 400)
+            return
         if path == "/api/model-candidates":
             self._send_json(candidate_models_payload())
             return
@@ -2488,25 +3219,31 @@ class ModelResultsHandler(_BASE_WEB._Handler):
             "/api/model-diagnostics",
             "/api/model-comparison",
             "/api/model-candidates/delete",
+            "/api/history-cleanup/preview",
+            "/api/history-cleanup/execute",
         }:
             super().do_POST()
             return
         try:
             payload = self._json_body()
-            result = (
-                training_exceedance.training_exceedance_payload(payload)
-                if path == "/api/training-exceedance"
-                else
-                train_payload(payload)
-                if path == "/api/train"
-                else _TREND_APP.trend_payload(payload)
-                if path == "/api/trend"
-                else model_diagnostic_payload(payload)
-                if path == "/api/model-diagnostics"
-                else delete_candidate_models_payload(payload)
-                if path == "/api/model-candidates/delete"
-                else compare_candidate_runs(payload.get("run_ids"), _BASE_WEB.RUNS_DIR)
-            )
+            if path == "/api/history-cleanup/preview":
+                result = history_cleanup_preview_payload(payload)
+            elif path == "/api/history-cleanup/execute":
+                result = history_cleanup_execute_payload(payload)
+            else:
+                result = (
+                    training_exceedance.training_exceedance_payload(payload)
+                    if path == "/api/training-exceedance"
+                    else train_payload(payload)
+                    if path == "/api/train"
+                    else _TREND_APP.trend_payload(payload)
+                    if path == "/api/trend"
+                    else model_diagnostic_payload(payload)
+                    if path == "/api/model-diagnostics"
+                    else delete_candidate_models_payload(payload)
+                    if path == "/api/model-candidates/delete"
+                    else compare_candidate_runs(payload.get("run_ids"), _BASE_WEB.RUNS_DIR)
+                )
             self._send_json(result)
         except Exception as error:
             self._send_json(_BASE_WEB.error_payload(error), 400)

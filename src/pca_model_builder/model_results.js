@@ -1025,6 +1025,228 @@
     }
   }
 
+  globalThis.refreshCandidateOptions = refreshCandidateOptions;
+  setupHistoryCleanup();
+
+  function setupHistoryCleanup() {
+    const storage = document.getElementById("historyCleanupStorage");
+    const rows = document.getElementById("historyCleanupRows");
+    const status = document.getElementById("historyCleanupStatus");
+    const previewBox = document.getElementById("historyCleanupPreview");
+    const resultBox = document.getElementById("historyCleanupResult");
+    const previewButton = document.getElementById("historyCleanupPreviewButton");
+    const confirm = document.getElementById("historyCleanupConfirm");
+    const executeButton = document.getElementById("historyCleanupExecuteButton");
+    let currentPreview = null;
+    let previewRevision = 0;
+    const selectedIds = () => [...rows.querySelectorAll("input:checked")].map(input => input.dataset.fileId);
+    const formatBytes = value => {
+      const bytes = Number(value) || 0;
+      if (bytes < 1024) return `${bytes} B`;
+      const units = ["KB", "MB", "GB", "TB"];
+      let size = bytes / 1024, index = 0;
+      while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+      return `${size.toFixed(2)} ${units[index]}`;
+    };
+    const cell = (row, value, className = "") => {
+      const item = document.createElement("td");
+      item.textContent = value;
+      if (className) item.className = className;
+      row.append(item);
+      return item;
+    };
+    const resetPreview = () => {
+      previewRevision += 1;
+      currentPreview = null;
+      confirm.checked = false;
+      confirm.disabled = true;
+      executeButton.disabled = true;
+      previewButton.disabled = !selectedIds().length;
+      previewBox.className = "status info";
+      previewBox.textContent = "选择文件后查看关联运行、保护原因和预计释放容量。";
+    };
+    const request = async (url, payload) => {
+      const response = await fetch(url, {
+        method: payload ? "POST" : "GET",
+        headers: payload ? {"Content-Type": "application/json"} : undefined,
+        body: payload ? JSON.stringify(payload) : undefined,
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "历史清理请求失败");
+      return data;
+    };
+    const renderStorage = summary => {
+      storage.replaceChildren();
+      [["上传文件", summary.upload_count], ["运行", summary.run_count], ["总容量", formatBytes(summary.total_bytes)]].forEach(([label, value]) => {
+        const metric = document.createElement("div"); metric.className = "metric";
+        const strong = document.createElement("strong"); strong.textContent = label;
+        const span = document.createElement("span"); span.textContent = String(value);
+        metric.append(strong, span); storage.append(metric);
+      });
+      if (!summary.complete) setUiMessage(status, `容量统计不完整：${summary.issues.join("；")}`, "warning");
+    };
+    const refresh = async () => {
+      resetPreview();
+      setUiMessage(status, "正在读取历史记录…", "info");
+      try {
+        const data = await request("/api/history-cleanup");
+        renderStorage(data.storage);
+        rows.replaceChildren();
+        (data.files || []).forEach(file => {
+          const row = document.createElement("tr");
+          const selectCell = document.createElement("td");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox"; checkbox.dataset.fileId = file.file_id;
+          checkbox.setAttribute("aria-label", `选择 ${file.filename}`);
+          checkbox.addEventListener("change", resetPreview);
+          selectCell.append(checkbox); row.append(selectCell);
+          const nameCell = document.createElement("td"); nameCell.className = "history-cleanup-name";
+          const name = document.createElement("strong"); name.textContent = file.filename; nameCell.append(name);
+          if (file.filename !== file.file_id) {
+            const id = document.createElement("small"); id.textContent = `UUID：${file.file_id}`; nameCell.append(document.createElement("br"), id);
+          }
+          row.append(nameCell);
+          cell(row, file.uploaded_at || "—");
+          cell(row, formatBytes(file.size_bytes), "numeric");
+          cell(row, String(file.run_count), "numeric");
+          const protection = document.createElement("td");
+          const label = document.createElement("span"); label.className = `status-label ${file.deletable ? "normal" : "blocking"}`;
+          label.textContent = file.deletable ? "可清理" : "受保护"; protection.append(label);
+          if (file.protection_reasons?.length) {
+            const reason = document.createElement("div"); reason.className = "history-cleanup-reasons";
+            reason.textContent = file.protection_reasons.join("；"); protection.append(reason);
+          }
+          row.append(protection); rows.append(row);
+        });
+        if (!data.files?.length) {
+          const row = document.createElement("tr"); cell(row, "暂无可识别的历史上传文件。"); row.firstElementChild.colSpan = 6; rows.append(row);
+        }
+        previewButton.disabled = true;
+        const scanIssues = [...(data.scan_issues || []), ...(data.storage.issues || [])];
+        if (data.storage.complete && !scanIssues.length) setUiMessage(status, `已读取 ${data.files.length} 个上传文件和 ${data.storage.run_count} 个运行。`, "success");
+        else if (scanIssues.length) setUiMessage(status, scanIssues.join("；"), "warning");
+      } catch (error) {
+        setUiMessage(status, `历史记录读取失败：${error.message}`, "error");
+      }
+    };
+    const renderPreview = data => {
+      previewBox.replaceChildren();
+      const total = document.createElement("p"); total.textContent = `预计释放 ${formatBytes(data.estimated_bytes)}。`;
+      previewBox.append(total);
+      data.files.forEach(file => {
+        const item = document.createElement("div");
+        const title = document.createElement("strong");
+        title.textContent = `${file.filename} · ${file.deletable ? `可清理 ${formatBytes(file.estimated_bytes)}` : "受保护"}`;
+        item.append(title);
+        if (file.runs?.length) {
+          const runList = document.createElement("ul");
+          file.runs.forEach(run => {
+            const entry = document.createElement("li");
+            entry.textContent = `运行 ${run.run_id} · ${formatBytes(run.size_bytes)}${run.protection_reasons?.length ? ` · ${run.protection_reasons.join("；")}` : ""}`;
+            runList.append(entry);
+          });
+          item.append(runList);
+        }
+        if (file.protection_reasons?.length) {
+          const reason = document.createElement("p"); reason.className = "history-cleanup-reasons";
+          reason.textContent = file.protection_reasons.join("；"); item.append(reason);
+        }
+        previewBox.append(item);
+      });
+    };
+    const renderResult = data => {
+      resultBox.replaceChildren();
+      const summary = document.createElement("p");
+      summary.textContent = `实际释放 ${formatBytes(data.bytes_freed)}；删除上传 ${data.deleted_file_ids.length} 个，关联运行 ${data.deleted_run_ids.length} 个。`;
+      resultBox.append(summary);
+      data.files.forEach(file => {
+        const line = document.createElement("p");
+        const stateLabel = file.deleted_file ? "已删除" : file.deleted_run_ids.length ? "部分清理" : "已跳过";
+        line.textContent = `${file.filename}：${stateLabel}，释放 ${formatBytes(file.bytes_freed)}${file.errors.length ? `；${file.errors.join("；")}` : ""}`;
+        resultBox.append(line);
+      });
+      resultBox.className = `status ${data.files.some(file => file.errors.length) ? "warning" : "success"}`;
+    };
+
+    globalThis.refreshHistoryCleanup = refresh;
+    document.getElementById("historyCleanupRefresh").addEventListener("click", refresh);
+    previewButton.addEventListener("click", async () => {
+      const fileIds = selectedIds();
+      if (!fileIds.length) return;
+      const revision = ++previewRevision;
+      previewButton.disabled = true;
+      setUiMessage(previewBox, "正在生成只读预览…", "info");
+      try {
+        const data = await request("/api/history-cleanup/preview", {file_ids: fileIds});
+        if (revision !== previewRevision || fileIds.join("\n") !== selectedIds().join("\n")) return;
+        currentPreview = data;
+        renderPreview(currentPreview);
+        confirm.disabled = !currentPreview.files.length;
+      } catch (error) {
+        if (revision !== previewRevision) return;
+        currentPreview = null;
+        setUiMessage(previewBox, `预览失败：${error.message}`, "error");
+      } finally {
+        previewButton.disabled = !selectedIds().length;
+      }
+    });
+    confirm.addEventListener("change", () => {
+      executeButton.disabled = !confirm.checked || !currentPreview?.files.some(file => file.deletable);
+    });
+    executeButton.addEventListener("click", async () => {
+      if (!confirm.checked || !currentPreview?.files.some(file => file.deletable)) return;
+      executeButton.disabled = true;
+      setUiMessage(resultBox, "正在重新核对并执行清理…", "info");
+      try {
+        const data = await request("/api/history-cleanup/execute", {
+          file_ids: currentPreview.files.map(file => file.file_id), confirm: true,
+        });
+        renderResult(data);
+        const validationSourceDeleted = Boolean(state.validationUpload?.file_id)
+          && data.deleted_file_ids.includes(state.validationUpload.file_id);
+        const currentWasDeleted = data.deleted_file_ids.includes(state.fileId)
+          || data.deleted_run_ids.includes(state.runId)
+          || data.deleted_run_ids.includes(state.exploratoryRunId);
+        if (validationSourceDeleted) {
+          globalThis.markValidationUploadDeleted?.();
+          window.location.reload();
+          return;
+        }
+        if (currentWasDeleted) {
+          state.fileId = null; state.fileName = null; state.runId = null;
+          state.exploratoryRunId = null; state.training = null; state.inspection = null;
+          globalThis.invalidateValidationInvestigation?.();
+          sessionStorage.setItem("pcaHistoryCleanupReloadResult", JSON.stringify({
+            result: data,
+            workflowStage: document.querySelector(".workflow-step.active")?.dataset.panel || "configPanel",
+          }));
+          window.location.reload();
+          return;
+        }
+        await refresh();
+        await globalThis.refreshCandidateOptions?.(state.runId);
+      } catch (error) {
+        setUiMessage(resultBox, `清理失败：${error.message}`, "error");
+      } finally {
+        executeButton.disabled = !confirm.checked || !currentPreview?.files.some(file => file.deletable);
+      }
+    });
+    document.addEventListener("DOMContentLoaded", () => {
+      const saved = sessionStorage.getItem("pcaHistoryCleanupReloadResult");
+      if (!saved) return;
+      sessionStorage.removeItem("pcaHistoryCleanupReloadResult");
+      try {
+        const restored = JSON.parse(saved);
+        renderResult(restored.result);
+        globalThis.showWorkflowStage?.(restored.workflowStage);
+        globalThis.showHistoryCleanup?.();
+        refresh();
+      } catch (_) {
+        setUiMessage(resultBox, "清理已完成；历史视图已刷新。", "success");
+      }
+    });
+  }
+
   function renderSingleModelDiagnostic(diagnostic) {
     const target = document.getElementById("singleModelDiagnostic");
     if (!diagnostic) {

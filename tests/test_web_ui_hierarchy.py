@@ -96,6 +96,26 @@ def test_final_web_has_a_static_five_stage_workbench() -> None:
         assert panel_id in parser.ancestors_by_id
 
 
+def test_history_cleanup_tab_is_separate_from_the_five_workflow_steps() -> None:
+    parser = _workbench()
+    html = web_model_results.INDEX_HTML
+
+    assert len(parser.workflow_steps) == 5
+    assert parser.ids.count("historyCleanupTab") == 1
+    assert parser.ids.count("historyCleanupPanel") == 1
+    assert "workflowSteps" not in parser.ancestors_by_id["historyCleanupTab"]
+    assert not set(parser.ancestors_by_id["historyCleanupPanel"]) & {
+        "configPanel", "candidatePanel", "modelPanel", "validationPanel", "releasePanel",
+    }
+    assert 'aria-controls="historyCleanupPanel" aria-pressed="false"' in html
+    assert 'id="historyCleanupRows"' in html
+    assert 'id="historyCleanupPreview"' in html
+    assert 'id="historyCleanupExecuteButton"' in html
+    assert "globalThis.showHistoryCleanup = () =>" in web_model_results._WORKBENCH_UI_SCRIPT
+    assert "historyCleanupPanel.hidden = false" in web_model_results._WORKBENCH_UI_SCRIPT
+    assert "historyCleanupPanel.hidden = true" in web_model_results._WORKBENCH_UI_SCRIPT
+
+
 def test_static_panels_own_their_existing_controls() -> None:
     parser = _workbench()
 

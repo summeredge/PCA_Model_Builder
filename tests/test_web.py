@@ -1,5 +1,6 @@
 import json
 import inspect
+from contextlib import contextmanager
 from io import BytesIO
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+import threading
 import zipfile
 
 import numpy as np
@@ -3126,6 +3128,748 @@ def test_final_web_candidate_deletion_rejects_invalid_lifecycle_corrupt_package_
     assert "无效的 run_id" in rejected["error"]
     assert (tmp_path / "runs" / candidate["run_id"]).is_dir()
     assert corrupt_dir.is_dir()
+
+
+def test_history_cleanup_previews_and_deletes_source_candidate_and_draft(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    cache = web.DataSessionCache()
+    monkeypatch.setattr(web, "DATA_SESSIONS", cache)
+    history = _history_frame()
+    uploaded = web.save_upload("history.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    training = {
+        "file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(), "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5,
+    }
+    candidate = web_model_results.train_payload({**training, "model_name": "history-candidate"})
+    draft = web_model_results.train_payload({
+        **training, "model_name": "history-draft", "model_purpose": "exploratory",
+    })
+    source_path = web.UPLOADS_DIR / f"{uploaded['file_id']}.csv"
+    metadata_path = web.UPLOADS_DIR / f"{uploaded['file_id']}.metadata.json"
+    cache.get_metadata(uploaded["file_id"], source_path, "utf-8-sig", "time")
+    assert cache.cache_bytes > 0
+
+    listing, list_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/history-cleanup"
+    )
+    item = next(file for file in listing["files"] if file["file_id"] == uploaded["file_id"])
+    assert list_status == 200
+    assert listing["storage"]["upload_count"] == 1
+    assert listing["storage"]["run_count"] == 2
+    assert item["filename"] == "history.csv"
+    assert item["run_count"] == 2
+    assert item["deletable"] is True
+
+    preview, preview_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/preview",
+        {"file_ids": [uploaded["file_id"]]},
+    )
+    preview_file = preview["files"][0]
+    assert preview_status == 200
+    assert preview_file["deletable"] is True
+    assert preview_file["estimated_bytes"] > source_path.stat().st_size
+    assert {run["run_id"] for run in preview_file["runs"]} == {
+        candidate["run_id"], draft["run_id"],
+    }
+    assert listing["storage"]["total_bytes"] == preview_file["estimated_bytes"]
+    rejected, rejected_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/execute",
+        {"file_ids": [uploaded["file_id"]]},
+    )
+    assert rejected_status == 400
+    assert "明确确认" in rejected["error"]
+    assert source_path.is_file()
+
+    result, execute_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/execute",
+        {"file_ids": [uploaded["file_id"]], "confirm": True},
+    )
+    assert execute_status == 200
+    assert result["deleted_file_ids"] == [uploaded["file_id"]]
+    assert set(result["deleted_run_ids"]) == {candidate["run_id"], draft["run_id"]}
+    assert result["bytes_freed"] == preview_file["estimated_bytes"]
+    assert result["storage"]["total_bytes"] == 0
+    assert source_path.exists() is False
+    assert metadata_path.exists() is False
+    assert not (web.RUNS_DIR / candidate["run_id"]).exists()
+    assert not (web.RUNS_DIR / draft["run_id"]).exists()
+    assert cache.cache_bytes == 0
+    candidates, candidate_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/model-candidates"
+    )
+    assert candidate_status == 200
+    assert candidates["candidates"] == []
+
+
+def test_history_cleanup_protects_formal_artifacts_and_active_lifecycle(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("protected.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    run = web_model_results.train_payload({
+        "file_id": uploaded["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(), "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "protected-history",
+    })
+    run_dir = web.RUNS_DIR / run["run_id"]
+    artifact = run_dir / "validated_model.pcamodel"
+    artifact.write_bytes(b"validated")
+    preview, status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/preview",
+        {"file_ids": [uploaded["file_id"]]},
+    )
+    assert status == 200
+    assert preview["files"][0]["deletable"] is False
+    assert any("validated_model.pcamodel" in reason for reason in preview["files"][0]["protection_reasons"])
+    result, status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/execute",
+        {"file_ids": [uploaded["file_id"]], "confirm": True},
+    )
+    assert status == 200
+    assert result["deleted_file_ids"] == []
+    assert artifact.is_file()
+    assert (web.UPLOADS_DIR / f"{uploaded['file_id']}.csv").is_file()
+
+    run_dir.joinpath("validation_report.json").write_text(
+        json.dumps({"validation_source": {"file_id": uploaded["file_id"]}}),
+        encoding="utf-8",
+    )
+    listing, _ = _get_response(
+        web_model_results.ModelResultsHandler, "/api/history-cleanup"
+    )
+    item = next(
+        file for file in listing["files"]
+        if file["file_id"] == uploaded["file_id"]
+    )
+    assert item["deletable"] is False
+    assert item["runs"][0]["source"] is True
+
+    artifact.unlink()
+    lifecycle = web._lifecycle_lock(run["run_id"])
+    lifecycle.__enter__()
+    try:
+        preview, status = _post_response(
+            web_model_results.ModelResultsHandler,
+            "/api/history-cleanup/preview",
+            {"file_ids": [uploaded["file_id"]]},
+        )
+        assert status == 200
+        assert any("正在执行生命周期操作" in reason for reason in preview["files"][0]["protection_reasons"])
+        result, status = _post_response(
+            web_model_results.ModelResultsHandler,
+            "/api/history-cleanup/execute",
+            {"file_ids": [uploaded["file_id"]], "confirm": True},
+        )
+    finally:
+        lifecycle.__exit__(None, None, None)
+    assert status == 200
+    assert result["deleted_file_ids"] == []
+    assert run_dir.is_dir()
+    assert (web.UPLOADS_DIR / f"{uploaded['file_id']}.csv").is_file()
+
+
+def test_history_cleanup_refuses_unknown_run_associations_and_uses_uuid_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("legacy.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    (web.UPLOADS_DIR / f"{uploaded['file_id']}.metadata.json").unlink()
+    unknown_run = web.RUNS_DIR / ("a" * 32)
+    unknown_run.mkdir(parents=True)
+    (unknown_run / "modeling_snapshot.json").write_text("{invalid", encoding="utf-8")
+
+    listing, list_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/history-cleanup"
+    )
+    item = next(file for file in listing["files"] if file["file_id"] == uploaded["file_id"])
+    assert list_status == 200
+    assert item["filename"] == uploaded["file_id"]
+    assert item["uploaded_at"]
+    assert item["deletable"] is False
+    assert any("无法确认运行关联" in reason for reason in item["protection_reasons"])
+
+    preview, preview_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/preview",
+        {"file_ids": [uploaded["file_id"]]},
+    )
+    result, execute_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/execute",
+        {"file_ids": [uploaded["file_id"]], "confirm": True},
+    )
+    assert preview_status == execute_status == 200
+    assert preview["files"][0]["estimated_bytes"] == 0
+    assert result["deleted_file_ids"] == []
+    assert (web.UPLOADS_DIR / f"{uploaded['file_id']}.csv").is_file()
+    assert unknown_run.is_dir()
+
+
+def test_history_cleanup_ui_invalidates_deleted_current_references():
+    source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
+    start = source.index("  function setupHistoryCleanup() {")
+    end = source.index("\n  function renderSingleModelDiagnostic", start)
+    setup = source[start:end]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(){this.children=[];this.listeners={};this.dataset={};this.className="";this.textContent="";this.checked=false;this.disabled=false;}
+        addEventListener(name,fn){this.listeners[name]=fn;}
+        append(...items){this.children.push(...items);if(!this.firstElementChild)this.firstElementChild=items[0];}
+        replaceChildren(...items){this.children=[];this.firstElementChild=null;this.textContent="";if(items.length)this.append(...items);}
+        setAttribute(){}
+        querySelectorAll(){return this.inputs||[];}
+      }
+      const ids=["historyCleanupStorage","historyCleanupRows","historyCleanupStatus","historyCleanupPreview","historyCleanupResult",
+        "historyCleanupPreviewButton","historyCleanupConfirm","historyCleanupExecuteButton","historyCleanupRefresh"];
+      const nodes=Object.fromEntries(ids.map(id=>[id,new Element()]));
+      globalThis.document={getElementById:id=>nodes[id],createElement:()=>new Element(),addEventListener(){},querySelector(){return {dataset:{panel:"candidatePanel"}};}};
+      globalThis.state={fileId:"file-1",runId:"run-1",exploratoryRunId:null};
+      globalThis.setUiMessage=(node,message,type)=>{node.className=`status ${type}`;node.textContent=message;};
+      let reload=false,stored="";
+      globalThis.window={location:{reload(){reload=true;}}};
+      globalThis.sessionStorage={setItem(key,value){if(key==="pcaHistoryCleanupReloadResult")stored=value;}};
+      globalThis.refreshCandidateOptions=async()=>{};
+      const response=data=>({ok:true,json:async()=>data});
+      const calls=[];
+      globalThis.fetch=async(url,options={})=>{
+        calls.push(url);
+        if(url.endsWith("/preview")) return response({estimated_bytes:13,files:[{file_id:"file-1",filename:"history.csv",deletable:true,estimated_bytes:13,runs:[],protection_reasons:[]}]});
+        if(url.endsWith("/execute")) return response({bytes_freed:13,deleted_file_ids:["file-1"],deleted_run_ids:["run-1"],
+          files:[{filename:"history.csv",deleted_file:true,deleted_run_ids:["run-1"],bytes_freed:13,errors:[]}]});
+        return response({storage:{upload_count:0,run_count:0,total_bytes:0,complete:true,issues:[]},files:[],scan_issues:[]});
+      };
+      __SETUP__
+      setupHistoryCleanup();
+      const checkbox=new Element();checkbox.dataset.fileId="file-1";checkbox.checked=true;
+      nodes.historyCleanupRows.inputs=[checkbox];
+      await nodes.historyCleanupPreviewButton.listeners.click();
+      nodes.historyCleanupConfirm.checked=true;nodes.historyCleanupConfirm.listeners.change();
+      await nodes.historyCleanupExecuteButton.listeners.click();
+      console.log(JSON.stringify({calls,reload,stored:JSON.parse(stored),fileId:state.fileId,runId:state.runId}));
+    """.replace("__SETUP__", setup))
+    assert result["calls"] == ["/api/history-cleanup/preview", "/api/history-cleanup/execute"]
+    assert result["reload"] is True
+    assert result["stored"]["result"]["deleted_file_ids"] == ["file-1"]
+    assert result["stored"]["workflowStage"] == "candidatePanel"
+    assert result["fileId"] is None
+    assert result["runId"] is None
+
+
+def test_history_cleanup_execute_rejects_upload_in_use(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "busy.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    source_path = web.UPLOADS_DIR / f"{uploaded['file_id']}.csv"
+    with web._upload_lock(uploaded["file_id"], "训练文件"):
+        listing, list_status = _get_response(
+            web_model_results.ModelResultsHandler, "/api/history-cleanup"
+        )
+        result, execute_status = _post_response(
+            web_model_results.ModelResultsHandler,
+            "/api/history-cleanup/execute",
+            {"file_ids": [uploaded["file_id"]], "confirm": True},
+        )
+    item = next(
+        file for file in listing["files"] if file["file_id"] == uploaded["file_id"]
+    )
+    assert list_status == 200
+    assert execute_status == 200
+    assert item["deletable"] is False
+    assert any("训练或验证" in reason for reason in item["protection_reasons"])
+    assert result["deleted_file_ids"] == []
+    assert any("训练或验证" in error for error in result["files"][0]["errors"])
+    assert source_path.is_file()
+
+
+def test_history_cleanup_ui_reloads_after_deleting_validation_upload():
+    source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
+    start = source.index("  function setupHistoryCleanup() {")
+    end = source.index("\n  function renderSingleModelDiagnostic", start)
+    setup = source[start:end]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(){this.children=[];this.listeners={};this.dataset={};this.className="";this.textContent="";this.checked=false;this.disabled=false;}
+        addEventListener(name,fn){this.listeners[name]=fn;}
+        append(...items){this.children.push(...items);if(!this.firstElementChild)this.firstElementChild=items[0];}
+        replaceChildren(...items){this.children=[];this.firstElementChild=null;this.textContent="";if(items.length)this.append(...items);}
+        setAttribute(){}
+        querySelectorAll(){return this.inputs||[];}
+      }
+      const ids=["historyCleanupStorage","historyCleanupRows","historyCleanupStatus","historyCleanupPreview","historyCleanupResult",
+        "historyCleanupPreviewButton","historyCleanupConfirm","historyCleanupExecuteButton","historyCleanupRefresh"];
+      const nodes=Object.fromEntries(ids.map(id=>[id,new Element()]));
+      globalThis.document={getElementById:id=>nodes[id],createElement:()=>new Element(),addEventListener(){},querySelector(){return {dataset:{panel:"candidatePanel"}};}};
+      globalThis.state={fileId:"training-file",runId:"run-1",exploratoryRunId:null,validationUpload:{file_id:"validation-file"}};
+      globalThis.setUiMessage=(node,message,type)=>{node.className=`status ${type}`;node.textContent=message;};
+      let reload=false,stored="";
+      globalThis.window={location:{reload(){reload=true;}}};      globalThis.sessionStorage={setItem(key,value){if(key==="pcaHistoryCleanupReloadResult")stored=value;}};
+      const response=data=>({ok:true,json:async()=>data});
+      globalThis.fetch=async url=>{        if(url.endsWith("/preview")) return response({estimated_bytes:13,files:[{file_id:"validation-file",filename:"validation.csv",deletable:true,estimated_bytes:13,runs:[],protection_reasons:[]}]});
+        if(url.endsWith("/execute")) return response({bytes_freed:13,deleted_file_ids:["validation-file"],deleted_run_ids:[],files:[{filename:"validation.csv",deleted_file:true,deleted_run_ids:[],bytes_freed:13,errors:[]}]});        return response({storage:{upload_count:0,run_count:0,total_bytes:0,complete:true,issues:[]},files:[],scan_issues:[]});
+      };      __SETUP__
+      let marked="";
+      globalThis.markValidationUploadDeleted=()=>{marked="deleted";state.validation=null;state.validationUpload=null;};
+      setupHistoryCleanup();
+      const checkbox=new Element();checkbox.dataset.fileId="validation-file";checkbox.checked=true;      nodes.historyCleanupRows.inputs=[checkbox];
+      await nodes.historyCleanupPreviewButton.listeners.click();
+      nodes.historyCleanupConfirm.checked=true;nodes.historyCleanupConfirm.listeners.change();
+      await nodes.historyCleanupExecuteButton.listeners.click();
+      console.log(JSON.stringify({reload,stored,fileId:state.fileId,runId:state.runId,marked,validationUpload:state.validationUpload}));
+    """.replace("__SETUP__", setup))
+    assert result["reload"] is True
+    assert result["stored"] == ""
+    assert result["fileId"] == "training-file"
+    assert result["runId"] == "run-1"
+    assert result["marked"] == "deleted"
+    assert result["validationUpload"] is None
+
+
+def test_history_cleanup_ui_only_invalidates_the_deleted_validation_file():
+    source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
+    start = source.index("  function setupHistoryCleanup() {")
+    end = source.index("\n  function renderSingleModelDiagnostic", start)
+    setup = source[start:end]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(){this.children=[];this.listeners={};this.dataset={};this.className="";this.textContent="";this.checked=false;this.disabled=false;}
+        addEventListener(name,fn){this.listeners[name]=fn;}
+        append(...items){this.children.push(...items);if(!this.firstElementChild)this.firstElementChild=items[0];}
+        replaceChildren(...items){this.children=[];this.firstElementChild=null;this.textContent="";if(items.length)this.append(...items);}
+        setAttribute(){}
+        querySelectorAll(){return this.inputs||[];}
+      }
+      const ids=["historyCleanupStorage","historyCleanupRows","historyCleanupStatus","historyCleanupPreview","historyCleanupResult",
+        "historyCleanupPreviewButton","historyCleanupConfirm","historyCleanupExecuteButton","historyCleanupRefresh"];
+      const nodes=Object.fromEntries(ids.map(id=>[id,new Element()]));
+      globalThis.document={getElementById:id=>nodes[id],createElement:()=>new Element(),addEventListener(){},querySelector(){return {dataset:{panel:"candidatePanel"}};}};
+      globalThis.state={fileId:"training-file",runId:"run-1",exploratoryRunId:null,validationUpload:{file_id:"another-validation"}};
+      globalThis.setUiMessage=(node,message,type)=>{node.className=`status ${type}`;node.textContent=message;};
+      let reloads=0,marked=0;
+      globalThis.window={location:{reload(){reloads++;}}};
+      globalThis.sessionStorage={setItem(){}};
+      globalThis.markValidationUploadDeleted=()=>{marked++;};
+      const response=data=>({ok:true,json:async()=>data});
+      globalThis.fetch=async url=>{
+        if(url.endsWith("/preview")) return response({estimated_bytes:1,files:[{file_id:"other-file",filename:"other.csv",deletable:true,estimated_bytes:1,runs:[],protection_reasons:[]}]});
+        if(url.endsWith("/execute")) return response({bytes_freed:1,deleted_file_ids:["other-file"],deleted_run_ids:[],files:[{filename:"other.csv",deleted_file:true,deleted_run_ids:[],bytes_freed:1,errors:[]}]});
+        return response({storage:{upload_count:0,run_count:0,total_bytes:0,complete:true,issues:[]},files:[],scan_issues:[]});
+      };
+      __SETUP__
+      setupHistoryCleanup();
+      const checkbox=new Element();checkbox.dataset.fileId="other-file";checkbox.checked=true;nodes.historyCleanupRows.inputs=[checkbox];
+      await nodes.historyCleanupPreviewButton.listeners.click();
+      nodes.historyCleanupConfirm.checked=true;nodes.historyCleanupConfirm.listeners.change();
+      await nodes.historyCleanupExecuteButton.listeners.click();
+      console.log(JSON.stringify({reloads,marked,validation:state.validationUpload?.file_id,train:state.fileId}));
+    """.replace("__SETUP__", setup))
+    assert result == {"reloads": 0, "marked": 0, "validation": "another-validation", "train": "training-file"}
+
+
+def test_validation_upload_deleted_status_invalidates_current_source():
+    html = web_model_results.INDEX_HTML
+    start = html.index("globalThis.markValidationUploadDeleted=")
+    mark = html[start:html.index('el("validationFileInput").addEventListener', start)]
+    result = _run_node_javascript(r"""
+      const nodes={validationSourceStatus:{textContent:""},validationContent:{hidden:false},validationEmpty:{hidden:true}},
+        el=id=>nodes[id]||{disabled:false},state={validationUpload:{file_id:"deleted",inspection:{}},validation:{},validationWindows:[1]},invalidated=[];
+      const invalidateValidationUpload=()=>{invalidated.push(true);state.validationSourceRevision=1;},fillSelect=()=>{};
+      __MARK__
+      markValidationUploadDeleted();
+      console.log(JSON.stringify({upload:state.validationUpload,windows:state.validationWindows.length,status:nodes.validationSourceStatus.textContent,invalidated:invalidated.length}));
+    """.replace("__MARK__", mark))
+    assert result["upload"] is None
+    assert result["windows"] == 0
+    assert result["invalidated"] == 1
+    assert "历史清理删除" in result["status"]
+
+
+def test_history_cleanup_protects_independent_validation_upload(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    # The metadata-only cache can hold a same-size validation upload from an earlier case.
+    monkeypatch.setattr(web, "DATA_SESSIONS", web.DataSessionCache())
+    history = _history_frame()
+    training = web.save_upload(
+        "history.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": training["file_id"], "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "history-validation",
+    }
+    trained = web_model_results.train_payload(payload)
+    future = history.copy()
+    future["time"] += pd.Timedelta(days=1)
+    validation = web.save_upload(
+        "validation.csv", future.to_csv(index=False).encode("utf-8-sig")
+    )
+    report = web.validate_payload({
+        **payload, "run_id": trained["run_id"], "file_id": validation["file_id"],
+        "validation_windows": [{
+            "id": "normal", "type": "normal_validation", "enabled": True,
+            "comment": "independent", "start": future.time.iloc[2].isoformat(),
+            "end": future.time.iloc[-1].isoformat(),
+        }],
+    })
+    listing, list_status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/history-cleanup"
+    )
+    assert report["run_id"] == trained["run_id"]
+    item = next(
+        file for file in listing["files"] if file["file_id"] == validation["file_id"]
+    )
+    assert list_status == 200
+    assert item["run_count"] == 1
+    inventory = web_model_results._history_inventory()
+    assert inventory["association_issues"] == []
+    assert [run["run_id"] for run in inventory["files"][validation["file_id"]]["runs"]] == [trained["run_id"]]
+    preview, preview_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/preview",
+        {"file_ids": [validation["file_id"]]},
+    )
+    result, execute_status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/history-cleanup/execute",
+        {"file_ids": [validation["file_id"]], "confirm": True},
+    )
+    assert execute_status == 200
+    assert result["deleted_file_ids"] == []
+    assert any("验证报告引用" in reason for reason in item["protection_reasons"])
+    assert trained["run_id"] in "".join(item["protection_reasons"])
+    assert preview_status == 200
+    assert preview["files"][0]["deletable"] is False
+    assert trained["run_id"] in "".join(preview["files"][0]["protection_reasons"])
+    assert preview["files"][0]["runs"][0]["run_id"] == trained["run_id"]
+    assert (web.UPLOADS_DIR / f"{validation['file_id']}.csv").is_file()
+
+
+def test_history_cleanup_blocks_active_training_before_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "training-busy.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    file_id = uploaded["file_id"]
+    training_started = threading.Event()
+    release_training = threading.Event()
+    cleanup_done = threading.Event()
+    cleanup_result = {}
+    original_load = web._load_modeling_upload
+
+    def paused_load(*args, **kwargs):
+        training_started.set()
+        assert release_training.wait(10)
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(web, "_load_modeling_upload", paused_load)
+    training_payload = {
+        "file_id": file_id, "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "busy-training",
+    }
+
+    def train():
+        cleanup_result["training"] = web_model_results.train_payload(training_payload)
+
+    def cleanup():
+        cleanup_result["cleanup"] = web_model_results.history_cleanup_execute_payload(
+            {"file_ids": [file_id], "confirm": True}
+        )
+        cleanup_done.set()
+
+    trainer = threading.Thread(target=train)
+    cleaner = threading.Thread(target=cleanup)
+    trainer.start()
+    assert training_started.wait(10)
+    cleaner.start()
+    assert cleanup_done.wait(10)
+    result = cleanup_result["cleanup"]
+    assert result["deleted_file_ids"] == []
+    assert any("训练或验证" in error for error in result["files"][0]["errors"])
+    assert (web.UPLOADS_DIR / f"{file_id}.csv").is_file()
+    release_training.set()
+    trainer.join(30)
+    assert not trainer.is_alive()
+    assert (web.RUNS_DIR / cleanup_result["training"]["run_id"] / "modeling_snapshot.json").is_file()
+
+
+def test_training_failure_before_snapshot_leaves_no_unrecorded_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "failed-training.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    original_write = web._write_web_json_atomic
+
+    def fail_snapshot(path, value):
+        if path.name == "modeling_snapshot.json":
+            raise OSError("simulated snapshot failure")
+        return original_write(path, value)
+
+    monkeypatch.setattr(web, "_write_web_json_atomic", fail_snapshot)
+    with pytest.raises(OSError, match="simulated snapshot failure"):
+        web_model_results.train_payload({
+            "file_id": uploaded["file_id"], "timestamp_column": "time",
+            "tags": ["A", "B", "C"],
+            "normal_start": history.time.iloc[0].isoformat(),
+            "normal_end": history.time.iloc[119].isoformat(),
+            "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+            "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "failed",
+        })
+    assert not web.RUNS_DIR.exists() or list(web.RUNS_DIR.iterdir()) == []
+
+
+def test_history_cleanup_blocks_active_validation_and_holds_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    training = web.save_upload(
+        "validation-train.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    payload = {
+        "file_id": training["file_id"], "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "busy-validation",
+    }
+    trained = web_model_results.train_payload(payload)
+    future = history.copy()
+    future["time"] += pd.Timedelta(days=1)
+    validation = web.save_upload(
+        "validation-busy.csv", future.to_csv(index=False).encode("utf-8-sig")
+    )
+    validation_file_id = validation["file_id"]
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+    cleanup_done = threading.Event()
+    outcome = {}
+    original_load = web._load_upload
+
+    def paused_load(payload_value, requested_columns):
+        if payload_value.get("file_id") == validation_file_id:
+            validation_started.set()
+            assert release_validation.wait(10)
+        return original_load(payload_value, requested_columns)
+
+    monkeypatch.setattr(web, "_load_upload", paused_load)
+    validation_payload = {
+        **payload, "run_id": trained["run_id"], "file_id": validation_file_id,
+        "validation_windows": [{
+            "id": "normal", "type": "normal_validation", "enabled": True,
+            "comment": "independent", "start": future.time.iloc[2].isoformat(),
+            "end": future.time.iloc[-1].isoformat(),
+        }],
+    }
+
+    def validate():
+        outcome["validation"] = web.validate_payload(validation_payload)
+
+    def cleanup():
+        outcome["cleanup"] = web_model_results.history_cleanup_execute_payload(
+            {"file_ids": [validation_file_id], "confirm": True}
+        )
+        cleanup_done.set()
+
+    validator = threading.Thread(target=validate)
+    cleaner = threading.Thread(target=cleanup)
+    validator.start()
+    assert validation_started.wait(10)
+    cleaner.start()
+    assert cleanup_done.wait(10)
+    assert outcome["cleanup"]["deleted_file_ids"] == []
+    assert any("训练或验证" in error for error in outcome["cleanup"]["files"][0]["errors"])
+    assert (web.UPLOADS_DIR / f"{validation_file_id}.csv").is_file()
+    release_validation.set()
+    validator.join(30)
+    assert not validator.is_alive()
+    assert (web.RUNS_DIR / trained["run_id"] / "validation_report.json").is_file()
+
+
+def test_history_cleanup_lock_blocks_new_training_and_keeps_nested_locks_ordered(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "cleanup-window.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    file_id = uploaded["file_id"]
+    trained = web_model_results.train_payload({
+        "file_id": file_id, "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "kept-run",
+    })
+    payload = {
+        "file_id": file_id, "timestamp_column": "time", "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "cleanup-window",
+    }
+    cleanup_ready = threading.Event()
+    release_cleanup = threading.Event()
+    outcome = {}
+    original_file_locks = web_model_results._history_file_locks
+
+    @contextmanager
+    def paused_file_locks(ids):
+        with original_file_locks(ids):
+            cleanup_ready.set()
+            assert release_cleanup.wait(10)
+            yield
+
+    monkeypatch.setattr(web_model_results, "_history_file_locks", paused_file_locks)
+
+    def cleanup():
+        outcome["cleanup"] = web_model_results.history_cleanup_execute_payload(
+            {"file_ids": [file_id], "confirm": True}
+        )
+
+    cleaner = threading.Thread(target=cleanup)
+    cleaner.start()
+    assert cleanup_ready.wait(10)
+    try:
+        web_model_results.train_payload(payload)
+    except web.UploadBusyError as error:
+        outcome["training_error"] = str(error)
+    else:
+        outcome["training_error"] = ""
+    release_cleanup.set()
+    cleaner.join(30)
+    assert not cleaner.is_alive()
+    assert "不能并发操作" in outcome["training_error"]
+    assert outcome["cleanup"]["deleted_file_ids"] == [file_id]
+    assert outcome["cleanup"]["deleted_run_ids"] == [trained["run_id"]]
+    assert not (web.UPLOADS_DIR / f"{file_id}.csv").exists()
+
+
+def test_history_cleanup_records_validation_evidence_with_run_and_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "source.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    run = web_model_results.train_payload({
+        "file_id": uploaded["file_id"], "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "evidence",
+    })
+    validation_path = web.save_upload(
+        "validation-evidence.csv",
+        history.assign(time=history.time + pd.Timedelta(days=1))
+        .to_csv(index=False).encode("utf-8-sig"),
+    )
+    web.validate_payload({
+        "run_id": run["run_id"], "file_id": validation_path["file_id"],
+        "timestamp_column": "time",
+        "validation_windows": [{
+            "id": "normal", "type": "normal_validation", "enabled": True,
+            "start": (history.time.iloc[2] + pd.Timedelta(days=1)).isoformat(),
+            "end": (history.time.iloc[-1] + pd.Timedelta(days=1)).isoformat(),
+            "comment": "evidence",
+        }],
+    })
+    listing, status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/history-cleanup"
+    )
+    item = next(
+        file for file in listing["files"]
+        if file["file_id"] == validation_path["file_id"]
+    )
+    assert status == 200
+    assert item["deletable"] is False
+    assert item["runs"][0]["run_id"] == run["run_id"]
+    assert any(run["run_id"] in reason for reason in item["protection_reasons"])
+
+
+def test_history_cleanup_treats_unreadable_validation_reports_conservatively(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload(
+        "unknown-report.csv", history.to_csv(index=False).encode("utf-8-sig")
+    )
+    run = web_model_results.train_payload({
+        "file_id": uploaded["file_id"], "timestamp_column": "time",
+        "tags": ["A", "B", "C"],
+        "normal_start": history.time.iloc[0].isoformat(),
+        "normal_end": history.time.iloc[119].isoformat(),
+        "sample_interval_minutes": 5, "smoothing_window_minutes": 10,
+        "max_lag_minutes": 5, "lag_step_minutes": 5, "model_name": "unknown-report",
+    })
+    (web.RUNS_DIR / run["run_id"] / "validation_report.json").write_text(
+        json.dumps({"validation_windows": []}), encoding="utf-8"
+    )
+    listing, status = _get_response(
+        web_model_results.ModelResultsHandler, "/api/history-cleanup"
+    )
+    item = next(
+        file for file in listing["files"]
+        if file["file_id"] == uploaded["file_id"]
+    )
+    assert status == 200
+    assert item["deletable"] is False
+    assert any(run["run_id"] in reason for reason in item["protection_reasons"])
+
+
+def test_history_cleanup_tab_switches_to_and_from_the_existing_workflow():
+    source = web_model_results._WORKBENCH_UI_SCRIPT
+    start = source.index("  globalThis.showWorkflowStage = target => {")
+    end = source.index(
+        '  workflowSteps.querySelectorAll(".workflow-step").forEach(button => button.addEventListener',
+        start,
+    )
+    switchers = source[start:end]
+    result = _run_node_javascript(r"""
+      class Element {
+        constructor(id){this.id=id;this.hidden=false;this.attributes={};this.classes=new Set();this.classList={
+          toggle:(name,on)=>on?this.classes.add(name):this.classes.delete(name),
+          remove:name=>this.classes.delete(name),contains:name=>this.classes.has(name)};}
+        setAttribute(name,value){this.attributes[name]=value;}
+        addEventListener(){}
+      }
+      const dataPanel=new Element("configPanel"),candidatePanel=new Element("candidatePanel"),modelPanel=new Element("modelPanel");
+      const validationPanel=new Element("validationPanel"),releasePanel=new Element("releasePanel"),historyCleanupPanel=new Element("historyCleanupPanel");
+      const historyCleanupTab=new Element("historyCleanupTab"),candidateNavigation={hidden:false},workflowSteps={querySelectorAll:()=>[]};
+      const scheduleCandidateSpy=()=>{};
+      globalThis.document={getElementById:()=>null};
+      __SWITCHERS__
+      globalThis.showWorkflowStage("candidatePanel");
+      globalThis.showHistoryCleanup();
+      const historyOpen=!historyCleanupPanel.hidden&&historyCleanupTab.attributes["aria-pressed"]==="true"
+        &&![dataPanel,candidatePanel,modelPanel,validationPanel,releasePanel].some(panel=>panel.classList.contains("active"));
+      globalThis.showWorkflowStage("candidatePanel");
+      console.log(JSON.stringify({historyOpen,returned:historyCleanupPanel.hidden&&historyCleanupTab.attributes["aria-pressed"]==="false"&&candidatePanel.classList.contains("active")}));
+    """.replace("__SWITCHERS__", switchers))
+    assert result == {"historyOpen": True, "returned": True}
 
 
 def test_final_web_candidate_deletion_frontend_guards_and_refreshes_comparison_state() -> None:

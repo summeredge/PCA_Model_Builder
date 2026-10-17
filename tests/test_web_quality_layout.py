@@ -2667,9 +2667,9 @@ def test_final_form_controls_have_five_scoped_width_semantics() -> None:
                 assert tag == 'input' and attrs.get('type', 'text') == expected_type, field_id
     # 所有静态控件均被通用语义或明确例外覆盖；解析 HTML 而非脚本中的模板 ID。
     assert all(tag != 'input' or attrs.get('type', 'text') in
-               ('text', 'number', 'datetime-local', 'file', 'range')
+               ('text', 'number', 'datetime-local', 'file', 'range', 'checkbox')
                for tag, attrs in controls.fields.values())
-    assert len(controls.fields) == 85
+    assert len(controls.fields) == 86
     assert controls.fields["explorationRegionTarget"] == ("select", {"id": "explorationRegionTarget", "disabled": None})
     assert html.index('id="semanticFormWidthStyle"') > html.index('id="modelResultsStyle"')
 
