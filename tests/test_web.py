@@ -3393,7 +3393,7 @@ def test_history_cleanup_execute_rejects_upload_in_use(tmp_path, monkeypatch):
     assert source_path.is_file()
 
 
-def test_history_cleanup_ui_reloads_after_deleting_validation_upload():
+def test_history_cleanup_ui_keeps_training_state_when_validation_upload_is_deleted():
     source = web_model_results._ASSET_PATH.read_text(encoding="utf-8")
     start = source.index("  function setupHistoryCleanup() {")
     end = source.index("\n  function renderSingleModelDiagnostic", start)
@@ -3428,12 +3428,41 @@ def test_history_cleanup_ui_reloads_after_deleting_validation_upload():
       await nodes.historyCleanupExecuteButton.listeners.click();
       console.log(JSON.stringify({reload,stored,fileId:state.fileId,runId:state.runId,marked,validationUpload:state.validationUpload}));
     """.replace("__SETUP__", setup))
-    assert result["reload"] is True
+    assert result["reload"] is False
     assert result["stored"] == ""
     assert result["fileId"] == "training-file"
     assert result["runId"] == "run-1"
     assert result["marked"] == "deleted"
     assert result["validationUpload"] is None
+
+
+def test_train_request_cannot_choose_unrecorded_run_cleanup_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    uploaded = web.save_upload(
+        "history.csv", _history_frame().to_csv(index=False).encode("utf-8-sig")
+    )
+    existing_run_id = "a" * 32
+    existing_run = web.RUNS_DIR / existing_run_id
+    existing_run.mkdir(parents=True)
+    existing_package = existing_run / "model.pcamodel"
+    existing_package.write_bytes(b"legacy-model-package")
+
+    result, status = _post_response(
+        web_model_results.ModelResultsHandler,
+        "/api/train",
+        {
+            "_created_run_id": existing_run_id,
+            "file_id": uploaded["file_id"],
+            "timestamp_column": "missing-time-column",
+            "tags": ["A", "B"],
+            "model_name": "failed-before-run-creation",
+        },
+    )
+
+    assert status == 400
+    assert "timestamp" in result["error"] or "missing-time-column" in result["error"]
+    assert existing_package.read_bytes() == b"legacy-model-package"
 
 
 def test_history_cleanup_ui_only_invalidates_the_deleted_validation_file():

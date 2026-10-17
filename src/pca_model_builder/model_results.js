@@ -1209,8 +1209,6 @@
           || data.deleted_run_ids.includes(state.exploratoryRunId);
         if (validationSourceDeleted) {
           globalThis.markValidationUploadDeleted?.();
-          window.location.reload();
-          return;
         }
         if (currentWasDeleted) {
           state.fileId = null; state.fileName = null; state.runId = null;

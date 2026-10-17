@@ -352,6 +352,8 @@ def inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def train_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    payload = payload.copy()
+    payload.pop("_created_run_id", None)
     file_id = _validated_id(_required_text(payload, "file_id"), "file_id")
     with _upload_lock(file_id, "训练文件"):
         try:
@@ -451,9 +453,9 @@ def _train_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
         )
 
     run_id = uuid.uuid4().hex
-    payload["_created_run_id"] = run_id
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
+    payload["_created_run_id"] = run_id
     model_name = _required_text(payload, "model_name")
     stored_config = {
         "model_name": model_name,
