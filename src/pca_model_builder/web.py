@@ -520,7 +520,7 @@ def _train_payload_locked(payload: dict[str, Any]) -> dict[str, Any]:
         "training_window_totals": training_result.training_window_totals,
         "training_quality_warnings": training_result.global_quality_warnings,
         "training_group_composition": _training_group_composition(
-            training_result.window_summaries, payload, config
+            training_result.window_summaries, payload, config, dynamic.index
         ),
         "dynamic_features": dynamic.shape[1],
         "n_components": model.n_components,
@@ -686,7 +686,7 @@ def quality_payload(payload: dict[str, Any]) -> dict[str, Any]:
     result["training_window_totals"] = normal_training.training_window_totals
     result["training_quality_warnings"] = normal_training.global_quality_warnings
     result["training_group_composition"] = _training_group_composition(
-        normal_training.window_summaries, payload, config
+        normal_training.window_summaries, payload, config, normal_training.dynamic.index
     )
     return _with_data_usage(
         result, loaded, len(normal_training.reference), len(normal_training.reference)
@@ -1184,12 +1184,30 @@ def _training_cluster_series(
                                   and item.get("cluster_id") == origin["cluster_id"]
                                   for item in exploration.get("cluster_candidates", [])):
                 continue
+            preferred = None
+            if window.get("source") == "preferred_region":
+                matches = [item for item in exploration.get("preferred_region_candidates", [])
+                           if reference == f"state-exploration-{match[1]}-{item.get('candidate_id')}"]
+                if len(matches) != 1 or matches[0].get("source") != "preferred_region":
+                    continue
+                preferred = matches[0]
+                try:
+                    if not (pd.Timestamp(preferred["start"]) <= pd.Timestamp(window["start"])
+                            <= pd.Timestamp(window["end"]) <= pd.Timestamp(preferred["end"])):
+                        continue
+                except (ValueError, TypeError, KeyError):
+                    continue
             source = exploration.get("_diagnostic_source", {})
             if source != {"file_id": payload["file_id"], "timestamp_column": payload["timestamp_column"], "preprocessing": config.to_dict(), "modeling_eligibility": normalize_modeling_eligibility(payload.get("modeling_eligibility"))}:
                 continue
             points = exploration.get("cluster_series")
             if isinstance(points, pd.DataFrame):
                 observed = points.loc[window["start"]:window["end"], ["cluster_id", "segment_id"]].copy()
+                if preferred is not None:
+                    observed.attrs["preferred_region_origin"] = {
+                        "origin_source": "preferred_region", "exploration_run_id": match[1],
+                        "origin_candidate_id": preferred["candidate_id"], "origin_source_ref": reference,
+                    }
                 if origin:
                     observed.attrs["origin_source_ref"] = reference
                     recorded = matches[0].get("provenance")
@@ -1285,6 +1303,10 @@ def _verified_training_window_origins(
                 reliable = bool(origin)
             if reliable:
                 origins[item["id"]] = origin
+        elif item.get("source") == "preferred_region":
+            points = observed.get(item["id"])
+            if points is not None and not points.empty:
+                origins[item["id"]] = points.attrs["preferred_region_origin"]
         elif item.get("source") == "performance":
             points = observed.get(item["id"])
             reference = str(points.attrs.get("origin_source_ref") or "") if points is not None else ""
@@ -1296,17 +1318,31 @@ def _verified_training_window_origins(
 
 def _training_group_composition(
     summaries: list[dict[str, Any]], payload: dict[str, Any], config: PreprocessingConfig,
+    dynamic_index: pd.DatetimeIndex | None = None,
 ) -> dict[str, Any]:
     """Aggregate actual window contributions using the existing provenance checks."""
     from .model_quality import _cluster_source
 
     used = [item for item in summaries if item.get("status") == "used"]
     origins = _verified_training_window_origins(summaries, payload, config)
+    observed = _training_cluster_series(used, payload, config)
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     untraceable = 0
     total = sum(item["effective_samples"] for item in used)
     for item in used:
         origin = origins.get(item["id"])
+        if item.get("source") == "preferred_region" and origin and dynamic_index is not None:
+            index = dynamic_index[(dynamic_index >= pd.Timestamp(item["start"]))
+                                  & (dynamic_index <= pd.Timestamp(item["end"]))]
+            counts = observed[item["id"]]["cluster_id"].reindex(index).value_counts()
+            untraceable += item["effective_samples"] - int(counts.sum())
+            for cluster_id, count in counts.items():
+                source = (f"state-exploration-{origin['exploration_run_id']}", str(cluster_id))
+                group = groups.setdefault(source, {
+                    "cluster_id": source[1], "source_ref": "-".join(source), "effective_samples": 0,
+                })
+                group["effective_samples"] += int(count)
+            continue
         source = _cluster_source(str(origin.get("origin_source_ref") or "")) if origin else None
         if source is None:
             untraceable += item["effective_samples"]

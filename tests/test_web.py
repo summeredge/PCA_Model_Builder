@@ -7754,3 +7754,103 @@ assert.equal(el('candidateWindows').children[0].children[1].children.filter(r=>r
     script_path.write_text(script, encoding="utf-8")
     completed = subprocess.run([node, str(script_path)], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.fixture
+def preferred_training_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(web, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(web, "RUNS_DIR", tmp_path / "runs")
+    history = _history_frame()
+    uploaded = web.save_upload("preferred.csv", history.to_csv(index=False).encode("utf-8-sig"))
+    payload = dict(file_id=uploaded["file_id"], timestamp_column="time", tags=["A", "B", "C"],
+                   sample_interval_minutes=5, filter_method="none", resampling_method="none",
+                   max_lag_minutes=10, lag_step_minutes=5, model_name="preferred", n_components=2)
+    exploration = web.state_exploration_payload({**payload,
+        "exploration_start": history.time.iloc[0].isoformat(),
+        "exploration_end": history.time.iloc[-1].isoformat(),
+        "exploration_config": {"cluster_count": 3, "minimum_candidate_duration_minutes": 10}})
+    run = exploration["exploration_run_id"]
+    region = web.state_exploration_preferred_region_payload(run, {"preferred_region_update_seq": 1, "ellipses": [
+        dict(center_pc1=0, center_pc2=0, radius_pc1=100000, radius_pc2=100000)]})
+    candidate = max(region["preferred_region_candidates"], key=lambda item: item["sample_count"])
+    window = dict(id="preferred", source="preferred_region", enabled=True, comment="",
+                  start=candidate["start"], end=candidate["end"],
+                  source_ref=f"state-exploration-{run}-{candidate['candidate_id']}")
+    return payload, run, window
+
+
+def test_preferred_region_training_scores_and_composition_use_actual_samples(preferred_training_source):
+    payload, run, window = preferred_training_source
+    points = web.STATE_EXPLORATION_RUNS[run]["cluster_series"]
+    # Keep original IDs from a real exploration; the region spans multiple groups.
+    assert points.cluster_id.nunique() > 1
+    stamps = points.loc[window["start"]:window["end"]].index
+    middle = len(stamps) // 2
+    windows = [{**window, "id": "left", "end": stamps[middle - 1].isoformat()},
+               {**window, "id": "right", "start": stamps[middle].isoformat()}]
+    result = web.train_payload({**payload, "training_windows": windows})
+    plain = web.train_payload({**payload, "training_windows": [{**w, "source": "manual"} for w in windows]})
+    expected = points.cluster_id.reindex(pd.to_datetime([r["timestamp"] for r in result["scores"]]))
+    assert [r["cluster_id"] for r in result["scores"]] == expected.tolist()
+    assert [{k: v for k, v in r.items() if k != "cluster_id"} for r in result["scores"]] == [
+        {k: v for k, v in r.items() if k != "cluster_id"} for r in plain["scores"]]
+    for key in ("training_rows", "explained_variance", "t2_limits", "q_limits", "status_counts"):
+        assert result[key] == plain[key]
+    composition = result["training_group_composition"]
+    assert composition["untraceable_samples"] == 0
+    assert {g["cluster_id"]: g["effective_samples"] for g in composition["groups"]} == expected.value_counts().to_dict()
+    assert web.quality_payload({**payload, "training_windows": windows})["training_group_composition"] == composition
+    whole = web.train_payload({**payload, "training_windows": [window]})
+    assert len({r["cluster_id"] for r in whole["scores"]}) > 1
+    line = next(line for line in web.INDEX_HTML.splitlines() if 'const clusterOption=new Option' in line)
+    script = 'const Option=function(text,value){this.dataset={};};const colorSelect={add(o){this.option=o}};'
+    script += 'const data=' + json.dumps({"scores": result["scores"]}) + ';' + line
+    script += 'console.log(JSON.stringify({disabled:colorSelect.option.disabled}));'
+    assert _run_node_javascript(script)["disabled"] is False
+    helpers = 'const clusterUiLabel=x=>x;const explorationClusterColor=x=>({cluster_001:"red",cluster_002:"blue",cluster_003:"green"})[x];'
+    script = helpers + _score_renderer_source()
+    script += 'const el=()=>({textContent:""});const escapeHtml=x=>String(x);const displayUiValue=x=>String(x);const displayTime=x=>String(x);const container={};'
+    script += 'scoreScatter(container,' + json.dumps(result["scores"]) + ',"cluster");console.log(JSON.stringify({svg:container.innerHTML}));'
+    svg = _run_node_javascript(script)["svg"]
+    for cluster in expected.unique():
+        assert cluster in svg
+    missing_stamp = pd.Timestamp(result["scores"][0]["timestamp"])
+    web.STATE_EXPLORATION_RUNS[run]["cluster_series"] = points.drop(missing_stamp)
+    missing = web.train_payload({**payload, "training_windows": windows})
+    assert missing["scores"][0]["cluster_id"] is None
+    assert missing["training_group_composition"]["untraceable_samples"] == 1
+
+
+@pytest.mark.parametrize("failure", ["cache", "reference", "candidate", "duplicate", "source", "range", "file", "timestamp", "preprocessing", "eligibility", "mixed_runs"])
+def test_preferred_region_training_cluster_rejects_unverified_sources(preferred_training_source, monkeypatch, failure):
+    from copy import deepcopy
+    payload, run, window = preferred_training_source
+    cached = web.STATE_EXPLORATION_RUNS[run]
+    windows = [window]
+    if failure == "cache":
+        monkeypatch.delitem(web.STATE_EXPLORATION_RUNS, run)
+    elif failure == "reference":
+        window["source_ref"] += "-forged"
+    elif failure == "candidate":
+        cached["preferred_region_candidates"] = []
+    elif failure == "duplicate":
+        cached["preferred_region_candidates"] *= 2
+    elif failure == "source":
+        cached["preferred_region_candidates"][0]["source"] = "manual"
+    elif failure == "range":
+        window["start"] = (pd.Timestamp(window["start"]) - pd.Timedelta(minutes=5)).isoformat()
+    elif failure == "file":
+        payload["file_id"] = "other"
+    elif failure == "timestamp":
+        payload["timestamp_column"] = "other"
+    elif failure == "preprocessing":
+        payload["max_lag_minutes"] = 0
+    elif failure == "eligibility":
+        payload["modeling_eligibility"] = {"keep_conditions": [{"column": "A", "minimum": 0}]}
+    else:
+        other = "b" * 32
+        monkeypatch.setitem(web.STATE_EXPLORATION_RUNS, other, deepcopy(cached))
+        windows.append({**window, "id": "other", "source_ref": window["source_ref"].replace(run, other)})
+    summaries = [{**w, "status": "used", "effective_samples": 10} for w in windows]
+    colors = web._training_score_clusters(cached["cluster_series"].index, summaries, payload, web._preprocessing_config(payload))
+    assert colors.isna().all()
